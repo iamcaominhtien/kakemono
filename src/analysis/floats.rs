@@ -149,6 +149,13 @@ pub struct FloatsConfig {
     /// Paths spanning more than this fraction of the page in both
     /// directions are page frames or backgrounds and are ignored.
     pub background_path_extent_ratio: f32,
+    /// A filled, unstroked path behind at least this many lines of running
+    /// text (of [`body_min_chars`](Self::body_min_chars) characters) is the
+    /// shading of a text box (an example, a note), not a drawing: it is
+    /// ignored, and the pictures inside the box stay figures of their own.
+    pub shaded_box_min_lines_count: usize,
+    /// ... or behind the captions of this many floats.
+    pub shaded_box_min_captions_count: usize,
     /// Paths with an alpha value below this are invisible and ignored.
     pub min_path_alpha: u8,
     /// A component needs at least this many paths to be a ruled table.
@@ -439,6 +446,8 @@ impl Default for FloatsConfig {
             background_image_area_ratio: 0.92,
             cover_max_lines_count: 12,
             background_path_extent_ratio: 0.95,
+            shaded_box_min_lines_count: 3,
+            shaded_box_min_captions_count: 2,
             min_path_alpha: 8,
             ruled_min_paths_count: 3,
             ruled_rule_tenths: 9,
@@ -1225,7 +1234,7 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         {
             continue;
         }
-        if path.filled && !path.stroked && path.is_white() {
+        if path.filled && !path.stroked && (path.is_white() || shades_text(page, &path.bbox, cfg)) {
             continue;
         }
         if path.color[3] < cfg.min_path_alpha {
@@ -1241,6 +1250,22 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     elements
+}
+
+/// Whether the area `bbox` holds lines of running text, or the captions of
+/// several floats: the shading of a box (see
+/// [`FloatsConfig::shaded_box_min_lines_count`]).
+fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
+    let inside = || page.lines.iter().filter(|line| bbox.contains(&line.bbox));
+    let text_lines = inside()
+        .filter(|line| line.char_count() >= cfg.body_min_chars)
+        .take(cfg.shaded_box_min_lines_count)
+        .count();
+    let captions = inside()
+        .filter(|line| CAPTION.is_match(&line.text()))
+        .take(cfg.shaded_box_min_captions_count)
+        .count();
+    text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
 }
 
 /// Whether a horizontal rule underlines text: it lies just below the
