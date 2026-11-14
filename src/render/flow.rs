@@ -297,6 +297,14 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
             } else {
                 ""
             };
+            if let Some((label, rest)) = chapter_label(&block.spans).filter(|_| cls.is_empty()) {
+                out.push_str(&format!(
+                    "<{tag}{id} class=\"chapter\"><span class=\"chapno\">{}</span> {}</{tag}>\n",
+                    esc(&label),
+                    spans_html(&rest)
+                ));
+                return;
+            }
             match section_number(&block.spans).filter(|_| ctx.offprint && cls.is_empty()) {
                 Some((number, rest)) => out.push_str(&format!(
                     "<{tag}{id} class=\"hang\"><span class=\"secno\">{}</span>{}</{tag}>\n",
@@ -501,6 +509,17 @@ fn section_number(spans: &[Span]) -> Option<(String, Vec<Span>)> {
     let mut rest = spans.to_vec();
     rest[0].text = first.text[found.end()..].to_string();
     Some((found.as_str().trim_end().to_string(), rest))
+}
+
+/// A heading that starts with a chapter label ("Chapter 1 The way of the
+/// program"): the label and the rest of the heading.
+fn chapter_label(spans: &[Span]) -> Option<(String, Vec<Span>)> {
+    let first = spans.first()?;
+    let found = crate::analysis::semantics::patterns::CHAPTER_LABEL.find(&first.text)?;
+    let mut rest = spans.to_vec();
+    rest[0].text = first.text[found.end()..].trim_start().to_string();
+    let has_rest = rest.iter().any(|span| !span.text.trim().is_empty());
+    has_rest.then(|| (found.as_str().trim_end().to_string(), rest))
 }
 
 /// A list item whose text starts with its `marker` ("(1)", "a."): the

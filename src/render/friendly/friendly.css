@@ -122,6 +122,8 @@ h1.title{font-family:var(--serif);font-size:var(--fs-title);line-height:var(--lh
   text-decoration:underline;text-underline-offset:3px;justify-self:start}
 p.note{font-family:var(--sans);font-size:var(--fs-meta);line-height:1.5;color:var(--ink-3);margin:0 0 var(--s3);text-align:left;hyphens:manual}
 p.scene-break{text-align:center;text-indent:0;margin:var(--s3) 0;hyphens:manual}
+h2.chapter{font-size:calc(var(--fs-h2)*1.3)}
+.chapno{display:block;font-family:var(--sans);font-size:.45em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin-bottom:.4em}
 .abstract{border-top:var(--heavy) solid var(--ink);border-bottom:var(--hair) solid var(--rule);padding:var(--s4) 0 var(--s5);margin:var(--s6) 0 var(--s7)}
 .abstract-label,h2.abstract-heading{font:600 var(--fs-label)/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--rubric);margin:0 0 var(--s3)}
 h2.abstract-heading{margin:var(--s6) 0 0;padding-top:var(--s4);border-top:var(--heavy) solid var(--ink)}

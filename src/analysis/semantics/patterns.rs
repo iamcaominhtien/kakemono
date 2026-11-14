@@ -6,6 +6,12 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// The label of a chapter or part set as a heading of its own above the
+/// chapter's title: "Chapter 1", "PART II", "CHAPTER 3:", "Appendix A".
+pub(crate) static CHAPTER_LABEL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?i:chapter|part|appendix|lesson|unit)\s+(?:\d{1,3}|[IVXLC]{1,6}|[A-Z])[.:]?(?:\s|$)").unwrap()
+});
+
 /// Arabic section number and title: "3", "3.2", "3.2.1." followed by the
 /// title (up to four levels of at most two digits each).
 pub(crate) static HEADING_NUM: LazyLock<Regex> =

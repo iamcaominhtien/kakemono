@@ -143,9 +143,57 @@ pub(crate) fn merge_paragraphs(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &
         uses_indent: uses_first_line_indent(nodes, stats, cfg),
         refs_labeled: references_are_labeled(nodes, cfg),
     };
+    join_chapter_labels(nodes);
     merge_cut_paragraphs(nodes, stats, cfg);
     merge_split_blocks(nodes, &style, cfg);
     merge_split_footnotes(nodes, cfg);
+}
+
+/// Joins a chapter label set as a heading of its own ("Chapter 1") with the
+/// heading right after it on the same page (the chapter's title): one
+/// heading, at the higher of the two levels.
+fn join_chapter_labels(nodes: &mut Vec<Node>) {
+    let mut i = 0;
+    while i + 1 < nodes.len() {
+        if let Some(class) = chapter_title_class(&nodes[i], &nodes[i + 1]) {
+            if let NodeKind::Text(title) = &nodes[i + 1].kind {
+                let bbox = title.bbox;
+                if let NodeKind::Text(label) = &mut nodes[i].kind {
+                    label.bbox = label.bbox.union(&bbox);
+                }
+            }
+            nodes[i].class = class;
+            append_text_node(nodes, i, i + 1);
+        }
+        i += 1;
+    }
+}
+
+/// The class of the heading made of the chapter label `label` and the
+/// heading `title` after it, when they join.
+fn chapter_title_class(label: &Node, title: &Node) -> Option<Class> {
+    let (
+        Class::Heading { level, number },
+        Class::Heading {
+            level: title_level,
+            number: title_number,
+        },
+    ) = (&label.class, &title.class)
+    else {
+        return None;
+    };
+    let label_text = block_text(&label.text_block()?.lines);
+    let label_text = label_text.trim();
+    let title_text = block_text(&title.text_block()?.lines);
+    let whole_label = CHAPTER_LABEL
+        .find(label_text)
+        .is_some_and(|found| found.end() == label_text.len());
+    (label.loc.page == title.loc.page && whole_label && !CHAPTER_LABEL.is_match(title_text.trim())).then(|| {
+        Class::Heading {
+            level: (*level).min(*title_level),
+            number: number.clone().or_else(|| title_number.clone()),
+        }
+    })
 }
 
 /// Joins a paragraph with the paragraph right after it in the same column
