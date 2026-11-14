@@ -9,7 +9,7 @@
 //! draw them.
 
 use super::page::PageData;
-use crate::model::Line;
+use crate::model::{Line, LineGlyph};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -93,7 +93,10 @@ pub struct FurnitureConfig {
     /// (such as the header of a table of numbers) reaches about 1.5.
     pub crowded_max_distance_em: f32,
     /// A number followed on its row, within this many font sizes, by text
-    /// that is not furniture is a heading's number, not a page number.
+    /// that is not furniture is a heading's number, not a page number. A
+    /// number set farther apart at either end of the top or bottom row of a
+    /// page is the page number of a book's running head ("46   Chapter 4.
+    /// Cumulative distribution functions").
     pub heading_number_max_gap_em: f32,
     /// The offset of printed page numbers to page indexes is the one at
     /// least this many pages ...
@@ -287,9 +290,10 @@ fn count_head_foot_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<R
 /// Removes the furniture lines of one page and returns them in their
 /// original order.
 fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> Vec<Line> {
-    let body = body_extent(page, repeats, cfg);
+    let numbered = numbered_heads(page, repeats.number_offset, cfg);
+    let body = body_extent(page, repeats, &numbered, cfg);
     let mut drop = margin_line_numbers(page, &body, cfg);
-    mark_running_heads(page, &body, repeats, cfg, &mut drop);
+    mark_running_heads(page, &body, repeats, &numbered, cfg, &mut drop);
 
     let mut kept = Vec::with_capacity(page.lines.len());
     let mut removed = Vec::new();
@@ -330,9 +334,17 @@ fn drop_head_rules(page: &mut PageData, removed: &[Line], body: &BodyExtent, cfg
 
 /// Extent of the main text: the long lines that are not running heads. When
 /// there are none, the whole page.
-fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> BodyExtent {
+fn body_extent(page: &PageData, repeats: &RepeatCounts, numbered: &[bool], cfg: &FurnitureConfig) -> BodyExtent {
     let is_repeated =
         |line: &Line| band(page, line, cfg).is_some_and(|line_band| repeats.is_repeated(&line.text(), line_band));
+    // The lines of a numbered running head are not text either.
+    let lines: Vec<&Line> = page
+        .lines
+        .iter()
+        .zip(numbered)
+        .filter(|(_, head)| !**head)
+        .map(|(line, _)| line)
+        .collect();
     // A first page's foot may set a journal line on the row of the page id
     // that the other pages repeat alone ("0031-9007/16/116(6)/061102(16)
     // 061102-1 Published by ..."): that row is not text.
@@ -346,9 +358,9 @@ fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -
         })
         .map(|line| line.baseline)
         .collect();
-    let body: Vec<&Line> = page
-        .lines
+    let body: Vec<&Line> = lines
         .iter()
+        .copied()
         .filter(|line| line.char_count() >= cfg.body_line_min_glyphs_count && !is_repeated(line))
         .filter(|line| !PREPRINT_FOOT.is_match(line.text().trim()))
         .filter(|line| {
@@ -359,9 +371,9 @@ fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -
         .collect();
     // A page with no long line (a lone "Appendix" heading): its other text,
     // without page numbers, is the text block.
-    let short: Vec<&Line> = page
-        .lines
+    let short: Vec<&Line> = lines
         .iter()
+        .copied()
         .filter(|line| !PAGE_NUMBER.is_match(line.text().trim()) && !is_repeated(line))
         .collect();
     let (top, bottom) = if body.is_empty() && short.is_empty() {
@@ -432,13 +444,15 @@ fn mark_running_heads(
     page: &PageData,
     body: &BodyExtent,
     repeats: &RepeatCounts,
+    numbered: &[bool],
     cfg: &FurnitureConfig,
     drop: &mut [bool],
 ) {
     let mut candidate: Vec<bool> = page
         .lines
         .iter()
-        .map(|line| is_furniture_candidate(page, line, body, repeats, cfg))
+        .zip(numbered)
+        .map(|(line, &head)| head || is_furniture_candidate(page, line, body, repeats, cfg))
         .collect();
     // A number right before other text on its row is the number of a
     // heading at the top of the page ("1   Introduction"), not a page number.
@@ -556,6 +570,11 @@ fn page_number_offset(pages: &[PageData], cfg: &FurnitureConfig) -> i64 {
             .iter()
             .filter(|line| is_extreme_line(page, line, cfg) && alone_on_row(page, line, cfg))
             .filter_map(|line| line.text().trim().parse::<i64>().ok())
+            .chain(
+                edge_rows(page, cfg)
+                    .into_iter()
+                    .filter_map(|row| row_edge_number(page, &row, cfg)),
+            )
             .map(|number| number - (page.index as i64 + 1))
             .collect();
         for offset in offsets {
@@ -570,6 +589,73 @@ fn page_number_offset(pages: &[PageData], cfg: &FurnitureConfig) -> i64 {
         .filter(|&(_, count)| count >= needed)
         .max_by_key(|&(offset, count)| (count, -offset.abs()))
         .map_or(0, |(offset, _)| offset)
+}
+
+/// The top and the bottom row of a page: the indexes of the lines on the
+/// baseline of its highest line, and of its lowest.
+fn edge_rows(page: &PageData, cfg: &FurnitureConfig) -> Vec<Vec<usize>> {
+    let row_of = |baseline: f32| -> Vec<usize> {
+        (0..page.lines.len())
+            .filter(|&i| (page.lines[i].baseline - baseline).abs() <= cfg.crowded_min_distance_pt)
+            .collect()
+    };
+    let top = page.lines.iter().min_by(|a, b| a.bbox.y0.total_cmp(&b.bbox.y0));
+    let bottom = page.lines.iter().max_by(|a, b| a.bbox.y1.total_cmp(&b.bbox.y1));
+    let mut rows = Vec::new();
+    if let Some(line) = top {
+        rows.push(row_of(line.baseline));
+    }
+    if let Some(line) = bottom {
+        let row = row_of(line.baseline);
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+/// The number at the start or the end of a row of text, set apart from the
+/// rest of the row by more than
+/// [`heading_number_max_gap_em`](FurnitureConfig::heading_number_max_gap_em):
+/// the page number of a running head. `None` when there is none.
+fn row_edge_number(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Option<i64> {
+    let mut glyphs: Vec<&LineGlyph> = row.iter().flat_map(|&i| page.lines[i].glyphs.iter()).collect();
+    glyphs.retain(|glyph| !glyph.text.trim().is_empty());
+    glyphs.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    let is_digit = |glyph: &&&LineGlyph| glyph.text.chars().all(|ch| ch.is_ascii_digit());
+    let lead = glyphs.iter().take_while(is_digit).count();
+    let trail = glyphs.iter().rev().take_while(is_digit).count();
+    let number = |part: &[&LineGlyph]| {
+        part.iter()
+            .map(|glyph| glyph.text.as_str())
+            .collect::<String>()
+            .parse()
+            .ok()
+    };
+    let apart = |left: &LineGlyph, right: &LineGlyph| right.x0 - left.x1 > cfg.heading_number_max_gap_em * left.size;
+    if lead > 0 && lead < glyphs.len() && apart(glyphs[lead - 1], glyphs[lead]) {
+        return number(&glyphs[..lead]);
+    }
+    let first = glyphs.len() - trail;
+    if trail > 0 && first > 0 && apart(glyphs[first - 1], glyphs[first]) {
+        return number(&glyphs[first..]);
+    }
+    None
+}
+
+/// The lines of a book's running head that carries the page number
+/// (see [`row_edge_number`]): the top or bottom row of the page when the
+/// number set apart at its end is the page's own number. One flag per line.
+fn numbered_heads(page: &PageData, offset: i64, cfg: &FurnitureConfig) -> Vec<bool> {
+    let mut heads = vec![false; page.lines.len()];
+    for row in edge_rows(page, cfg) {
+        if row_edge_number(page, &row, cfg) == Some(page.index as i64 + 1 + offset) {
+            for i in row {
+                heads[i] = true;
+            }
+        }
+    }
+    heads
 }
 
 /// Whether no other line shares the row of `line` (a footnote's number
