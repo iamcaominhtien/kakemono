@@ -842,3 +842,19 @@ fn is_extreme_line(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> bool 
     page.lines.iter().all(|other| other.bbox.y0 >= line.bbox.y0 - tol)
         || page.lines.iter().all(|other| other.bbox.y1 <= line.bbox.y1 + tol)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::roman_value;
+
+    #[test]
+    fn roman_page_numbers_are_read() {
+        assert_eq!(roman_value("vi"), Some(6));
+        assert_eq!(roman_value("xxii"), Some(22));
+        assert_eq!(roman_value("xlix"), Some(49));
+        // Not written the usual way, or not a numeral.
+        assert_eq!(roman_value("iiii"), None);
+        assert_eq!(roman_value("vx"), None);
+        assert_eq!(roman_value("vim"), None);
+    }
+}
