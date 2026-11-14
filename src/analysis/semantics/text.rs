@@ -205,8 +205,9 @@ impl TextBuilder<'_> {
 
     /// Prepares the spans of a line (text `text`) to be followed by the next
     /// line (text `next`): removes a soft hyphen, or adds the space between
-    /// the lines (none after a slash, as in URLs). Returns whether a soft
-    /// hyphen was removed.
+    /// the lines (none after a slash, as in URLs, nor in Chinese or Japanese
+    /// text, see [`joins_without_space`]). Returns whether a soft hyphen was
+    /// removed.
     fn join_line_end(&self, spans: &mut Vec<Span>, text: &str, next: &str) -> bool {
         // A URL broken across lines goes on without a space. A hyphen at
         // the break is part of it ("py-faster-" / "rcnn"), unless TeX
@@ -236,6 +237,7 @@ impl TextBuilder<'_> {
             }
         } else if !text.ends_with('/')
             && !text.is_empty()
+            && !joins_without_space(text, next)
             && let Some(last) = spans.last_mut()
         {
             last.text.push(' ');
@@ -616,10 +618,45 @@ fn close_run(current: &mut Option<OpenRun>, runs: &mut Vec<EqRun>) {
     }
 }
 
+/// Whether two lines of a paragraph join without a space: Chinese and
+/// Japanese are written without spaces between words, so a line that ends
+/// with a CJK character and a next line that starts with one join directly
+/// ("年々" / "増えています"), and so does a line that ends with a CJK
+/// punctuation mark ("、" "。").
+fn joins_without_space(text: &str, next: &str) -> bool {
+    let (Some(last), Some(first)) = (text.trim_end().chars().last(), next.trim_start().chars().next()) else {
+        return false;
+    };
+    is_cjk_punctuation_mark(last) || (is_cjk_char(last) && is_cjk_char(first))
+}
+
+/// Whether `ch` is a character of Chinese or Japanese text: a Han
+/// ideograph, kana, a CJK punctuation mark or a full-width form.
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
+/// Whether `ch` is a CJK punctuation mark (the ideographic comma and full
+/// stop, brackets and quotes, and their full-width forms).
+fn is_cjk_punctuation_mark(ch: char) -> bool {
+    matches!(ch, '\u{3001}'..='\u{303F}') || (matches!(ch, '\u{FF01}'..='\u{FF65}') && !ch.is_alphanumeric())
+}
+
 #[cfg(test)]
 #[allow(clippy::min_ident_chars, clippy::missing_docs_in_private_items)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_and_japanese_lines_join_without_space() {
+        assert!(joins_without_space("外国人の数が年々", "増えています。"));
+        assert!(joins_without_space("身につけるための教材です。", "Irodori"));
+        assert!(!joins_without_space("such as 日本語", "while N2"));
+        assert!(!joins_without_space("the people", "communicating"));
+    }
 
     use std::collections::HashSet;
 

@@ -219,11 +219,16 @@ fn overlapping_runs(line: &Line) -> Vec<(usize, usize)> {
 
 /// The font size of glyph `idx` of `line` when the glyph sits on the
 /// baseline but is clearly smaller or larger than the line (see
-/// [`RESIZED_MIN_RATIO`]); `None` otherwise.
+/// [`RESIZED_MIN_RATIO`]), or is clearly larger wherever it sits; `None`
+/// otherwise.
 fn own_size(line: &Line, idx: usize) -> Option<f32> {
     let glyph = &line.glyphs[idx];
     let on_baseline = (glyph.y - line.baseline).abs() <= OFF_BASELINE_EM * line.size;
-    (on_baseline && (glyph.size - line.size).abs() > RESIZED_MIN_RATIO * line.size).then_some(glyph.size)
+    let resized = (glyph.size - line.size).abs() > RESIZED_MIN_RATIO * line.size;
+    // Larger than the line is never a superscript, wherever its baseline
+    // ("初級1" at 18 pt in a running foot of 9 pt type).
+    let larger = glyph.size > line.size * (1.0 + RESIZED_MIN_RATIO);
+    ((on_baseline && resized) || larger).then_some(glyph.size)
 }
 
 /// Whether two glyphs of `line.glyphs[first..end]` sit one over the other.

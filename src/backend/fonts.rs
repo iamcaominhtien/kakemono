@@ -142,6 +142,21 @@ const SANS_PATTERNS: &[&str] = &[
     "univers",
     "phv",
     "sfss",
+    "myriad",
+    "avantgarde",
+    "gillsans",
+    "din-",
+    // Japanese, Chinese and Korean sans-serif families (Gothic, Hei).
+    "gothic",
+    "shingo",
+    "kakugo",
+    "marugo",
+    "meiryo",
+    "heiti",
+    "simhei",
+    "yahei",
+    "dotum",
+    "gulim",
 ];
 
 /// What the analysis needs to know about a font, inferred from its name and

@@ -96,6 +96,7 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     line_box_descent_em: 0.25,
     accent_min_width_pt: 0.5,
     accent_min_overlap_ratio: 0.4,
+    squeezed_punctuation_overlap_ratio: 0.5,
 };
 
 /// Tuning parameters of line building. Part of [`LayoutConfig`](crate::config::LayoutConfig).
@@ -291,6 +292,11 @@ pub struct LinesConfig {
     /// Smallest horizontal overlap (as a fraction of the narrower glyph) of
     /// an accent with a letter for the two to be composed.
     pub accent_min_overlap_ratio: f32,
+    /// Two neighbouring CJK punctuation marks whose advance boxes overlap by
+    /// more than this fraction of the narrower one are a squeezed pair
+    /// ("。「", each mark taking half its width in Japanese typesetting):
+    /// they are ordered by the middle of their ink, not by their left edge.
+    pub squeezed_punctuation_overlap_ratio: f32,
 }
 
 impl Default for LinesConfig {
@@ -927,6 +933,37 @@ fn accent_target(glyphs: &[LineGlyph], accent_idx: usize, cfg: &LinesConfig) -> 
     }
 }
 
+/// Puts squeezed pairs of CJK punctuation back in reading order (see
+/// [`LinesConfig::squeezed_punctuation_overlap_ratio`]). In "です。「いろ"
+/// typeset with half-width punctuation, the "「" starts a little left of the
+/// "。" before it; their inks are in the left and the right half of their
+/// boxes. `glyphs` must be sorted left to right.
+fn order_squeezed_punctuation(glyphs: &mut [LineGlyph], cfg: &LinesConfig) {
+    let punctuation = |glyph: &LineGlyph| {
+        let mut chars = glyph.text.chars();
+        matches!((chars.next(), chars.next()), (Some(ch), None) if is_cjk_punctuation(ch))
+    };
+    for i in 1..glyphs.len() {
+        let (prev, cur) = (&glyphs[i - 1], &glyphs[i]);
+        if !punctuation(prev) || !punctuation(cur) || prev.ink.is_unset() || cur.ink.is_unset() {
+            continue;
+        }
+        let overlap = prev.x1.min(cur.x1) - prev.x0.max(cur.x0);
+        let narrower = (prev.x1 - prev.x0).min(cur.x1 - cur.x0);
+        if overlap > cfg.squeezed_punctuation_overlap_ratio * narrower && cur.ink.cx() < prev.ink.cx() {
+            glyphs.swap(i - 1, i);
+        }
+    }
+}
+
+/// Whether `ch` is a punctuation mark of CJK text: the CJK symbols and
+/// punctuation block, and the full-width forms that are not letters or
+/// digits.
+fn is_cjk_punctuation(ch: char) -> bool {
+    matches!(ch, '\u{3000}'..='\u{303F}' | '\u{30FB}')
+        || (matches!(ch, '\u{FF01}'..='\u{FF65}') && !ch.is_alphanumeric())
+}
+
 /// Turns a finished segment into a line: sorts its glyphs, composes
 /// accents, marks word spaces, and picks the line's font (the most common
 /// font of the glyphs on the baseline, lowest index on ties).
@@ -934,6 +971,7 @@ fn accent_target(glyphs: &[LineGlyph], accent_idx: usize, cfg: &LinesConfig) -> 
 /// Panics if the segment has no glyphs.
 fn finalize(page: usize, mut segment: Segment, cfg: &LinesConfig) -> Line {
     segment.glyphs.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    order_squeezed_punctuation(&mut segment.glyphs, cfg);
     compose_accents(&mut segment.glyphs, cfg);
     segment.refresh(cfg);
     let size = segment.size;
@@ -1787,6 +1825,19 @@ mod tests {
             extra: Vec::new(),
             color: [0; 3],
         }
+    }
+
+    #[test]
+    fn squeezed_japanese_punctuation_keeps_its_order() {
+        // "。「" set with half-width punctuation: the bracket starts 0.8 pt
+        // left of the full stop, whose ink is in the left of its box.
+        let mut glyphs = vec![
+            line_glyph_at("\u{300C}", (364.75, 375.02), (370.0, 374.0)),
+            line_glyph_at("\u{3002}", (365.57, 375.84), (366.0, 369.0)),
+        ];
+        order_squeezed_punctuation(&mut glyphs, &LinesConfig::default());
+        assert_eq!(glyphs[0].text, "\u{3002}");
+        assert_eq!(glyphs[1].text, "\u{300C}");
     }
 
     #[test]
