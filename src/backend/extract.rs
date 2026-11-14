@@ -402,7 +402,7 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             let info = &self.fonts.infos[font as usize];
             let mut text = match info.mathabx {
                 Some(abx) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
-                None => glyph_text(unicode),
+                None => glyph_text(unicode, info.libertine),
             };
             if text.is_empty() {
                 continue;
@@ -545,18 +545,44 @@ fn paint_color(paint: &Paint<'_>) -> [u8; 4] {
 
 /// The normalised text of a glyph's Unicode mapping: U+FFFD when there is
 /// none, and empty when the mapping holds only characters that are dropped
-/// (control characters, zero-width spaces).
-fn glyph_text(unicode: Option<BfString>) -> String {
+/// (control characters, zero-width spaces). The private-use code points of
+/// Linux Libertine are read first when `libertine` is set.
+fn glyph_text(unicode: Option<BfString>, libertine: bool) -> String {
     let mut text = String::new();
-    match unicode {
-        Some(BfString::Char(ch)) => {
-            let mut buf = [0u8; 4];
-            normalize_text(ch.encode_utf8(&mut buf), &mut text);
-        }
-        Some(BfString::String(string)) => normalize_text(&string, &mut text),
-        None => text.push('\u{FFFD}'),
+    let raw = match unicode {
+        Some(BfString::Char(ch)) => ch.to_string(),
+        Some(BfString::String(string)) => string,
+        None => return '\u{FFFD}'.to_string(),
+    };
+    if libertine {
+        normalize_text(&libertine_text(&raw), &mut text);
+    } else {
+        normalize_text(&raw, &mut text);
     }
     text
+}
+
+/// Reads the private-use code points that Linux Libertine and Biolinum give
+/// their ligatures ("Th", "tt", "ft", ...), small capitals (as lowercase
+/// letters) and old-style figures. Other characters are kept.
+fn libertine_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let code = ch as u32;
+        match code {
+            0xE039 => out.push_str("ft"),
+            0xE03A => out.push_str("ck"),
+            0xE03B => out.push_str("ch"),
+            0xE03C => out.push_str("tt"),
+            0xE048 => out.push_str("Qu"),
+            0xE049 => out.push_str("Th"),
+            0xE0E0 => out.push('f'),
+            0xE051..=0xE06A => out.push(char::from(b'a' + (code - 0xE051) as u8)),
+            0xE118..=0xE121 => out.push(char::from(b'0' + (code - 0xE118) as u8)),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Appends `text` to `out`, expanding Latin ligatures, turning special
@@ -579,9 +605,27 @@ fn normalize_text(text: &str, out: &mut String) {
             '\u{00AD}' => out.push('-'),
             '\u{2010}' | '\u{2011}' => out.push('-'),
             '\u{0}'..='\u{1F}' | '\u{7F}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}' => {}
+            '\u{F8E5}'..='\u{F8FE}' => out.push(symbol_piece(ch)),
             '\u{E000}'..='\u{F8FF}' => out.push('\u{FFFD}'),
             other => out.push(other),
         }
+    }
+}
+
+/// The Unicode piece of a large delimiter or integral that the Adobe Symbol
+/// encoding puts in the private-use area (U+F8E5 to U+F8FE), as TeX's cmex
+/// and other math extension fonts are mapped in PDFs.
+fn symbol_piece(ch: char) -> char {
+    const PIECES: [char; 26] = [
+        '\u{F8E5}', '\u{F8E6}', '\u{23AF}', '\u{AE}', '\u{A9}', '\u{2122}', '\u{239B}', '\u{239C}', '\u{239D}',
+        '\u{23A1}', '\u{23A2}', '\u{23A3}', '\u{23A7}', '\u{23A8}', '\u{23A9}', '\u{23AA}', '\u{23AE}', '\u{239E}',
+        '\u{239F}', '\u{23A0}', '\u{23A4}', '\u{23A5}', '\u{23A6}', '\u{23AB}', '\u{23AC}', '\u{23AD}',
+    ];
+    let piece = PIECES[(ch as u32 - 0xF8E5) as usize];
+    if ('\u{E000}'..='\u{F8FF}').contains(&piece) {
+        '\u{FFFD}'
+    } else {
+        piece
     }
 }
 
@@ -650,5 +694,25 @@ mod tests {
         let mut text = String::new();
         normalize_text("le\u{E039}most", &mut text);
         assert_eq!(text, "le\u{FFFD}most");
+    }
+
+    #[test]
+    fn libertine_private_use_glyphs_are_read() {
+        use super::libertine_text;
+        assert_eq!(
+            libertine_text("\u{E049}e pa\u{E03C}ern a\u{E039}er"),
+            "The pattern after"
+        );
+        assert_eq!(
+            libertine_text("\u{E05D}\u{E059}\u{E064} \u{E119}\u{E121}\u{E11F}\u{E120}"),
+            "mit 1978"
+        );
+    }
+
+    #[test]
+    fn delimiter_pieces_are_read() {
+        let mut text = String::new();
+        normalize_text("\u{F8EB}\u{F8F4}\u{F8FE}", &mut text);
+        assert_eq!(text, "\u{239B}\u{23AA}\u{23AD}");
     }
 }

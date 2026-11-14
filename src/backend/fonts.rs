@@ -159,6 +159,10 @@ const SANS_PATTERNS: &[&str] = &[
     "gulim",
 ];
 
+/// Linux Libertine and Linux Biolinum (not their successor Libertinus,
+/// which encodes its glyphs differently).
+const LIBERTINE_PATTERNS: &[&str] = &["linlibertine", "linbiolinum"];
+
 /// What the analysis needs to know about a font, inferred from its name and
 /// font descriptor.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -188,6 +192,11 @@ pub struct FontInfo {
     /// Small-capitals font (see [`SMALL_CAPS_PATTERNS`]).
     #[serde(default)]
     pub small_caps: bool,
+    /// Linux Libertine or Biolinum, whose ligatures, small capitals and
+    /// old-style figures are mapped to private-use code points (see
+    /// `extract::libertine_text`).
+    #[serde(default)]
+    pub libertine: bool,
 }
 
 impl FontInfo {
@@ -219,9 +228,11 @@ impl FontInfo {
             && (flags & FLAG_SMALL_CAP != 0
                 || contains_any(&lower, SMALL_CAPS_PATTERNS)
                 || SMALL_CAPS_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix)));
+        let libertine = contains_any(&lower, LIBERTINE_PATTERNS);
         Self {
             sans,
             small_caps,
+            libertine,
             name,
             bold: bold && !math_pi,
             italic: italic && !math_pi,
