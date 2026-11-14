@@ -402,6 +402,7 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             let info = &self.fonts.infos[font as usize];
             let mut text = match info.mathabx {
                 Some(abx) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
+                None if info.lasy => lasy_text(glyph.char_code()).to_string(),
                 None => glyph_text(unicode, info.libertine),
             };
             if text.is_empty() {
@@ -560,6 +561,25 @@ fn glyph_text(unicode: Option<BfString>, libertine: bool) -> String {
         normalize_text(&raw, &mut text);
     }
     text
+}
+
+/// The symbol of character code `code` in LaTeX's `lasy` font (the encoding
+/// of `latexsym.sty`), U+FFFD for the others.
+fn lasy_text(code: u32) -> &'static str {
+    match code {
+        0x01 => "\u{25C1}",
+        0x02 => "\u{22B4}",
+        0x03 => "\u{25B7}",
+        0x04 => "\u{22B5}",
+        0x30 => "\u{2127}",
+        0x31 => "\u{22C8}",
+        0x32 => "\u{25A1}",
+        0x33 => "\u{25C7}",
+        0x3B => "\u{219D}",
+        0x3C => "\u{228F}",
+        0x3D => "\u{2290}",
+        _ => "\u{FFFD}",
+    }
 }
 
 /// Reads the private-use code points that Linux Libertine and Biolinum give
