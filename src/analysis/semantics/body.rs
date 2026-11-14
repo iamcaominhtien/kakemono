@@ -52,7 +52,7 @@ pub struct BodyConfig {
     /// letter label is a list item or a run-in paragraph.
     pub letter_heading_max_words_count: usize,
     /// A block that ends with a period and has more words than this is a
-    /// sentence, not a heading.
+    /// sentence, not a heading, numbered or not.
     pub sentence_max_heading_words_count: usize,
     /// The last line of a block reaching to within this distance (points) of
     /// the block's right edge is a full line, as in running text.
@@ -217,7 +217,13 @@ fn find_heading_candidates(
         if THEOREM_LABEL.is_match(features.text) {
             continue;
         }
-        let number = heading_number(&features, seen_refs, &cfg.body);
+        // A numbered sentence not set in bold ("4. Use the modified version
+        // of do_twice to call print_twice twice.") is an item of a list, not
+        // a section.
+        let sentence = !features.bold
+            && features.text.ends_with('.')
+            && features.words > cfg.body.sentence_max_heading_words_count;
+        let number = heading_number(&features, seen_refs, &cfg.body).filter(|_| !sentence);
         let is_heading = number.is_some()
             || is_known_heading(&features, &cfg.body)
             || is_styled_heading(&features, block, &cfg.body);
