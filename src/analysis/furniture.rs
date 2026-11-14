@@ -103,6 +103,10 @@ pub struct FurnitureConfig {
     /// page is the page number of a book's running head ("46   Chapter 4.
     /// Cumulative distribution functions").
     pub heading_number_max_gap_em: f32,
+    /// A roman page number in a running head ("vi Preface") is at most
+    /// this many pages below the page's position in the file (covers before
+    /// the front matter).
+    pub roman_number_max_offset_count: i64,
     /// The offset of printed page numbers to page indexes is the one at
     /// least this many pages ...
     pub number_offset_min_pages: usize,
@@ -134,6 +138,7 @@ impl Default for FurnitureConfig {
             crowded_min_distance_pt: 2.0,
             crowded_max_distance_em: 1.75,
             heading_number_max_gap_em: 3.0,
+            roman_number_max_offset_count: 4,
             number_offset_min_pages: 3,
             number_offset_min_ratio: 0.3,
             printer_mark_min_gap_em: 3.0,
@@ -720,26 +725,82 @@ fn edge_rows(page: &PageData, cfg: &FurnitureConfig) -> Vec<Vec<usize>> {
 /// [`heading_number_max_gap_em`](FurnitureConfig::heading_number_max_gap_em):
 /// the page number of a running head. `None` when there is none.
 fn row_edge_number(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Option<i64> {
+    row_edge_token(page, row, cfg, |ch| ch.is_ascii_digit())?.parse().ok()
+}
+
+/// The value of a lowercase roman page number ("vi", "xxii") set apart at
+/// either end of the row `row` (front matter), as [`row_edge_number`].
+fn row_edge_roman(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Option<i64> {
+    roman_value(&row_edge_token(page, row, cfg, |ch| {
+        matches!(ch, 'i' | 'v' | 'x' | 'l')
+    })?)
+}
+
+/// The value of the lowercase roman numeral `text`, when it is one written
+/// in the usual subtractive form.
+fn roman_value(text: &str) -> Option<i64> {
+    let digit = |ch: char| match ch {
+        'i' => Some(1),
+        'v' => Some(5),
+        'x' => Some(10),
+        'l' => Some(50),
+        _ => None,
+    };
+    let values: Vec<i64> = text.chars().map(digit).collect::<Option<_>>()?;
+    let mut total = 0;
+    for (idx, value) in values.iter().enumerate() {
+        if values.get(idx + 1).is_some_and(|next| next > value) {
+            total -= value;
+        } else {
+            total += value;
+        }
+    }
+    (total > 0 && to_roman(total) == text).then_some(total)
+}
+
+/// `value` (1 to 89) as a lowercase roman numeral.
+fn to_roman(mut value: i64) -> String {
+    let mut out = String::new();
+    for (step, numeral) in [
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ] {
+        while value >= step {
+            out.push_str(numeral);
+            value -= step;
+        }
+    }
+    out
+}
+
+/// The run of glyphs accepted by `accept` at either end of the row `row`,
+/// set apart from the rest of the row by more than
+/// `heading_number_max_gap_em`.
+fn row_edge_token(
+    page: &PageData,
+    row: &[usize],
+    cfg: &FurnitureConfig,
+    accept: impl Fn(char) -> bool,
+) -> Option<String> {
     let mut glyphs: Vec<&LineGlyph> = row.iter().flat_map(|&i| page.lines[i].glyphs.iter()).collect();
     glyphs.retain(|glyph| !glyph.text.trim().is_empty());
     glyphs.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-    let is_digit = |glyph: &&&LineGlyph| glyph.text.chars().all(|ch| ch.is_ascii_digit());
-    let lead = glyphs.iter().take_while(is_digit).count();
-    let trail = glyphs.iter().rev().take_while(is_digit).count();
-    let number = |part: &[&LineGlyph]| {
-        part.iter()
-            .map(|glyph| glyph.text.as_str())
-            .collect::<String>()
-            .parse()
-            .ok()
-    };
+    let accepted = |glyph: &&&LineGlyph| glyph.text.chars().all(&accept);
+    let lead = glyphs.iter().take_while(accepted).count();
+    let trail = glyphs.iter().rev().take_while(accepted).count();
+    let token = |part: &[&LineGlyph]| part.iter().map(|glyph| glyph.text.as_str()).collect::<String>();
     let apart = |left: &LineGlyph, right: &LineGlyph| right.x0 - left.x1 > cfg.heading_number_max_gap_em * left.size;
     if lead > 0 && lead < glyphs.len() && apart(glyphs[lead - 1], glyphs[lead]) {
-        return number(&glyphs[..lead]);
+        return Some(token(&glyphs[..lead]));
     }
     let first = glyphs.len() - trail;
     if trail > 0 && first > 0 && apart(glyphs[first - 1], glyphs[first]) {
-        return number(&glyphs[first..]);
+        return Some(token(&glyphs[first..]));
     }
     None
 }
@@ -750,7 +811,13 @@ fn row_edge_number(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Opt
 fn numbered_heads(page: &PageData, offset: i64, cfg: &FurnitureConfig) -> Vec<bool> {
     let mut heads = vec![false; page.lines.len()];
     for row in edge_rows(page, cfg) {
-        if row_edge_number(page, &row, cfg) == Some(page.index as i64 + 1 + offset) {
+        let page_number = page.index as i64 + 1;
+        let arabic = row_edge_number(page, &row, cfg) == Some(page_number + offset);
+        // Front matter counts its pages in roman numerals from the first
+        // page, or from just after the cover.
+        let roman = row_edge_roman(page, &row, cfg)
+            .is_some_and(|value| value <= page_number && page_number - value <= cfg.roman_number_max_offset_count);
+        if arabic || roman {
             for i in row {
                 heads[i] = true;
             }
