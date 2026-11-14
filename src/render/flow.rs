@@ -275,6 +275,14 @@ fn is_abstract_text(spans: &[Span]) -> bool {
         .eq_ignore_ascii_case("abstract")
 }
 
+/// Whether `spans` are a scene break of a novel: a paragraph of only
+/// "#", "*" or "⁂" marks ("#", "* * *"), centred in the book.
+fn is_scene_break(spans: &[Span]) -> bool {
+    let text = plain(spans);
+    let marks: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    !marks.is_empty() && marks.len() <= 5 && marks.iter().all(|ch| matches!(ch, '#' | '*' | '\u{2042}'))
+}
+
 /// Writes one block. Titles and author blocks are written by the modes
 /// themselves and are skipped here.
 fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &mut String) {
@@ -297,6 +305,12 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 )),
                 None => out.push_str(&format!("<{tag}{id}{cls}>{}</{tag}>\n", spans_html(&block.spans))),
             }
+        }
+        BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
+            out.push_str(&format!(
+                "<p{id} class=\"scene-break\">{}</p>\n",
+                spans_html(&block.spans)
+            ));
         }
         BlockKind::Paragraph { .. } => out.push_str(&format!("<p{id}>{}</p>\n", spans_html(&block.spans))),
         BlockKind::ListItem { marker } => {

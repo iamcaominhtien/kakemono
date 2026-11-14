@@ -29,6 +29,7 @@ h1.title{font-size:1.72em;line-height:1.2;text-align:center;margin:.6em 0 .9em;t
 .au-name{font-weight:700}
 .au-line code{font-size:.9em}
 .note{font-size:.9em;color:var(--muted);text-align:center;margin:0 0 .8em}
+p.scene-break{text-align:center}
 h2,h3,h4,h5{line-height:1.25;margin:1.15em 0 .5em;break-after:avoid;font-weight:700}
 h2{font-size:1.2em}
 h3{font-size:1.06em}
