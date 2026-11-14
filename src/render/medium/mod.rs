@@ -150,6 +150,7 @@ fn page_html(doc: &Document, page_idx: usize, page: &PageInfo, trim: &PageTrim, 
     let ctx = FlowCtx {
         unit: WidthUnit::Cqw { page_width: width },
         offprint: false,
+        covers: (None, None),
     };
     let mut inner = String::new();
 

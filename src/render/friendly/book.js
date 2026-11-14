@@ -14,7 +14,7 @@
   var reduced=matchMedia('(prefers-reduced-motion:reduce)');
   var DUR=720;            // a full turn, ms
   var view=null,stage,real,win,turn,repA,repB,layerA,flapBox,flap,flapIn,blank,shRev,shFront,shFlap,prevBtns,nextBtns,countEl,barEl,soundBtn;
-  var g={},page=0,pages=1,per=2,step=1,heads=[],active=false,stale=true,busy=false,queued=0,observer=null;
+  var g={},page=0,pages=1,per=2,step=1,heads=[],active=false,stale=true,busy=false,queued=0,observer=null,cover=null,coverRatio=0,back=null,backRatio=0,emptyCol=-1;
 
   function el(tag,cls,html){var e=doc.createElement(tag);if(cls)e.className=cls;if(html)e.innerHTML=html;return e;}
   var ARROW_L='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
@@ -133,13 +133,49 @@
     view.classList.toggle('bk-single',!two);
     real.querySelector('.verso').hidden=!two;
   }
+  // ---------- The cover: a page of its own, like a closed book ----------
+  // A book's cover (the figure the converter marks .cover) is not set in
+  // the text: blank pages come first, as many as a spread shows, and the
+  // last of them is painted with the cover from edge to edge, alone on the
+  // right with nothing on the left. The text starts on the next spread.
+  // The back cover (.back-cover) ends the book the same way: alone on a
+  // left page, after the text, with nothing on the right.
+  // A page much narrower than the cover (a phone) shows all of it instead.
+  var COVER_CROP=0.12;    // largest difference of aspect (log ratio) that is cropped
+  function picture(art,sel){
+    var img=art.querySelector(sel);if(!img)return [null,0];
+    var w=img.naturalWidth||+img.getAttribute('width'),h=img.naturalHeight||+img.getAttribute('height');
+    return [img.currentSrc||img.src,h?w/h:0];
+  }
+  function coverPads(art){
+    [].forEach.call(art.querySelectorAll(':scope>.bk-pad'),function(p){p.remove();});
+    var c=picture(art,'figure.cover img');cover=c[0];coverRatio=c[1];
+    c=picture(art,'figure.back-cover img');back=c[0];backRatio=c[1];
+    if(cover)for(var i=0;i<per;i++)art.insertBefore(el('div','bk-pad'),art.firstChild);
+  }
+  // After the layout: the back cover's page, on the left of a spread.
+  function backPad(art){
+    emptyCol=-1;if(!back)return;
+    var pad=el('div','bk-pad bk-back');art.appendChild(pad);
+    // A blank page before it, without a running head, as in a printed book.
+    if(per===2&&colOf(pad)%2){emptyCol=colOf(pad);art.insertBefore(el('div','bk-pad bk-back'),pad);}
+  }
+  // Paints page e with a cover picture, or clears it.
+  function face(e,src,ratio){
+    e.classList.toggle('bk-cover',!!src);e.style.backgroundImage=src?'url("'+src+'")':'';
+    e.style.backgroundSize=src&&ratio&&Math.abs(Math.log(g.pw/g.ph/ratio))>COVER_CROP?'contain':'';
+    if(src){e.style.visibility='';e.querySelector('.bk-rh').textContent='';e.querySelector('.bk-folio').textContent='';}
+  }
+  function removePads(){[].forEach.call(article.querySelectorAll(':scope>.bk-pad'),function(p){p.remove();});}
   function paginate(){
     measure();
     var art=win.firstElementChild;art.style.setProperty('--bk-x','0px');
+    coverPads(art);
     // A page cannot scroll sideways: wide tables shrink further than in the scroll view.
     if(P.fitTables)P.fitTables(art,0.55);
     fitFloats(art);fillGaps(art);keepFloats(art);keepHeads(art);
     if(P.cues){P.cues(art);}
+    backPad(art);
     if(observer){observer.takeRecords();}
     pages=Math.max(1,Math.round((art.scrollWidth+(step-g.tw))/step));
     // Entries of a bibliography that were mistaken for headings do not head a page.
@@ -299,18 +335,23 @@
   // Shows spread (or page) p in spread element s.
   function paint(s,p){
     s.querySelector('.bk-window>article').style.setProperty('--bk-x',(-p*step)+'px');
-    var v=s.querySelector('.verso'),r=s.querySelector('.recto');
+    var v=s.querySelector('.verso'),r=s.querySelector('.recto'),closed=!!cover&&p===0,ended=!!back&&p===pages-1;
+    v.style.visibility=closed&&per===2?'hidden':'';
+    face(r,closed?cover:ended&&per===1?back:null,closed?coverRatio:backRatio);face(v,ended&&per===2?back:null,backRatio);
+    if(closed)return;
+    if(ended){if(per===2)r.style.visibility='hidden';return;}
     if(per===2){
       v.querySelector('.bk-rh').textContent=title;v.querySelector('.bk-folio').textContent=String(p+1);
       r.querySelector('.bk-rh').textContent=p+1<pages?headAt(p+1):'';r.querySelector('.bk-folio').textContent=p+1<pages?String(p+2):'';
       r.style.visibility=p+1<pages?'':'hidden';
+      if(p+1===emptyCol)r.querySelector('.bk-rh').textContent='';
     }else{
       r.querySelector('.bk-rh').textContent=headAt(p);r.querySelector('.bk-folio').textContent=String(p+1);
     }
   }
   function show(p,announce){
     page=first(p);paint(real,page);
-    var last=page+per>=pages,label=per===2&&page+1<pages?'Pages '+(page+1)+'–'+(page+2)+' of '+pages:'Page '+(page+1)+' of '+pages;
+    var last=page+per>=pages,label=cover&&page===0?'Cover':back&&page===pages-1?'Back cover':per===2&&page+1<pages?'Pages '+(page+1)+'–'+(page+2)+' of '+pages:'Page '+(page+1)+' of '+pages;
     countEl.textContent=label;barEl.firstChild.style.width=((Math.min(pages,page+per))/pages*100)+'%';
     var prog=doc.getElementById('progress');if(prog)prog.style.width=((Math.min(pages,page+per))/pages*100)+'%';
     prevBtns.forEach(function(b){b.disabled=page===0;});nextBtns.forEach(function(b){b.disabled=last;});
@@ -562,7 +603,10 @@
     // Footnotes leave the margin column first: they change the flow.
     if(P.placeSidenotes)P.placeSidenotes();
     win.appendChild(article);active=true;placeNotes();
-    paginate();show(anchor?colOf(anchor):0,false);
+    paginate();
+    // Opened at the top, the book shows its cover first.
+    var top=article.querySelector(':scope>:not(.bk-pad)');
+    show(anchor&&!(cover&&anchor===top)?colOf(anchor):0,false);
     // Prepare the replicas while the reader looks at the page, so the first turn starts at once.
     (window.requestIdleCallback||function(f){return setTimeout(f,200);})(function(){if(active&&!busy)ensureReplicas();});
     if(P.syncToggle)P.syncToggle();
@@ -583,7 +627,8 @@
   function leave(){
     if(!active)return;
     var keep=blockOnPage(page);if(observer)observer.disconnect();
-    active=false;restoreFloats();restoreNotes();clearFloats(article);layout.appendChild(article);view.hidden=true;root.removeAttribute('data-view');
+    if(keep&&keep.classList.contains('bk-pad'))keep=null;
+    active=false;restoreFloats();restoreNotes();clearFloats(article);removePads();cover=back=null;layout.appendChild(article);view.hidden=true;root.removeAttribute('data-view');
     win.firstElementChild&&win.removeChild(win.firstElementChild);
     article.style.removeProperty('--bk-x');clearTocPages();
     if(P.syncToggle)P.syncToggle();if(P.placeSidenotes)P.placeSidenotes();if(P.fitScroll)P.fitScroll();

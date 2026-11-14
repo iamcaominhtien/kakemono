@@ -49,6 +49,9 @@ pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts
     for page in &mut pages {
         join_math_letters(&mut page.lines, fonts, &layout.lines);
     }
+    if let Some(page) = pages.last_mut() {
+        page.last = true;
+    }
     let stats = compute_stats(&pages, &layout.page);
     let furniture = remove_furniture(&mut pages, &layout.furniture);
     meta.arxiv_id = meta.arxiv_id.or(furniture.arxiv_id);

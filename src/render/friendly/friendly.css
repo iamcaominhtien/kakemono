@@ -366,6 +366,10 @@ article>*{grid-column:text;min-width:0}
 /* A caption stays with its figure or table; one that cannot shrink to a page splits after its first rows.
    A caption alone in its figure keeps nothing: its break-avoid would pass to the figure's edges and glue it to its neighbours. */
 .bk-window figure.bk-split{break-inside:auto}
+.bk-window .bk-pad{height:var(--th);break-after:column}
+.bk-window .bk-pad.bk-back{break-before:column}
+.bk-window figure.cover,.bk-window figure.back-cover{display:none}
+.bk-paper.bk-cover{background-color:var(--paper);background-position:center;background-size:cover;background-repeat:no-repeat}
 .bk-window ol.refs li.bk-long{break-inside:auto}
 .bk-window figure>figcaption:first-child:not(:last-child){break-after:avoid}
 .bk-window figure>figcaption:last-child:not(:first-child){break-before:avoid}

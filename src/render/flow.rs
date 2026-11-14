@@ -14,6 +14,9 @@ static SECTION_NUMBER: LazyLock<Regex> =
 /// (a phone, a book page): text in it stays readable, and the picture
 /// scrolls sideways instead.
 const LEGIBLE_MIN_SCALE: f32 = 0.7;
+/// A picture on the first page that covers at least this fraction of it is
+/// the cover of a book.
+const COVER_MIN_AREA_RATIO: f32 = 0.8;
 
 /// How image widths are expressed in a given mode.
 pub(crate) enum WidthUnit {
@@ -57,6 +60,36 @@ pub(crate) struct FlowCtx {
     /// section numbers, reference and list labels, figure plates, caption
     /// labels without punctuation, numeric table columns.
     pub offprint: bool,
+    /// Ids of the blocks that are the front and the back cover of the book
+    /// (see [`cover_blocks`]), whose figures get the `cover` and
+    /// `back-cover` classes: the book view sets them as pages of their own.
+    pub covers: (Option<usize>, Option<usize>),
+}
+
+/// The ids of the blocks that are the front and the back cover of a book:
+/// the first figure, when it is a picture on the first page covering most
+/// of it (see [`COVER_MIN_AREA_RATIO`]), and the last one, when it is such
+/// a picture on the last page. `None` for papers.
+pub(crate) fn cover_blocks(doc: &Document) -> (Option<usize>, Option<usize>) {
+    let mut figures = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { .. }));
+    let covering = |block: &Block, page_idx: usize| {
+        let BlockKind::Figure { image: Some(image), .. } = &block.kind else {
+            return false;
+        };
+        doc.pages.get(page_idx).is_some_and(|page| {
+            image.page == page_idx && image.rect.area() >= COVER_MIN_AREA_RATIO * page.width * page.height
+        })
+    };
+    let front = figures.next().filter(|block| covering(block, 0)).map(|block| block.id);
+    let last_page = doc.pages.len().saturating_sub(1);
+    let back = figures
+        .next_back()
+        .filter(|block| last_page > 0 && covering(block, last_page))
+        .map(|block| block.id);
+    (front, back)
 }
 
 /// A run of consecutive blocks that share a container element.
@@ -343,6 +376,13 @@ fn figure_html(
     ctx: &FlowCtx,
 ) -> String {
     let cls = float_class(kind);
+    let cover = if ctx.covers.0 == Some(block.id) {
+        " cover"
+    } else if ctx.covers.1 == Some(block.id) {
+        " back-cover"
+    } else {
+        ""
+    };
     // A float whose text is all code is a listing.
     if ctx.offprint
         && kind == FloatKind::Algorithm
@@ -407,7 +447,7 @@ fn figure_html(
     } else {
         format!("{img}{cap}")
     };
-    format!("<figure class=\"float {cls}\"{id}>{inner}</figure>\n")
+    format!("<figure class=\"float {cls}{cover}\"{id}>{inner}</figure>\n")
 }
 
 /// The section number at the start of a heading and the rest of its spans,

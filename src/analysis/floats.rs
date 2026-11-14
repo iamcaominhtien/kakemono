@@ -141,9 +141,10 @@ pub struct FloatsConfig {
     /// Images covering more than this fraction of the page are page
     /// backgrounds (scans, watermarks) and are ignored.
     pub background_image_area_ratio: f32,
-    /// ... except on the first page when it has at most this many lines of
-    /// text: that is the cover of a book, a picture with its title and
-    /// authors on it, and it is kept as a figure.
+    /// ... except on the first or the last page when it has at most this
+    /// many lines of text: that is the cover (or the back cover) of a book,
+    /// a picture with its title and authors on it, and it is kept as a
+    /// figure.
     pub cover_max_lines_count: usize,
     /// Paths spanning more than this fraction of the page in both
     /// directions are page frames or backgrounds and are ignored.
@@ -1197,7 +1198,7 @@ fn cluster_graphics(page: &PageData, cfg: &FloatsConfig) -> Vec<Component> {
 fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> {
     let page_area = page.width * page.height;
     let mut elements: Vec<GraphicElement> = Vec::new();
-    let cover = page.index == 0 && page.lines.len() <= cfg.cover_max_lines_count;
+    let cover = (page.index == 0 || page.last) && page.lines.len() <= cfg.cover_max_lines_count;
     for image in &page.images {
         if image.bbox.area() > cfg.background_image_area_ratio * page_area && !cover {
             continue;

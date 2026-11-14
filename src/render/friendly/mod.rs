@@ -111,6 +111,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
             pt_per_em: doc.body_size,
         },
         offprint: true,
+        covers: cover_blocks(doc),
     };
     let mut content = render_flow(&front_rest, images, &ctx);
     content.push_str(&render_flow(body, images, &ctx));
