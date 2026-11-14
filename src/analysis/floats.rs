@@ -29,7 +29,7 @@ const UNLABELLED: u32 = u32::MAX;
 /// standing alone is a caption; a bare "Fig. 3 shows" is a reference.
 static CAPTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(?P<kind>Supplementary\s+Figure|Supplementary\s+Table|Extended\s+Data\s+Fig\.?|Extended\s+Data\s+Table|Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?P<num>\d+[a-z]?|[IVXLC]+|[A-Z]\.?\d+|S\d+)\s*(?P<punct>[:.|—–-]|$)?",
+        r"^(?P<kind>Supplementary\s+Figure|Supplementary\s+Table|Extended\s+Data\s+Fig\.?|Extended\s+Data\s+Table|Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?P<num>\d+(?:\.\d+)*[a-z]?|[IVXLC]+|[A-Z]\.?\d+|S\d+)\s*(?P<punct>[:.|—–-]|$)?",
     )
     .unwrap()
 });
@@ -965,22 +965,21 @@ fn caption_at(
 }
 
 /// Whether the label (the first `label_len` non-space characters of the
-/// line) is set in bold while the caption text after it is not.
+/// line) is set in bold. The caption text after it may be bold too (OpenStax
+/// sets whole captions in bold): a reference to a figure in the running
+/// text is set like the text around it.
 fn label_is_bold(line: &Line, label_len: usize, fonts: &[FontInfo], cfg: &FloatsConfig) -> bool {
     let mut seen = 0;
-    let (mut bold_label, mut bold_rest, mut n_label, mut n_rest) = (0, 0, 0, 0);
+    let (mut bold_label, mut n_label) = (0, 0);
     for glyph in &line.glyphs {
-        let bold = fonts[glyph.font as usize].bold;
-        if seen < label_len {
-            n_label += 1;
-            bold_label += bold as usize;
-        } else {
-            n_rest += 1;
-            bold_rest += bold as usize;
+        if seen >= label_len {
+            break;
         }
+        n_label += 1;
+        bold_label += fonts[glyph.font as usize].bold as usize;
         seen += glyph.text.chars().count();
     }
-    n_label > 0 && bold_label * 10 >= n_label * cfg.caption_label_bold_tenths && (n_rest == 0 || bold_rest * 2 < n_rest)
+    n_label > 0 && bold_label * 10 >= n_label * cfg.caption_label_bold_tenths
 }
 
 /// Whether line `idx` continues a paragraph: a line of the same size right
@@ -2303,4 +2302,32 @@ fn remove_float_lines(lines: &mut Vec<Line>, is_caption_line: &[bool], absorbed:
         i += 1;
         keep
     });
+}
+
+#[cfg(test)]
+mod caption_label_tests {
+    use super::CAPTION;
+
+    fn label(text: &str) -> Option<(String, bool)> {
+        CAPTION.captures(text).map(|captures| {
+            let punct = captures.name("punct").is_some_and(|punct| !punct.as_str().is_empty());
+            (captures["num"].to_string(), punct)
+        })
+    }
+
+    #[test]
+    fn chapter_numbers_are_part_of_the_label() {
+        // A reference in the running text has no punctuation after its number...
+        assert_eq!(
+            label("Table 1.12 lists the different data values"),
+            Some(("1.12".into(), false))
+        );
+        // ... a caption has.
+        assert_eq!(
+            label("Figure 5.24. Four rolling die mazes"),
+            Some(("5.24".into(), true))
+        );
+        assert_eq!(label("Figure 3: Results"), Some(("3".into(), true)));
+        assert_eq!(label("Figure 3. The model"), Some(("3".into(), true)));
+    }
 }
