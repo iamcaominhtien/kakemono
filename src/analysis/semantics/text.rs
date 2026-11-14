@@ -8,7 +8,8 @@ use crate::analysis::tables::Grid;
 use crate::backend::FontInfo;
 use crate::model::Line;
 use crate::model::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 /// Most characters of an anchor slug; longer headings are cut, which keeps
 /// the URL fragments readable.
@@ -104,9 +105,12 @@ struct OpenRun {
 
 /// The reading order of a line's glyphs: left to right, except that a
 /// superscript and a subscript set one above the other ("410^{+160}_{-180}")
-/// are read one after the other, not interleaved digit by digit.
-fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
+/// are read one after the other, not interleaved digit by digit. The second
+/// element holds the glyph ranges of the stacked pairs that are inline
+/// fractions, read "1/2".
+fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>) {
     let mut order: Vec<usize> = Vec::with_capacity(glyphs.len());
+    let mut fractions: Vec<Range<usize>> = Vec::new();
     let mut i = 0;
     while i < glyphs.len() {
         if glyphs[i].script == 0 {
@@ -122,7 +126,7 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
         let run = start..i;
         let span = |sign: i8| {
             run.clone()
-                .filter(|&k| glyphs[k].script == sign)
+                .filter(|&k| glyphs[k].script.signum() == sign)
                 .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| {
                     (lo.min(glyphs[k].x0), hi.max(glyphs[k].x1))
                 })
@@ -131,22 +135,112 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
         let stacked = up.0 < down.1 && down.0 < up.1;
         if stacked {
             order.extend(run.clone().filter(|&k| glyphs[k].script > 0));
+            // Terms stacked on a fraction bar (see `mark_fractions`).
+            if run.clone().any(|k| glyphs[k].script.abs() == FRACTION_TERM) {
+                fractions.push(run.clone());
+            }
             order.extend(run.filter(|&k| glyphs[k].script < 0));
         } else {
             order.extend(run);
         }
     }
-    order
+    (order, fractions)
+}
+
+/// The text set before glyphs of an inline fraction, by position in the
+/// reading `order`: an opening parenthesis before a term of several parts,
+/// the slash (closing the numerator's parenthesis) before the denominator,
+/// and the closing parenthesis of the denominator before what follows it
+/// (at `order.len()` when the line ends with it).
+fn fraction_marks(glyphs: &[LineGlyph], order: &[usize], fractions: &[Range<usize>]) -> HashMap<usize, String> {
+    let mut marks: HashMap<usize, String> = HashMap::new();
+    for run in fractions {
+        let positions: Vec<usize> = (0..order.len()).filter(|&pos| run.contains(&order[pos])).collect();
+        let term = |sign: i8| -> Vec<usize> {
+            positions
+                .iter()
+                .copied()
+                .filter(|&pos| glyphs[order[pos]].script.signum() == sign)
+                .collect()
+        };
+        let (numerator, denominator) = (term(1), term(-1));
+        let (Some(&num_start), Some(&den_start), Some(&den_end)) =
+            (numerator.first(), denominator.first(), denominator.last())
+        else {
+            continue;
+        };
+        let compound = |term: &[usize]| {
+            term.iter().skip(1).any(|&pos| glyphs[order[pos]].space_before)
+                || term.iter().any(|&pos| {
+                    glyphs[order[pos]]
+                        .text
+                        .chars()
+                        .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
+                })
+        };
+        let (num_parens, den_parens) = (compound(&numerator), compound(&denominator));
+        if num_parens {
+            marks.entry(num_start).or_default().push('(');
+        }
+        let slash = marks.entry(den_start).or_default();
+        if num_parens {
+            slash.push(')');
+        }
+        slash.push('/');
+        if den_parens {
+            slash.push('(');
+            marks.entry(den_end + 1).or_default().insert(0, ')');
+        }
+    }
+    marks
+}
+
+/// Appends `text` in `style` and `color` to `spans`.
+fn push_text(spans: &mut Vec<Span>, text: &str, style: u8, color: [u8; 3]) {
+    match spans.last_mut() {
+        Some(span) if span.style == style && span.color == color => span.text.push_str(text),
+        _ => spans.push(Span {
+            text: text.to_string(),
+            style,
+            href: None,
+            color,
+        }),
+    }
 }
 
 impl TextBuilder<'_> {
-    /// Styled text of a single line, exactly as it appears.
+    /// Styled text of a single line as placed on the page: the terms of an
+    /// inline fraction stay a superscript and a subscript.
+    fn placed_line_spans(&self, line: &Line) -> Vec<Span> {
+        if !line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+            return self.line_spans(line);
+        }
+        let mut placed = line.clone();
+        for glyph in &mut placed.glyphs {
+            if glyph.script.abs() == FRACTION_TERM {
+                glyph.script = glyph.script.signum();
+            }
+        }
+        self.line_spans(&placed)
+    }
+
+    /// Styled text of a single line, as read: inline fractions read "1/2".
     pub(crate) fn line_spans(&self, line: &Line) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
-        for (glyph_idx, &index) in stacked_script_order(&line.glyphs).iter().enumerate() {
+        let (order, fractions) = stacked_script_order(&line.glyphs);
+        // The terms of an inline fraction read as "1/2", "(n−1)/n".
+        let marks = fraction_marks(&line.glyphs, &order, &fractions);
+        for (glyph_idx, &index) in order.iter().enumerate() {
             let glyph = &line.glyphs[index];
             let style = line.style_of(glyph, self.fonts);
-            let space = glyph.space_before && glyph_idx > 0;
+            let mut space = glyph.space_before && glyph_idx > 0;
+            if let Some(before) = marks.get(&glyph_idx) {
+                if space {
+                    push_text(&mut spans, " ", style, glyph.color);
+                }
+                push_text(&mut spans, before, style, glyph.color);
+                space = false;
+            }
             if let Some(span) = spans.last_mut() {
                 if space {
                     span.text.push(' ');
@@ -163,6 +257,9 @@ impl TextBuilder<'_> {
                 color: glyph.color,
             });
         }
+        if let (Some(close), Some(last)) = (marks.get(&order.len()), spans.last_mut()) {
+            last.text.push_str(close);
+        }
         spans
     }
 
@@ -172,21 +269,32 @@ impl TextBuilder<'_> {
     /// per-line output keeps everything.
     pub(crate) fn build(&self, lines: &[Line], skip: usize, mask: u8) -> Built {
         let texts: Vec<String> = lines.iter().map(|line| line.text()).collect();
+        // The running text reads inline fractions as "1/2"; the per-line
+        // spans keep them stacked, as placed on the page.
+        let mut read: Vec<HLine> = Vec::with_capacity(lines.len());
         let mut hlines: Vec<HLine> = Vec::with_capacity(lines.len());
         let mut line_texts: Vec<String> = Vec::with_capacity(lines.len());
         for (line_idx, line) in lines.iter().enumerate() {
             let mut line_spans = self.line_spans(line);
+            let mut placed_spans = self.placed_line_spans(line);
             let soft_hyphen = match texts.get(line_idx + 1) {
-                Some(next) => self.join_line_end(&mut line_spans, &texts[line_idx], next),
+                Some(next) => {
+                    self.join_line_end(&mut placed_spans, &texts[line_idx], next);
+                    self.join_line_end(&mut line_spans, &texts[line_idx], next)
+                }
                 None => false,
             };
             line_texts.push(line_spans.iter().map(|span| span.text.as_str()).collect());
-            hlines.push(HLine {
+            read.push(HLine {
                 spans: line_spans,
                 soft_hyphen,
             });
+            hlines.push(HLine {
+                spans: placed_spans,
+                soft_hyphen,
+            });
         }
-        let mut spans = running_spans(&hlines, mask);
+        let mut spans = running_spans(&read, mask);
         if skip > 0 && !lines.is_empty() {
             let n: usize = lines[0]
                 .glyphs

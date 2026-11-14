@@ -6,7 +6,7 @@
 use crate::backend::{Dir, FontInfo, Glyph, RawPage};
 use crate::common::geom::{Rect, median, weighted_mode};
 use crate::model::style::{BOLD, ITALIC, MATH, MONO, SANS, SMALL_CAPS, SUB, SUP};
-use crate::model::{Line, LineGlyph, RotatedText};
+use crate::model::{FRACTION_TERM, Line, LineGlyph, RotatedText};
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 
@@ -100,6 +100,7 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_max_size_ratio: 0.65,
     ruby_max_gap_em: 0.6,
     ruby_over_kanji_min_ratio: 0.8,
+    fraction_bar_slack_em: 0.3,
     blank_max_thickness_pt: 1.5,
     blank_max_drop_em: 0.4,
     blank_max_rise_em: 0.1,
@@ -317,6 +318,9 @@ pub struct LinesConfig {
     /// ... with at least this share of its glyphs over a kanji of that line
     /// is furigana (ruby): the reading of the kanji, not text of its own.
     pub ruby_over_kanji_min_ratio: f32,
+    /// The bar of an inline fraction reaches its terms to within this many
+    /// font sizes, and overhangs them by at most as much.
+    pub fraction_bar_slack_em: f32,
     /// A thin horizontal rule (at most this thick, points) ...
     pub blank_max_thickness_pt: f32,
     /// ... on or just below the baseline of a word (at most this many font
@@ -676,7 +680,61 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
         .collect();
     lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
     mark_fixed_pitch(&mut lines, cfg);
+    for line in &mut lines {
+        mark_fractions(line, raw, cfg);
+    }
     (lines, rotated)
+}
+
+/// Marks the inline fractions of `line`: a superscript and a subscript set
+/// one above the other with a rule between them, as wide as they are
+/// ("(¹⁄₂, ¹⁄₃)" set as \tfrac). Their glyphs get the script level
+/// [`FRACTION_TERM`] (numerator) and its negative (denominator). Stacked
+/// scripts without a bar (a binomial coefficient, "‖x‖²₂") stay scripts.
+fn mark_fractions(line: &mut Line, raw: &RawPage, cfg: &LinesConfig) {
+    let glyphs = &line.glyphs;
+    let mut terms: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < glyphs.len() {
+        if glyphs[i].script == 0 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < glyphs.len() && glyphs[i].script != 0 {
+            i += 1;
+        }
+        let extent = |sign: i8| {
+            (start..i)
+                .filter(|&k| glyphs[k].script == sign)
+                .fold(None, |acc: Option<(f32, f32, f32)>, k| {
+                    let glyph = &glyphs[k];
+                    let (x0, x1, y) = acc.unwrap_or((glyph.x0, glyph.x1, glyph.y));
+                    Some((x0.min(glyph.x0), x1.max(glyph.x1), y))
+                })
+        };
+        let (Some(up), Some(down)) = (extent(1), extent(-1)) else {
+            continue;
+        };
+        let (left, right) = (up.0.min(down.0), up.1.max(down.1));
+        let slack = cfg.fraction_bar_slack_em * line.size;
+        let barred = raw.paths.iter().chain(&raw.pixel_rules).any(|path| {
+            let bar = path.bbox;
+            path.is_hrule()
+                && bar.cy() > up.2
+                && bar.cy() < down.2
+                && bar.x0 <= left + slack
+                && bar.x1 >= right - slack
+                && bar.width() <= right - left + 2.0 * slack
+        });
+        if up.0 < down.1 && down.0 < up.1 && barred {
+            terms.extend(start..i);
+        }
+    }
+    for k in terms {
+        let glyph = &mut line.glyphs[k];
+        glyph.script = glyph.script.signum() * FRACTION_TERM;
+    }
 }
 
 /// Removes the word spaces found after a letter of a math font that are

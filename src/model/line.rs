@@ -3,6 +3,11 @@
 
 use crate::common::geom::Rect;
 
+/// The script level of the numerator of an inline fraction (the
+/// denominator has its negative): read "1/2", not as a superscript and a
+/// subscript.
+pub const FRACTION_TERM: i8 = 2;
+
 /// One glyph (or a short run of text from one glyph, such as a ligature
 /// expanded to "fi") of a [`Line`], in page coordinates.
 #[derive(Debug, Clone)]
@@ -20,7 +25,9 @@ pub struct LineGlyph {
     pub size: f32,
     /// Index into the document's font table.
     pub font: u16,
-    /// 1 = superscript, -1 = subscript, 0 = on the baseline.
+    /// 1 = superscript, -1 = subscript, 0 = on the baseline;
+    /// [`FRACTION_TERM`] (numerator) and its negative (denominator) for the
+    /// terms of an inline fraction stacked on a bar.
     pub script: i8,
     /// A word space precedes this glyph (decided from the gap to the
     /// previous glyph; always false for the first glyph of a line).
