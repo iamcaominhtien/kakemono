@@ -36,9 +36,14 @@ const RESIZED_MIN_RATIO: f32 = 0.08;
 /// instead of being one word space that the line-fitting script would
 /// stretch letter by letter. Word spaces are about a third of an em.
 const TAB_MIN_GAP_EM: f32 = 0.8;
-/// ... and at least this many times the median of the other word spaces of
-/// the line: a justified line with loose word spaces has no tab.
+/// ... and at least this many times the median of the word spaces of the
+/// line (its gaps narrower than [`TAB_MIN_GAP_EM`]): a justified line with
+/// loose word spaces has no tab.
 const TAB_MIN_SPACE_RATIO: f32 = 3.0;
+/// A line whose gaps are all wider than [`TAB_MIN_GAP_EM`] has tabs only
+/// when there are at most this many ("1 ⇥ Introduction", "Index ⇥ 297");
+/// more is a loosely justified line.
+const TAB_MAX_ALONE_COUNT: usize = 2;
 
 /// Consecutive glyphs of a line drawn at their own place.
 struct Cluster {
@@ -121,25 +126,27 @@ pub(super) fn line_html(line: &Line, spans: &[Span], units: &Units) -> (String, 
 /// For each glyph of `line`, the width (in points) of the gap before it when
 /// that gap is a tab (see [`TAB_MIN_GAP_EM`] and [`TAB_MIN_SPACE_RATIO`]).
 fn tabs_of(line: &Line) -> Vec<Option<f32>> {
-    let spaces: Vec<(usize, f32)> = (1..line.glyphs.len())
+    let spaces: Vec<f32> = (1..line.glyphs.len())
         .filter(|&idx| line.glyphs[idx].space_before)
-        .map(|idx| (idx, line.glyphs[idx].x0 - line.glyphs[idx - 1].x1))
+        .map(|idx| line.glyphs[idx].x0 - line.glyphs[idx - 1].x1)
         .collect();
-    let mut tabs = vec![None; line.glyphs.len()];
-    for &(idx, gap) in &spaces {
-        if gap <= TAB_MIN_GAP_EM * line.size {
-            continue;
-        }
-        let others: Vec<f32> = spaces
-            .iter()
-            .filter(|other| other.0 != idx)
-            .map(|other| other.1)
-            .collect();
-        if others.is_empty() || gap >= TAB_MIN_SPACE_RATIO * median(&others, 0.0) {
-            tabs[idx] = Some(gap);
-        }
+    let min_gap = TAB_MIN_GAP_EM * line.size;
+    // The word spaces of the line, against which a wide gap is measured
+    // (other wide gaps would hide a tab: "2 ⇥ Descriptive Statistics ⇥ 67").
+    let words: Vec<f32> = spaces.iter().copied().filter(|&gap| gap <= min_gap).collect();
+    let wide_count = spaces.len() - words.len();
+    if words.is_empty() && wide_count > TAB_MAX_ALONE_COUNT {
+        // Nothing but wide gaps: a loose justified line, not tabs.
+        return vec![None; line.glyphs.len()];
     }
-    tabs
+    let word_space = median(&words, 0.0);
+    std::iter::once(None)
+        .chain(line.glyphs.windows(2).map(|pair| {
+            let gap = pair[1].x0 - pair[0].x1;
+            (pair[1].space_before && gap > min_gap && gap >= TAB_MIN_SPACE_RATIO * word_space).then_some(gap)
+        }))
+        .take(line.glyphs.len())
+        .collect()
 }
 
 /// Runs of consecutive glyphs that contain two stacked glyphs, as (first,
@@ -508,6 +515,14 @@ mod tests {
         // "1.1 Finding Words  ........  12": word spaces of 3 pt, then 120 pt.
         let tabs = tabs_of(&line(&[0.0, 23.0, 46.0, 186.0]));
         assert_eq!(tabs, vec![None, None, None, Some(120.0)]);
+    }
+
+    #[test]
+    fn chapter_number_and_page_number_are_both_tabs() {
+        // "2 ⇥ Descriptive Statistics ⇥ 67": two gaps of about 1 em around
+        // one word space of 3 pt.
+        let tabs = tabs_of(&line(&[0.0, 30.0, 53.0, 83.0]));
+        assert_eq!(tabs, vec![None, Some(10.0), None, Some(10.0)]);
     }
 
     #[test]
