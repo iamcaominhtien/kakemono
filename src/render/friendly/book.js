@@ -96,6 +96,20 @@
       if(!changed)break;
     }
   }
+  // A code listing that does not fit what is left of a page, and would
+  // leave most of it empty by moving on, runs on to the next page, as in a
+  // printed book (its long lines wrap).
+  function flowCode(art){
+    [].forEach.call(art.querySelectorAll('figure.code.bk-flow'),function(f){f.classList.remove('bk-flow');});
+    var top=art.getBoundingClientRect().top,th=art.clientHeight,moved=[];
+    [].forEach.call(art.querySelectorAll('figure.code'),function(f){
+      var prev=f.previousElementSibling,fr=f.getClientRects(),pr=prev&&prev.getClientRects();
+      if(!fr.length||!pr||!pr.length||fr[0].top-top>4)return;
+      var last=pr[pr.length-1];
+      if(colOf(f)===colOf(prev)+1&&(last.bottom-top)/th<0.6)moved.push(f);
+    });
+    moved.forEach(function(f){f.classList.add('bk-flow');});
+  }
   function keepHeads(art){
     [].forEach.call(art.querySelectorAll('[data-bkb]'),function(h){h.removeAttribute('data-bkb');h.style.breakBefore='';});
     for(var round=0;round<4;round++){
@@ -104,8 +118,10 @@
         var next=h.nextElementSibling,hr=h.getClientRects(),nr=next&&next.getClientRects();
         if(!hr.length||!nr||!nr.length||/^H[2-5]$/.test(next.tagName))return;
         if(colOf(next)<=Math.floor((hr[hr.length-1].left-art.getBoundingClientRect().left+2)/step))return;
-        var start=h;while(start.previousElementSibling&&/^H[2-5]$/.test(start.previousElementSibling.tagName))start=start.previousElementSibling;
-        if(start.hasAttribute('data-bkb')||start.getBoundingClientRect().top-art.getBoundingClientRect().top<4)return;
+        var start=h,top=function(e){return e.getBoundingClientRect().top-art.getBoundingClientRect().top<4;};while(start.previousElementSibling&&/^H[2-5]$/.test(start.previousElementSibling.tagName))start=start.previousElementSibling;
+        // A run of headings that fills a page from its top (a chapter's outline) leaves only its last one to move.
+        if(top(start))start=h;
+        if(start.hasAttribute('data-bkb')||top(start))return;
         start.setAttribute('data-bkb','');start.style.breakBefore='column';changed=true;
       });
       if(!changed)break;
@@ -174,7 +190,7 @@
     coverPads(art);
     // A page cannot scroll sideways: wide tables shrink further than in the scroll view.
     if(P.fitTables)P.fitTables(art,0.55);
-    fitFloats(art);fillGaps(art);keepFloats(art);keepHeads(art);
+    fitFloats(art);fillGaps(art);keepFloats(art);flowCode(art);keepHeads(art);
     if(P.cues){P.cues(art);}
     backPad(art);
     if(observer){observer.takeRecords();}

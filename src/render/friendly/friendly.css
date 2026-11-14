@@ -392,6 +392,9 @@ article>*{grid-column:text;min-width:0}
 /* A picture of a table keeps at least 70% of its size on the page, the box scrolls for the rest. */
 .bk-window .tbl-wrap>img,.bk-window figure .tbl-wrap>img[data-bkw]{max-width:none!important;max-height:var(--th);object-fit:contain}
 .bk-window pre.listing{max-height:calc(var(--th) - 5rem);overflow:auto}
+.bk-window figure.code.bk-flow{break-inside:auto}.bk-window figure.code.bk-flow .code-head{break-after:avoid}
+.bk-window figure.code.bk-flow pre.listing{max-height:none;overflow:visible;white-space:pre-wrap}.bk-window figure.code.bk-flow pre.listing code{min-width:0}.bk-window figure.code.bk-flow .l{break-inside:avoid;padding-left:2ch;text-indent:-2ch}
+.bk-window figure.code.bk-flow pre.numbered .l{--ln:calc(2.25em + 2 * var(--s3) + var(--hair));padding-left:calc(var(--ln) + 2ch);text-indent:calc(-1 * var(--ln) - 2ch)}
 .bk-window aside.footnote.side{position:relative;grid-column:auto;width:auto;top:auto!important}
 .bk-window .colophon{margin-top:var(--s5);break-before:avoid}
 /* The page edge clips: the hover bleed of reference entries stays inside the text block. */
