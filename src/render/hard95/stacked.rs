@@ -31,10 +31,11 @@ const STACK_MIN_RISE_EM: f32 = 0.4;
 const RESIZED_MIN_RATIO: f32 = 0.08;
 /// A gap between two glyphs of a line wider than this (in em of the line
 /// font size) is a tab: the space before the page number of a table of
-/// contents entry, between the page number and the title of a running
-/// head. It keeps its width in the PDF instead of being one word space that
-/// the line-fitting script would stretch letter by letter.
-const TAB_MIN_GAP_EM: f32 = 1.5;
+/// contents entry, between a chapter number and its title, between the page
+/// number and the title of a running head. It keeps its width in the PDF
+/// instead of being one word space that the line-fitting script would
+/// stretch letter by letter. Word spaces are about a third of an em.
+const TAB_MIN_GAP_EM: f32 = 0.8;
 /// ... and at least this many times the median of the other word spaces of
 /// the line: a justified line with loose word spaces has no tab.
 const TAB_MIN_SPACE_RATIO: f32 = 3.0;
