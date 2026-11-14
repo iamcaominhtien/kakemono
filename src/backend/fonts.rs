@@ -7,6 +7,7 @@
 //! the font program's contents and the glyph id.
 
 use super::mathabx::MathAbx;
+use super::symbols::SymbolFont;
 use hayro_font::{Font, FontCache, FontGlyph, GlyphId};
 use hayro_interpret::InterpreterSettings;
 use hayro_syntax::object::{Array, Dict, Name, Number, Stream};
@@ -197,11 +198,10 @@ pub struct FontInfo {
     /// `extract::libertine_text`).
     #[serde(default)]
     pub libertine: bool,
-    /// The `lasy` font of LaTeX (`latexsym`: the box that ends a proof,
-    /// ◇, ⇝, ...), whose glyphs have no Unicode mapping and are read by
-    /// character code (see `extract::lasy_text`).
+    /// A symbol font of known encoding (`lasy`, MathDesign, Dingbats),
+    /// whose glyphs without a Unicode mapping are read by character code.
     #[serde(default)]
-    pub lasy: bool,
+    pub symbols: Option<SymbolFont>,
 }
 
 impl FontInfo {
@@ -234,11 +234,8 @@ impl FontInfo {
                 || contains_any(&lower, SMALL_CAPS_PATTERNS)
                 || SMALL_CAPS_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix)));
         let libertine = contains_any(&lower, LIBERTINE_PATTERNS);
-        let lasy = lower
-            .strip_prefix("lasy")
-            .is_some_and(|size| size.chars().all(|ch| ch.is_ascii_digit()));
         Self {
-            lasy,
+            symbols: SymbolFont::from_name(&lower),
             sans,
             small_caps,
             libertine,
@@ -566,7 +563,6 @@ mod tests {
         // The subset tag is not part of the name.
         assert!(!FontInfo::from_name("EXCSCL+Helvetica", 0, 0.0, 0.0).small_caps);
         assert!(!FontInfo::from_name("CMR10", 0, 0.0, 0.0).small_caps);
-        assert!(FontInfo::from_name("CMEULC+LASY10", 0, 0.0, 0.0).lasy);
-        assert!(!FontInfo::from_name("LASYB10X", 0, 0.0, 0.0).lasy);
+        assert!(FontInfo::from_name("CMEULC+LASY10", 0, 0.0, 0.0).symbols.is_some());
     }
 }

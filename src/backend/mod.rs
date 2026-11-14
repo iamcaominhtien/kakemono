@@ -9,6 +9,7 @@ pub mod file;
 pub mod fonts;
 pub mod mathabx;
 pub mod render;
+pub mod symbols;
 
 pub use extract::{Dir, Glyph, ImageBox, PathBox, RawPage};
 pub use file::PdfFile;
