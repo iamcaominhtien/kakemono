@@ -380,7 +380,19 @@ impl Assembler<'_> {
     fn equation_block(&mut self, id: usize, loc: Loc, equation: EquationBlock) -> Block {
         let mut lines = equation.lines;
         lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
-        let alt = lines.iter().map(|line| line.text()).collect::<Vec<_>>().join(" ");
+        // As read, with inline fractions as "1/2".
+        let read = |line: &Line| {
+            if line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+                self.text
+                    .line_spans(line)
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            } else {
+                line.text()
+            }
+        };
+        let alt = lines.iter().map(read).collect::<Vec<_>>().join(" ");
         let margin = self.cfg.equation_margin_pt;
         let rect = equation
             .bbox

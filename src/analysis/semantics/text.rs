@@ -56,12 +56,16 @@ pub struct TextConfig {
     /// A glyph starting less than this (multiple of its font size) after
     /// the end of the current run joins it.
     pub run_max_gap_em: f32,
+    /// Inside and around an inline fraction, a gap wider than this many
+    /// font sizes is a word space.
+    pub fraction_space_min_em: f32,
 }
 
 impl Default for TextConfig {
     fn default() -> Self {
         Self {
             compound_part_min_chars_count: 4,
+            fraction_space_min_em: 0.2,
             cell_wrap_min_dy_em: 0.5,
             math_axis_height_em: 0.25,
             tall_glyph_min_height_em: 1.3,
@@ -152,7 +156,12 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>)
 /// the slash (closing the numerator's parenthesis) before the denominator,
 /// and the closing parenthesis of the denominator before what follows it
 /// (at `order.len()` when the line ends with it).
-fn fraction_marks(glyphs: &[LineGlyph], order: &[usize], fractions: &[Range<usize>]) -> HashMap<usize, String> {
+fn fraction_marks(
+    glyphs: &[LineGlyph],
+    order: &[usize],
+    fractions: &[Range<usize>],
+    cfg: &TextConfig,
+) -> HashMap<usize, String> {
     let mut marks: HashMap<usize, String> = HashMap::new();
     for run in fractions {
         let positions: Vec<usize> = (0..order.len()).filter(|&pos| run.contains(&order[pos])).collect();
@@ -170,13 +179,15 @@ fn fraction_marks(glyphs: &[LineGlyph], order: &[usize], fractions: &[Range<usiz
             continue;
         };
         let compound = |term: &[usize]| {
-            term.iter().skip(1).any(|&pos| glyphs[order[pos]].space_before)
-                || term.iter().any(|&pos| {
-                    glyphs[order[pos]]
-                        .text
-                        .chars()
-                        .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
-                })
+            term.windows(2).any(|pair| {
+                let (left, right) = (&glyphs[order[pair[0]]], &glyphs[order[pair[1]]]);
+                right.x0 - left.x1 > cfg.fraction_space_min_em * right.size
+            }) || term.iter().any(|&pos| {
+                glyphs[order[pos]]
+                    .text
+                    .chars()
+                    .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
+            })
         };
         let (num_parens, den_parens) = (compound(&numerator), compound(&denominator));
         if num_parens {
@@ -193,6 +204,42 @@ fn fraction_marks(glyphs: &[LineGlyph], order: &[usize], fractions: &[Range<usiz
         }
     }
     marks
+}
+
+/// Whether a space goes before the glyph at position `pos` of the reading
+/// `order`, when it is in an inline fraction or right after one: the space
+/// marks of the glyphs were set in left-to-right order, which mixes the two
+/// terms, so the gaps are measured again, within each term and around the
+/// fraction. `None` for the other glyphs.
+fn fraction_space(
+    glyphs: &[LineGlyph],
+    order: &[usize],
+    pos: usize,
+    fractions: &[Range<usize>],
+    cfg: &TextConfig,
+) -> Option<bool> {
+    let glyph = &glyphs[order[pos]];
+    let prev = &glyphs[order[pos.checked_sub(1)?]];
+    let run_of = |index: usize| fractions.iter().find(|run| run.contains(&index));
+    let wide = |gap: f32| gap > cfg.fraction_space_min_em * glyph.size;
+    let extent = |run: &Range<usize>| {
+        run.clone()
+            .map(|k| (glyphs[k].x0, glyphs[k].x1))
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (x0, x1)| {
+                (lo.min(x0), hi.max(x1))
+            })
+    };
+    match (run_of(order[pos]), run_of(order[pos - 1])) {
+        // Inside one fraction: a gap within a term; none between the terms.
+        (Some(run), Some(prev_run)) if run == prev_run => {
+            Some(prev.script.signum() == glyph.script.signum() && wide(glyph.x0 - prev.x1))
+        }
+        // The fraction starts: the gap from the text before it.
+        (Some(run), _) => Some(wide(extent(run).0 - prev.x1)),
+        // The text after a fraction: the gap from its right edge.
+        (None, Some(prev_run)) => Some(wide(glyph.x0 - extent(prev_run).1)),
+        (None, None) => None,
+    }
 }
 
 /// Appends `text` in `style` and `color` to `spans`.
@@ -229,11 +276,13 @@ impl TextBuilder<'_> {
         let mut spans: Vec<Span> = Vec::new();
         let (order, fractions) = stacked_script_order(&line.glyphs);
         // The terms of an inline fraction read as "1/2", "(n−1)/n".
-        let marks = fraction_marks(&line.glyphs, &order, &fractions);
+        let marks = fraction_marks(&line.glyphs, &order, &fractions, self.cfg);
         for (glyph_idx, &index) in order.iter().enumerate() {
             let glyph = &line.glyphs[index];
             let style = line.style_of(glyph, self.fonts);
-            let mut space = glyph.space_before && glyph_idx > 0;
+            let mut space = fraction_space(&line.glyphs, &order, glyph_idx, &fractions, self.cfg)
+                .unwrap_or(glyph.space_before)
+                && glyph_idx > 0;
             if let Some(before) = marks.get(&glyph_idx) {
                 if space {
                     push_text(&mut spans, " ", style, glyph.color);

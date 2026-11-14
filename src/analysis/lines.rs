@@ -101,6 +101,12 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_max_gap_em: 0.6,
     ruby_over_kanji_min_ratio: 0.8,
     fraction_bar_slack_em: 0.3,
+    fraction_bar_max_axis_em: 0.6,
+    fraction_host_max_gap_em: 1.5,
+    fraction_numerator_max_rise_em: 1.0,
+    fraction_denominator_max_drop_em: 1.4,
+    fraction_term_max_size_ratio: 0.85,
+    fraction_term_max_glyphs_count: 8,
     blank_max_thickness_pt: 1.5,
     blank_max_drop_em: 0.4,
     blank_max_rise_em: 0.1,
@@ -321,6 +327,22 @@ pub struct LinesConfig {
     /// The bar of an inline fraction reaches its terms to within this many
     /// font sizes, and overhangs them by at most as much.
     pub fraction_bar_slack_em: f32,
+    /// The bar of an inline fraction is at most this many font sizes above
+    /// the baseline of its line (on the math axis) ...
+    pub fraction_bar_max_axis_em: f32,
+    /// ... and within this many font sizes of the line's ends (the line may
+    /// stop on either side of the fraction) ...
+    pub fraction_host_max_gap_em: f32,
+    /// ... its numerator's baseline at most this far above the bar and its
+    /// denominator's ...
+    pub fraction_numerator_max_rise_em: f32,
+    /// ... at most this far below it (font sizes of the line) ...
+    pub fraction_denominator_max_drop_em: f32,
+    /// ... and their glyphs at most this fraction of the line's size (a
+    /// display fraction, in full size, is left to the formula).
+    pub fraction_term_max_size_ratio: f32,
+    /// Most glyphs of each term of a fraction gathered from rows of its own.
+    pub fraction_term_max_glyphs_count: usize,
     /// A thin horizontal rule (at most this thick, points) ...
     pub blank_max_thickness_pt: f32,
     /// ... on or just below the baseline of a word (at most this many font
@@ -680,11 +702,132 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
         .collect();
     lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
     mark_fixed_pitch(&mut lines, cfg);
+    gather_fractions(&mut lines, raw, cfg);
     for line in &mut lines {
         mark_fractions(line, raw, cfg);
     }
     (lines, rotated)
 }
+
+/// Moves the terms of inline fractions that were read as lines of their
+/// own into the line they belong to. Several fractions in a row ("= ¹⁄₆ +
+/// ¹⁄₆ = ²⁄₆") leave their numerators in one row of small text above the
+/// line and their denominators in one below. For each short bar on the
+/// math axis of a line, the smaller glyphs right above and right below it,
+/// within its width, become that line's fraction terms ([`FRACTION_TERM`]).
+fn gather_fractions(lines: &mut Vec<Line>, raw: &RawPage, cfg: &LinesConfig) {
+    let bars: Vec<Rect> = raw
+        .paths
+        .iter()
+        .chain(&raw.pixel_rules)
+        .filter(|path| path.is_hrule())
+        .map(|path| path.bbox)
+        .collect();
+    let mut moved = false;
+    for bar in bars {
+        let Some((host, mut taken)) = fraction_on_bar(lines, &bar, cfg) else {
+            continue;
+        };
+        // Remove from the back so that the indexes stay valid.
+        taken.sort_by_key(|&(idx, k, _)| std::cmp::Reverse((idx, k)));
+        for (idx, k, sign) in taken {
+            let mut glyph = lines[idx].glyphs.remove(k);
+            glyph.script = sign * FRACTION_TERM;
+            glyph.space_before = false;
+            lines[host].glyphs.push(glyph);
+        }
+        moved = true;
+    }
+    if !moved {
+        return;
+    }
+    lines.retain(|line| !line.glyphs.is_empty());
+    for line in lines.iter_mut() {
+        line.glyphs
+            .sort_by(|a, b| a.x0.total_cmp(&b.x0).then(b.script.cmp(&a.script)));
+        let first = line.glyphs.first().map_or(line.bbox.x0, |glyph| glyph.x0);
+        let last = line
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.x1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        line.bbox = Rect::new(first, line.bbox.y0, last, line.bbox.y1);
+        line.ink = line.glyphs.iter().fold(Rect::EMPTY, |acc, glyph| acc.union(&glyph.ink));
+    }
+}
+
+/// The inline fraction drawn on `bar`, if there is one: the index of the
+/// line it belongs to, and the glyphs of its terms (line index, glyph
+/// index, 1 for the numerator or -1 for the denominator).
+fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usize, Vec<TermGlyph>)> {
+    let cy = bar.cy();
+    // The line may be cut at the fraction: its piece on either side,
+    // within reach of the bar, is the host.
+    let host = lines.iter().position(|line| {
+        let rise = line.baseline - cy;
+        let reach = cfg.fraction_host_max_gap_em * line.size;
+        rise >= 0.0
+            && rise <= cfg.fraction_bar_max_axis_em * line.size
+            && bar.x0 >= line.bbox.x0 - reach
+            && bar.x1 <= line.bbox.x1 + reach
+            && !line.glyphs.iter().any(|glyph| glyph.x1 > bar.x0 && glyph.x0 < bar.x1)
+    })?;
+    let size = lines[host].size;
+    let slack = cfg.fraction_bar_slack_em * size;
+    // The terms are smaller than every glyph of the line (a big operator
+    // makes a line's size larger than its text).
+    let smallest = lines[host]
+        .glyphs
+        .iter()
+        .filter(|glyph| glyph.script == 0 && !glyph.text.chars().any(|ch| BIG_OPERATORS.contains(ch)))
+        .map(|glyph| glyph.size)
+        .reduce(f32::min)?;
+    let term = |glyph: &LineGlyph, sign: i8| {
+        let centre = (glyph.x0 + glyph.x1) / 2.0;
+        let reach = if sign > 0 {
+            cy - glyph.y >= 0.0 && cy - glyph.y <= cfg.fraction_numerator_max_rise_em * size
+        } else {
+            glyph.y - cy > 0.0 && glyph.y - cy <= cfg.fraction_denominator_max_drop_em * size
+        };
+        reach && centre >= bar.x0 - slack && centre <= bar.x1 + slack
+    };
+    let found = |sign: i8| {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|&(idx, _)| idx != host)
+            .flat_map(|(idx, line)| (0..line.glyphs.len()).map(move |k| (idx, k)))
+            .filter(|&(idx, k)| term(&lines[idx].glyphs[k], sign))
+            .map(|(idx, k)| (idx, k, sign))
+            .collect::<Vec<_>>()
+    };
+    // Each term is one short run of text on a baseline of its own, smaller
+    // than the line (a term in full size is a display fraction, left whole
+    // to the formula).
+    let simple = |term: &[TermGlyph]| {
+        let glyph = |&(idx, k, _): &TermGlyph| &lines[idx].glyphs[k];
+        term.first().is_some_and(|first| {
+            term.len() <= cfg.fraction_term_max_glyphs_count
+                && term.iter().all(|part| {
+                    (glyph(part).y - glyph(first).y).abs() <= slack
+                        && glyph(part).size <= cfg.fraction_term_max_size_ratio * smallest
+                })
+        })
+    };
+    let (mut numerator, denominator) = (found(1), found(-1));
+    if !simple(&numerator) || !simple(&denominator) {
+        return None;
+    }
+    numerator.extend(denominator);
+    Some((host, numerator))
+}
+
+/// A glyph of a fraction's term: line index, glyph index, and 1 for the
+/// numerator or -1 for the denominator.
+type TermGlyph = (usize, usize, i8);
+
+/// Big operators, set larger than the text of their line.
+const BIG_OPERATORS: &str = "\u{2211}\u{220F}\u{222B}\u{22C3}\u{22C2}";
 
 /// Marks the inline fractions of `line`: a superscript and a subscript set
 /// one above the other with a rule between them, as wide as they are
@@ -727,7 +870,19 @@ fn mark_fractions(line: &mut Line, raw: &RawPage, cfg: &LinesConfig) {
                 && bar.x1 >= right - slack
                 && bar.width() <= right - left + 2.0 * slack
         });
-        if up.0 < down.1 && down.0 < up.1 && barred {
+        // Each term sits on one baseline, without a relation in it (a
+        // formula set in small type is not one fraction).
+        let one_term = |sign: i8| {
+            let term: Vec<&LineGlyph> = (start..i)
+                .map(|k| &glyphs[k])
+                .filter(|glyph| glyph.script == sign)
+                .collect();
+            term.iter().all(|glyph| {
+                (glyph.y - term[0].y).abs() <= slack
+                    && !glyph.text.chars().any(|ch| "=<>\u{2264}\u{2265}\u{2248}".contains(ch))
+            })
+        };
+        if up.0 < down.1 && down.0 < up.1 && barred && one_term(1) && one_term(-1) {
             terms.extend(start..i);
         }
     }
