@@ -97,6 +97,9 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     accent_min_width_pt: 0.5,
     accent_min_overlap_ratio: 0.4,
     squeezed_punctuation_overlap_ratio: 0.5,
+    ruby_max_size_ratio: 0.65,
+    ruby_max_gap_em: 0.6,
+    ruby_over_kanji_min_ratio: 0.8,
 };
 
 /// Tuning parameters of line building. Part of [`LayoutConfig`](crate::config::LayoutConfig).
@@ -297,6 +300,15 @@ pub struct LinesConfig {
     /// ("。「", each mark taking half its width in Japanese typesetting):
     /// they are ordered by the middle of their ink, not by their left edge.
     pub squeezed_punctuation_overlap_ratio: f32,
+    /// A line of kana at most this fraction of the size of the line right
+    /// below it ...
+    pub ruby_max_size_ratio: f32,
+    /// ... whose bottom is at most this many font sizes (of the line below)
+    /// above that line's top ...
+    pub ruby_max_gap_em: f32,
+    /// ... with at least this share of its glyphs over a kanji of that line
+    /// is furigana (ruby): the reading of the kanji, not text of its own.
+    pub ruby_over_kanji_min_ratio: f32,
 }
 
 impl Default for LinesConfig {
@@ -954,6 +966,63 @@ fn order_squeezed_punctuation(glyphs: &mut [LineGlyph], cfg: &LinesConfig) {
             glyphs.swap(i - 1, i);
         }
     }
+}
+
+/// Takes the furigana out of the lines of a page and returns them: lines of
+/// small kana set right above kanji, which give their reading (see
+/// [`LinesConfig::ruby_max_size_ratio`]). Left in, each would be a line of
+/// text of its own between the lines of the text it annotates.
+pub fn take_ruby(lines: &mut Vec<Line>, cfg: &LinesConfig) -> Vec<Line> {
+    let is_ruby: Vec<bool> = lines.iter().map(|line| is_ruby_line(line, lines, cfg)).collect();
+    let mut ruby = Vec::new();
+    let mut kept = Vec::with_capacity(lines.len());
+    for (line, flag) in std::mem::take(lines).into_iter().zip(is_ruby) {
+        if flag {
+            ruby.push(line);
+        } else {
+            kept.push(line);
+        }
+    }
+    *lines = kept;
+    ruby
+}
+
+/// Whether `line` is furigana over one of `lines`.
+fn is_ruby_line(line: &Line, lines: &[Line], cfg: &LinesConfig) -> bool {
+    let kana = |ch: char| matches!(ch, '\u{3041}'..='\u{309F}' | '\u{30A0}'..='\u{30FF}');
+    let kanji = |text: &str| {
+        text.chars()
+            .any(|ch| matches!(ch, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '\u{3005}'))
+    };
+    let glyphs: Vec<&LineGlyph> = line
+        .glyphs
+        .iter()
+        .filter(|glyph| !glyph.text.trim().is_empty())
+        .collect();
+    if glyphs.is_empty() || !glyphs.iter().all(|glyph| glyph.text.chars().all(kana)) {
+        return false;
+    }
+    lines.iter().any(|base| {
+        let gap = base.bbox.y0 - line.bbox.y1;
+        line.size <= cfg.ruby_max_size_ratio * base.size
+            && base.baseline > line.baseline
+            && gap <= cfg.ruby_max_gap_em * base.size
+            && gap >= -cfg.ruby_max_gap_em * base.size
+            && {
+                let over = glyphs
+                    .iter()
+                    .filter(|glyph| {
+                        let cx = (glyph.x0 + glyph.x1) / 2.0;
+                        base.glyphs.iter().any(|kanji_glyph| {
+                            kanji(&kanji_glyph.text)
+                                && cx >= kanji_glyph.x0 - line.size
+                                && cx <= kanji_glyph.x1 + line.size
+                        })
+                    })
+                    .count();
+                over as f32 >= cfg.ruby_over_kanji_min_ratio * glyphs.len() as f32
+            }
+    })
 }
 
 /// Whether `ch` is a punctuation mark of CJK text: the CJK symbols and
@@ -1864,5 +1933,66 @@ mod tests {
         let raw = page(vec![glyph("\u{FFFD}", 50.0, [0; 3]), glyph("\u{FFFD}", 50.6, [0; 3])]);
         let (glyphs, _) = collect_glyphs(&raw, &LinesConfig::default());
         assert_eq!(glyphs.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod ruby_tests {
+    use super::*;
+
+    /// A line of single-character glyphs of `size`, one em apart from `x`.
+    fn line_at(text: &str, x: f32, baseline: f32, size: f32) -> Line {
+        let glyphs: Vec<LineGlyph> = text
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| {
+                let x0 = x + i as f32 * size;
+                LineGlyph {
+                    text: ch.to_string(),
+                    x0,
+                    x1: x0 + size,
+                    y: baseline,
+                    size,
+                    font: 0,
+                    script: 0,
+                    space_before: false,
+                    ink: Rect::new(x0, baseline - 0.8 * size, x0 + size, baseline),
+                    ox: x0,
+                    oy: baseline,
+                    extra: Vec::new(),
+                    color: [0, 0, 0],
+                }
+            })
+            .collect();
+        let x1 = glyphs.last().map_or(x, |glyph| glyph.x1);
+        Line {
+            page: 0,
+            bbox: Rect::new(x, baseline - 0.8 * size, x1, baseline + 0.2 * size),
+            ink: Rect::new(x, baseline - 0.8 * size, x1, baseline),
+            baseline,
+            size,
+            font: 0,
+            glyphs,
+            fixed_pitch: false,
+        }
+    }
+
+    #[test]
+    fn furigana_over_kanji_leave_the_text() {
+        let cfg = LinesConfig::default();
+        // きょう over 今日, right above the line.
+        let mut lines = vec![
+            line_at("きょう", 100.0, 100.0, 5.0),
+            line_at("今日はいい天気", 100.0, 110.0, 10.0),
+        ];
+        let ruby = take_ruby(&mut lines, &cfg);
+        assert_eq!(ruby.len(), 1);
+        assert_eq!(lines.len(), 1);
+        // A line of kana of the body size stays.
+        let mut lines = vec![
+            line_at("そうですね", 100.0, 100.0, 10.0),
+            line_at("今日", 100.0, 112.0, 10.0),
+        ];
+        assert!(take_ruby(&mut lines, &cfg).is_empty());
     }
 }
