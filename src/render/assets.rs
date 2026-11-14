@@ -107,8 +107,12 @@ impl ImageStore<'_> {
         let page_hint = |page: usize| format!("page-{}", page + 1);
         match job {
             ImageJob::Region(spec, hint) => {
-                let (png, _, _) = renderer.region_png(spec.page, spec.rect, self.opts.scale, spec.transparent)?;
-                Some((png, "image/png", "png", hint.clone()))
+                let (data, jpeg) = renderer.region_picture(spec.page, spec.rect, self.opts.scale, spec.transparent)?;
+                Some(if jpeg {
+                    (data, "image/jpeg", "jpg", hint.clone())
+                } else {
+                    (data, "image/png", "png", hint.clone())
+                })
             }
             ImageJob::Page(page) => match self.opts.page_image {
                 PageImage::Svg | PageImage::SvgOnly => {

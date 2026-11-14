@@ -29,6 +29,14 @@ const MAX_IMAGE_SIDE_PX: u32 = 2600;
 /// JPEG quality of recompressed images: visually lossless for photographs
 /// and plots at a fraction of the PNG size.
 const JPEG_QUALITY: u8 = 88;
+/// A rendered region whose PNG is smaller than this (bytes) stays a PNG:
+/// small pictures are line art or save little.
+const PHOTO_MIN_PNG_BYTES: usize = 64_000;
+/// A rendered region with at least this many distinct colours is a
+/// photograph or a painting, which JPEG compresses well. Line art, plots
+/// and text, even anti-aliased, have far fewer and stay PNG (sharp edges).
+const PHOTO_MIN_COLOURS: usize = 4096;
+
 /// Start of the line that draws a glyph in hayro's SVG output.
 const GLYPH_USE_PREFIX: &str = "<use xlink:href=\"#";
 /// Attribute holding the placement of a glyph.
@@ -80,6 +88,35 @@ impl<'a> PageRenderer<'a> {
     /// transparent instead of white. Returns `None` when the page does not
     /// exist or the PNG cannot be encoded.
     pub fn region_png(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<(Vec<u8>, u32, u32)> {
+        let pixmap = self.region_pixmap(page, rect, scale, transparent)?;
+        let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        let png = pixmap.into_png().ok()?;
+        Some((png, width, height))
+    }
+
+    /// Like [`Self::region_png`], but a picture with many colours (a
+    /// photograph, a painted illustration) is given as a JPEG when that is
+    /// less than half the size (see [`PHOTO_MIN_PNG_BYTES`]). Returns the
+    /// data and whether it is a JPEG.
+    pub fn region_picture(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<(Vec<u8>, bool)> {
+        let pixmap = self.region_pixmap(page, rect, scale, transparent)?;
+        let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        // On white, every pixel is opaque: premultiplied is plain RGBA.
+        let rgba = (!transparent).then(|| pixmap.data_as_u8_slice().to_vec());
+        let png = pixmap.into_png().ok()?;
+        if let Some(rgba) = rgba
+            && png.len() >= PHOTO_MIN_PNG_BYTES
+            && many_colours(&rgba, PHOTO_MIN_COLOURS)
+            && let Some(jpeg) = encode_jpeg(&rgba, width, height)
+            && jpeg.len() * 2 < png.len()
+        {
+            return Some((jpeg, true));
+        }
+        Some((png, false))
+    }
+
+    /// Renders `rect` of a page into a pixmap (see [`Self::region_png`]).
+    fn region_pixmap(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<Pixmap> {
         let page = self.pdf.pages().get(page)?;
         let (scale, width, height) = region_bitmap(rect, scale);
         let (width_px, height_px) = (width as u16, height as u16);
@@ -105,8 +142,7 @@ impl<'a> PageRenderer<'a> {
                 ..Default::default()
             },
         );
-        let png = pixmap.into_png().ok()?;
-        Some((png, width_px as u32, height_px as u32))
+        Some(pixmap)
     }
 
     /// Renders a whole page on white at `scale` pixels per point (see
@@ -329,6 +365,32 @@ fn recompress_png(engine: &base64::engine::GeneralPurpose, payload: &str) -> Opt
         })
         // Base64 turns 3 bytes into 4 characters.
         .filter(|jpeg| jpeg.len() * 4 / 3 < len)
+}
+
+/// Whether the RGBA pixels hold at least `min` distinct colours (alpha
+/// ignored). Stops counting as soon as they do.
+fn many_colours(rgba: &[u8], min: usize) -> bool {
+    let mut seen: HashSet<[u8; 3]> = HashSet::with_capacity(min);
+    for pixel in rgba.chunks_exact(4) {
+        seen.insert([pixel[0], pixel[1], pixel[2]]);
+        if seen.len() >= min {
+            return true;
+        }
+    }
+    false
+}
+
+/// The opaque RGBA pixels as a JPEG of quality [`JPEG_QUALITY`].
+fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let rgb: Vec<u8> = rgba
+        .chunks_exact(4)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .ok()?;
+    Some(jpeg)
 }
 
 /// The scale and pixel size of the bitmap of `rect` (page points) drawn at
