@@ -125,7 +125,8 @@
     mb=ph-mt-th;
     g={two:two,phone:phone,pw:pw,ph:ph,mt:mt,mb:mb,mi:mi,mo:mo,tw:tw,th:th,fs:fs};
     per=two?2:1;
-    var gap=two?2*mi:mi+mo;step=tw+gap;
+    // Columns are laid out in 1/64 px: a gap off that grid drifts from p*step, by pixels after hundreds of pages.
+    var gap=Math.round((two?2*mi:mi+mo)*64)/64;step=tw+gap;
     var vars={'--pw':pw,'--ph':ph,'--sw':two?2*pw:pw,'--rx':two?pw:0,'--mt':mt,'--mb':mb,'--mi':mi,'--mo':mo,'--tw':tw,'--th':th,'--gap':gap,
       '--winw':two?2*tw+gap:tw,'--wx':two?mo:mi};
     for(var name in vars)view.style.setProperty(name,vars[name]+'px');
@@ -266,15 +267,19 @@
   function fitFloats(art){
     restoreFloats();clearFloats(art);
     // A reference too long to move whole to the next page may break across pages.
-    [].forEach.call(art.querySelectorAll('ol.refs li'),function(li){li.classList.remove('bk-long');});
-    [].forEach.call(art.querySelectorAll('ol.refs li'),function(li){if(li.getBoundingClientRect().height>g.th*0.25)li.classList.add('bk-long');});
-    [].forEach.call(art.querySelectorAll('figure.float'),function(f){
-      var base=baseOf(f);f._bk=base;if(!base.scalable){if(floatH(f,base,null)>g.th)split(f);return;}
+    // Everything is measured before anything changes (the floats in the
+    // probe, beside the article): a long book is laid out once, not once per float.
+    var lis=[].slice.call(art.querySelectorAll('ol.refs li'));
+    lis.forEach(function(li){li.classList.remove('bk-long');});
+    lis.filter(function(li){return li.getBoundingClientRect().height>g.th*0.25;}).forEach(function(li){li.classList.add('bk-long');});
+    var figs=[].slice.call(art.querySelectorAll('figure.float')),plans=figs.map(function(f){
+      var base=baseOf(f);f._bk=base;if(!base.scalable)return {split:floatH(f,base,null)>g.th};
       var bar=base.wide?20:0,room=pageRoom(f)-bar,k=solve(f,base,room,base.min,1);
       if(!k&&room<g.th-1-bar){room=g.th-1-bar;k=solve(f,base,room,base.min,1);}
-      if(!k){scale(f,base,base.min);f._k=base.min;split(f);return;}
-      scale(f,base,k);f._k=k;
+      return k?{k:k}:{k:base.min,split:true};
     });
+    figs.forEach(function(f,i){var p=plans[i];if(p.k!=null){scale(f,f._bk,p.k);f._k=p.k;}});
+    figs.forEach(function(f,i){if(plans[i].split)split(f);});
   }
   // A float that starts a page after a page left a good part empty is
   // scaled to that room when it can be without shrinking too far; else it
@@ -282,17 +287,23 @@
   var floated=[];
   function restoreFloats(){while(floated.length){var m=floated.pop();m[0]._hole=null;m[1].parentNode.replaceChild(m[0],m[1]);}}
   function fragH(n){var h=0;[].forEach.call(n.getClientRects(),function(r){h+=r.height;});return h+Number.parseFloat(getComputedStyle(n).marginBottom);}
-  function sendOn(f,gap){
-    var sum=0,n=f.nextElementSibling,at=null,count=0;
+  // Where float f moves to fill a gap: after the text that fills it, or
+  // null. Only measures; `range` is what it measured.
+  function sendOnPlan(f,gap){
+    var sum=0,n=f.nextElementSibling,at=null,count=0,range=[f];
     while(n&&count<16&&!/^H[12]$/.test(n.tagName)&&!n.matches('footer,.colophon')){
+      range.push(n);
       if(!n.classList.contains('footnote')){sum+=fragH(n);if(!/^H/.test(n.tagName))at=n;count++;if(sum>=gap)break;}
       n=n.nextElementSibling;
     }
     // Short of text before the end of the section: the float still moves behind what there is.
-    if(!at||sum<gap*(!n||count<16&&sum<gap?0.3:0.9))return false;
+    if(!at||sum<gap*(!n||count<16&&sum<gap?0.3:0.9))return null;
     while(at.nextElementSibling&&at.nextElementSibling.classList.contains('footnote'))at=at.nextElementSibling;
+    return {at:at,range:range};
+  }
+  function sendOn(f,at){
     if(!f._hole){var hole=doc.createComment('');f.parentNode.insertBefore(hole,f);f._hole=hole;floated.push([f,hole]);}
-    at.parentNode.insertBefore(f,at.nextSibling);return true;
+    at.parentNode.insertBefore(f,at.nextSibling);
   }
   function fillGaps(art){
     for(var round=0;round<8;round++){
@@ -307,10 +318,18 @@
         todo.push([f,gap,g.th-(last.bottom-top)]);
       });
       var changed=false;
-      todo.forEach(function(t){
-        var f=t[0],k=f._k>GAP_MIN?solve(f,f._bk,t[1]-(f._bk.wide?20:0),GAP_MIN,f._k):0;
-        if(k){if(k<f._k){scale(f,f._bk,k);f._k=k;changed=true;}}
-        else if((f._moves=(f._moves||0)+1)<=6&&t[2]>=g.th*0.35&&sendOn(f,t[2]))changed=true;
+      // The scales first (measured in the probe), then the changes.
+      var ks=todo.map(function(t){var f=t[0];return f._k>GAP_MIN?solve(f,f._bk,t[1]-(f._bk.wide?20:0),GAP_MIN,f._k):0;});
+      todo.forEach(function(t,i){var f=t[0],k=ks[i];if(k&&k<f._k){scale(f,f._bk,k);f._k=k;changed=true;}});
+      // Then where the others move, all measured before any moves; a float
+      // whose text another one moves through waits for the next round.
+      var plans=todo.map(function(t,i){var f=t[0];return !ks[i]&&(f._moves=(f._moves||0)+1)<=6&&t[2]>=g.th*0.35?sendOnPlan(f,t[2]):null;});
+      var touched=new Set();
+      todo.forEach(function(t,i){
+        var p=plans[i];if(!p)return;
+        if(p.range.some(function(n){return touched.has(n);})||touched.has(p.at)){t[0]._moves--;changed=true;return;}
+        p.range.forEach(function(n){touched.add(n);});touched.add(p.at);
+        sendOn(t[0],p.at);changed=true;
       });
       if(!changed)break;
     }
