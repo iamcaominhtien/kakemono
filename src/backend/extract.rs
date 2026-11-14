@@ -3,6 +3,7 @@
 //! the bounding boxes of vector drawing operations.
 
 use super::fonts::{FontRegistry, UNKNOWN_FONT};
+use super::symbols::MAPSTO_STEM;
 use crate::common::geom::Rect;
 use hayro_interpret::font::{Glyph as PdfGlyph, GlyphRun};
 use hayro_interpret::hayro_cmap::BfString;
@@ -79,6 +80,9 @@ const PIXEL_RULE_COLOR: [u8; 4] = [0, 0, 0, 255];
 /// A single-pixel picture is a rule when its thin side is at most this
 /// (in points).
 const PIXEL_RULE_MAX_THICKNESS_PT: f32 = 2.0;
+/// The arrow of ↦ starts within this distance of its stem (in em), on the
+/// same baseline.
+const MAPSTO_MAX_OFFSET_EM: f32 = 0.3;
 
 /// Text direction of a glyph, quantised to quarter turns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +279,24 @@ impl GlyphPlacement {
 }
 
 impl Extractor<'_, '_> {
+    /// Joins an arrow at `placement` to the stem of ↦ drawn just before it
+    /// ([`MAPSTO_STEM`]): the stem glyph takes the arrow's extent. Returns
+    /// whether the arrow was joined.
+    fn join_mapsto(&mut self, placement: &GlyphPlacement, adv: f32, ink: Rect) -> bool {
+        let Some(stem) = self.page.glyphs.last_mut() else {
+            return false;
+        };
+        let (x, y) = (placement.origin.x as f32, placement.origin.y as f32);
+        let near = (stem.y - y).abs() <= MAPSTO_MAX_OFFSET_EM * placement.size
+            && (x - stem.x).abs() <= MAPSTO_MAX_OFFSET_EM * placement.size;
+        if stem.text != MAPSTO_STEM || !near {
+            return false;
+        }
+        stem.adv = (x + adv - stem.x).max(stem.adv);
+        stem.ink = stem.ink.union(&ink);
+        true
+    }
+
     /// The active clip rectangle.
     fn clip(&self) -> kurbo::Rect {
         self.clips.last().copied().unwrap_or(self.page_rect)
@@ -400,9 +422,14 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             };
             let (unicode, advance, font, outline_box) = self.describe_glyph(glyph);
             let info = &self.fonts.infos[font as usize];
-            let mut text = match info.mathabx {
-                Some(abx) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
-                None => glyph_text(unicode, info.libertine),
+            let private = match (&unicode, info.symbols) {
+                (Some(BfString::Char(ch)), Some(symbols)) => symbols.private_text(*ch),
+                _ => None,
+            };
+            let mut text = match (info.mathabx, private) {
+                (Some(abx), _) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
+                (None, Some(known)) => known.to_string(),
+                (None, None) => glyph_text(unicode, info.libertine),
             };
             // A symbol font of known encoding fills in what the PDF leaves unmapped.
             if text == "\u{FFFD}"
@@ -410,7 +437,8 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             {
                 text = known;
             }
-            if text.is_empty() {
+            if text.is_empty() || text == "\u{FFFD}" && matches!(glyph.char_code(), 9 | 10 | 13) {
+                // Control codes (a line break typed into a figure label) draw nothing.
                 continue;
             }
             if self.fonts.infos[font as usize].math_pi {
@@ -435,6 +463,9 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             // scaled text keeps correct advances.
             let adv = advance.unwrap_or(DEFAULT_ADVANCE_UNITS) as f64 / GLYPH_UNITS_PER_EM * placement.x_scale;
             let ink = ink_box(outline_box, transform, &placement, adv);
+            if text == "\u{2192}" && self.join_mapsto(&placement, adv as f32, ink) {
+                continue;
+            }
             self.page.glyphs.push(Glyph {
                 text,
                 x: placement.origin.x as f32,
@@ -612,6 +643,10 @@ fn normalize_text(text: &str, out: &mut String) {
             '\u{2010}' | '\u{2011}' => out.push('-'),
             '\u{0}'..='\u{1F}' | '\u{7F}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}' => {}
             '\u{F8E5}'..='\u{F8FE}' => out.push(symbol_piece(ch)),
+            // Adobe's code points for old-style figures and small capitals
+            // (Garamond Expert and other expert sets).
+            '\u{F730}'..='\u{F739}' => out.push(char::from(b'0' + (ch as u32 - 0xF730) as u8)),
+            '\u{F761}'..='\u{F77A}' => out.push(char::from(b'a' + (ch as u32 - 0xF761) as u8)),
             '\u{E000}'..='\u{F8FF}' => out.push('\u{FFFD}'),
             other => out.push(other),
         }

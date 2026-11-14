@@ -21,32 +21,47 @@ pub enum SymbolFont {
     Dingbats,
     /// `stmaryrd` (the short arrows: an edge u→v).
     Stmary,
+    /// A math extension font in TeX's OMX encoding (the encoding of
+    /// `cmex`): big delimiters, big operators and the pieces of both.
+    Omx,
+    /// LibreOffice's OpenSymbol, whose bullets come at the private-use
+    /// code points of Wingdings.
+    OpenSymbol,
 }
 
 impl SymbolFont {
     /// The symbol font whose PostScript name (lower case, without subset
     /// prefix) is `lower`, if it is one.
     pub fn from_name(lower: &str) -> Option<Self> {
-        if lower
-            .strip_prefix("lasy")
-            .is_some_and(|size| size.chars().all(|ch| ch.is_ascii_digit()))
-        {
+        if tex_font(lower, &["lasy"]) {
             Some(Self::Lasy)
         } else if lower.starts_with("mathdesign") && lower.contains("symbola") {
             Some(Self::MathDesignA)
-        } else if lower.starts_with("mathdesign") && lower.contains("-symbol-") {
+        } else if (lower.starts_with("mathdesign") && lower.contains("-symbol-")) || tex_font(lower, &["cmsy", "cmbsy"])
+        {
             Some(Self::Oms)
+        } else if (lower.starts_with("mathdesign") && lower.contains("-extension-")) || tex_font(lower, &["cmex"]) {
+            Some(Self::Omx)
+        } else if lower.starts_with("opensymbol") {
+            Some(Self::OpenSymbol)
         } else if lower.starts_with("mathdesign") && lower.contains("mathitalic") {
             Some(Self::Oml)
         } else if lower == "dingbats" || lower.starts_with("zapfdingbats") {
             Some(Self::Dingbats)
-        } else if lower
-            .strip_prefix("stmary")
-            .is_some_and(|size| size.chars().all(|ch| ch.is_ascii_digit()))
-        {
+        } else if tex_font(lower, &["stmary"]) {
             Some(Self::Stmary)
         } else {
             None
+        }
+    }
+
+    /// The text of a glyph that the PDF maps to the private-use character
+    /// `ch`, when the font gives that character a known meaning.
+    pub fn private_text(self, ch: char) -> Option<&'static str> {
+        match (self, ch) {
+            // Wingdings' "l", the round bullet of word processors.
+            (Self::OpenSymbol, '\u{F06C}') => Some("\u{25CF}"),
+            _ => None,
         }
     }
 
@@ -63,9 +78,47 @@ impl SymbolFont {
             Self::Stmary => ["\u{2190}", "\u{2192}", "\u{2191}", "\u{2193}"]
                 .get(usize::from(code))
                 .map(|arrow| arrow.to_string()),
+            Self::Omx => OMX
+                .get(usize::from(code))
+                .filter(|text| !text.is_empty())
+                .map(|text| text.to_string()),
+            Self::OpenSymbol => None,
         }
     }
 }
+
+/// Whether `lower` is one of the TeX fonts `stems` at a design size
+/// (`cmsy10`, `lasy7`).
+fn tex_font(lower: &str, stems: &[&str]) -> bool {
+    stems.iter().any(|stem| {
+        lower
+            .strip_prefix(stem)
+            .is_some_and(|size| !size.is_empty() && size.chars().all(|ch| ch.is_ascii_digit()))
+    })
+}
+
+/// TeX's OMX encoding (`cmex`). Sized delimiters read as the delimiter; the
+/// extension pieces read as the Unicode bracket pieces; the pieces that are
+/// only drawn (the stem of a radical, arrow and brace tips) have no text.
+#[rustfmt::skip]
+const OMX: [&str; 128] = [
+    "(", ")", "[", "]", "\u{230A}", "\u{230B}", "\u{2308}", "\u{2309}",
+    "{", "}", "\u{27E8}", "\u{27E9}", "|", "\u{2016}", "/", "\\",
+    "(", ")", "(", ")", "[", "]", "\u{230A}", "\u{230B}",
+    "\u{2308}", "\u{2309}", "{", "}", "\u{27E8}", "\u{27E9}", "/", "\\",
+    "(", ")", "[", "]", "\u{230A}", "\u{230B}", "\u{2308}", "\u{2309}",
+    "{", "}", "\u{27E8}", "\u{27E9}", "/", "\\", "/", "\\",
+    "\u{239B}", "\u{239E}", "\u{23A1}", "\u{23A4}", "\u{23A3}", "\u{23A6}", "\u{23A2}", "\u{23A5}",
+    "\u{23A7}", "\u{23AB}", "\u{23A9}", "\u{23AD}", "\u{23A8}", "\u{23AC}", "\u{23AA}", "",
+    "\u{239D}", "\u{23A0}", "\u{239C}", "\u{239F}", "\u{27E8}", "\u{27E9}", "\u{2A06}", "\u{2A06}",
+    "\u{222E}", "\u{222E}", "\u{2A00}", "\u{2A00}", "\u{2A01}", "\u{2A01}", "\u{2A02}", "\u{2A02}",
+    "\u{2211}", "\u{220F}", "\u{222B}", "\u{22C3}", "\u{22C2}", "\u{2A04}", "\u{22C0}", "\u{22C1}",
+    "\u{2211}", "\u{220F}", "\u{222B}", "\u{22C3}", "\u{22C2}", "\u{2A04}", "\u{22C0}", "\u{22C1}",
+    "\u{2210}", "\u{2210}", "^", "^", "^", "~", "~", "~",
+    "[", "]", "\u{230A}", "\u{230B}", "\u{2308}", "\u{2309}", "{", "}",
+    "\u{221A}", "\u{221A}", "\u{221A}", "\u{221A}", "\u{221A}", "", "", "",
+    "", "", "", "", "", "", "", "",
+];
 
 /// `lasy`, the encoding of `latexsym.sty`.
 fn lasy(code: u8) -> Option<&'static str> {
@@ -85,8 +138,12 @@ fn lasy(code: u8) -> Option<&'static str> {
     })
 }
 
-/// TeX's OMS encoding (`cmsy`). The negation slash and the stem of ↦,
-/// which are drawn over other symbols, have no text of their own.
+/// The text of the stem that OMS draws before an arrow to make ↦: the
+/// extraction joins it with the arrow that follows.
+pub const MAPSTO_STEM: &str = "\u{21A6}";
+
+/// TeX's OMS encoding (`cmsy`). The negation slash, which is drawn over
+/// other symbols, has no text of its own.
 #[rustfmt::skip]
 const OMS: [&str; 128] = [
     "\u{2212}", "\u{22C5}", "\u{D7}", "\u{2217}", "\u{F7}", "\u{22C4}", "\u{B1}", "\u{2213}",
@@ -95,7 +152,7 @@ const OMS: [&str; 128] = [
     "\u{223C}", "\u{2248}", "\u{2282}", "\u{2283}", "\u{226A}", "\u{226B}", "\u{227A}", "\u{227B}",
     "\u{2190}", "\u{2192}", "\u{2191}", "\u{2193}", "\u{2194}", "\u{2197}", "\u{2198}", "\u{2243}",
     "\u{21D0}", "\u{21D2}", "\u{21D1}", "\u{21D3}", "\u{21D4}", "\u{2196}", "\u{2199}", "\u{221D}",
-    "\u{2032}", "\u{221E}", "\u{2208}", "\u{220B}", "\u{25B3}", "\u{25BD}", "", "",
+    "\u{2032}", "\u{221E}", "\u{2208}", "\u{220B}", "\u{25B3}", "\u{25BD}", "", MAPSTO_STEM,
     "\u{2200}", "\u{2203}", "\u{AC}", "\u{2205}", "\u{211C}", "\u{2111}", "\u{22A4}", "\u{22A5}",
     "\u{2135}", "", "", "", "", "", "", "",
     "", "", "", "", "", "", "", "",
@@ -215,5 +272,12 @@ mod tests {
             Some("\u{2192}")
         );
         assert_eq!(SymbolFont::from_name("lasyb10x"), None);
+        assert_eq!(SymbolFont::from_name("cmsy10"), Some(SymbolFont::Oms));
+        let omx = SymbolFont::from_name("mathdesign-ch-regular-extension-10").unwrap();
+        assert_eq!(omx.text(0).as_deref(), Some("("));
+        assert_eq!(omx.text(0x58).as_deref(), Some("\u{2211}"));
+        assert_eq!(omx.text(0x7E), None);
+        let bullets = SymbolFont::from_name("opensymbol").unwrap();
+        assert_eq!(bullets.private_text('\u{F06C}'), Some("\u{25CF}"));
     }
 }
