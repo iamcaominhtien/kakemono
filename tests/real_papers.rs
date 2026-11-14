@@ -444,7 +444,7 @@ paper_test!(
     "1810.04805v2",
     "BERT",
     tables >= 8,
-    broken <= 3,
+    broken <= 2,
     split <= 0,
     glyphs <= 0,
     hyphenated <= 228,
@@ -495,7 +495,8 @@ paper_test!(
     "2303.08774v6",
     "GPT-4 Technical Report",
     tables >= 8,
-    broken <= 46,
+    // The lines of its code listings are no longer paragraphs (45 before).
+    broken <= 20,
     split <= 0,
     glyphs <= 498,
     hyphenated <= 302,

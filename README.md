@@ -202,7 +202,9 @@ variable `PAPER2HTML_CACHE`).
 
 `--json` writes a list of blocks in reading order. Each block has a `type`
 (`title`, `authors`, `heading`, `paragraph`, `list_item`, `equation`, `figure`, `footnote`,
-`reference`, `note`), the page number `page` (counted from 0), `bbox` and `spans`:
+`reference`, `note`, `code`), the page number `page` (counted from 0), `bbox` and `spans`. A
+`code` block (a listing set in a monospaced font) also has `rows`, one per line, indented with
+spaces:
 
 ```json
 {

@@ -180,7 +180,8 @@ fn stray_equation_number(block: &Block) -> Option<String> {
 }
 
 /// The end of the run of code paragraphs starting at `blocks[start]`, when
-/// the run has at least two lines (one monospaced line stays inline code).
+/// the run has at least two lines (one monospaced line stays inline code)
+/// or holds a listing found by the analysis.
 fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
     let end = start
         + blocks[start..]
@@ -188,7 +189,10 @@ fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
             .take_while(|block| code::is_code_paragraph(block))
             .count();
     let lines: usize = blocks[start..end].iter().map(|block| block.lines.len()).sum();
-    (lines >= 2).then_some(end)
+    let listing = blocks[start..end]
+        .iter()
+        .any(|block| matches!(block.kind, BlockKind::Code));
+    (lines >= 2 || listing).then_some(end)
 }
 
 /// Author groups as cards.
@@ -315,7 +319,29 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
         BlockKind::Figure { kind, image, label } => {
             out.push_str(&figure_html(block, *kind, image, label, &id, images, ctx));
         }
+        BlockKind::Code => out.push_str(&code_html(block, &id)),
     }
+}
+
+/// A code listing: its rows in a `pre` element, with their indentation.
+/// The rows are monospaced as a whole, so their spans keep only bold and
+/// italic.
+fn code_html(block: &Block, id: &str) -> String {
+    let rows: Vec<String> = block
+        .rows
+        .iter()
+        .map(|row| {
+            let spans: Vec<Span> = row
+                .iter()
+                .map(|span| Span {
+                    style: span.style & !style::MONO,
+                    ..span.clone()
+                })
+                .collect();
+            spans_html(&spans)
+        })
+        .collect();
+    format!("<pre class=\"code\"{id}><code>{}</code></pre>\n", rows.join("\n"))
 }
 
 /// A footnote, with its marker (if any) as a superscript (in the friendly

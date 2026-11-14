@@ -231,6 +231,8 @@ pub enum BlockKind {
         /// Citation label ("12", "Smith et al. 2020"), if the entry has one.
         label: Option<String>,
     },
+    /// A code listing; `Block::rows` holds its lines, indented with spaces.
+    Code,
 }
 
 /// A unit of content of the document (paragraph, heading, figure, ...), in

@@ -55,9 +55,12 @@ const ALGORITHM_ASSIGNMENTS: [&str; 2] = ["\u{2190}", ":="];
 /// Words of the unnumbered header lines of an algorithm (inputs, outputs).
 const ALGORITHM_HEADERS: [&str; 5] = ["Require", "Ensure", "Input", "Output", "Data"];
 
-/// Whether `block` is a paragraph set entirely in a monospaced font (a
-/// piece of code), apart from spaces.
+/// Whether `block` is a code listing found by the analysis, or a paragraph
+/// set entirely in a monospaced font (a piece of code), apart from spaces.
 pub(crate) fn is_code_paragraph(block: &Block) -> bool {
+    if matches!(block.kind, BlockKind::Code) {
+        return block.hlines.len() == block.lines.len();
+    }
     matches!(block.kind, BlockKind::Paragraph { in_abstract: false })
         && block.spans.iter().any(|span| !span.text.trim().is_empty())
         && block

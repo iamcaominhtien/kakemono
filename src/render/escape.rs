@@ -61,7 +61,21 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
         if span.style & SUB != 0 {
             tag("sub");
         }
-        let body = format!("{open}{}{close}", esc(&span.text));
+        // Spaces at the ends of inline code go outside its tags: they would
+        // otherwise show inside its shaded box.
+        let text = span.text.as_str();
+        let body = if span.style & MONO == 0 {
+            format!("{open}{}{close}", esc(text))
+        } else {
+            let inner = text.trim_matches(' ');
+            let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
+            let trail = &text[text.trim_end_matches(' ').len()..];
+            if inner.is_empty() {
+                esc(text)
+            } else {
+                format!("{lead}{open}{}{close}{trail}", esc(inner))
+            }
+        };
         match &span.href {
             Some(href) if href.starts_with('#') => {
                 out.push_str(&format!("<a class=\"xref\" href=\"{}\">{body}</a>", esc(href)))
@@ -170,6 +184,7 @@ pub(crate) fn kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::Figure { .. } => "caption",
         BlockKind::Footnote { .. } => "footnote",
         BlockKind::Reference { .. } => "reference",
+        BlockKind::Code => "code",
     }
 }
 

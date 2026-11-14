@@ -18,7 +18,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
     │   tables      row/column grid of tables
     │   order       reading order (columns, regions)
     │   blocks      lines → raw blocks (paragraphs, equations, footnotes)
-    │   semantics/  classification (title, authors, headings, …), paragraph joining,
+    │   semantics/  classification (title, authors, headings, code listings, …), paragraph joining,
     │               reference linking, building the Document
     │   crops       equation pictures that do not cut glyphs
     │   math        structure of display formulas (MathNode trees, written as MathML)

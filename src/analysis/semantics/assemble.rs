@@ -279,6 +279,14 @@ impl Assembler<'_> {
                 }
                 (BlockKind::Paragraph { in_abstract }, built)
             }
+            Class::Code => {
+                // The lines keep their breaks and indentation; the hard
+                // renderers still use the lines as built.
+                let mut built = self.text.build(lines, 0, 0);
+                rows = super::code::code_rows(lines, self.text.fonts);
+                built.spans = rows.join(&Span::plain("\n"));
+                (BlockKind::Code, built)
+            }
             Class::Unknown => (
                 BlockKind::Paragraph { in_abstract: false },
                 self.text.build(lines, 0, 0),

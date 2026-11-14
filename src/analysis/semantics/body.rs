@@ -185,6 +185,7 @@ struct FlowState {
 /// Only nodes still [`Class::Unknown`] are classified; non-text nodes are
 /// left alone.
 pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[FontInfo], cfg: &SemanticsConfig) {
+    super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
     assign_heading_levels(nodes, candidates, stats, &cfg.body);
