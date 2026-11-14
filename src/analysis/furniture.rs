@@ -9,6 +9,7 @@
 //! draw them.
 
 use super::page::PageData;
+use crate::common::geom::Rect;
 use crate::model::{Line, LineGlyph};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -22,6 +23,10 @@ static PAGE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]?\d{2,}
 /// to Physics Letters B" (elsarticle), "Preprint. Under review." (NeurIPS).
 static PREPRINT_FOOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?i:preprint submitted to\b|preprint\. under review)").unwrap());
+
+/// A printer's position mark: underscores, then an optional signed number
+/// ("___-1", "___0", "___+1").
+static PRINTER_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^_+[-+]?\d*$").unwrap());
 
 /// A line that is nothing but a page number: arabic or roman, optionally
 /// "page N", "N of M" or "N/M", with up to three decorating non-word
@@ -103,6 +108,9 @@ pub struct FurnitureConfig {
     pub number_offset_min_pages: usize,
     /// ... and this fraction of the pages agree on.
     pub number_offset_min_ratio: f32,
+    /// A printer's mark ("___-1") is at least this many font sizes away
+    /// from the words beside it on its row.
+    pub printer_mark_min_gap_em: f32,
 }
 
 impl Default for FurnitureConfig {
@@ -128,6 +136,7 @@ impl Default for FurnitureConfig {
             heading_number_max_gap_em: 3.0,
             number_offset_min_pages: 3,
             number_offset_min_ratio: 0.3,
+            printer_mark_min_gap_em: 3.0,
         }
     }
 }
@@ -290,6 +299,8 @@ fn count_head_foot_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<R
 /// Removes the furniture lines of one page and returns them in their
 /// original order.
 fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> Vec<Line> {
+    let outer = body_extent(page, repeats, &numbered_heads(page, repeats.number_offset, cfg), cfg);
+    let marks = take_printer_marks(page, &outer, cfg);
     let numbered = numbered_heads(page, repeats.number_offset, cfg);
     let body = body_extent(page, repeats, &numbered, cfg);
     let mut drop = margin_line_numbers(page, &body, cfg);
@@ -306,7 +317,92 @@ fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &Furn
     }
     page.lines = kept;
     drop_head_rules(page, &removed, &body, cfg);
+    removed.extend(marks);
     removed
+}
+
+/// Takes the printer's marks out of the lines of a page and returns them:
+/// the position marks a layout program prints in the margin ("___-1",
+/// "___0", "___1"), which share a baseline with lines of the text and were
+/// read as part of them. A mark is a word of underscores (cut by the
+/// page's crop box, it may keep one only), with an optional signed number,
+/// beside the text block `body` and set apart from the rest of its line by
+/// more than [`printer_mark_min_gap_em`](FurnitureConfig::printer_mark_min_gap_em).
+fn take_printer_marks(page: &mut PageData, body: &BodyExtent, cfg: &FurnitureConfig) -> Vec<Line> {
+    let mut marks = Vec::new();
+    let mut kept = Vec::with_capacity(page.lines.len());
+    for line in std::mem::take(&mut page.lines) {
+        let words = word_ranges(&line);
+        let is_mark = |range: &std::ops::Range<usize>| {
+            let text: String = line.glyphs[range.clone()]
+                .iter()
+                .map(|glyph| glyph.text.as_str())
+                .collect();
+            PRINTER_MARK.is_match(&text)
+        };
+        let apart = |i: usize| {
+            let range = &words[i];
+            let gap_before = i
+                .checked_sub(1)
+                .map(|prev| line.glyphs[range.start].x0 - line.glyphs[words[prev].end - 1].x1);
+            let gap_after = words
+                .get(i + 1)
+                .map(|next| line.glyphs[next.start].x0 - line.glyphs[range.end - 1].x1);
+            let far = |gap: Option<f32>| gap.is_none_or(|gap| gap > cfg.printer_mark_min_gap_em * line.size);
+            far(gap_before) && far(gap_after)
+        };
+        // Beside the text block, not in it: a row of underscores in the
+        // text is a blank to fill in, or a rule in a listing.
+        let beside = |range: &std::ops::Range<usize>| {
+            line.glyphs[range.start].x0 >= body.right - cfg.body_edge_tolerance_pt
+                || line.glyphs[range.end - 1].x1 <= body.left + cfg.body_edge_tolerance_pt
+        };
+        let mark_words: Vec<usize> = (0..words.len())
+            .filter(|&i| is_mark(&words[i]) && beside(&words[i]) && apart(i))
+            .collect();
+        if mark_words.is_empty() {
+            kept.push(line);
+            continue;
+        }
+        let in_mark = |g: usize| mark_words.iter().any(|&i| words[i].contains(&g));
+        let (mark, rest): (Vec<_>, Vec<_>) = line.glyphs.iter().cloned().enumerate().partition(|(g, _)| in_mark(*g));
+        marks.push(with_glyphs(&line, mark.into_iter().map(|(_, glyph)| glyph).collect()));
+        let rest: Vec<LineGlyph> = rest.into_iter().map(|(_, glyph)| glyph).collect();
+        if !rest.is_empty() {
+            kept.push(with_glyphs(&line, rest));
+        }
+    }
+    page.lines = kept;
+    marks
+}
+
+/// The glyph index ranges of the words of a line (split at word spaces).
+fn word_ranges(line: &Line) -> Vec<std::ops::Range<usize>> {
+    let mut words: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, glyph) in line.glyphs.iter().enumerate() {
+        match words.last_mut() {
+            Some(word) if !glyph.space_before => word.end = i + 1,
+            _ => words.push(i..i + 1),
+        }
+    }
+    words
+}
+
+/// `line` with only `glyphs` (a part of its glyphs, in order), its boxes
+/// fitted to them.
+fn with_glyphs(line: &Line, mut glyphs: Vec<LineGlyph>) -> Line {
+    if let Some(first) = glyphs.first_mut() {
+        first.space_before = false;
+    }
+    let x0 = glyphs.first().map_or(line.bbox.x0, |glyph| glyph.x0);
+    let x1 = glyphs.last().map_or(line.bbox.x1, |glyph| glyph.x1);
+    let ink = glyphs.iter().fold(Rect::EMPTY, |acc, glyph| acc.union(&glyph.ink));
+    Line {
+        bbox: Rect::new(x0, line.bbox.y0, x1, line.bbox.y1),
+        ink,
+        glyphs,
+        ..line.clone()
+    }
 }
 
 /// Removes the rules that underline a running head (or top a running foot):
