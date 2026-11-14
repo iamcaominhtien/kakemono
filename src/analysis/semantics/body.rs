@@ -91,6 +91,13 @@ pub struct BodyConfig {
     /// Last page index (0-based) on which an inline "Abstract—" label starts
     /// the abstract; later it is ordinary text.
     pub inline_abstract_max_page_idx: usize,
+    /// A paragraph after a list item whose left edge is within this
+    /// distance (em) of the item's text (its second line) continues the
+    /// item.
+    pub list_continuation_max_offset_em: f32,
+    /// ... provided the item's text is indented by at least this much (em)
+    /// from its label.
+    pub list_continuation_min_indent_em: f32,
 }
 
 impl Default for BodyConfig {
@@ -118,6 +125,8 @@ impl Default for BodyConfig {
             centered_title_tolerance_pt: 4.0,
             abstract_max_pages_count: 1,
             inline_abstract_max_page_idx: 1,
+            list_continuation_max_offset_em: 0.3,
+            list_continuation_min_indent_em: 0.5,
         }
     }
 }
@@ -190,6 +199,48 @@ pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[Fo
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
     assign_heading_levels(nodes, candidates, stats, &cfg.body);
     classify_running_text(nodes, &cfg.body);
+    mark_list_continuations(nodes, &cfg.body);
+}
+
+/// Marks the paragraphs that continue a list item: a paragraph right after
+/// an item (or another continuation), in the same column, whose lines start
+/// where the item's text does, to the right of the item's label.
+fn mark_list_continuations(nodes: &mut [Node], cfg: &BodyConfig) {
+    // The left edge of the text of the list item being continued.
+    let mut item_text_left: Option<f32> = None;
+    for idx in 0..nodes.len() {
+        let Some(block) = nodes[idx].text_block() else {
+            continue;
+        };
+        let em = block.lines.first().map_or(0.0, |line| line.size);
+        match nodes[idx].class {
+            Class::ListItem { .. } => {
+                item_text_left = match block.lines.as_slice() {
+                    [first, second, ..]
+                        if second.bbox.x0 - first.bbox.x0 >= cfg.list_continuation_min_indent_em * em =>
+                    {
+                        Some(second.bbox.x0)
+                    }
+                    _ => None,
+                };
+                continue;
+            }
+            Class::ListContinuation => continue,
+            Class::Paragraph { in_abstract: false } => {}
+            _ => {
+                item_text_left = None;
+                continue;
+            }
+        }
+        let same_column = idx > 0 && nodes[idx - 1].loc.page == nodes[idx].loc.page;
+        let aligned =
+            item_text_left.is_some_and(|left| (block.left - left).abs() <= cfg.list_continuation_max_offset_em * em);
+        if same_column && aligned {
+            nodes[idx].class = Class::ListContinuation;
+        } else {
+            item_text_left = None;
+        }
+    }
 }
 
 /// Pass 1: the unclassified text blocks that look like headings, in

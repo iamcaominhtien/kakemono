@@ -204,6 +204,8 @@ pub enum BlockKind {
         /// `None` for bullet lists.
         marker: Option<String>,
     },
+    /// A further paragraph of the list item before it.
+    ListContinuation,
     /// A displayed formula, shown as an image of its area.
     Equation {
         /// The area of the page that shows the formula.

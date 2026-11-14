@@ -264,6 +264,7 @@ impl Assembler<'_> {
                 };
                 (BlockKind::ListItem { marker }, built)
             }
+            Class::ListContinuation => (BlockKind::ListContinuation, self.text.build(lines, 0, 0)),
             Class::Reference => {
                 let built = self.text.build(lines, 0, 0);
                 let label = reference_label(&spans_text(&built.spans));

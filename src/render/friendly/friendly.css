@@ -160,6 +160,7 @@ ul.list{margin:0 0 var(--s4);padding-left:1.4em;list-style:none}
 ul.list li{position:relative;margin:0 0 var(--s2);text-align:left}
 ul.list li::before{content:"";position:absolute;left:-1.05em;top:.72em;width:.32em;height:.32em;background:var(--ink-3)}
 ul.list li.labeled::before{display:none}
+ul.list li.more::before{display:none}
 ul.list li.labeled .lbl{margin-left:-1.4em;display:inline-block;min-width:1.4em;padding-right:.3em;color:var(--rubric);font-variant-numeric:tabular-nums}
 aside.footnote{font-size:var(--fs-note);line-height:var(--lh-note);color:var(--ink-2);margin:var(--s4) 0 var(--s5);padding-top:var(--s2);position:relative}
 aside.footnote::before{content:"";position:absolute;top:0;left:0;width:3rem;border-top:var(--hair) solid var(--rule-strong)}

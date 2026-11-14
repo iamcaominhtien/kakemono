@@ -214,23 +214,19 @@ fn merge_cut_paragraphs(nodes: &mut Vec<Node>, stats: &DocStats, cfg: &Paragraph
 /// Whether text node `next` continues the paragraph node `prev` that
 /// precedes it in the same column (see [`merge_cut_paragraphs`]).
 fn is_cut_paragraph(prev: &Node, next: &Node, stats: &DocStats, cfg: &ParagraphsConfig) -> bool {
-    let (
-        Class::Paragraph {
-            in_abstract: prev_abstract,
-        },
-        Class::Paragraph {
-            in_abstract: next_abstract,
-        },
-    ) = (&prev.class, &next.class)
-    else {
-        return false;
+    let same_flow = match (&prev.class, &next.class) {
+        (Class::Paragraph { in_abstract: a }, Class::Paragraph { in_abstract: b }) => a == b,
+        (Class::ListItem { .. } | Class::ListContinuation, Class::ListContinuation) => true,
+        _ => false,
     };
+    if !same_flow {
+        return false;
+    }
     let (Some(prev_block), Some(next_block)) = (prev.text_block(), next.text_block()) else {
         return false;
     };
     let (last, first) = (prev_block.lines.last().unwrap(), &next_block.lines[0]);
-    prev_abstract == next_abstract
-        && (prev_block.lines.len() >= 2 || last.text().ends_with('-'))
+    (prev_block.lines.len() >= 2 || last.text().ends_with('-'))
         && prev_block.right - last.bbox.x1 <= cfg.full_line_max_gap_em * last.size
         && prev.tail == (next.loc.page, next.loc.leaf)
         && (last.size - first.size).abs() <= cfg.size_tolerance_pt
@@ -350,7 +346,7 @@ fn compatible_classes(prev: &Class, next: &Class) -> bool {
     match (prev, next) {
         (Class::Paragraph { in_abstract: a }, Class::Paragraph { in_abstract: b }) => a == b,
         (Class::Reference, Class::Reference) => true,
-        (Class::ListItem { .. }, Class::Paragraph { .. }) => true,
+        (Class::ListItem { .. } | Class::ListContinuation, Class::Paragraph { .. } | Class::ListContinuation) => true,
         // "... question answering, and" / "(4) a degenerate ...": an
         // enumeration inside a sentence, not a list.
         (Class::Paragraph { .. }, Class::ListItem { bullet: false }) => true,

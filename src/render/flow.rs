@@ -227,7 +227,7 @@ pub(crate) fn authors_html(blocks: &[&Block]) -> String {
 /// floats, equations and footnotes do not interrupt an abstract.
 fn group_of(block: &Block, current: Group) -> Group {
     match &block.kind {
-        BlockKind::ListItem { .. } => Group::List,
+        BlockKind::ListItem { .. } | BlockKind::ListContinuation => Group::List,
         BlockKind::Reference { .. } => Group::Refs,
         BlockKind::Paragraph { in_abstract: true } => Group::Abstract,
         // Floats, equations and footnotes do not interrupt a group.
@@ -328,6 +328,9 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 None => spans_html(&block.spans),
             };
             out.push_str(&format!("<li{id}{cls}>{body}</li>\n"));
+        }
+        BlockKind::ListContinuation => {
+            out.push_str(&format!("<li{id} class=\"more\">{}</li>\n", spans_html(&block.spans)))
         }
         BlockKind::Reference { label } => {
             let body = match label.as_deref().filter(|_| ctx.offprint) {

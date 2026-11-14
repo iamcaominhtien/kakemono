@@ -132,6 +132,8 @@ pub(crate) enum Class {
         /// The label is a bullet symbol rather than a number or letter.
         bullet: bool,
     },
+    /// A further paragraph of the list item before it.
+    ListContinuation,
     /// One entry of the bibliography.
     Reference,
     /// A code listing, kept line by line.

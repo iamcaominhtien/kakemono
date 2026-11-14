@@ -181,6 +181,7 @@ pub(crate) fn kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::Heading { .. } => "heading",
         BlockKind::Paragraph { .. } => "paragraph",
         BlockKind::ListItem { .. } => "list-item",
+        BlockKind::ListContinuation => "list-continuation",
         BlockKind::Equation { .. } => "equation",
         BlockKind::Figure { .. } => "caption",
         BlockKind::Footnote { .. } => "footnote",

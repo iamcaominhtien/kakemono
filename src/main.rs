@@ -510,6 +510,7 @@ fn kind_label(kind: &BlockKind) -> String {
         BlockKind::Paragraph { .. } => "P".into(),
         BlockKind::Code => "CODE".into(),
         BlockKind::ListItem { marker } => format!("LI {}", marker.clone().unwrap_or_default()),
+        BlockKind::ListContinuation => "LI+".to_string(),
         BlockKind::Equation { number, image } => format!(
             "EQ {} [{:.0}x{:.0}]",
             number.clone().unwrap_or_default(),
