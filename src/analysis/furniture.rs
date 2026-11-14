@@ -364,8 +364,13 @@ fn take_printer_marks(page: &mut PageData, body: &BodyExtent, cfg: &FurnitureCon
             kept.push(line);
             continue;
         }
-        let in_mark = |g: usize| mark_words.iter().any(|&i| words[i].contains(&g));
-        let (mark, rest): (Vec<_>, Vec<_>) = line.glyphs.iter().cloned().enumerate().partition(|(g, _)| in_mark(*g));
+        let in_mark = |idx: usize| mark_words.iter().any(|&i| words[i].contains(&idx));
+        let (mark, rest): (Vec<_>, Vec<_>) = line
+            .glyphs
+            .iter()
+            .cloned()
+            .enumerate()
+            .partition(|(idx, _)| in_mark(*idx));
         marks.push(with_glyphs(&line, mark.into_iter().map(|(_, glyph)| glyph).collect()));
         let rest: Vec<LineGlyph> = rest.into_iter().map(|(_, glyph)| glyph).collect();
         if !rest.is_empty() {
