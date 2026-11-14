@@ -156,6 +156,12 @@ pub struct FloatsConfig {
     pub shaded_box_min_lines_count: usize,
     /// ... or behind the captions of this many floats.
     pub shaded_box_min_captions_count: usize,
+    /// A vertical rule with at least this many lines of running text
+    /// beside it ...
+    pub side_rule_min_lines_count: usize,
+    /// ... starting at most this many font sizes to its right is the bar
+    /// that marks a box of text (an example), not a drawing: it is ignored.
+    pub side_rule_max_gap_em: f32,
     /// Paths with an alpha value below this are invisible and ignored.
     pub min_path_alpha: u8,
     /// A component needs at least this many paths to be a ruled table.
@@ -448,6 +454,8 @@ impl Default for FloatsConfig {
             background_path_extent_ratio: 0.95,
             shaded_box_min_lines_count: 3,
             shaded_box_min_captions_count: 2,
+            side_rule_min_lines_count: 3,
+            side_rule_max_gap_em: 3.0,
             min_path_alpha: 8,
             ruled_min_paths_count: 3,
             ruled_rule_tenths: 9,
@@ -1243,6 +1251,9 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         if path.is_hrule() && (inline_rule(page, &path.bbox, cfg) || underline(page, &path.bbox, cfg)) {
             continue;
         }
+        if path.is_vrule() && marks_text(page, &path.bbox, cfg) {
+            continue;
+        }
         elements.push(GraphicElement {
             bbox: path.bbox,
             image: false,
@@ -1266,6 +1277,24 @@ fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
         .take(cfg.shaded_box_min_captions_count)
         .count();
     text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
+}
+
+/// Whether a vertical rule runs along lines of running text that start
+/// just right of it: the bar beside a box of text (see
+/// [`FloatsConfig::side_rule_min_lines_count`]).
+fn marks_text(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
+    page.lines
+        .iter()
+        .filter(|line| {
+            line.char_count() >= cfg.body_min_chars
+                && line.bbox.y0 >= rule.y0
+                && line.bbox.y1 <= rule.y1
+                && line.bbox.x0 >= rule.x1
+                && line.bbox.x0 - rule.x1 <= cfg.side_rule_max_gap_em * line.size
+        })
+        .take(cfg.side_rule_min_lines_count)
+        .count()
+        >= cfg.side_rule_min_lines_count
 }
 
 /// Whether a horizontal rule underlines text: it lies just below the
