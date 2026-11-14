@@ -1236,13 +1236,19 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
             rule: false,
         });
     }
+    let captioned = page.lines.iter().any(|line| CAPTION.is_match(&line.text()));
     for path in &page.paths {
         if path.bbox.width() > cfg.background_path_extent_ratio * page.width
             && path.bbox.height() > cfg.background_path_extent_ratio * page.height
         {
             continue;
         }
-        if path.filled && !path.stroked && (path.is_white() || shades_text(page, &path.bbox, cfg)) {
+        // The shading of a box of text is no drawing; nor is the frame of
+        // one on a page without captions (a framed figure of text is still a
+        // figure).
+        let shading = path.filled && !path.stroked;
+        let frame = path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned;
+        if (shading && path.is_white()) || ((shading || frame) && shades_text(page, &path.bbox, cfg)) {
             continue;
         }
         if path.color[3] < cfg.min_path_alpha {
@@ -1269,7 +1275,7 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
 fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
     let inside = || page.lines.iter().filter(|line| bbox.contains(&line.bbox));
     let text_lines = inside()
-        .filter(|line| line.char_count() >= cfg.body_min_chars)
+        .filter(|line| text_width(line) >= cfg.body_min_chars)
         .take(cfg.shaded_box_min_lines_count)
         .count();
     let captions = inside()
@@ -1277,6 +1283,22 @@ fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
         .take(cfg.shaded_box_min_captions_count)
         .count();
     text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
+}
+
+/// The length of `line` in Latin characters: its characters other than
+/// spaces, a wide (CJK) character counting as two.
+fn text_width(line: &Line) -> usize {
+    line.text()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .map(|ch| if is_wide(ch) { 2 } else { 1 })
+        .sum()
+}
+
+/// A character set twice as wide as a Latin letter: CJK ideographs, kana,
+/// hangul and fullwidth forms.
+fn is_wide(ch: char) -> bool {
+    matches!(ch, '\u{1100}'..='\u{115F}' | '\u{2E80}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FF60}')
 }
 
 /// Whether a vertical rule runs along lines of running text that start

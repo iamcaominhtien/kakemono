@@ -100,6 +100,14 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_max_size_ratio: 0.65,
     ruby_max_gap_em: 0.6,
     ruby_over_kanji_min_ratio: 0.8,
+    blank_max_thickness_pt: 1.5,
+    blank_max_drop_em: 0.4,
+    blank_max_rise_em: 0.1,
+    blank_max_gap_em: 1.0,
+    blank_stacked_max_distance_em: 0.9,
+    underline_piece_max_gap_pt: 6.0,
+    blank_underscore_em: 0.5,
+    blank_max_underscores_count: 8,
 };
 
 /// Tuning parameters of line building. Part of [`LayoutConfig`](crate::config::LayoutConfig).
@@ -309,6 +317,31 @@ pub struct LinesConfig {
     /// ... with at least this share of its glyphs over a kanji of that line
     /// is furigana (ruby): the reading of the kanji, not text of its own.
     pub ruby_over_kanji_min_ratio: f32,
+    /// A thin horizontal rule (at most this thick, points) ...
+    pub blank_max_thickness_pt: f32,
+    /// ... on or just below the baseline of a word (at most this many font
+    /// sizes below it ...
+    pub blank_max_drop_em: f32,
+    /// ... or this many above it; a fraction bar is higher, on the math
+    /// axis) ...
+    pub blank_max_rise_em: f32,
+    /// ... that starts or ends within this many font sizes of the word, with
+    /// no glyph over it, is typed text: an underscore ("file_name", drawn as
+    /// a rule by some producers) or a blank to fill in ("日本語教室に
+    /// ______。").
+    pub blank_max_gap_em: f32,
+    /// Rules on the same height at most this far apart (points) are pieces
+    /// of one underline, not underscores.
+    pub underline_piece_max_gap_pt: f32,
+    /// A glyph whose baseline is at most this many font sizes above or
+    /// below the rule, over its width, makes it part of that text (an
+    /// underline, a fraction bar, the bar of a radical).
+    pub blank_stacked_max_distance_em: f32,
+    /// The rule reads as one underscore per this many font sizes of its
+    /// width ...
+    pub blank_underscore_em: f32,
+    /// ... and at most this many.
+    pub blank_max_underscores_count: usize,
 }
 
 impl Default for LinesConfig {
@@ -710,7 +743,117 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
         copies.insert(glyph, glyphs.len());
         glyphs.push(line_glyph(glyph, cfg));
     }
+    let blanks = blank_glyphs(raw, &glyphs, cfg);
+    glyphs.extend(blanks);
     (glyphs, rotated.runs)
+}
+
+/// A piece of a horizontal brace or bracket drawn over or under a formula.
+fn is_brace_piece(ch: char) -> bool {
+    matches!(ch, '\u{23B4}'..='\u{23B6}' | '\u{23DC}'..='\u{23E1}' | '\u{FE35}'..='\u{FE44}')
+}
+
+/// Punctuation that may stand right before a blank or an underscore.
+const BLANK_NEIGHBOUR_MARKS: &str = "_-.,:;'\"()[]/、。，：「」『』（）";
+
+/// Underscores for the thin rules drawn just below the baseline next to a
+/// word, with no glyph above them: underscores drawn as rules, and blanks
+/// to fill in. Each gets the font, size and baseline of the word.
+fn blank_glyphs(raw: &RawPage, glyphs: &[LineGlyph], cfg: &LinesConfig) -> Vec<LineGlyph> {
+    let rules: Vec<Rect> = raw
+        .paths
+        .iter()
+        .chain(&raw.pixel_rules)
+        .filter(|rule| rule.is_hrule() && rule.bbox.height() <= cfg.blank_max_thickness_pt && !rule.is_white())
+        .map(|rule| rule.bbox)
+        .collect();
+    let mut blanks = Vec::new();
+    for (idx, &bbox) in rules.iter().enumerate() {
+        if part_of_drawing(raw, &rules, idx, cfg) || part_of_formula(glyphs, &bbox, cfg) {
+            continue;
+        }
+        let cy = bbox.cy();
+        let on_baseline = |glyph: &&LineGlyph| {
+            cy - glyph.y >= -cfg.blank_max_rise_em * glyph.size && cy - glyph.y <= cfg.blank_max_drop_em * glyph.size
+        };
+        let neighbour = glyphs.iter().filter(on_baseline).find(|glyph| {
+            let reach = cfg.blank_max_gap_em * glyph.size;
+            (glyph.x1 <= bbox.x0 + reach / 4.0 && bbox.x0 - glyph.x1 <= reach)
+                || (glyph.x0 >= bbox.x1 - reach / 4.0 && glyph.x0 - bbox.x1 <= reach)
+        });
+        // After an operator ("f(x) = ―"), the rule is a fraction bar whose
+        // terms are not text.
+        let after_operator = glyphs
+            .iter()
+            .filter(on_baseline)
+            .filter(|glyph| glyph.x1 <= bbox.x0 + glyph.size * cfg.blank_max_gap_em / 4.0)
+            .max_by(|a, b| a.x1.total_cmp(&b.x1))
+            .is_some_and(|left| {
+                bbox.x0 - left.x1 <= cfg.blank_max_gap_em * left.size
+                    && !left
+                        .text
+                        .chars()
+                        .all(|ch| ch.is_alphanumeric() || BLANK_NEIGHBOUR_MARKS.contains(ch))
+            });
+        let Some(word) = neighbour.filter(|_| !after_operator) else {
+            continue;
+        };
+        let count = ((bbox.width() / (cfg.blank_underscore_em * word.size)).round() as usize)
+            .clamp(1, cfg.blank_max_underscores_count);
+        let mut blank = word.clone();
+        blank.text = "_".repeat(count);
+        blank.x0 = bbox.x0;
+        blank.x1 = bbox.x1;
+        blank.ox = bbox.x0;
+        blank.ink = Rect::new(bbox.x0, word.y, bbox.x1, bbox.y1);
+        blank.extra = Vec::new();
+        blanks.push(blank);
+    }
+    blanks
+}
+
+/// Whether the rule `rules[idx]` is part of a drawing: a piece of an
+/// underline drawn word by word (a link), which has the underlines of the
+/// words beside it, or a tick mark or wire, which touches the rest of its
+/// drawing (a box around a blank holds it whole).
+fn part_of_drawing(raw: &RawPage, rules: &[Rect], idx: usize, cfg: &LinesConfig) -> bool {
+    let bbox = rules[idx];
+    let underline_piece = rules.iter().enumerate().any(|(other_idx, other)| {
+        other_idx != idx
+            && (other.cy() - bbox.cy()).abs() <= cfg.blank_max_thickness_pt
+            && (other.x0 - bbox.x1).max(bbox.x0 - other.x1) <= cfg.underline_piece_max_gap_pt
+    });
+    let grow = cfg.blank_max_thickness_pt;
+    let near = Rect::new(bbox.x0 - grow, bbox.y0 - grow, bbox.x1 + grow, bbox.y1 + grow);
+    let touches_drawing = raw
+        .paths
+        .iter()
+        .map(|path| path.bbox)
+        .chain(raw.images.iter().map(|image| image.bbox))
+        .any(|other| other != bbox && near.intersects(&other) && !other.contains(&bbox));
+    underline_piece || touches_drawing
+}
+
+/// Whether the rule `bbox` belongs to text or a formula around it: text
+/// over it (underlined words, a numerator) or right under it (a
+/// denominator, a radicand), a radical sign at its start, or the curl
+/// pieces of a horizontal brace beside it.
+fn part_of_formula(glyphs: &[LineGlyph], bbox: &Rect, cfg: &LinesConfig) -> bool {
+    let cy = bbox.cy();
+    let stacked = |glyph: &LineGlyph, factor: f32| {
+        (glyph.y - cy).abs() <= factor * cfg.blank_stacked_max_distance_em * glyph.size
+    };
+    glyphs.iter().any(|glyph| {
+        let inset = glyph.size * cfg.blank_underscore_em / 2.0;
+        let reach = cfg.blank_max_gap_em * glyph.size;
+        let covered = glyph.x1 > bbox.x0 + inset && glyph.x0 < bbox.x1 - inset && stacked(glyph, 1.0);
+        let radical = glyph.text.contains('\u{221A}') && (glyph.x1 - bbox.x0).abs() <= reach && stacked(glyph, 2.0);
+        let brace = glyph.text.chars().any(is_brace_piece)
+            && glyph.x1 >= bbox.x0 - reach
+            && glyph.x0 <= bbox.x1 + reach
+            && stacked(glyph, 1.0);
+        covered || radical || brace
+    })
 }
 
 /// A glyph of the page as a glyph of a line (not yet raised, lowered or

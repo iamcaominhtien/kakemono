@@ -98,6 +98,9 @@ pub struct BodyConfig {
     /// ... provided the item's text is indented by at least this much (em)
     /// from its label.
     pub list_continuation_min_indent_em: f32,
+    /// A sentence of a language course is mostly in CJK characters (at
+    /// least this share), and its translation mostly in Latin letters.
+    pub translated_min_script_ratio: f32,
 }
 
 impl Default for BodyConfig {
@@ -127,6 +130,7 @@ impl Default for BodyConfig {
             inline_abstract_max_page_idx: 1,
             list_continuation_max_offset_em: 0.3,
             list_continuation_min_indent_em: 0.5,
+            translated_min_script_ratio: 0.6,
         }
     }
 }
@@ -243,6 +247,53 @@ fn mark_list_continuations(nodes: &mut [Node], cfg: &BodyConfig) {
     }
 }
 
+/// Whether the text block `nodes[idx]`, of text `text`, is a sentence of a
+/// language course rather than a heading: a line of dialogue ("Ａ：はい、
+/// 何ですか？"), or an unnumbered sentence written mostly in CJK characters
+/// that ends with a full stop, or with other punctuation and is followed by
+/// its translation (a block mostly in Latin letters, in a smaller size).
+fn is_translated_sentence(nodes: &[Node], idx: usize, text: &str, cfg: &BodyConfig) -> bool {
+    if DIALOGUE_LINE.is_match(text) {
+        return true;
+    }
+    // A numbered task ("2 自分の近況を話しましょう。") stays a heading.
+    let numbered = text
+        .trim_start_matches(['(', '（', ' '])
+        .starts_with(|ch: char| ch.is_ascii_digit());
+    let ends_sentence = !numbered && text.ends_with(['。', '？', '！', '?', '!']);
+    if !ends_sentence || script_ratio(text, is_cjk) < cfg.translated_min_script_ratio {
+        return false;
+    }
+    // A full stop ends a sentence: headings do not end with one.
+    if text.ends_with('。') {
+        return true;
+    }
+    let (Some(block), Some(next)) = (nodes[idx].text_block(), nodes.get(idx + 1)) else {
+        return false;
+    };
+    let Some(next_block) = next.text_block().filter(|_| next.loc.page == nodes[idx].loc.page) else {
+        return false;
+    };
+    let next_text = block_text(&next_block.lines);
+    script_ratio(&next_text, |ch| ch.is_ascii_alphabetic()) >= cfg.translated_min_script_ratio
+        && block_size(&next_block.lines) < block_size(&block.lines)
+}
+
+/// The share of the non-space characters of `text` that `pred` accepts.
+fn script_ratio(text: &str, pred: impl Fn(char) -> bool) -> f32 {
+    // Blanks to fill in ("____") are not part of the script.
+    let chars: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace() && *ch != '_').collect();
+    if chars.is_empty() {
+        return 0.0;
+    }
+    chars.iter().filter(|&&ch| pred(ch)).count() as f32 / chars.len() as f32
+}
+
+/// A Chinese or Japanese character (kana, kanji) or CJK punctuation.
+fn is_cjk(ch: char) -> bool {
+    matches!(ch, '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{9FFF}' | '\u{FF00}'..='\u{FFEF}')
+}
+
 /// Pass 1: the unclassified text blocks that look like headings, in
 /// document order. Once the bibliography heading has been seen, appendix
 /// labels without the word "Appendix" ("A Proofs") are accepted too.
@@ -265,7 +316,7 @@ fn find_heading_candidates(
         let Some(features) = heading_features(block, text.trim(), body_size, fonts, cfg) else {
             continue;
         };
-        if THEOREM_LABEL.is_match(features.text) {
+        if THEOREM_LABEL.is_match(features.text) || is_translated_sentence(nodes, idx, features.text, &cfg.body) {
             continue;
         }
         // A numbered sentence not set in bold ("4. Use the modified version

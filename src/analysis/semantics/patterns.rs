@@ -12,6 +12,11 @@ pub(crate) static CHAPTER_LABEL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?i:chapter|part|appendix|lesson|unit)\s+(?:\d{1,3}|[IVXLC]{1,6}|[A-Z])[.:]?(?:\s|$)").unwrap()
 });
 
+/// A line of dialogue in a language course: a speaker letter and a colon,
+/// after an optional example label ("Ａ：すみません。", "［例］▶ Ｂ：はい").
+pub(crate) static DIALOGUE_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:［\s*例\s*］\s*▶?\s*)?[A-ZＡ-Ｚ]\s*[：:]\s*\S").unwrap());
+
 /// Arabic section number and title: "3", "3.2", "3.2.1." followed by the
 /// title (up to four levels of at most two digits each).
 pub(crate) static HEADING_NUM: LazyLock<Regex> =
