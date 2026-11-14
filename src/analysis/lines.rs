@@ -20,6 +20,9 @@ const FIXED_PITCH_SHORT_RUN: usize = 2;
 /// are looked for; a copy is looked for in its band and the two next to it,
 /// so offsets up to this height are found.
 const DUPLICATE_BAND_PT: f32 = 8.0;
+/// Longest run of tight gaps in a row that can be word spaces: the two
+/// around a one-letter word. Longer runs are letter-spaced text.
+const TIGHT_SPACE_MAX_RUN: usize = 2;
 /// The combining long solidus overlay, which TeX fonts give the slash that
 /// negates a relation (`\neq`, `\notin`).
 const NEGATION: char = '\u{0338}';
@@ -1151,16 +1154,25 @@ fn mark_spaces(glyphs: &mut [LineGlyph], size: f32, fixed_pitch: bool, cfg: &Lin
             && gap > cfg.tight_space_ratio * usual_gap
     };
     // A tight word space lies between two letters of the same script, and
-    // its neighbours are no gaps: runs of gaps are letter-spaced text or
-    // monospaced code.
+    // is not part of a run of three or more such gaps in a row: those are
+    // letter-spaced text or monospaced code. Two in a row are the spaces
+    // around a one-letter word ("with a different").
+    let gap_is_tight: Vec<bool> = (0..n).map(|i| i > 0 && is_tight(&gaps[i])).collect();
+    let mut run_len = vec![0usize; n];
+    let mut start = 0;
+    while start < n {
+        let mut end = start;
+        while end < n && gap_is_tight[end] {
+            end += 1;
+        }
+        for len in &mut run_len[start..end] {
+            *len = end - start;
+        }
+        start = end + 1;
+    }
     let tight: Vec<bool> = (0..n)
         .map(|i| {
-            i > 0
-                && is_tight(&gaps[i])
-                && glyphs[i].script == 0
-                && glyphs[i - 1].script == 0
-                && !(i > 1 && is_tight(&gaps[i - 1]))
-                && !(i + 1 < n && is_tight(&gaps[i + 1]))
+            gap_is_tight[i] && glyphs[i].script == 0 && glyphs[i - 1].script == 0 && run_len[i] <= TIGHT_SPACE_MAX_RUN
         })
         .collect();
     let tight_spaces = tight.iter().filter(|&&is_space| is_space).count() >= cfg.tight_space_min_count;
