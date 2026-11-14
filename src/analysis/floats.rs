@@ -1334,7 +1334,9 @@ fn inline_rule(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
                 Some(true) => b.x1 <= rule.x0 + line.size && rule.x0 - b.x1 <= close,
                 Some(false) => b.x0 >= rule.x1 - line.size && b.x0 - rule.x1 <= close,
             };
-            cy > b.y0 + band && cy < b.y1 - band && beside && placed
+            // A line beside the bar ("; ", "+") may be short; one through it
+            // must reach past it.
+            cy > b.y0 + band && cy < b.y1 - band && placed && (side.is_some() || beside)
         })
     };
     let through = reaching(None) || reaching(Some(true)) || reaching(Some(false));
