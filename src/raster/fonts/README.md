@@ -1,6 +1,6 @@
 # TeX fonts of the formula reader
 
-`paper2html formula` compares the ink of a formula picture with the glyphs of the fonts LaTeX
+`kakemono formula` compares the ink of a formula picture with the glyphs of the fonts LaTeX
 sets formulas in, at the sizes it uses (10 pt text, 7 pt scripts, 5 pt scripts of scripts, each
 with strokes of its own). These are the Type 1 files, unchanged, read with skrifa.
 

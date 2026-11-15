@@ -1,6 +1,6 @@
 # Architecture
 
-`paper2html` is a **pipeline**: a PDF passes through a chain of stages. Each stage takes one clearly
+`kakemono` is a **pipeline**: a PDF passes through a chain of stages. Each stage takes one clearly
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
 (`Document` → HTML) meet at exactly one place: the `Document` model in `model`.
 
@@ -43,7 +43,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
 | `render/` | HTML output: a `Renderer` for each mode, the `assets` image store, shared HTML parts |
-| `raster/` | Formulas from pictures (`paper2html formula`): pieces of ink recognised against the TeX fonts (`tex`, `templates`, `shape`, `recognize`), then rebuilt by `analysis::math` |
+| `raster/` | Formulas from pictures (`kakemono formula`): pieces of ink recognised against the TeX fonts (`tex`, `templates`, `shape`, `recognize`), then rebuilt by `analysis::math` |
 
 Dependencies run in one direction only:
 
@@ -104,4 +104,4 @@ CI checks these conventions (`clippy.toml`, lints in `lib.rs`).
 Every structural change must keep the output the same. `tests/real_papers.rs` compares the output
 hashes of 8 real papers, in all four modes and in JSON, with `tests/data/snapshots`; one character of
 difference turns the test red. When you change the output on purpose, run
-`P2H_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit the snapshots with the change.
+`KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit the snapshots with the change.

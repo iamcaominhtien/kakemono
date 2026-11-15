@@ -84,7 +84,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="paper2html (medium)">
+<meta name="generator" content="kakemono (medium)">
 <title>{title}</title>
 <style>
 :root{{--fs:{fs};--lh:{lh:.3};--mx:{mx:.1};--my:{my:.1}}}

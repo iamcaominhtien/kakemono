@@ -22,4 +22,4 @@ scripts/fetch-test-pdfs.sh
 ```
 
 Tests skip any paper that is missing and print the list of missing papers. With the environment
-variable `P2H_REQUIRE_ALL_PAPERS=1` (as in CI), a missing paper is an error.
+variable `KAKEMONO_REQUIRE_ALL_PAPERS=1` (as in CI), a missing paper is an error.

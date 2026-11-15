@@ -97,7 +97,7 @@ machine:
 ## 7. Batch processing
 
 - There is no command for processing many documents. For now you need an outside script, for example
-  `ls *.pdf | xargs -P 2 -I{} paper2html convert {} -m hard-95 -j 1 -o out/`.
+  `ls *.pdf | xargs -P 2 -I{} kakemono convert {} -m hard-95 -j 1 -o out/`.
   We should add a `batch` command: run N documents in parallel, skip documents that are already done,
   log errors.
 - Downloads from arXiv are not rate-limited. arXiv asks automated tools to download slowly (their API
@@ -132,7 +132,7 @@ Sort by score, look at the worst, fix by kind of error, run again and compare wi
 run by picture (only formulas whose MathML changed need new screenshots). Pairing breaks when the
 number of equation blocks changes, so pictures must be rebuilt in the same run.
 
-## 9. Formulas from pictures (`paper2html formula`)
+## 9. Formulas from pictures (`kakemono formula`)
 
 **Current state.** Experimental. The ink of the picture is cut into pieces and each is compared
 with glyphs of the TeX fonts (Computer Modern at 10/7/5 pt, AMS fonts, `dsfont`, `rsfs`), then the
@@ -164,7 +164,7 @@ fonts (Times, as in the LIGO paper) are not read.
 - For pictures not set in TeX fonts, a learned model (pix2tex, Texify) would do better than
   templates.
 
-**How to measure (scripts kept outside the repository).** Run `paper2html formula` on the
+**How to measure (scripts kept outside the repository).** Run `kakemono formula` on the
 equation pictures of the papers of section 8 (several pictures per call; one line per picture),
 compare the text of the `mi`/`mn`/`mo` elements with that of the MathML from the PDF, counting
 look-alikes as equal (`∆`/`Δ`, `φ`/`ϕ`, `‖`/`||`), and list the confusions of readings of the

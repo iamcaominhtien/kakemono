@@ -180,7 +180,7 @@
   }else{pages.forEach(fitPage);}
   var main=doc.querySelector('.pages');
   if(main)mo.observe(main,{subtree:true,childList:true,characterData:true});
-  window.paper2htmlFitAll=function(){pages.forEach(fitPage);};
+  window.kakemonoFitAll=function(){pages.forEach(fitPage);};
 
   var root=doc.documentElement,zoom=1.5;
   function set(z){zoom=clamp(z,0.5,4);root.style.setProperty('--zoom',zoom);doc.body.classList.remove('fit');}

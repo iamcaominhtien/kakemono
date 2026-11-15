@@ -1,8 +1,8 @@
 //! End-to-end test on a small PDF that is generated on the fly.
 
 use base64::Engine;
-use paper2html::model::BlockKind;
-use paper2html::{AnalyzeOptions, HtmlOptions, Mode, Paper};
+use kakemono::model::BlockKind;
+use kakemono::{AnalyzeOptions, HtmlOptions, Mode, Paper};
 
 /// Builds a one-page PDF using the standard Helvetica fonts.
 fn tiny_pdf() -> Vec<u8> {
@@ -352,8 +352,8 @@ fn page_pictures_load_lazily() {
 
 #[test]
 fn layout_config_reaches_the_stages() {
-    use paper2html::LayoutConfig;
-    use paper2html::analysis::tables::TablesConfig;
+    use kakemono::LayoutConfig;
+    use kakemono::analysis::tables::TablesConfig;
     let paper = Paper::from_bytes(tiny_pdf()).expect("valid pdf");
     let tables = |opts: AnalyzeOptions| {
         paper

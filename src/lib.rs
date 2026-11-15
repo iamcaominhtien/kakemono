@@ -1,4 +1,4 @@
-//! paper2html: convert scientific-paper PDFs (such as those on arXiv) into
+//! kakemono: convert scientific-paper PDFs (such as those on arXiv) into
 //! clean HTML.
 //!
 //! The pipeline is: PDF access ([`backend`]) -> layout analysis and

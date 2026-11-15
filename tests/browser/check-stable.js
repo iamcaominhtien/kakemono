@@ -13,7 +13,7 @@
 //
 // usage: node tests/browser/check-stable.js file.medium.html file.friendly.html [...]
 // Uses the Playwright package if installed, else playwright-core with the
-// system Chrome (set P2H_CHROME_CHANNEL=chrome, as CI does).
+// system Chrome (set KAKEMONO_CHROME_CHANNEL=chrome, as CI does).
 let pw;
 try {
   pw = require('playwright');
@@ -22,7 +22,7 @@ try {
 }
 
 const path = require('path');
-const channel = process.env.P2H_CHROME_CHANNEL;
+const channel = process.env.KAKEMONO_CHROME_CHANNEL;
 let problems = 0;
 
 function fail(file, msg) {

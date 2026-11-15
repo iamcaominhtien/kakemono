@@ -12,7 +12,7 @@ use std::time::Duration;
 /// error page or a truncated cache entry.
 const PDF_MAGIC: &[u8] = b"%PDF";
 /// Name of the cache directory under the user's cache root.
-const CACHE_DIR_NAME: &str = "paper2html";
+const CACHE_DIR_NAME: &str = "kakemono";
 /// Give up on a download after this long: large papers take a while, but a
 /// stalled connection should not hang the program.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -82,11 +82,11 @@ pub fn save_pdf(id: &str, dest: &Path) -> Result<()> {
     std::fs::write(dest, data).with_context(|| format!("writing {}", dest.display()))
 }
 
-/// Directory of the download cache: `$PAPER2HTML_CACHE`, else
-/// `$XDG_CACHE_HOME/paper2html`, else `~/.cache/paper2html`, else a
+/// Directory of the download cache: `$KAKEMONO_CACHE`, else
+/// `$XDG_CACHE_HOME/kakemono`, else `~/.cache/kakemono`, else a
 /// directory in the system's temporary directory.
 fn cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("PAPER2HTML_CACHE") {
+    if let Some(dir) = std::env::var_os("KAKEMONO_CACHE") {
         return PathBuf::from(dir);
     }
     if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
@@ -108,7 +108,7 @@ fn download(id: &str) -> Result<Vec<u8>> {
     let agent = ureq::AgentBuilder::new()
         .try_proxy_from_env(true)
         .timeout(DOWNLOAD_TIMEOUT)
-        .user_agent(concat!("paper2html/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("kakemono/", env!("CARGO_PKG_VERSION")))
         .build();
     let resp = agent.get(&url).call().with_context(|| format!("downloading {url}"))?;
     let mut data = Vec::new();

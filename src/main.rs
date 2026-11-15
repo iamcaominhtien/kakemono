@@ -1,4 +1,4 @@
-//! The `paper2html` command line: parses the arguments and calls the
+//! The `kakemono` command line: parses the arguments and calls the
 //! library. `convert` turns a PDF into HTML (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
@@ -10,10 +10,10 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use paper2html::analysis::pipeline::Analysis;
-use paper2html::model::{Block, BlockKind, Loc};
-use paper2html::source::arxiv;
-use paper2html::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::analysis::pipeline::Analysis;
+use kakemono::model::{Block, BlockKind, Loc};
+use kakemono::source::arxiv;
+use kakemono::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -36,7 +36,7 @@ const BYTES_PER_MB: f64 = 1e6;
 /// Command-line arguments.
 #[derive(Parser)]
 #[command(
-    name = "paper2html",
+    name = "kakemono",
     version,
     about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML"
 )]
@@ -312,7 +312,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let (paper, stem) = load(&args.input)?;
     let started = Instant::now();
-    let jobs = paper2html::common::parallel::resolve_jobs(args.jobs);
+    let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
     let analysis = paper.analyze_with(AnalyzeOptions {
         tables: args.tables == TablesArg::Auto,
         jobs,
@@ -411,23 +411,23 @@ fn write_mode(
 /// # Errors
 /// When a picture cannot be opened, or a single picture cannot be read.
 fn formula(images: &[PathBuf], scores: bool) -> Result<()> {
-    let cfg = paper2html::raster::RasterConfig::default();
+    let cfg = kakemono::raster::RasterConfig::default();
     let mut out = std::io::stdout().lock();
     for path in images {
         let image = image::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         if scores {
-            let read = paper2html::raster::formula_with_confidence(&image, &cfg);
+            let read = kakemono::raster::formula_with_confidence(&image, &cfg);
             let (weakest, closest, math) = read.map_or((f32::NAN, f32::NAN, String::new()), |(node, confidence)| {
                 (
                     confidence.weakest,
                     confidence.closest,
-                    paper2html::render::math_html(&node, ""),
+                    kakemono::render::math_html(&node, ""),
                 )
             });
             writeln!(out, "{}\t{weakest:.3}\t{closest:.3}\t{math}", path.display())?;
             continue;
         }
-        let math = paper2html::raster::formula(&image, &cfg).map(|node| paper2html::render::math_html(&node, ""));
+        let math = kakemono::raster::formula(&image, &cfg).map(|node| kakemono::render::math_html(&node, ""));
         if images.len() == 1 {
             let math = math.ok_or_else(|| anyhow!("cannot read the formula in {}", path.display()))?;
             writeln!(out, "{math}")?;

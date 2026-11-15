@@ -1,5 +1,5 @@
 [package]
-name = "paper2html"
+name = "kakemono"
 version = "0.3.0"
 edition = "2024"
 description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes"
@@ -10,11 +10,11 @@ categories = ["command-line-utilities", "text-processing"]
 license = "MIT"
 
 [lib]
-name = "paper2html"
+name = "kakemono"
 path = "src/lib.rs"
 
 [[bin]]
-name = "paper2html"
+name = "kakemono"
 path = "src/main.rs"
 
 [dependencies]

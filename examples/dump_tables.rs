@@ -1,6 +1,6 @@
 //! Prints the rebuilt tables of a PDF (first rows of each), for checking
 //! table reconstruction by hand. usage: cargo run --example dump_tables -- paper.pdf
-use paper2html::Paper;
+use kakemono::Paper;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: dump_tables <file.pdf>");

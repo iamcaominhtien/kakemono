@@ -40,7 +40,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="paper2html (hard)">
+<meta name="generator" content="kakemono (hard)">
 <title>{title}</title>
 <style>
 {CSS}</style>

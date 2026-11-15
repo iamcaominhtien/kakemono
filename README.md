@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="paper2html logo" width="120" height="120">
+<img src="docs/assets/logo.svg" alt="kakemono logo" width="120" height="120">
 
-# paper2html
+# kakemono
 
 **Turn PDF papers and books into clean, readable HTML — in pure Rust, as a single executable.**
 
-[![Release](https://img.shields.io/github/v/release/iamcaominhtien/rust-pdf-parser?label=release&color=3b5bdb)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
+[![Release](https://img.shields.io/github/v/release/iamcaominhtien/rust-pdf-parser?label=release&color=d9822b)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/rust-pdf-parser/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/rust-pdf-parser/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![PDF engine](https://img.shields.io/badge/PDF_engine-hayro-orange)](https://github.com/LaurenzV/hayro)
@@ -20,11 +20,14 @@
 
 ---
 
+> *Kakemono* is a Japanese hanging scroll: a work unrolled so that it can be read at a
+> glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
+
 Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
 to feed to translation tools.
 
 ```bash
-paper2html convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
+kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
 ```
 
 ## Features
@@ -62,24 +65,24 @@ attached to every [release](https://github.com/iamcaominhtien/rust-pdf-parser/re
 cargo install --git https://github.com/iamcaominhtien/rust-pdf-parser
 ```
 
-or, in a clone, `cargo build --release`; the executable is `target/release/paper2html`.
+or, in a clone, `cargo build --release`; the executable is `target/release/kakemono`.
 
 ## Usage
 
 ```bash
-paper2html convert 1706.03762
+kakemono convert 1706.03762
 ```
 
 ```bash
-paper2html convert paper.pdf --mode medium -o paper.html
+kakemono convert paper.pdf --mode medium -o paper.html
 ```
 
 ```bash
-paper2html convert paper.pdf --all --json -o out/
+kakemono convert paper.pdf --all --json -o out/
 ```
 
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
-arXiv URL. Downloaded PDFs are cached in `~/.cache/paper2html` (`PAPER2HTML_CACHE` changes it).
+arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
 | Option | Meaning |
 | --- | --- |
@@ -95,9 +98,9 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/paper2html` (`PAPER2HTML_CACH
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
 
-Other commands: `paper2html fetch <id> -o paper.pdf` only downloads; `paper2html inspect paper.pdf`
+Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
 prints the detected structure (headings, paragraphs, figures, formulas; `<math>` marks a formula
-rebuilt as MathML); `paper2html formula picture.png` reads pictures of LaTeX formulas and prints
+rebuilt as MathML); `kakemono formula picture.png` reads pictures of LaTeX formulas and prints
 their MathML (experimental).
 
 ## JSON for translation tools
@@ -125,7 +128,7 @@ cells (`colspan`, `rowspan`) and rules.
 ## Use as a library
 
 ```rust
-use paper2html::{HtmlOptions, Mode, Paper};
+use kakemono::{HtmlOptions, Mode, Paper};
 
 let paper = Paper::from_bytes(std::fs::read("paper.pdf")?)?;
 let analysis = paper.analyze();
@@ -158,10 +161,10 @@ cargo test --release
   paragraphs broken mid-sentence, words still hyphenated, characters left in the `hard-95`
   background and formulas rebuilt as MathML. The limits are the current results: better passes,
   worse fails; tighten them after an improvement
-  (`P2H_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
+  (`KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
 - **Snapshots**: a hash of each mode's HTML and of the JSON per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
-  `P2H_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
+  `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):
