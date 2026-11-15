@@ -11,3 +11,11 @@
 # Reports made by the SonarQube workflow
 /clippy-report.json
 /lcov.info
+
+# Python binding: virtual environment, build output and caches
+/python/.venv/
+/python/target/
+/python/dist/
+__pycache__/
+*.so
+*.pyd
