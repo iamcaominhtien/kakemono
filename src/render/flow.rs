@@ -64,6 +64,61 @@ pub(crate) struct FlowCtx {
     /// (see [`cover_blocks`]), whose figures get the `cover` and
     /// `back-cover` classes: the book view sets them as pages of their own.
     pub covers: (Option<usize>, Option<usize>),
+    /// Classes of the small pictures set beside the text that follows them
+    /// (see [`side_figures`]), by block id.
+    pub sides: std::collections::HashMap<usize, &'static str>,
+}
+
+/// A picture at most this share of its page wide can stand beside text.
+const SIDE_MAX_WIDTH_RATIO: f32 = 0.4;
+/// The text beside a picture and the picture share at least this share of
+/// the height of the lower of the two.
+const SIDE_MIN_OVERLAP_RATIO: f32 = 0.5;
+/// The text beside a picture may reach this far (points) over its edge.
+const SIDE_EDGE_TOLERANCE_PT: f32 = 2.0;
+
+/// The small uncaptioned pictures that stand beside the text block after
+/// them in `blocks` (an icon left of a note, a portrait right of a
+/// biography), with the class that floats them to their side: `side-l` or
+/// `side-r`.
+pub(crate) fn side_figures(doc: &Document, blocks: &[&Block]) -> std::collections::HashMap<usize, &'static str> {
+    let mut sides = std::collections::HashMap::new();
+    for pair in blocks.windows(2) {
+        let (fig, text) = (pair[0], pair[1]);
+        let BlockKind::Figure {
+            image: Some(image),
+            label: None,
+            ..
+        } = &fig.kind
+        else {
+            continue;
+        };
+        let textual = matches!(
+            text.kind,
+            BlockKind::Paragraph { .. } | BlockKind::Note | BlockKind::Heading { .. }
+        );
+        let Some(page) = doc.pages.get(image.page) else {
+            continue;
+        };
+        if !textual
+            || fig.table.is_some()
+            || text.page != image.page
+            || image.rect.width() > SIDE_MAX_WIDTH_RATIO * page.width
+        {
+            continue;
+        }
+        let (rect, other) = (image.rect, text.bbox);
+        let overlap = rect.y1.min(other.y1) - rect.y0.max(other.y0);
+        if overlap < SIDE_MIN_OVERLAP_RATIO * rect.height().min(other.height()) {
+            continue;
+        }
+        if other.x0 >= rect.x1 - SIDE_EDGE_TOLERANCE_PT {
+            sides.insert(fig.id, "side-l");
+        } else if other.x1 <= rect.x0 + SIDE_EDGE_TOLERANCE_PT {
+            sides.insert(fig.id, "side-r");
+        }
+    }
+    sides
 }
 
 /// The ids of the blocks that are the front and the back cover of a book:
@@ -154,6 +209,20 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
                 images,
                 ctx,
             ));
+            block_idx += 2;
+            continue;
+        }
+        // A small picture and the text beside it share a box, so that the
+        // next pair starts below both.
+        if group == Group::None
+            && ctx.sides.contains_key(&block.id)
+            && let Some(next) = blocks.get(block_idx + 1)
+            && group_of(next, group) == Group::None
+        {
+            out.push_str("<div class=\"beside\">");
+            block_html(block, images, ctx, &mut out);
+            block_html(next, images, ctx, &mut out);
+            out.push_str("</div>\n");
             block_idx += 2;
             continue;
         }
@@ -437,7 +506,11 @@ fn figure_html(
     } else if ctx.covers.1 == Some(block.id) {
         " back-cover"
     } else {
-        ""
+        match ctx.sides.get(&block.id) {
+            Some(&"side-l") => " side-l",
+            Some(_) => " side-r",
+            None => "",
+        }
     };
     // A float whose text is all code is a listing.
     if ctx.offprint

@@ -151,6 +151,7 @@ fn page_html(doc: &Document, page_idx: usize, page: &PageInfo, trim: &PageTrim, 
         unit: WidthUnit::Cqw { page_width: width },
         offprint: false,
         covers: (None, None),
+        sides: side_figures(doc, &blocks),
     };
     let mut inner = String::new();
 
