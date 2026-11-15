@@ -1,6 +1,6 @@
 [package]
 name = "kakemono"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes, or Word documents"
 repository = "https://github.com/iamcaominhtien/kakemono"
