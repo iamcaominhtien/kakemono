@@ -99,16 +99,21 @@
   // A code listing that does not fit what is left of a page, and would
   // leave most of it empty by moving on, runs on to the next page, as in a
   // printed book (its long lines wrap).
-  function flowCode(art){
-    [].forEach.call(art.querySelectorAll('figure.code.bk-flow'),function(f){f.classList.remove('bk-flow');});
+  // One the columns cut anyway (it follows a heading it keeps to) flows too,
+  // rather than leave its title bar alone at the foot of a page.
+  function flowCode(art,fresh){
+    if(fresh)[].forEach.call(art.querySelectorAll('figure.code.bk-flow'),function(f){f.classList.remove('bk-flow');});
     var top=art.getBoundingClientRect().top,th=art.clientHeight,moved=[];
-    [].forEach.call(art.querySelectorAll('figure.code'),function(f){
-      var prev=f.previousElementSibling,fr=f.getClientRects(),pr=prev&&prev.getClientRects();
-      if(!fr.length||!pr||!pr.length||fr[0].top-top>4)return;
+    [].forEach.call(art.querySelectorAll('figure.code:not(.bk-flow)'),function(f){
+      var prev=f.previousElementSibling,fr=f.getClientRects(),pr=prev&&prev.getClientRects(),pre=f.querySelector('pre');
+      if(!fr.length)return;
+      if(pre&&colOf(pre)>colOf(f)){moved.push(f);return;}
+      if(!pr||!pr.length||fr[0].top-top>4)return;
       var last=pr[pr.length-1];
       if(colOf(f)===colOf(prev)+1&&(last.bottom-top)/th<0.6)moved.push(f);
     });
     moved.forEach(function(f){f.classList.add('bk-flow');});
+    return moved.length>0;
   }
   function keepHeads(art){
     [].forEach.call(art.querySelectorAll('[data-bkb]'),function(h){h.removeAttribute('data-bkb');h.style.breakBefore='';});
@@ -190,7 +195,7 @@
     coverPads(art);
     // A page cannot scroll sideways: wide tables shrink further than in the scroll view.
     if(P.fitTables)P.fitTables(art,0.55);
-    fitFloats(art);fillGaps(art);keepFloats(art);flowCode(art);keepHeads(art);
+    fitFloats(art);fillGaps(art);keepFloats(art);flowCode(art,true);keepHeads(art);for(var r=0;r<2&&flowCode(art,false);r++)keepHeads(art);
     if(P.cues){P.cues(art);}
     backPad(art);
     if(observer){observer.takeRecords();}

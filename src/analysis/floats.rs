@@ -364,6 +364,11 @@ pub struct FloatsConfig {
     pub label_centred_overlap_ratio: f32,
     /// A label beside the drawing has fewer than this many characters.
     pub side_label_max_chars: usize,
+    /// A tick label (a number at the end of an axis, which may stick out
+    /// over the drawing's edge) has at most this many characters.
+    pub tick_label_max_chars: usize,
+    /// ... and sits at most this far (points) from the drawing.
+    pub tick_label_max_gap_pt: f32,
     /// A bold line is the drawing's title, not a heading, when its centre
     /// is within this fraction of the drawing's width of the drawing's
     /// centre...
@@ -523,6 +528,8 @@ impl Default for FloatsConfig {
             label_overlap_ratio: 0.8,
             label_centred_overlap_ratio: 0.7,
             side_label_max_chars: 30,
+            tick_label_max_chars: 8,
+            tick_label_max_gap_pt: 4.0,
             title_center_tol_ratio: 0.1,
             title_min_width_pt: 40.0,
             title_min_indent_pt: 15.0,
@@ -2010,6 +2017,7 @@ fn settle_region(
     if !float.table_like || float.kind == FloatKind::Figure {
         region = absorb_side_labels(ctx, absorbed, float_idx, region, text_left);
         region = absorb_rotated_labels(ctx, region);
+        region = absorb_edge_ticks(ctx, absorbed, float_idx, region);
     }
     if let Some(cap_idx) = float.cap {
         let caption = &ctx.captions[cap_idx];
@@ -2166,6 +2174,53 @@ fn stacked_label(region: &Rect, line: &Line, cfg: &FloatsConfig) -> bool {
             || (line.bbox.cx() > region.x0
                 && line.bbox.cx() < region.x1
                 && line.bbox.x_overlap(region) >= cfg.label_centred_overlap_ratio * line.bbox.width()))
+}
+
+/// Absorbs the tick labels at the ends of the drawing's axes, which stick
+/// out over its edge ("200" at the top of the y axis, "130" at the end of
+/// the x axis): the labels above, below or beside the drawing are only
+/// taken when they lie mostly against it. One pass against the settled
+/// region, so that they do not draw in more text.
+fn absorb_edge_ticks(ctx: &PageContext, absorbed: &mut [Option<usize>], float_idx: usize, region: Rect) -> Rect {
+    let cfg = ctx.cfg;
+    let crosses = |lo: f32, hi: f32, edge: f32| lo < edge && edge < hi;
+    let near = |gap: f32| (cfg.label_min_gap_pt..=cfg.tick_label_max_gap_pt).contains(&gap);
+    let mut grown = region;
+    for (i, line) in ctx.page.lines.iter().enumerate() {
+        if ctx.is_caption_line[i] || absorbed[i].is_some() || !is_tick_label(line, cfg) {
+            continue;
+        }
+        let bbox = &line.bbox;
+        let hgap = (region.x0 - bbox.x1).max(bbox.x0 - region.x1);
+        let vgap = (region.y0 - bbox.y1).max(bbox.y0 - region.y1);
+        let beside = near(hgap)
+            && bbox.cy() > region.y0
+            && bbox.cy() < region.y1
+            && (crosses(bbox.y0, bbox.y1, region.y0) || crosses(bbox.y0, bbox.y1, region.y1));
+        let stacked = near(vgap)
+            && bbox.cx() > region.x0
+            && bbox.cx() < region.x1
+            && (crosses(bbox.x0, bbox.x1, region.x0) || crosses(bbox.x0, bbox.x1, region.x1));
+        // Half inside: over the corner of the plot area.
+        let straddles = bbox.intersects(&region) && !region.contains(bbox);
+        if beside || stacked || straddles {
+            absorbed[i] = Some(float_idx);
+            grown = grown.union(bbox);
+        }
+    }
+    grown
+}
+
+/// Whether `line` is a tick label of an axis: a short number ("130",
+/// "0.025", "-2", "40%").
+fn is_tick_label(line: &Line, cfg: &FloatsConfig) -> bool {
+    let text = line.text();
+    let text = text.trim();
+    text.chars().count() <= cfg.tick_label_max_chars
+        && text.chars().any(|ch| ch.is_ascii_digit())
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ".,-+%$\u{2212}".contains(ch))
 }
 
 /// Whether `line` is a short label right left or right of `region`, mostly
