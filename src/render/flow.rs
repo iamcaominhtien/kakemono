@@ -67,6 +67,9 @@ pub(crate) struct FlowCtx {
     /// Classes of the small pictures set beside the text that follows them
     /// (see [`side_figures`]), by block id.
     pub sides: std::collections::HashMap<usize, &'static str>,
+    /// Write the formulas inside running text as MathML (see
+    /// [`inline_math`](super::inline_math)); otherwise as styled text.
+    pub math: bool,
 }
 
 /// A picture at most this share of its page wide can stand beside text.
@@ -358,7 +361,10 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
     let id = id_attr(block);
     match &block.kind {
         BlockKind::Title | BlockKind::Authors => {}
-        BlockKind::Note => out.push_str(&format!("<p class=\"note\">{}</p>\n", spans_html(&block.spans))),
+        BlockKind::Note => out.push_str(&format!(
+            "<p class=\"note\">{}</p>\n",
+            text_html(&block.spans, ctx.math)
+        )),
         BlockKind::Heading { level } => {
             let tag = heading_tag(*level);
             let cls = if is_abstract_text(&block.spans) {
@@ -370,7 +376,7 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 out.push_str(&format!(
                     "<{tag}{id} class=\"chapter\"><span class=\"chapno\">{}</span> {}</{tag}>\n",
                     esc(&label),
-                    spans_html(&rest)
+                    text_html(&rest, ctx.math)
                 ));
                 return;
             }
@@ -378,9 +384,12 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 Some((number, rest)) => out.push_str(&format!(
                     "<{tag}{id} class=\"hang\"><span class=\"secno\">{}</span>{}</{tag}>\n",
                     esc(&number),
-                    spans_html(&rest)
+                    text_html(&rest, ctx.math)
                 )),
-                None => out.push_str(&format!("<{tag}{id}{cls}>{}</{tag}>\n", spans_html(&block.spans))),
+                None => out.push_str(&format!(
+                    "<{tag}{id}{cls}>{}</{tag}>\n",
+                    text_html(&block.spans, ctx.math)
+                )),
             }
         }
         BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
@@ -389,22 +398,23 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 spans_html(&block.spans)
             ));
         }
-        BlockKind::Paragraph { .. } => out.push_str(&format!("<p{id}>{}</p>\n", spans_html(&block.spans))),
+        BlockKind::Paragraph { .. } => out.push_str(&format!("<p{id}>{}</p>\n", text_html(&block.spans, ctx.math))),
         BlockKind::ListItem { marker } => {
             let cls = if marker.is_some() { " class=\"labeled\"" } else { "" };
             let body = match marker.as_deref().filter(|_| ctx.offprint) {
-                Some(marker) => labelled_html(&block.spans, marker, "lbl"),
-                None => spans_html(&block.spans),
+                Some(marker) => labelled_html(&block.spans, marker, "lbl", ctx.math),
+                None => text_html(&block.spans, ctx.math),
             };
             out.push_str(&format!("<li{id}{cls}>{body}</li>\n"));
         }
-        BlockKind::ListContinuation => {
-            out.push_str(&format!("<li{id} class=\"more\">{}</li>\n", spans_html(&block.spans)))
-        }
+        BlockKind::ListContinuation => out.push_str(&format!(
+            "<li{id} class=\"more\">{}</li>\n",
+            text_html(&block.spans, ctx.math)
+        )),
         BlockKind::Reference { label } => {
             let body = match label.as_deref().filter(|_| ctx.offprint) {
-                Some(label) => reference_html(&block.spans, label),
-                None => spans_html(&block.spans),
+                Some(label) => reference_html(&block.spans, label, ctx.math),
+                None => text_html(&block.spans, ctx.math),
             };
             out.push_str(&format!("<li{id}>{body}</li>\n"));
         }
@@ -455,7 +465,7 @@ fn footnote_html(block: &Block, marker: &str, id: &str, ctx: &FlowCtx) -> String
     };
     format!(
         "<aside class=\"footnote\"{id} role=\"note\">{mark}{}</aside>\n",
-        spans_html(&block.spans)
+        text_html(&block.spans, ctx.math)
     )
 }
 
@@ -518,7 +528,7 @@ fn figure_html(
         && block.table.is_none()
         && let Some(lines) = code::float_listing_lines(block)
     {
-        return code::listing_html(&lines, &caption_html_bare(&block.spans), id);
+        return code::listing_html(&lines, &caption_html_bare(&block.spans, ctx.math), id);
     }
     let alt = esc(&figure_alt(block, label));
     // An algorithm whose text reads as pseudocode is rebuilt as text.
@@ -554,16 +564,18 @@ fn figure_html(
     // A reconstructed table replaces the picture of the table.
     let img = match (&block.table, algo) {
         (_, Some(algo)) => algo,
-        (Some(table), _) if ctx.offprint => format!("<div class=\"tbl-wrap\">{}</div>", table_html_numeric(table)),
-        (Some(table), _) => format!("<div class=\"tbl-wrap\">{}</div>", table_html(table)),
+        (Some(table), _) if ctx.offprint => {
+            format!("<div class=\"tbl-wrap\">{}</div>", table_html_numeric(table, ctx.math))
+        }
+        (Some(table), _) => format!("<div class=\"tbl-wrap\">{}</div>", table_html(table, ctx.math)),
         (None, None) => img,
     };
     let cap = if block.spans.is_empty() {
         String::new()
     } else if ctx.offprint {
-        format!("<figcaption>{}</figcaption>", caption_html_bare(&block.spans))
+        format!("<figcaption>{}</figcaption>", caption_html_bare(&block.spans, ctx.math))
     } else {
-        format!("<figcaption>{}</figcaption>", caption_html(&block.spans))
+        format!("<figcaption>{}</figcaption>", caption_html(&block.spans, ctx.math))
     };
     // Keep the caption on the side it had in the paper.
     let caption_first = match (image, block.lines.first()) {
@@ -605,21 +617,26 @@ fn chapter_label(spans: &[Span]) -> Option<(String, Vec<Span>)> {
 
 /// A list item whose text starts with its `marker` ("(1)", "a."): the
 /// marker in a `<span class="{class}">`, then the rest of the text.
-/// Without the marker at the start, the plain text.
-fn labelled_html(spans: &[Span], marker: &str, class: &str) -> String {
+/// Without the marker at the start, the plain text. Inline formulas are
+/// MathML when `math`.
+fn labelled_html(spans: &[Span], marker: &str, class: &str, math: bool) -> String {
     match spans.first() {
         Some(first) if !marker.is_empty() && first.text.starts_with(marker) => {
             let mut rest = spans.to_vec();
             rest[0].text = first.text[marker.len()..].trim_start().to_string();
-            format!("<span class=\"{class}\">{}</span>{}", esc(marker), spans_html(&rest))
+            format!(
+                "<span class=\"{class}\">{}</span>{}",
+                esc(marker),
+                text_html(&rest, math)
+            )
         }
-        _ => spans_html(spans),
+        _ => text_html(spans, math),
     }
 }
 
 /// A bibliography entry with its label ("[12]" or "12.") set apart in a
-/// `<span class="rn">`.
-fn reference_html(spans: &[Span], label: &str) -> String {
+/// `<span class="rn">`. Inline formulas are MathML when `math`.
+fn reference_html(spans: &[Span], label: &str, math: bool) -> String {
     let Some(first) = spans.first() else {
         return String::new();
     };
@@ -628,8 +645,12 @@ fn reference_html(spans: &[Span], label: &str) -> String {
         if let Some(rest) = text.strip_prefix(printed.as_str()) {
             let mut rest_spans = spans.to_vec();
             rest_spans[0].text = rest.trim_start().to_string();
-            return format!("<span class=\"rn\">{}</span>{}", esc(&printed), spans_html(&rest_spans));
+            return format!(
+                "<span class=\"rn\">{}</span>{}",
+                esc(&printed),
+                text_html(&rest_spans, math)
+            );
         }
     }
-    spans_html(spans)
+    text_html(spans, math)
 }

@@ -9,6 +9,7 @@ mod flow;
 mod friendly;
 mod hard;
 mod hard95;
+mod inline_math;
 mod markdown;
 mod mathml;
 mod medium;

@@ -94,6 +94,21 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
     out
 }
 
+/// Styled spans as HTML, like [`spans_html`], with the formulas inside the
+/// text (see [`inline_math`](super::inline_math)) as MathML when `math`.
+pub(crate) fn text_html(spans: &[Span], math: bool) -> String {
+    if !math || !super::inline_math::has_math(spans) {
+        return spans_html(spans);
+    }
+    super::inline_math::split(spans)
+        .into_iter()
+        .map(|piece| match piece {
+            super::inline_math::Piece::Text(spans) => spans_html(&spans),
+            super::inline_math::Piece::Math(node, alt) => super::mathml::inline_math_html(&node, &alt),
+        })
+        .collect()
+}
+
 /// Whether a link text is a web or mail address rather than words.
 fn looks_like_address(text: &str) -> bool {
     let text = text.trim();
@@ -110,23 +125,29 @@ pub(crate) fn plain(spans: &[Span]) -> String {
         .to_string()
 }
 
-/// Caption HTML with the label ("Figure 3:") emphasised.
-pub(crate) fn caption_html(spans: &[Span]) -> String {
+/// Caption HTML with the label ("Figure 3:") emphasised, and inline
+/// formulas as MathML when `math`.
+pub(crate) fn caption_html(spans: &[Span], math: bool) -> String {
     if let Some(first) = spans.first()
         && let Some(label_match) = CAP_LABEL.find(&first.text)
     {
         let mut rest = spans.to_vec();
         let label = first.text[..label_match.end()].trim_end().to_string();
         rest[0].text = first.text[label.len()..].to_string();
-        return format!("<span class=\"cap-label\">{}</span>{}", esc(&label), spans_html(&rest));
+        return format!(
+            "<span class=\"cap-label\">{}</span>{}",
+            esc(&label),
+            text_html(&rest, math)
+        );
     }
-    spans_html(spans)
+    text_html(spans, math)
 }
 
 /// Caption HTML with the label ("Figure 3") set apart and its trailing
 /// punctuation (":", ".", "|", a dash) dropped: the friendly mode marks
-/// the label by colour and weight instead.
-pub(crate) fn caption_html_bare(spans: &[Span]) -> String {
+/// the label by colour and weight instead. Inline formulas are MathML when
+/// `math`.
+pub(crate) fn caption_html_bare(spans: &[Span], math: bool) -> String {
     if let Some(first) = spans.first()
         && let Some(label_match) = CAP_LABEL.find(&first.text)
     {
@@ -136,9 +157,13 @@ pub(crate) fn caption_html_bare(spans: &[Span]) -> String {
             .trim_end_matches([':', '.', '|', '—', '–', '-'])
             .trim_end();
         rest[0].text = first.text[label_match.end()..].trim_start().to_string();
-        return format!("<span class=\"cap-label\">{}</span>{}", esc(label), spans_html(&rest));
+        return format!(
+            "<span class=\"cap-label\">{}</span>{}",
+            esc(label),
+            text_html(&rest, math)
+        );
     }
-    spans_html(spans)
+    text_html(spans, math)
 }
 
 /// The CSS class of a float of the given kind.

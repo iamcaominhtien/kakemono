@@ -1,9 +1,11 @@
 //! Styled text runs ([`Span`]) as inline Markdown: emphasis, code, links,
-//! and `<sup>`/`<sub>` for raised and lowered text (Markdown has no syntax
-//! of its own for them).
+//! `<sup>`/`<sub>` for raised and lowered text (Markdown has no syntax of
+//! its own for them), and the formulas inside the text as LaTeX (`$…$`).
 
+use super::latex::latex;
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::esc;
+use crate::render::inline_math::{Piece, has_math, split};
 use std::collections::HashSet;
 
 /// Characters escaped with a backslash anywhere in running text: those that
@@ -23,13 +25,50 @@ pub(crate) struct Inline<'a> {
     /// The anchors of the document that are written (as `<a id>`): a link
     /// to any other anchor stays text.
     pub(crate) anchors: &'a HashSet<String>,
+    /// Write the formulas inside the text as LaTeX (see
+    /// [`inline_math`](crate::render::inline_math)).
+    pub(crate) math: bool,
 }
 
 impl Inline<'_> {
-    /// The spans as one line of inline Markdown. Neighbouring spans of the
-    /// same style and link are joined first, so that emphasis is not
-    /// closed and opened again inside a word.
+    /// The spans as one line of inline Markdown, with the formulas inside
+    /// them as `$…$` when [`Inline::math`].
     pub(crate) fn spans(&self, spans: &[Span]) -> String {
+        self.write(spans, false)
+    }
+
+    /// The spans of a cell of a pipe table: as [`Inline::spans`], with the
+    /// bars of the formulas written as commands, since a bar ends the cell.
+    pub(crate) fn cell(&self, spans: &[Span]) -> String {
+        self.write(spans, true)
+    }
+
+    /// Writes spans, with formulas when wanted; `in_table` writes the bars of
+    /// formulas as `\vert`.
+    fn write(&self, spans: &[Span], in_table: bool) -> String {
+        if !self.math || !has_math(spans) {
+            return self.text(spans).trim().to_string();
+        }
+        let mut out = String::new();
+        for piece in split(spans) {
+            match piece {
+                Piece::Text(spans) => out.push_str(&self.text(&spans)),
+                Piece::Math(node, _) => {
+                    let mut tex = latex(&node);
+                    if in_table {
+                        tex = tex.replace("\\|", "\\Vert ").replace('|', "\\vert ");
+                    }
+                    out.push_str(&format!("${}$", tex.trim()));
+                }
+            }
+        }
+        out.trim().to_string()
+    }
+
+    /// Text spans as inline Markdown (not trimmed). Neighbouring spans of
+    /// the same style and link are joined first, so that emphasis is not
+    /// closed and opened again inside a word.
+    fn text(&self, spans: &[Span]) -> String {
         let mut out = String::new();
         for (text, style, href) in merge(spans) {
             let body = styled(&text, style);
@@ -43,7 +82,7 @@ impl Inline<'_> {
                 _ => out.push_str(&body),
             }
         }
-        out.trim().to_string()
+        out
     }
 
     /// Whether `href` is written as a link: an anchor of the document that
@@ -84,26 +123,11 @@ fn styled(text: &str, style: u8) -> String {
     let trail = &text[text.trim_end_matches(' ').len()..];
     let mut body = if style & MONO != 0 {
         code_span(inner)
+    } else if style & (BOLD | ITALIC) != 0 {
+        emphasis(inner, style)
     } else {
         escape(inner)
     };
-    // CommonMark opens or closes `*` next to punctuation only when a space
-    // is on the other side ("*x:*A" stays as it is): such text gets HTML tags.
-    let ends_alphanumeric = inner.starts_with(char::is_alphanumeric) && inner.ends_with(char::is_alphanumeric);
-    if style & ITALIC != 0 {
-        body = if ends_alphanumeric {
-            format!("*{body}*")
-        } else {
-            format!("<em>{body}</em>")
-        };
-    }
-    if style & BOLD != 0 {
-        body = if ends_alphanumeric {
-            format!("**{body}**")
-        } else {
-            format!("<strong>{body}</strong>")
-        };
-    }
     if style & SUP != 0 {
         body = format!("<sup>{body}</sup>");
     }
@@ -111,6 +135,28 @@ fn styled(text: &str, style: u8) -> String {
         body = format!("<sub>{body}</sub>");
     }
     format!("{lead}{body}{trail}")
+}
+
+/// Bold or italic text: the punctuation at its ends stays outside the
+/// marks, where CommonMark expects it ("*Bottom row*:", not "*Bottom
+/// row:*" which does not close before a letter); punctuation alone is not
+/// emphasised.
+fn emphasis(text: &str, style: u8) -> String {
+    let core_start = text.find(char::is_alphanumeric);
+    let core_end = text
+        .rfind(char::is_alphanumeric)
+        .map(|idx| idx + text[idx..].chars().next().map_or(1, char::len_utf8));
+    let (Some(start), Some(end)) = (core_start, core_end) else {
+        return escape(text);
+    };
+    let mut core = escape(&text[start..end]);
+    if style & ITALIC != 0 {
+        core = format!("*{core}*");
+    }
+    if style & BOLD != 0 {
+        core = format!("**{core}**");
+    }
+    format!("{}{core}{}", escape(&text[..start]), escape(&text[end..]))
 }
 
 /// `text` as inline code, between enough backticks that none inside closes
@@ -189,7 +235,7 @@ pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
                 body = format!("<{tag}>{body}</{tag}>");
             }
         }
-        let inline = Inline { anchors };
+        let inline = Inline { anchors, math: false };
         let body = match href.filter(|href| inline.is_link(href)) {
             Some(href) => format!("<a href=\"{}\">{body}</a>", esc(&href)),
             None => body,
@@ -213,17 +259,23 @@ mod tests {
     #[test]
     fn emphasis_keeps_spaces_outside() {
         let anchors = HashSet::new();
-        let inline = Inline { anchors: &anchors };
+        let inline = Inline {
+            anchors: &anchors,
+            math: false,
+        };
         let spans = [span("a ", 0), span("bold ", BOLD), span("x_1 * y", 0)];
         assert_eq!(inline.spans(&spans), "a **bold** x\\_1 \\* y");
         let spans = [span("Bottom row:", ITALIC), span("A", 0)];
-        assert_eq!(inline.spans(&spans), "<em>Bottom row:</em>A");
+        assert_eq!(inline.spans(&spans), "*Bottom row*:A");
     }
 
     #[test]
     fn links_only_to_known_anchors_and_web() {
         let anchors: HashSet<String> = ["ref-1".to_string()].into();
-        let inline = Inline { anchors: &anchors };
+        let inline = Inline {
+            anchors: &anchors,
+            math: false,
+        };
         let mut known = span("[1]", 0);
         known.href = Some("#ref-1".into());
         let mut unknown = span(" [2]", 0);

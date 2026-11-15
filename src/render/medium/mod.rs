@@ -152,6 +152,8 @@ fn page_html(doc: &Document, page_idx: usize, page: &PageInfo, trim: &PageTrim, 
         offprint: false,
         covers: (None, None),
         sides: side_figures(doc, &blocks),
+
+        math: images.opts.equations == Equations::MathMl,
     };
     let mut inner = String::new();
 

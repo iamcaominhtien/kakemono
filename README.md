@@ -40,7 +40,7 @@ kakemono convert 1706.03762 -o attention.md     # Markdown, pictures in attentio
 | --- | --- |
 | 🦀 **Pure Rust** | One executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use [hayro](https://github.com/LaurenzV/hayro). |
 | 📖 **Continuous text** | Lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined across columns and pages, running heads and page numbers removed, footnotes set apart. |
-| 🧱 **Real structure** | Tables rebuilt as `<table>`, display formulas as MathML, code listings kept line by line, lists, headings and cross-links. |
+| 🧱 **Real structure** | Tables rebuilt as `<table>`, formulas (displayed and inside the text) as MathML, code listings kept line by line, lists, headings and cross-links. |
 | 🖼️ **Sharp images** | Figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG. |
 | 📝 **Word documents** | `.docx` with Word styles, Word tables and editable Word equations, from the same analysis. |
 | ✍️ **Markdown** | `.md` with pipe tables, LaTeX formulas (`$$`) and the pictures in a folder of their own. |
@@ -69,7 +69,8 @@ HTML. It is built from the same analysis as the HTML modes, as one flowing colum
   contents work), lists, footnotes, code and references get Word styles;
 - rebuilt tables become Word tables, with merged cells and the paper's rules;
 - formulas whose structure is clear become Word equations (Office Math, editable in Word), the
-  others pictures; numbered formulas keep their number at the right margin;
+  others pictures; numbered formulas keep their number at the right margin; formulas inside the
+  text (`fₜ(θₜ)`, `β₁ = 0.9`) are equations too;
 - figures are pictures of their area of the page, with their captions; citations and references to
   figures, tables and sections are links within the document.
 
@@ -87,7 +88,7 @@ analysis, readable on GitHub, in Obsidian, Jupyter, Pandoc, or by an LLM:
   blocks) get their Markdown syntax; bold, italic, code, links and `<sup>`/`<sub>` are kept;
 - rebuilt tables become pipe tables, or HTML tables when cells span rows or columns;
 - formulas whose structure is clear become LaTeX between `$$` (with `\tag{n}` for their number),
-  the others pictures;
+  the others pictures; formulas inside the text become `$…$`;
 - figures are pictures, written to `<name>_assets/` next to the file (`--image-dir images` for
   `images/`); `--images inline` embeds them as data URIs instead, for a single file;
 - citations and references to figures, tables and sections are links within the document.
@@ -146,7 +147,7 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML and Word |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
-| `--equations <mathml\|image>` | Display formulas as MathML (Word equations in `.docx`) where the structure is clear (default), or pictures |
+| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
@@ -225,6 +226,8 @@ The options are those of the command line (`tables`, `equations`, `page_image`, 
   `friendly`) or text placed by position (`hard-95`).
 - Formulas with `\underbrace`, a drawing, or symbols the PDF gives no Unicode code for stay
   pictures; a character with no code at all shows as `�` in `medium`/`friendly`.
+- Formulas inside the text are found from their fonts and scripts: a fraction or a root set on
+  several levels inside a line (`β₂/√β₁` stacked) is not rebuilt, and its pieces read as scripts.
 - `hard-95` uses Latin Modern for TeX papers and the reader's fonts otherwise, so letter shapes may
   differ slightly; positions and line widths match.
 - Author–year citations are not linked yet; scanned and encrypted PDFs are not supported.

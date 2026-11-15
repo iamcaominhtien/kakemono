@@ -75,15 +75,16 @@ pub(crate) fn table_walk(table: &Table, mut emit: impl FnMut(usize, usize, Optio
     }
 }
 
-/// A reconstructed table as an HTML `<table>`.
-pub(crate) fn table_html(table: &Table) -> String {
-    write_table(table, &[])
+/// A reconstructed table as an HTML `<table>`, with inline formulas as
+/// MathML when `math`.
+pub(crate) fn table_html(table: &Table, math: bool) -> String {
+    write_table(table, &[], math)
 }
 
 /// A reconstructed table as an HTML `<table>`, with the `num` class on the
 /// cells of numeric columns (see [`numeric_columns`]) so they align right.
-pub(crate) fn table_html_numeric(table: &Table) -> String {
-    write_table(table, &numeric_columns(table))
+pub(crate) fn table_html_numeric(table: &Table, math: bool) -> String {
+    write_table(table, &numeric_columns(table), math)
 }
 
 /// For each column, whether all its non-empty body cells hold a number
@@ -112,8 +113,8 @@ fn numeric_columns(table: &Table) -> Vec<bool> {
 }
 
 /// Writes a table; `numeric` tells which columns get the `num` class (may
-/// be empty: none).
-fn write_table(table: &Table, numeric: &[bool]) -> String {
+/// be empty: none); inline formulas are MathML when `math`.
+fn write_table(table: &Table, numeric: &[bool], math: bool) -> String {
     let mut out = String::from("<table class=\"tbl\">");
     let mut open_row: Option<usize> = None;
     table_walk(table, |row_idx, col, cell| {
@@ -129,7 +130,7 @@ fn write_table(table: &Table, numeric: &[bool]) -> String {
             )),
             Some(cell) => {
                 let num = cell.colspan == 1 && numeric.get(cell.col).copied().unwrap_or(false);
-                out.push_str(&cell_html(table, row_idx, cell, tag, num));
+                out.push_str(&cell_html(table, row_idx, cell, tag, num, math));
             }
         }
     });
@@ -173,7 +174,7 @@ fn open_table_row(table: &Table, open_row: Option<usize>, row_idx: usize, out: &
 
 /// A non-empty cell of row `row_idx` as a `tag` (`th` or `td`) element, with
 /// its alignment, wrapping and rule classes (and `num` when `num`).
-fn cell_html(table: &Table, row_idx: usize, cell: &TableCell, tag: &str, num: bool) -> String {
+fn cell_html(table: &Table, row_idx: usize, cell: &TableCell, tag: &str, num: bool, math: bool) -> String {
     let align = if cell.colspan > 1 {
         "c"
     } else {
@@ -187,6 +188,6 @@ fn cell_html(table: &Table, row_idx: usize, cell: &TableCell, tag: &str, num: bo
         if short { " nw" } else { "" },
         if cell.rowspan > 1 { " mid" } else { "" },
         table_rule_classes(table, row_idx, cell.col, cell.colspan, cell.rowspan),
-        spans_html(&cell.spans)
+        text_html(&cell.spans, math)
     )
 }

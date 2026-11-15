@@ -55,6 +55,14 @@ pub fn math_html(node: &MathNode, alt: &str) -> String {
     out
 }
 
+/// The `<math>` element of a formula inside running text.
+pub(crate) fn inline_math_html(node: &MathNode, alt: &str) -> String {
+    let mut out = format!("<math class=\"eq-math im\" alttext=\"{}\">", esc(alt));
+    write_node(node, &mut out);
+    out.push_str("</math>");
+    out
+}
+
 /// Writes `node` as exactly one MathML element.
 fn write_node(node: &MathNode, out: &mut String) {
     match node {

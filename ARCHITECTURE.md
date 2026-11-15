@@ -47,6 +47,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
 | `render/` | HTML output: a `Renderer` for each mode, the `assets` image store, shared HTML parts |
 | `render/docx/` | Word output: `body` (blocks → `word/document.xml`), `omml` (`MathNode` → Office Math), `table` (Word tables), `parts` (styles, relationships, page), `zip` (a minimal ZIP writer). Pictures are placeholders drawn afterwards on several threads, as in `assets`; `to_docx_with_images` also returns them as files |
+| `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math) and Markdown (`$…$`) |
 | `render/markdown/` | Markdown output: `inline` (spans → emphasis, code, links; escaping), `latex` (`MathNode` → LaTeX for `$$`), tables as pipe or HTML tables. Pictures go through the `assets` store, as files or data URIs |
 | `python/` | The Python package (separate crate, built with maturin): `src/lib.rs` binds `Paper` with PyO3 and releases the GIL; `kakemono/__init__.py` adds paths and arXiv ids |
 | `raster/` | Formulas from pictures (`kakemono formula`): pieces of ink recognised against the TeX fonts (`tex`, `templates`, `shape`, `recognize`), then rebuilt by `analysis::math` |

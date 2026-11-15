@@ -7,7 +7,7 @@
 //! folder next to the file (or embedded as data URIs).
 
 mod inline;
-mod latex;
+pub(super) mod latex;
 
 use super::{
     CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, code, code_run, doc_title, figure_alt, float_class,
@@ -89,7 +89,10 @@ pub fn render_markdown(analysis: &Analysis, pdf: &PdfFile, opts: &MarkdownOption
     let anchors = linked_anchors(doc);
     let mut writer = Writer {
         opts,
-        inline: Inline { anchors: &anchors },
+        inline: Inline {
+            anchors: &anchors,
+            math: opts.equations == Equations::MathMl,
+        },
         images: &mut images,
         out: String::new(),
         list_indent: 0,
@@ -477,7 +480,7 @@ impl Writer<'_, '_> {
         for (row_idx, row) in table.rows.iter().enumerate() {
             let mut cells = vec![String::new(); table.n_cols];
             for cell in row.iter().filter(|cell| cell.col < table.n_cols) {
-                cells[cell.col] = self.inline.spans(&cell.spans);
+                cells[cell.col] = self.inline.cell(&cell.spans);
             }
             lines.push(format!("| {} |", cells.join(" | ")));
             if row_idx == 0 {
