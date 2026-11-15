@@ -647,3 +647,85 @@ fn contents_page_numbers_in_a_column_are_not_line_numbers() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A caption in the margin at `y`: its bold label, then its lines of text
+/// (the first one after the label).
+fn margin_caption(y: i32, label: &str, lines: &[&str]) -> String {
+    let mut content = format!("BT /F2 7 Tf 50 {y} Td ({label}) Tj /F1 7 Tf ( {}) Tj ET\n", lines[0]);
+    for (row, text) in lines.iter().enumerate().skip(1) {
+        let y = y - 8 * row as i32;
+        content.push_str(&format!("BT /F1 7 Tf 50 {y} Td ({text}) Tj ET\n"));
+    }
+    content
+}
+
+/// A book page with figures and their captions in the margin: two small
+/// figures in the margin, each with its caption above it, and a plot in the
+/// text column with its caption beside it, its top level with the plot's
+/// axis label rather than with the plot's frame.
+fn margin_figures_page() -> String {
+    let mut content = String::new();
+    for row in 0..12 {
+        let y = 700 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Line {row} of the running text that fills the wide column of this page) Tj ET\n"
+        ));
+    }
+    content.push_str(&margin_caption(
+        705,
+        "Figure 1.1",
+        &["A margin", "figure set above it."],
+    ));
+    content.push_str("0.4 0.7 0.4 rg 60 630 60 55 re f 0 g\n");
+    content.push_str(&margin_caption(615, "Figure 1.2", &["Another", "margin figure."]));
+    content.push_str("1 0.4 0.4 rg 60 540 60 55 re f 0 g\n");
+    // The plot: its frame, a curve, and an axis label above the frame.
+    content.push_str("1 w 250 300 m 450 300 l S 250 300 m 250 420 l S 260 310 m 440 410 l S\n");
+    content.push_str("BT /F1 6 Tf 240 424 Td (2.5) Tj ET\n");
+    content.push_str(&margin_caption(
+        430,
+        "Figure 1.3",
+        &["A plot", "beside its caption", "in the margin."],
+    ));
+    for row in 0..8 {
+        let y = 270 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Line {row} of the text after the plot, which goes on in the wide column) Tj ET\n"
+        ));
+    }
+    content
+}
+
+#[test]
+fn margin_captions_find_their_figures() {
+    let paper = Paper::from_bytes(build_pages_pdf(&[margin_figures_page()])).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let figure = |label: &str| {
+        doc.blocks
+            .iter()
+            .find_map(|block| match &block.kind {
+                BlockKind::Figure {
+                    label: Some(found),
+                    image,
+                    ..
+                } if found == label => Some(*image),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {label}"))
+            .unwrap_or_else(|| panic!("{label} has no image"))
+            .rect
+    };
+    // Page coordinates run down from the top (792 pt).
+    let first = figure("Figure 1.1");
+    assert!(
+        first.y0 < 792.0 - 670.0 && first.y1 > 792.0 - 640.0,
+        "Figure 1.1 at {first:?}"
+    );
+    let second = figure("Figure 1.2");
+    assert!(
+        second.y0 < 792.0 - 580.0 && second.y1 > 792.0 - 550.0,
+        "Figure 1.2 at {second:?}"
+    );
+    let plot = figure("Figure 1.3");
+    assert!(plot.x0 <= 250.0 && plot.x1 >= 450.0, "Figure 1.3 at {plot:?}");
+}
