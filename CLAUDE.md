@@ -116,3 +116,7 @@ committing.
   A PR that mixes kinds gets every label that applies. If a PR fits none of these (for example
   CI only, or refactoring only), create a short, lowercase label that names it (`ci`,
   `refactor`, `tests`) rather than leaving the PR unlabelled.
+- **SonarQube Cloud issues:** after the PR's checks finish, read the new issues SonarQube Cloud
+  reports on it and fix them all in the PR, without waiting to be asked. They are public:
+  `curl -s "https://sonarcloud.io/api/issues/search?componentKeys=iamcaominhtien_rust-pdf-parser&pullRequest=<N>&resolved=false"`.
+  Recurring ones: `rust:S2208` (a wildcard `use x::*` outside a test module: import each name).

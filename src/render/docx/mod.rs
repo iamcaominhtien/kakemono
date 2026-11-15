@@ -15,8 +15,10 @@ use super::assets::MARK;
 use super::{Equations, doc_title};
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
-use crate::model::*;
-use parts::*;
+use crate::model::ImageSpec;
+use parts::{
+    APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, PACKAGE_RELS, SETTINGS, STYLES, XML_DECL, core_props, document_rels,
+};
 use zip::{Compression, ZipWriter};
 
 /// Everything that controls how a document is written as a Word file.

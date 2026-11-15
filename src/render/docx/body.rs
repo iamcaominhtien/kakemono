@@ -6,7 +6,7 @@ use super::parts::{TEXT_WIDTH_TWIPS, TWIPS_PER_PT, section_props};
 use super::table::table_xml;
 use super::xml::{bookmark_name, run_props, text_runs};
 use super::{DocxOptions, PendingImage};
-use crate::model::*;
+use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style};
 use crate::render::assets::MARK;
 use crate::render::{
     CAP_LABEL, Equations, code, code_run, figure_alt, is_abstract_text, is_scene_break, plain, stray_equation_number,

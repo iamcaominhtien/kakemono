@@ -1,7 +1,7 @@
 //! Small pieces of WordprocessingML: escaping, runs of text and their
 //! properties.
 
-use crate::model::style::*;
+use crate::model::style::{BOLD, ITALIC, MATH, MONO, SMALL_CAPS, SUB, SUP};
 
 /// Longest bookmark name Word accepts, in characters.
 const BOOKMARK_MAX_CHARS: usize = 40;
