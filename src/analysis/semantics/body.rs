@@ -400,14 +400,18 @@ fn find_heading_candidates(
 }
 
 /// The body font size of each page: the size carrying most characters of
-/// the unclassified text blocks of the page, but never below the document's
+/// the unclassified text blocks of the page (and of its entries of
+/// contents, set in running text size), but never below the document's
 /// body size. A system card set in 11 pt inside a report set in 10 pt has
 /// body text of 11 pt, which must not count as "larger than the body".
 fn page_body_sizes(nodes: &[Node], stats: &DocStats) -> Vec<f32> {
     let pages = nodes.iter().map(|node| node.loc.page + 1).max().unwrap_or(0);
     // Characters per size, in tenths of a point, for each page.
     let mut chars: Vec<HashMap<i32, usize>> = vec![HashMap::new(); pages];
-    for node in nodes.iter().filter(|node| node.class == Class::Unknown) {
+    for node in nodes
+        .iter()
+        .filter(|node| matches!(node.class, Class::Unknown | Class::ContentsEntry { .. }))
+    {
         let Some(block) = node.text_block() else { continue };
         for line in &block.lines {
             *chars[node.loc.page]

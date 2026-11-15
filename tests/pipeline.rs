@@ -584,3 +584,51 @@ fn book_margins_hold_notes_and_running_feet() {
         .count();
     assert!(notes >= 8, "two margin notes per page, found {notes}");
 }
+
+/// A page of contents set in three columns, as in many books: the number,
+/// the title and, far to the right, the page number.
+fn contents_page() -> String {
+    let mut content = String::from("BT /F2 16 Tf 200 700 Td (Contents) Tj ET\n");
+    let entries = [
+        ("1", "Introduction and Motivation", 11),
+        ("1.1", "Finding Words for Intuitions", 12),
+        ("1.2", "Two Ways to Read This Book", 13),
+        ("1.3", "Exercises and Feedback", 16),
+        ("2", "Linear Algebra", 17),
+        ("2.1", "Systems of Linear Equations", 19),
+        ("2.2", "Matrices", 22),
+        ("2.3", "Solving Systems of Linear Equations", 27),
+        ("2.4", "Vector Spaces", 35),
+        ("2.5", "Linear Independence", 40),
+        ("2.6", "Basis and Rank", 44),
+        ("2.7", "Linear Mappings", 48),
+    ];
+    for (row, (number, title, page)) in entries.iter().enumerate() {
+        let y = 650 - 14 * row;
+        content.push_str(&format!("BT /F1 10 Tf 72 {y} Td ({number}) Tj ET\n"));
+        content.push_str(&format!("BT /F1 10 Tf 100 {y} Td ({title}) Tj ET\n"));
+        let x = if *page < 10 { 534 } else { 528 };
+        content.push_str(&format!("BT /F1 10 Tf {x} {y} Td ({page}) Tj ET\n"));
+    }
+    content
+}
+
+#[test]
+fn contents_page_numbers_in_a_column_are_not_line_numbers() {
+    let paper = Paper::from_bytes(build_pages_pdf(&[contents_page()])).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let pages: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::ContentsEntry { page, .. } => Some(page.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pages,
+        ["11", "12", "13", "16", "17", "19", "22", "27", "35", "40", "44", "48"],
+        "{:?}",
+        doc.blocks.iter().map(|block| (&block.kind, block.text())).collect::<Vec<_>>()
+    );
+}

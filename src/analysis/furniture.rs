@@ -87,6 +87,11 @@ pub struct FurnitureConfig {
     /// Fewest numbers sharing a right edge for them to be a column of margin
     /// line numbers (review copies number every line, so there are many).
     pub line_number_min_count: usize,
+    /// Smallest share of the steps between successive margin numbers (top
+    /// to bottom) that are the same step: line numbers count up evenly
+    /// (1, 2, 3 or 5, 10, 15), the page numbers of a table of contents do
+    /// not.
+    pub line_number_min_even_ratio: f32,
     /// How far (in points) a candidate may overlap the top or bottom of the
     /// text block and still count as outside it.
     pub body_edge_tolerance_pt: f32,
@@ -147,6 +152,7 @@ impl Default for FurnitureConfig {
             line_number_margin_pt: 2.0,
             line_number_bin_pt: 3.0,
             line_number_min_count: 8,
+            line_number_min_even_ratio: 0.7,
             body_edge_tolerance_pt: 1.0,
             page_number_max_glyphs_count: 12,
             crowded_min_distance_pt: 2.0,
@@ -646,13 +652,31 @@ fn margin_line_numbers(page: &PageData, body: &BodyExtent, cfg: &FurnitureConfig
     }
     let mut drop: Vec<bool> = vec![false; page.lines.len()];
     for idxs in numeric.values() {
-        if idxs.len() >= cfg.line_number_min_count {
+        if idxs.len() >= cfg.line_number_min_count && counts_evenly(page, idxs, cfg) {
             for &i in idxs {
                 drop[i] = true;
             }
         }
     }
     drop
+}
+
+/// Whether the numeric lines `idxs` of the page, read top to bottom, count
+/// up by the same step most of the time (see
+/// [`FurnitureConfig::line_number_min_even_ratio`]).
+fn counts_evenly(page: &PageData, idxs: &[usize], cfg: &FurnitureConfig) -> bool {
+    let mut numbers: Vec<(f32, i64)> = idxs
+        .iter()
+        .filter_map(|&i| Some((page.lines[i].baseline, page.lines[i].text().trim().parse().ok()?)))
+        .collect();
+    numbers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let steps: Vec<i64> = numbers.windows(2).map(|pair| pair[1].1 - pair[0].1).collect();
+    let mut counts: HashMap<i64, usize> = HashMap::new();
+    for &step in steps.iter().filter(|&&step| step > 0) {
+        *counts.entry(step).or_default() += 1;
+    }
+    let most = counts.values().copied().max().unwrap_or(0);
+    most as f32 >= cfg.line_number_min_even_ratio * steps.len() as f32
 }
 
 /// Sets the `drop` flag of the running heads, running feet and page numbers
@@ -771,11 +795,14 @@ fn is_furniture_candidate(
 }
 
 /// Whether `text` is the page's number: its 1-based index plus the
-/// document's `offset`.
+/// document's `offset`, or a roman numeral (front matter, numbered apart)
+/// no greater than the page's 1-based index.
 fn is_own_number(page: &PageData, text: &str, offset: i64) -> bool {
-    text.trim()
-        .parse::<i64>()
-        .is_ok_and(|number| number == page.index as i64 + 1 + offset)
+    let text = text.trim();
+    match text.parse::<i64>() {
+        Ok(number) => number == page.index as i64 + 1 + offset,
+        Err(_) => roman_value(&text.to_lowercase()).is_some_and(|number| number <= page.index as i64 + 1),
+    }
 }
 
 /// The offset between printed page numbers and page indexes that most pages
