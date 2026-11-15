@@ -135,6 +135,9 @@ const SYMBOLS: &[(char, &str)] = &[
     ('⇔', "\\Leftrightarrow"),
     ('⟶', "\\longrightarrow"),
     ('⟹', "\\Longrightarrow"),
+    ('⟺', "\\Longleftrightarrow"),
+    ('⟷', "\\longleftrightarrow"),
+    ('⟸', "\\Longleftarrow"),
     ('↦', "\\mapsto"),
     ('↑', "\\uparrow"),
     ('↓', "\\downarrow"),
@@ -350,7 +353,7 @@ fn write_node(node: &MathNode, out: &mut String) {
         }
         MathNode::Text(text) => push(out, &format!("\\text{{{}}}", text_escape(text))),
         MathNode::Space(width) => push(out, &space(*width)),
-        MathNode::Row(nodes) => nodes.iter().for_each(|node| write_node(node, out)),
+        MathNode::Row(nodes) => write_row(nodes, out),
         MathNode::Frac { num, den } => push(out, &format!("\\frac{{{}}}{{{}}}", group(num), group(den))),
         MathNode::Sqrt(base) => push(out, &format!("\\sqrt{{{}}}", group(base))),
         MathNode::Root { base, index } => push(out, &format!("\\sqrt[{}]{{{}}}", group(index), group(base))),
@@ -470,6 +473,56 @@ fn is_delimiter(text: &str) -> bool {
         text,
         "(" | ")" | "[" | "]" | "{" | "}" | "|" | "‖" | "⟨" | "⟩" | "⌊" | "⌋" | "⌈" | "⌉" | "/"
     )
+}
+
+/// Writes the nodes of a row. A table between two tall delimiters is a
+/// matrix (`bmatrix`, `pmatrix`, ...), and one after a tall opening brace
+/// only is `cases`: TeX sizes their delimiters itself.
+fn write_row(nodes: &[MathNode], out: &mut String) {
+    let mut i = 0;
+    while i < nodes.len() {
+        if let Some((env, used)) = matrix(&nodes[i..]) {
+            push(out, &env);
+            i += used;
+        } else {
+            write_node(&nodes[i], out);
+            i += 1;
+        }
+    }
+}
+
+/// The matrix or `cases` environment that starts `nodes` (a tall opening
+/// delimiter, a table and, for a matrix, the matching tall closing one),
+/// and how many nodes it takes; `None` when `nodes` starts otherwise.
+fn matrix(nodes: &[MathNode]) -> Option<(String, usize)> {
+    fn tall(node: &MathNode) -> Option<&str> {
+        match node {
+            MathNode::Operator {
+                text,
+                height_em: Some(_),
+            } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+    let open = tall(nodes.first()?)?;
+    let MathNode::Table { rows, .. } = nodes.get(1)? else {
+        return None;
+    };
+    let close = nodes.get(2).and_then(tall);
+    let (env, used) = match (open, close) {
+        ("(", Some(")")) => ("pmatrix", 3),
+        ("[", Some("]")) => ("bmatrix", 3),
+        ("{", Some("}")) => ("Bmatrix", 3),
+        ("|", Some("|")) => ("vmatrix", 3),
+        ("‖", Some("‖")) => ("Vmatrix", 3),
+        ("{", None) => ("cases", 2),
+        _ => return None,
+    };
+    let body: Vec<String> = rows
+        .iter()
+        .map(|row| row.iter().map(group).collect::<Vec<_>>().join(" & "))
+        .collect();
+    Some((format!("\\begin{{{env}}} {} \\end{{{env}}}", body.join(" \\\\ ")), used))
 }
 
 /// A multi-line display as an `array`, with its column alignments.
@@ -664,6 +717,22 @@ mod tests {
     fn precomposed_accents_and_bracket_pieces() {
         let node = MathNode::Row(vec![ident("ã"), op("⎡"), ident("ĝ"), op("⎦")]);
         assert_eq!(latex(&node), "\\tilde{a}\\lceil\\hat{g}\\rfloor");
+    }
+
+    #[test]
+    fn matrix_and_cases() {
+        let tall = |text: &str| MathNode::Operator {
+            text: text.into(),
+            height_em: Some(2.0),
+        };
+        let table = MathNode::Table {
+            rows: vec![vec![ident("a"), ident("b")], vec![ident("c"), ident("d")]],
+            align: vec!["center", "center"],
+        };
+        let node = MathNode::Row(vec![ident("A"), op("="), tall("["), table.clone(), tall("]")]);
+        assert_eq!(latex(&node), "A=\\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}");
+        let node = MathNode::Row(vec![tall("{"), table]);
+        assert_eq!(latex(&node), "\\begin{cases} a & b \\\\ c & d \\end{cases}");
     }
 
     #[test]

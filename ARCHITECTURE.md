@@ -13,15 +13,15 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
     ▼  analysis/pipeline.rs   one function; read it top to bottom to see the whole flow
     │   page        PageData, document-wide font size / line spacing statistics
     │   lines       characters → lines (superscript/subscript, accents, rotated text)
-    │   furniture   remove repeated headers/footers/page numbers
+    │   furniture   remove repeated headers/footers/page numbers (by band, or at the same place)
     │   floats      figures, tables, algorithms + captions
     │   tables      row/column grid of tables
     │   order       reading order (columns, regions)
-    │   blocks      lines → raw blocks (paragraphs, equations, footnotes)
+    │   blocks      lines → raw blocks (paragraphs, equations, footnotes, margin notes)
     │   semantics/  classification (title, authors, contents, headings, code listings, …), paragraph joining,
     │               reference linking, building the Document
     │   crops       equation pictures that do not cut glyphs
-    │   math        structure of display formulas (MathNode trees, written as MathML)
+    │   math        structure of display formulas (MathNode trees: matrices, cases, dots)
     ▼
  Document (model)       fixed boundary between analysis and output
     │

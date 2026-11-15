@@ -221,12 +221,16 @@ impl Writer<'_, '_> {
                 self.paragraph(&format!("{}{text}", " ".repeat(self.list_indent.max(2))));
             }
             BlockKind::Reference { .. } => self.text_paragraph(&block.spans),
+            // A note without a mark (a note in the margin of a book) is set
+            // apart as a quotation.
+            BlockKind::Footnote { marker } if marker.is_empty() => {
+                let text = self.inline.spans(&block.spans);
+                if !text.is_empty() {
+                    self.paragraph(&format!("> {text}"));
+                }
+            }
             BlockKind::Footnote { marker } => {
-                let mark = if marker.is_empty() {
-                    String::new()
-                } else {
-                    format!("<sup>{}</sup> ", escape(marker))
-                };
+                let mark = format!("<sup>{}</sup> ", escape(marker));
                 self.paragraph(&format!("{mark}{}", self.inline.spans(&block.spans)));
             }
             BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),

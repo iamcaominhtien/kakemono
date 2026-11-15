@@ -483,3 +483,104 @@ fn code_in_two_columns_is_indented_column_by_column() {
         ]
     );
 }
+
+/// A PDF with one page per item of `pages`, each drawing that content with
+/// the fonts of [`build_pdf`].
+fn build_pages_pdf(pages: &[String]) -> Vec<u8> {
+    let n = pages.len();
+    let fonts = 3 + 2 * n;
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 2 * i)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" ")),
+    ];
+    for (i, content) in pages.iter().enumerate() {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R \
+             /Resources << /Font << /F1 {fonts} 0 R /F2 {} 0 R >> >> >>",
+            4 + 2 * i,
+            fonts + 1
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content));
+    }
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string());
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>".to_string());
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", i + 1, body));
+    }
+    let xref = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+    for off in offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objects.len() + 1,
+        xref
+    ));
+    pdf.into_bytes()
+}
+
+/// A page of a book with wide margins: running text in a column on the
+/// right, two notes in the left margin, and a long running foot well above
+/// the foot band.
+fn book_page(number: usize) -> String {
+    let mut content = String::new();
+    for row in 0..30 {
+        let y = 680 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Page {number} line {row} of the running text that fills the wide column of the book page) Tj ET\n"
+        ));
+    }
+    for (row, text) in [
+        "Be careful to check",
+        "the margin notes.",
+        "",
+        "A second note set",
+        "in the margin.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if !text.is_empty() {
+            // Halfway between two lines of the running text.
+            let y = 589 - 14 * row;
+            content.push_str(&format!("BT /F1 7 Tf 50 {y} Td ({text}) Tj ET\n"));
+        }
+    }
+    content.push_str("BT /F1 8 Tf 170 110 Td (Draft \\(2024-01-15\\) of a book for the tests. Feedback: https://example.org.) Tj ET\n");
+    content
+}
+
+#[test]
+fn book_margins_hold_notes_and_running_feet() {
+    let pages: Vec<String> = (1..=4).map(book_page).collect();
+    let paper = Paper::from_bytes(build_pages_pdf(&pages)).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let texts: Vec<String> = doc.blocks.iter().map(|block| block.text()).collect();
+    assert!(
+        texts.iter().all(|text| !text.contains("Draft (2024")),
+        "running foot left in the text: {texts:?}"
+    );
+    // Every piece of the margin notes is a note, and none is in the text.
+    let note_words = ["Be careful", "margin notes", "second note", "in the margin"];
+    for block in &doc.blocks {
+        let text = block.text();
+        if note_words.iter().any(|words| text.contains(words)) {
+            assert!(
+                matches!(block.kind, BlockKind::Footnote { .. }),
+                "margin note read as {:?}: {text}",
+                block.kind
+            );
+        }
+    }
+    let notes = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .count();
+    assert!(notes >= 8, "two margin notes per page, found {notes}");
+}

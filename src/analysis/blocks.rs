@@ -276,6 +276,20 @@ pub struct BlocksConfig {
     pub bold_run_in_max_words_count: usize,
     /// A row is bold when at least this fraction of its glyphs are bold.
     pub bold_dominant_ratio: f32,
+
+    // --- margin notes ---
+    /// A line at least this wide (a fraction of the page width) is a line
+    /// of the main text of its page ...
+    pub main_text_min_width_ratio: f32,
+    /// ... and a block of text beside all of them, at most this wide, ...
+    pub margin_note_max_width_ratio: f32,
+    /// ... and set at most this size (a fraction of the body size), is a
+    /// note in the margin (a book's sidenotes): it is set apart like a
+    /// footnote, and does not cut the paragraph it stands beside.
+    pub margin_note_max_size_ratio: f32,
+    /// A page has margin notes only beside at least this many lines of
+    /// main text.
+    pub main_text_min_lines_count: usize,
 }
 
 impl Default for BlocksConfig {
@@ -351,6 +365,10 @@ impl Default for BlocksConfig {
             bold_flip_gap_leading: 1.1,
             bold_run_in_max_words_count: 12,
             bold_dominant_ratio: 0.95,
+            main_text_min_width_ratio: 0.45,
+            margin_note_max_width_ratio: 0.22,
+            margin_note_max_size_ratio: 0.92,
+            main_text_min_lines_count: 5,
         }
     }
 }
@@ -585,6 +603,51 @@ pub fn build_blocks(
         emit_blocks(ctx, rows, fn_start, loc, &mut out);
     }
     out
+}
+
+/// Turns the text blocks of the margin notes of a page into footnote
+/// blocks: narrow blocks of small text (see
+/// [`BlocksConfig::margin_note_max_size_ratio`]) that lie wholly beside the
+/// lines of the main text, to the left or to the right, within their
+/// height, and that are not headings (all bold). Set apart as notes, they
+/// no longer read as paragraphs of the text, nor cut the paragraph they
+/// stand beside. A page with few long lines of main text (two columns of
+/// text) has no margin notes.
+pub fn mark_margin_notes(
+    blocks: &mut [RawBlock],
+    page_width: f32,
+    stats: &DocStats,
+    fonts: &[FontInfo],
+    cfg: &BlocksConfig,
+) {
+    let max_size = cfg.margin_note_max_size_ratio * stats.body_size;
+    let main_lines: Vec<&Line> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            RawBlock::Text(text) => Some(text.lines.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|line| line.size > max_size && line.bbox.width() >= cfg.main_text_min_width_ratio * page_width)
+        .collect();
+    if main_lines.len() < cfg.main_text_min_lines_count {
+        return;
+    }
+    let main = main_lines.iter().fold(Rect::EMPTY, |acc, line| acc.union(&line.bbox));
+    let bold = |line: &Line| fonts.get(usize::from(line.font)).is_some_and(|font| font.bold);
+    for block in blocks.iter_mut() {
+        let RawBlock::Text(text) = block else {
+            continue;
+        };
+        let small = text.lines.iter().all(|line| line.size <= max_size);
+        let narrow = text.bbox.width() <= cfg.margin_note_max_width_ratio * page_width;
+        let beside =
+            (text.bbox.x1 <= main.x0 || text.bbox.x0 >= main.x1) && text.bbox.y0 >= main.y0 && text.bbox.y1 <= main.y1;
+        let heading = text.lines.iter().all(bold);
+        if small && narrow && beside && !heading {
+            *block = RawBlock::Footnote(text.clone());
+        }
+    }
 }
 
 impl LeafExtent {

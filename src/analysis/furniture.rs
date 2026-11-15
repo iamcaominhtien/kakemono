@@ -118,6 +118,17 @@ pub struct FurnitureConfig {
     /// A printer's mark ("___-1") is at least this many font sizes away
     /// from the words beside it on its row.
     pub printer_mark_min_gap_em: f32,
+    /// Lines in the top or bottom part of the page this high (a fraction
+    /// of the page height) are also compared by position: a book with wide
+    /// margins sets its running feet above the foot band.
+    pub placed_band_ratio: f32,
+    /// Shortest normalised text (in bytes) of a line compared by position:
+    /// a long line repeated at the same place is a running head or foot
+    /// ("Draft (2024-01-15) of ...", a copyright notice), a short one may
+    /// repeat by chance.
+    pub placed_min_text_bytes: usize,
+    /// Baselines within this distance (points) are at the same place.
+    pub placed_tolerance_pt: f32,
 }
 
 impl Default for FurnitureConfig {
@@ -145,6 +156,9 @@ impl Default for FurnitureConfig {
             number_offset_min_pages: 3,
             number_offset_min_ratio: 0.3,
             printer_mark_min_gap_em: 3.0,
+            placed_band_ratio: 0.2,
+            placed_min_text_bytes: 30,
+            placed_tolerance_pt: 2.0,
         }
     }
 }
@@ -174,6 +188,11 @@ enum Band {
 /// normalised text and the band it was found in.
 type RepeatKey = (String, Band);
 
+/// Key under which long lines are counted by position: the normalised text
+/// and the baseline in steps of
+/// [`placed_tolerance_pt`](FurnitureConfig::placed_tolerance_pt).
+type PlacedKey = (String, i32);
+
 /// How many pages each head/foot line occurs on, and how many it takes to
 /// count as a running head.
 struct RepeatCounts {
@@ -184,6 +203,9 @@ struct RepeatCounts {
     /// Printed page number minus the 1-based page index, as most pages
     /// show it (a document whose cover page is unnumbered starts at -1).
     number_offset: i64,
+    /// Number of pages on which each long line of the top or bottom part
+    /// of the page occurs at the same place (see [`PlacedKey`]).
+    placed: HashMap<PlacedKey, usize>,
 }
 
 impl RepeatCounts {
@@ -229,6 +251,7 @@ pub fn remove_furniture(pages: &mut [PageData], cfg: &FurnitureConfig) -> Furnit
             cfg.min_repeat_count
         },
         number_offset: page_number_offset(pages, cfg),
+        placed: count_placed_lines(pages, cfg),
     };
     for page in pages.iter_mut() {
         let removed = remove_page_furniture(page, &repeats, cfg);
@@ -287,6 +310,80 @@ fn band(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> Option<Band> {
     }
 }
 
+/// The key of `line` for the count by position, when it is long enough and
+/// in the top or bottom part of the page (see
+/// [`placed_band_ratio`](FurnitureConfig::placed_band_ratio)).
+fn placed_key(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> Option<PlacedKey> {
+    let band = cfg.placed_band_ratio * page.height;
+    let outer = line.bbox.y1 < band || line.bbox.y0 > page.height - band;
+    let text = normalize_furniture(&line.text());
+    (outer && text.len() >= cfg.placed_min_text_bytes)
+        .then(|| (text, (line.baseline / cfg.placed_tolerance_pt).round() as i32))
+}
+
+/// Counts, for every long line of the top or bottom part of the pages, on
+/// how many pages it occurs at the same place.
+fn count_placed_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<PlacedKey, usize> {
+    let mut counts: HashMap<PlacedKey, usize> = HashMap::new();
+    for page in pages {
+        let keys: HashSet<PlacedKey> = page
+            .lines
+            .iter()
+            .filter_map(|line| placed_key(page, line, cfg))
+            .collect();
+        for key in keys {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    counts
+}
+
+/// Whether `line` is a long line repeated at the same place (within one
+/// step of tolerance) on enough pages to be a running head or foot.
+fn is_placed_repeat(page: &PageData, line: &Line, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> bool {
+    placed_key(page, line, cfg).is_some_and(|(text, step)| {
+        let count: usize = (step - 1..=step + 1)
+            .map(|near| repeats.placed.get(&(text.clone(), near)).copied().unwrap_or(0))
+            .sum();
+        count >= repeats.min_repeat
+    })
+}
+
+/// Takes out of the page the long lines repeated at the same place on
+/// other pages (see [`is_placed_repeat`]) that stand alone on their row,
+/// and returns them with their index among the page's lines. A repeated
+/// line beside other text on its row is part of it: the journal name in
+/// the head of a first page, the header of a column of a table.
+fn take_placed_repeats(page: &mut PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> Vec<(usize, Line)> {
+    let placed: Vec<bool> = page
+        .lines
+        .iter()
+        .map(|line| is_placed_repeat(page, line, repeats, cfg))
+        .collect();
+    let flags: Vec<bool> = page
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            placed[i]
+                && !page.lines.iter().enumerate().any(|(j, other)| {
+                    j != i && !placed[j] && (other.baseline - line.baseline).abs() <= cfg.crowded_min_distance_pt
+                })
+        })
+        .collect();
+    let mut taken = Vec::new();
+    let mut kept = Vec::with_capacity(page.lines.len());
+    for (i, (line, take)) in std::mem::take(&mut page.lines).into_iter().zip(flags).enumerate() {
+        if take {
+            taken.push((i, line));
+        } else {
+            kept.push(line);
+        }
+    }
+    page.lines = kept;
+    taken
+}
+
 /// Counts, for every normalised head/foot text, on how many pages it occurs.
 fn count_head_foot_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<RepeatKey, usize> {
     let mut counts: HashMap<RepeatKey, usize> = HashMap::new();
@@ -307,6 +404,9 @@ fn count_head_foot_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<R
 /// Removes the furniture lines of one page and returns them in their
 /// original order.
 fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> Vec<Line> {
+    // Long lines repeated at the same place go first: the page's own
+    // number may then be its last line.
+    let placed = take_placed_repeats(page, repeats, cfg);
     let outer = body_extent(page, repeats, &numbered_heads(page, repeats.number_offset, cfg), cfg);
     let marks = take_printer_marks(page, &outer, cfg);
     let numbered = numbered_heads(page, repeats.number_offset, cfg);
@@ -316,13 +416,23 @@ fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &Furn
 
     let mut kept = Vec::with_capacity(page.lines.len());
     let mut removed = Vec::new();
+    // The removed lines keep the order they had on the page: the placed
+    // repeats go back between the others at their original index.
+    let mut placed = placed.into_iter().peekable();
+    let mut original = 0;
     for (i, line) in std::mem::take(&mut page.lines).into_iter().enumerate() {
+        while placed.peek().is_some_and(|(idx, _)| *idx == original) {
+            removed.extend(placed.next().map(|(_, line)| line));
+            original += 1;
+        }
+        original += 1;
         if drop[i] {
             removed.push(line);
         } else {
             kept.push(line);
         }
     }
+    removed.extend(placed.map(|(_, line)| line));
     page.lines = kept;
     drop_head_rules(page, &removed, &body, cfg);
     removed.extend(marks);
