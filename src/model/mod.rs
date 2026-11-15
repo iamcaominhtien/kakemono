@@ -235,6 +235,14 @@ pub enum BlockKind {
     },
     /// A code listing; `Block::rows` holds its lines, indented with spaces.
     Code,
+    /// An entry of a table of contents; the spans hold its title, linked to
+    /// the heading it names when one is found.
+    ContentsEntry {
+        /// Nesting level: 1 for the outermost entries (chapters).
+        level: u8,
+        /// The page number as printed ("47", "xi").
+        page: String,
+    },
 }
 
 /// A unit of content of the document (paragraph, heading, figure, ...), in

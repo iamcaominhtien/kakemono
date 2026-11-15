@@ -49,6 +49,13 @@ pub struct AssembleConfig {
     /// of numbering, as in a report followed by a system card, only when at
     /// least this many anchors of that kind repeat; fewer are stray duplicates.
     pub min_target_set_count: usize,
+    /// A picture on the first or last page of a book covering at least this
+    /// share of the page is its cover: it is shown whole, title included,
+    /// rather than cut off just under the title set over it.
+    pub cover_min_area_ratio: f32,
+    /// A cover page has at most this many lines of text (title, authors,
+    /// publisher).
+    pub cover_max_lines_count: usize,
 }
 
 impl Default for AssembleConfig {
@@ -61,6 +68,8 @@ impl Default for AssembleConfig {
             note_max_pages_before: 1,
             note_max_pages_after: 2,
             min_target_set_count: 2,
+            cover_min_area_ratio: 0.6,
+            cover_max_lines_count: 12,
         }
     }
 }
@@ -146,6 +155,7 @@ pub(crate) fn build_document(
         ..
     } = assembler;
     link_blocks(&mut blocks, cfg);
+    link_contents(&mut blocks);
 
     if !title_parts.is_empty() {
         meta.title = Some(title_parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
@@ -287,6 +297,11 @@ impl Assembler<'_> {
                 rows = super::code::code_rows(lines, self.text.fonts);
                 built.spans = rows.join(&Span::plain("\n"));
                 (BlockKind::Code, built)
+            }
+            Class::ContentsEntry { level, page } => {
+                let mut built = self.text.build(lines, 0, 0);
+                super::contents::strip_page_label(&mut built.spans, &page);
+                (BlockKind::ContentsEntry { level, page }, built)
             }
             Class::Unknown => (
                 BlockKind::Paragraph { in_abstract: false },
@@ -431,6 +446,24 @@ impl Assembler<'_> {
         block
     }
 
+    /// The region of a picture of page `page`: the whole page when the
+    /// picture is a book's cover (see
+    /// [`AssembleConfig::cover_min_area_ratio`]), else `rect` itself.
+    fn cover_region(&self, page: usize, rect: Rect) -> Rect {
+        let Some(data) = self.pages.get(page) else { return rect };
+        let edge = page == 0 || page + 1 == self.pages.len();
+        let page_rect = Rect::new(0.0, 0.0, data.width, data.height);
+        if edge
+            && self.pages.len() > 1
+            && data.lines.len() <= self.cfg.cover_max_lines_count
+            && rect.area() >= self.cfg.cover_min_area_ratio * page_rect.area()
+        {
+            page_rect
+        } else {
+            rect
+        }
+    }
+
     /// The block of a figure, table or algorithm: its caption as text, an
     /// image of its region, the text inside it and, for simple tables (when
     /// enabled), the reconstructed table. Labelled floats are anchored by
@@ -451,9 +484,10 @@ impl Assembler<'_> {
             rows.push(vec![Span::plain(float.inner_text.clone())]);
         }
         let table = self.float_table(&float);
+        let region = float.region.map(|rect| self.cover_region(float.page, rect));
         let kind = BlockKind::Figure {
             kind: float.kind,
-            image: float.region.map(|rect| ImageSpec {
+            image: region.map(|rect| ImageSpec {
                 page: float.page,
                 rect,
                 transparent: false,
@@ -640,6 +674,42 @@ fn link_blocks(blocks: &mut [Block], cfg: &AssembleConfig) {
                     .map(|(.., anchor)| anchor.clone())
             };
             link_footnote_marks(&mut block.spans, &note_for, cfg);
+        }
+    }
+}
+
+/// Links each entry of a table of contents to the heading it names: the
+/// first heading with the same words (see
+/// [`title_key`](super::contents::title_key)) after the one the previous
+/// entry was linked to, so that the many "Summary" sections each get
+/// their entry.
+fn link_contents(blocks: &mut [Block]) {
+    let headings: Vec<(usize, String)> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| matches!(block.kind, BlockKind::Heading { .. }) && block.anchor.is_some())
+        .map(|(idx, block)| (idx, super::contents::title_key(&spans_text(&block.spans))))
+        .collect();
+    let mut from = 0;
+    for idx in 0..blocks.len() {
+        if !matches!(blocks[idx].kind, BlockKind::ContentsEntry { .. }) {
+            continue;
+        }
+        let key = super::contents::title_key(&spans_text(&blocks[idx].spans));
+        if key.is_empty() {
+            continue;
+        }
+        let found = headings[from..]
+            .iter()
+            .position(|(heading, heading_key)| *heading > idx && *heading_key == key);
+        if let Some(pos) = found {
+            let anchor = blocks[headings[from + pos].0].anchor.clone();
+            from += pos + 1;
+            for span in &mut blocks[idx].spans {
+                if span.href.is_none() {
+                    span.href = anchor.as_ref().map(|anchor| format!("#{anchor}"));
+                }
+            }
         }
     }
 }

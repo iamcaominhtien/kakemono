@@ -54,14 +54,21 @@ body.fit .page{width:min(100%,calc(var(--pw)*var(--zoom)*1px))}
 .fb .ln::after{content:"\A";white-space:pre}
 .fb .ln.hy::after{content:"-\A"}
 .fb .ln.end::after{content:none}
+/* A line squeezed sideways onto its width (a condensed font in the PDF). */
+.pl.sq{transform-origin:0 0}
+.fb .ln.sq{display:inline-block;transform-origin:0 0}
+.fb .ln.sq::after{content:none}
+.fb .ln.sq.hy::after{content:"-"}
 /* Reflow mode (after the text was edited or translated). */
 .fb.rf .in{text-indent:var(--ti,0);padding-left:var(--pl,0);hyphens:auto;-webkit-hyphens:auto;overflow-wrap:break-word}
 .fb.rf[data-align="justify"] .in{text-align:justify}
 .fb.rf[data-align="center"] .in{text-align:center}
 .fb.rf .ln{white-space:normal;margin-left:0!important;top:0!important;word-spacing:normal!important;letter-spacing:normal!important}
 .fb.rf .ln::after{content:none!important}
+.fb.rf .ln.sq{display:inline}
+.fb.rf br.sqbr{display:none}
 /* Tables on their original grid. */
-.tb{position:absolute;background:#fff}
+.tb{position:absolute}
 .tb table{width:100%;height:100%;border-collapse:collapse;table-layout:fixed;border-spacing:0}
 .tb th,.tb td{padding:0;font-weight:400;white-space:nowrap;vertical-align:top;line-height:1;overflow:visible}
 .tb .mid{vertical-align:middle}

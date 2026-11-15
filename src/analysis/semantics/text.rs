@@ -290,19 +290,26 @@ impl TextBuilder<'_> {
                 push_text(&mut spans, before, style, glyph.color);
                 space = false;
             }
+            // A space after a link stays out of it.
+            let mut lead = "";
             if let Some(span) = spans.last_mut() {
+                let same_link = span.href.as_deref() == glyph.link.as_deref();
                 if space {
-                    span.text.push(' ');
+                    if same_link || span.href.is_none() {
+                        span.text.push(' ');
+                    } else {
+                        lead = " ";
+                    }
                 }
-                if span.style == style && span.color == glyph.color {
+                if span.style == style && span.color == glyph.color && same_link {
                     span.text.push_str(&glyph.text);
                     continue;
                 }
             }
             spans.push(Span {
-                text: glyph.text.clone(),
+                text: format!("{lead}{}", glyph.text),
                 style,
-                href: None,
+                href: glyph.link.as_deref().map(str::to_string),
                 color: glyph.color,
             });
         }
@@ -756,11 +763,13 @@ fn running_spans(hlines: &[HLine], mask: u8) -> Vec<Span> {
     for span in hlines.iter().flat_map(|hline| hline.spans.iter()) {
         let style = span.style & !mask;
         match spans.last_mut() {
-            Some(prev) if prev.style == style && prev.color == span.color => prev.text.push_str(&span.text),
+            Some(prev) if prev.style == style && prev.color == span.color && prev.href == span.href => {
+                prev.text.push_str(&span.text)
+            }
             _ => spans.push(Span {
                 text: span.text.clone(),
                 style,
-                href: None,
+                href: span.href.clone(),
                 color: span.color,
             }),
         }

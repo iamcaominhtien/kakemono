@@ -476,6 +476,8 @@ mod tests {
                 font: 0,
                 script: 0,
                 space_before: i > 0,
+                drawn_space: false,
+                link: None,
                 ink: Rect::new(x, 93.0, x + 20.0, 100.0),
                 ox: x,
                 oy: 100.0,

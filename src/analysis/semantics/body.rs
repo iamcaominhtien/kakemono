@@ -74,6 +74,9 @@ pub struct BodyConfig {
     /// An unnumbered heading within this distance (points) below the typical
     /// size of a level is given that level.
     pub level_size_tolerance_pt: f32,
+    /// Fewest unnumbered headings that the table of contents must list for
+    /// its levels to be used.
+    pub contents_min_headings_count: usize,
     /// An unnumbered level-2 heading must be at least this much larger than
     /// the body text (points); smaller ones are level 3.
     pub h2_min_size_above_body_pt: f32,
@@ -123,6 +126,7 @@ impl Default for BodyConfig {
             styled_heading_max_words_count: 16,
             default_h1_size_above_body_pt: 1.5,
             level_size_tolerance_pt: 0.3,
+            contents_min_headings_count: 3,
             h2_min_size_above_body_pt: 0.3,
             repeated_label_min_count: 5,
             centered_title_tolerance_pt: 4.0,
@@ -198,6 +202,7 @@ struct FlowState {
 /// Only nodes still [`Class::Unknown`] are classified; non-text nodes are
 /// left alone.
 pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[FontInfo], cfg: &SemanticsConfig) {
+    super::contents::mark_contents(nodes, cfg);
     super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
@@ -617,15 +622,68 @@ fn assign_heading_levels(nodes: &mut [Node], candidates: Vec<HeadingCandidate>, 
         .map(|candidate| candidate.size)
         .collect();
     let h2_size = median(&h2_sizes, stats.body_size);
+    let by_contents = contents_levels(nodes, &candidates, cfg);
     for candidate in candidates {
-        let level = candidate
-            .level
-            .unwrap_or(unnumbered_level(&candidate, h1_size, h2_size, stats, cfg));
+        let level = candidate.level.unwrap_or_else(|| match &by_contents {
+            Some(levels) => levels.level_of(&candidate, cfg),
+            None => unnumbered_level(&candidate, h1_size, h2_size, stats, cfg),
+        });
         nodes[candidate.idx].class = Class::Heading {
             level: level.min(MAX_HEADING_LEVEL),
             number: candidate.number,
         };
     }
+}
+
+/// Heading levels taken from a table of contents: the level of the entry
+/// each heading names; a heading it does not list takes the level of the
+/// listed headings of its size (see [`ContentsLevels::level_of`]).
+struct ContentsLevels {
+    /// Level of each entry, by the words of its title.
+    entries: HashMap<String, u8>,
+    /// (level, median size of the headings of that level that it lists).
+    sizes: Vec<(u8, f32)>,
+}
+
+impl ContentsLevels {
+    /// The level of the unnumbered heading `candidate`.
+    fn level_of(&self, candidate: &HeadingCandidate, cfg: &BodyConfig) -> u8 {
+        if let Some(&level) = self.entries.get(&super::contents::title_key(&candidate.text)) {
+            return level;
+        }
+        // The first listed level whose headings are not larger: a heading
+        // the contents leave out ("Table of Contents" itself, the sections
+        // of a preface) takes the level of its size; one smaller than every
+        // listed level is below them all (worked examples, exercise labels).
+        self.sizes
+            .iter()
+            .find(|&&(_, size)| size <= candidate.size + cfg.level_size_tolerance_pt)
+            .map_or(self.sizes[self.sizes.len() - 1].0 + 1, |&(level, _)| level)
+    }
+}
+
+/// The levels given by the document's table of contents, when it lists at
+/// least [`BodyConfig::contents_min_headings_count`] of the candidates.
+fn contents_levels(nodes: &[Node], candidates: &[HeadingCandidate], cfg: &BodyConfig) -> Option<ContentsLevels> {
+    let entries = super::contents::entry_levels(nodes);
+    if entries.is_empty() {
+        return None;
+    }
+    let mut by_level: std::collections::BTreeMap<u8, Vec<f32>> = std::collections::BTreeMap::new();
+    for candidate in candidates {
+        if let Some(&level) = entries.get(&super::contents::title_key(&candidate.text)) {
+            by_level.entry(level).or_default().push(candidate.size);
+        }
+    }
+    let listed: usize = by_level.values().map(Vec::len).sum();
+    if listed < cfg.contents_min_headings_count {
+        return None;
+    }
+    let sizes = by_level
+        .into_iter()
+        .map(|(level, sizes)| (level, median(&sizes, 0.0)))
+        .collect();
+    Some(ContentsLevels { entries, sizes })
 }
 
 /// Level of an unnumbered heading from its size: 1 near the level-1 size

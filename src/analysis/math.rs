@@ -1797,6 +1797,8 @@ mod tests {
             font,
             script: 0,
             space_before: false,
+            drawn_space: false,
+            link: None,
             ink: ink.unwrap_or(Rect::new(x, baseline - 0.7 * size, x1, baseline)),
             ox: x,
             oy: baseline,

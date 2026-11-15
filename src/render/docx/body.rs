@@ -32,6 +32,9 @@ const EQ_MIDDLE_TWIPS: u32 = TEXT_WIDTH_TWIPS - 2 * EQ_SIDE_TWIPS;
 const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
 /// The marker of an item of a bullet list.
 const BULLET: &str = "•";
+/// Indent of each level of a table of contents below the first (twips,
+/// a quarter inch).
+const CONTENTS_INDENT_TWIPS: u32 = 360;
 /// A tab, as a run: separates a label from the text in a hanging indent.
 const TAB_RUN: &str = "<w:r><w:tab/></w:r>";
 /// An empty paragraph only a few points high, between two tables: Word
@@ -157,6 +160,17 @@ impl<'a> Body<'a> {
             }
             BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
             BlockKind::Figure { kind, image, label } => self.figure(block, *kind, image.as_ref(), label),
+            BlockKind::ContentsEntry { level, page } => {
+                // The title, then a right-aligned tab with dot leaders up to
+                // the page number, indented by level.
+                let width = TEXT_WIDTH_TWIPS;
+                let indent = u32::from(level.saturating_sub(1)) * CONTENTS_INDENT_TWIPS;
+                let props = format!(
+                    "<w:tabs><w:tab w:val=\"right\" w:leader=\"dot\" w:pos=\"{width}\"/></w:tabs><w:ind w:left=\"{indent}\"/>"
+                );
+                let content = self.runs(&block.spans) + TAB_RUN + &text_runs(page, "");
+                self.paragraph("Normal", &props, anchor, &content);
+            }
             BlockKind::Code => {
                 let lines: Vec<String> = block
                     .rows

@@ -14,6 +14,9 @@
   //    font is narrower all through), and only the lines the PDF justifies
   //    (data-j) stretch their word spaces for the rest. Centred and ragged
   //    lines have the word spaces of the font, never huge gaps.
+  // A line still wider than its target at FIT_MIN_SCALE is set in a font
+  // much narrower than any fallback (a condensed sans, a narrow monospace):
+  // it keeps its size and is squeezed sideways onto its width instead.
   // Letter spacing is added after every letter, the last one included.
   // Rotated text is measured along its own baseline.
   // Combining marks (a tilde over a letter) take no spacing of their own and
@@ -25,7 +28,8 @@
       WS_RAGGED_MAX=0.3,    // largest extra word space of a line that is not justified
       LS_MIN=-0.02,         // letter spacing range, in em
       LS_MAX=0.15,
-      LS_JUSTIFIED_MAX=0.06;// letter spacing for a font that is narrower all through, in justified lines
+      LS_JUSTIFIED_MAX=0.06,// letter spacing for a font that is narrower all through, in justified lines
+      SQUEEZE_MIN=0.6;      // narrowest sideways squeeze of a line
   function width(el){return el.classList.contains('rt')?el.offsetWidth:el.getBoundingClientRect().width;}
   function measure(el){el.style.wordSpacing='';el.style.letterSpacing='';return width(el);}
   // Sets the type of a line to `k` times the size it has in the page.
@@ -50,8 +54,21 @@
     var base=rs.length>=3?rs[Math.floor(rs.length*0.15)]:null;
     items.forEach(function(it){apply(it,base);});
   }
+  // Squeezes a line sideways by `k`. A line of a flowing block becomes an
+  // inline block, with a line break after it in place of its own.
+  function squeeze(el,k){
+    var ln=el.classList.contains('ln');
+    if(!ln&&!el.classList.contains('pl'))return false;
+    el.classList.add('sq');
+    el.style.transform='scaleX('+Math.max(k,SQUEEZE_MIN).toFixed(4)+')';
+    if(ln&&!el.classList.contains('end')&&!el.nextElementSibling?.classList.contains('sqbr')){
+      var br=doc.createElement('br');br.className='sqbr';el.after(br);
+    }
+    return true;
+  }
   function apply(it,base){
     var el=it.el,fs=Number.parseFloat(getComputedStyle(el).fontSize),target=it.target,nat=it.nat;
+    if(target/nat<FIT_MIN_SCALE&&squeeze(el,target/nat))return;
     var ratio=it.just&&base!==null?base:target/nat;
     if(ratio<FIT_SHRINK_FROM){
       var k=Math.max(ratio,FIT_MIN_SCALE);
@@ -85,8 +102,20 @@
   // A rebuilt table whose rows turned out taller than its region (fonts with
   // taller lines than the PDF's) is scaled down to fit the region, so that it
   // never runs over the text below it.
-  var TABLE_OVERFLOW=1.03;
+  var TABLE_OVERFLOW=1.03,CELL_MIN_SCALE=0.6,CELL_ROOM=0.96;
+  // A table whose cells hold text wider than their columns (a narrower font
+  // in the PDF) gets a smaller type, the same in every cell, so that no
+  // text runs into the next column.
+  function fitCells(tb){
+    var t=tb.firstElementChild,k=1;
+    t.style.fontSize='';
+    tb.querySelectorAll('td,th').forEach(function(c){
+      if(c.clientWidth>0&&c.scrollWidth>c.clientWidth*CELL_ROOM)k=Math.min(k,c.clientWidth*CELL_ROOM/c.scrollWidth);
+    });
+    if(k<1)t.style.fontSize=(Math.max(k,CELL_MIN_SCALE)*100).toFixed(1)+'%';
+  }
   function fitTable(tb){
+    fitCells(tb);
     var t=tb.firstElementChild;
     if(!t)return;
     t.style.transform='';t.style.width='';
@@ -132,7 +161,10 @@
     fitAll(lines,w);
     clonesOf(fb).forEach(function(c){
       var cl=c.querySelectorAll('.ln');
-      for(var i=0;i<cl.length&&i<lines.length;i++){cl[i].style.wordSpacing=lines[i].style.wordSpacing;cl[i].style.letterSpacing=lines[i].style.letterSpacing;cl[i].style.fontSize=lines[i].style.fontSize;}
+      for(var i=0;i<cl.length&&i<lines.length;i++){
+        cl[i].style.wordSpacing=lines[i].style.wordSpacing;cl[i].style.letterSpacing=lines[i].style.letterSpacing;cl[i].style.fontSize=lines[i].style.fontSize;
+        if(lines[i].classList.contains('sq'))squeeze(cl[i],Number.parseFloat(lines[i].style.transform.slice(7)));
+      }
     });
     original.set(fb,fb.textContent);
   }
@@ -155,6 +187,7 @@
     var inner=fb.firstElementChild,boxes=[fb].concat([].slice.call(clonesOf(fb))),total=0;
     boxes.forEach(function(b){b.classList.add('rf');total+=b.getBoundingClientRect().height;});
     fb.querySelectorAll('.ln[data-fs0]').forEach(function(l){l.style.fontSize=l.dataset.fs0;});
+    boxes.forEach(function(b){b.querySelectorAll('.ln.sq').forEach(function(l){l.style.transform='';});});
     var lh=Number.parseFloat(getComputedStyle(fb).lineHeight)||0,scale=1;
     inner.style.fontSize='';
     while(scale>0.62&&inner.scrollHeight>total+lh*0.3){scale-=0.03;inner.style.fontSize=Math.round(scale*100)+'%';}
@@ -168,7 +201,7 @@
       var n=r.target.nodeType===1?r.target:r.target.parentElement;if(!n||!n.closest)return;
       var fb=n.closest('.fb');if(fb&&!fb.classList.contains('cont'))changed.add(fb);
       var tb=n.closest('.tb');if(tb)tb.classList.add('rf');
-      var pl=n.closest('.pl');if(pl){pl.style.wordSpacing='';pl.style.letterSpacing='';if(pl.dataset.fs0!==undefined)pl.style.fontSize=pl.dataset.fs0;}
+      var pl=n.closest('.pl');if(pl){pl.style.wordSpacing='';pl.style.letterSpacing='';pl.style.transform='';if(pl.dataset.fs0!==undefined)pl.style.fontSize=pl.dataset.fs0;}
     });
     changed.forEach(function(fb){if(original.has(fb)&&fb.textContent!==original.get(fb))reflow(fb);});
   });

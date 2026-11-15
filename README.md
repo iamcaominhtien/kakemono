@@ -135,7 +135,7 @@ their MathML (experimental).
 
 `--json` writes the blocks in reading order. Each block has a `type` (`title`, `authors`,
 `heading`, `paragraph`, `list_item`, `list_continuation`, `equation`, `figure`, `footnote`,
-`reference`, `note`, `code`), its `page` (from 0), `bbox` and `spans`:
+`reference`, `note`, `code`, `contents_entry`), its `page` (from 0), `bbox` and `spans`:
 
 ```json
 {
@@ -151,7 +151,9 @@ their MathML (experimental).
 Joining the `text` of the spans gives the paragraph exactly. `style` is a bit set: 1 bold, 2 italic,
 4 monospace, 8 math font, 16 superscript, 32 subscript, 64 sans-serif. A `code` block also has
 `rows`, one per line, indented with spaces; a rebuilt table has a `table` field with its rows,
-cells (`colspan`, `rowspan`) and rules.
+cells (`colspan`, `rowspan`) and rules. A `contents_entry` (a line of a book's table of contents)
+has its `level` and printed `page`; its title links to the heading it names. Links of the PDF
+(link annotations) are kept as `href` on the spans they cover.
 
 ## Use as a library
 

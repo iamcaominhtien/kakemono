@@ -81,14 +81,23 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
             Some(href) if href.starts_with('#') => {
                 out.push_str(&format!("<a class=\"xref\" href=\"{}\">{body}</a>", esc(href)))
             }
+            // A link whose text is an address may break anywhere; one on
+            // words breaks between them.
             Some(href) => out.push_str(&format!(
-                "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{body}</a>",
+                "<a{} href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{body}</a>",
+                if looks_like_address(text) { " class=\"url\"" } else { "" },
                 esc(href)
             )),
             None => out.push_str(&body),
         }
     }
     out
+}
+
+/// Whether a link text is a web or mail address rather than words.
+fn looks_like_address(text: &str) -> bool {
+    let text = text.trim();
+    !text.contains(' ') && (text.contains("://") || text.contains("www.") || text.contains('/') || text.contains('@'))
 }
 
 /// The text of `spans` without styling, trimmed.
@@ -187,6 +196,7 @@ pub(crate) fn kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::Footnote { .. } => "footnote",
         BlockKind::Reference { .. } => "reference",
         BlockKind::Code => "code",
+        BlockKind::ContentsEntry { .. } => "contents-entry",
     }
 }
 
