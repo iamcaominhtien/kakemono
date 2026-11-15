@@ -6,11 +6,11 @@
 
 **Turn PDF papers and books into clean, readable HTML — in pure Rust, as a single executable.**
 
-[![Release](https://img.shields.io/github/v/release/iamcaominhtien/rust-pdf-parser?label=release&color=d9822b)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/rust-pdf-parser/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/rust-pdf-parser/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![PDF engine](https://img.shields.io/badge/PDF_engine-hayro-orange)](https://github.com/LaurenzV/hayro)
-[![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
+[![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
 [Features](#features) · [Modes](#the-four-modes) · [Install](#installation) · [Usage](#usage) ·
@@ -57,12 +57,12 @@ block whose text changes (after translation) reflows inside its box.
 ## Installation
 
 **Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
-attached to every [release](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest).
+attached to every [release](https://github.com/iamcaominhtien/kakemono/releases/latest).
 
 **From source** (stable Rust):
 
 ```bash
-cargo install --git https://github.com/iamcaominhtien/rust-pdf-parser
+cargo install --git https://github.com/iamcaominhtien/kakemono
 ```
 
 or, in a clone, `cargo build --release`; the executable is `target/release/kakemono`.
