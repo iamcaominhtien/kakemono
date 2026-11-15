@@ -235,7 +235,7 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
 
 /// The equation number written as a paragraph of its own: a paragraph whose
 /// whole text is a number in parentheses, "(2)" or "(2.1)".
-fn stray_equation_number(block: &Block) -> Option<String> {
+pub(crate) fn stray_equation_number(block: &Block) -> Option<String> {
     if !matches!(block.kind, BlockKind::Paragraph { in_abstract: false }) {
         return None;
     }
@@ -251,7 +251,7 @@ fn stray_equation_number(block: &Block) -> Option<String> {
 /// The end of the run of code paragraphs starting at `blocks[start]`, when
 /// the run has at least two lines (one monospaced line stays inline code)
 /// or holds a listing found by the analysis.
-fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
+pub(crate) fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
     let end = start
         + blocks[start..]
             .iter()
@@ -338,7 +338,7 @@ fn open_group(group: Group, blocks: &[&Block], block_idx: usize, out: &mut Strin
 
 /// Whether the text of `spans` is the word "Abstract" (any case, with an
 /// optional final `.` or `:`).
-fn is_abstract_text(spans: &[Span]) -> bool {
+pub(crate) fn is_abstract_text(spans: &[Span]) -> bool {
     plain(spans)
         .trim_end_matches(['.', ':'])
         .eq_ignore_ascii_case("abstract")
@@ -346,7 +346,7 @@ fn is_abstract_text(spans: &[Span]) -> bool {
 
 /// Whether `spans` are a scene break of a novel: a paragraph of only
 /// "#", "*" or "⁂" marks ("#", "* * *"), centred in the book.
-fn is_scene_break(spans: &[Span]) -> bool {
+pub(crate) fn is_scene_break(spans: &[Span]) -> bool {
     let text = plain(spans);
     let marks: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
     !marks.is_empty() && marks.len() <= 5 && marks.iter().all(|ch| matches!(ch, '#' | '*' | '\u{2042}'))

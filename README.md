@@ -4,7 +4,7 @@
 
 # kakemono
 
-**Turn PDF papers and books into clean, readable HTML — in pure Rust, as a single executable.**
+**Turn PDF papers and books into clean, readable HTML or Word documents — in pure Rust, as a single executable.**
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
-[Features](#features) · [Modes](#the-four-modes) · [Install](#installation) · [Usage](#usage) ·
+[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Install](#installation) · [Usage](#usage) ·
 [Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -26,10 +26,11 @@
 > glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
 
 Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
-to feed to translation tools.
+to feed to translation tools, or a Word document to edit.
 
 ```bash
 kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
+kakemono convert 1706.03762 -o attention.docx   # the same paper as a Word document
 ```
 
 ## Features
@@ -40,6 +41,7 @@ kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03
 | 📖 **Continuous text** | Lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined across columns and pages, running heads and page numbers removed, footnotes set apart. |
 | 🧱 **Real structure** | Tables rebuilt as `<table>`, display formulas as MathML, code listings kept line by line, lists, headings and cross-links. |
 | 🖼️ **Sharp images** | Figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG. |
+| 📝 **Word documents** | `.docx` with Word styles, Word tables and editable Word equations, from the same analysis. |
 | 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
 | ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
@@ -55,6 +57,22 @@ kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03
 In every mode a paragraph stays one element in the DOM (`<p>` in `medium`/`friendly`, one `div`
 with `data-block` in `hard`/`hard-95`), so translation tools see whole paragraphs. In `hard-95`, a
 block whose text changes (after translation) reflows inside its box.
+
+## Word documents
+
+`kakemono convert paper.pdf -o paper.docx` (or `--format docx`) writes a Word document instead of
+HTML. It is built from the same analysis as the HTML modes, as one flowing column:
+
+- the title, authors, abstract, headings (`Heading 1`–`4`, so Word's navigation pane and table of
+  contents work), lists, footnotes, code and references get Word styles;
+- rebuilt tables become Word tables, with merged cells and the paper's rules;
+- formulas whose structure is clear become Word equations (Office Math, editable in Word), the
+  others pictures; numbered formulas keep their number at the right margin;
+- figures are pictures of their area of the page, with their captions; citations and references to
+  figures, tables and sections are links within the document.
+
+The page is US Letter with one-inch margins. `--scale` and `--equations` apply; `--mode`, `--all`,
+`--images`, `--page-image` and `--fonts` are for HTML only.
 
 ## Installation
 
@@ -86,6 +104,10 @@ kakemono convert paper.pdf --mode medium -o paper.html
 kakemono convert paper.pdf --all --json -o out/
 ```
 
+```bash
+kakemono convert paper.pdf -o paper.docx
+```
+
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
 arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
@@ -93,12 +115,13 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-o, --output <path>` | HTML file, or directory |
+| `-f, --format <html\|docx>` | HTML (default) or a Word document; `docx` when `--output` ends in `.docx` |
+| `-o, --output <path>` | HTML or `.docx` file, or directory |
 | `--images <inline\|files>` | Embed images (default) or write them to `<name>_assets/` |
-| `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi) |
+| `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML and Word |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
-| `--equations <mathml\|image>` | Display formulas as MathML where the structure is clear (default), or pictures |
+| `--equations <mathml\|image>` | Display formulas as MathML (Word equations in `.docx`) where the structure is clear (default), or pictures |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
@@ -143,7 +166,8 @@ let out = paper.to_html(&analysis, &HtmlOptions { mode: Mode::Friendly, ..Defaul
 std::fs::write("paper.html", out.html)?;
 ```
 
-`paper.to_html` can be called once per mode with the same analysis. `analysis.doc` is the
+`paper.to_html` can be called once per mode with the same analysis, and
+`paper.to_docx(&analysis, &DocxOptions::default())` returns the bytes of a Word document. `analysis.doc` is the
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
 how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -159,6 +183,7 @@ import kakemono
 html = kakemono.convert("paper.pdf")                   # friendly mode, one self-contained page
 html = kakemono.convert("1706.03762", mode="medium")   # an arXiv id or URL works too
 pages = kakemono.convert_all("paper.pdf")              # every mode, from one analysis
+kakemono.to_docx("paper.pdf", "paper.docx")           # a Word document (also returns its bytes)
 doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
 ```
 
@@ -175,6 +200,8 @@ The options are those of the command line (`tables`, `equations`, `page_image`, 
 - `hard-95` uses Latin Modern for TeX papers and the reader's fonts otherwise, so letter shapes may
   differ slightly; positions and line widths match.
 - Author–year citations are not linked yet; scanned and encrypted PDFs are not supported.
+- Word documents are one column (the page and column layout of the PDF is not kept), and figures
+  are pictures.
 - Unusual layouts may be read wrongly: `inspect` shows what was detected.
 
 ## Testing
@@ -190,7 +217,7 @@ cargo test --release
   background and formulas rebuilt as MathML. The limits are the current results: better passes,
   worse fails; tighten them after an improvement
   (`KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
-- **Snapshots**: a hash of each mode's HTML and of the JSON per paper, in `tests/data/snapshots/`.
+- **Snapshots**: a hash of each mode's HTML, of the Word document and of the JSON per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 

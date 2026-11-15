@@ -1,7 +1,7 @@
 # kakemono for Python
 
-Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, from
-Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
+Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML or Word
+documents, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
 ```bash
@@ -14,6 +14,7 @@ import kakemono
 html = kakemono.convert("paper.pdf")                       # friendly mode, one self-contained page
 html = kakemono.convert("1706.03762", mode="medium")       # an arXiv id or URL works too
 pages = kakemono.convert_all("paper.pdf")                  # {"hard": ..., "hard-95": ..., "medium": ..., "friendly": ...}
+kakemono.to_docx("paper.pdf", "paper.docx")               # a Word document (also returns its bytes)
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 ```
 
@@ -27,6 +28,9 @@ doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: bloc
 Options of `convert` and `convert_all`: `tables`, `equations` (`"mathml"` or `"image"`),
 `page_image` (`"svg"`, `"svg-only"`, `"png"`), `embed_fonts`, `scale` and `jobs`. They match the
 command-line options described in the [main README](https://github.com/iamcaominhtien/kakemono#usage).
+
+`to_docx` takes `tables`, `equations`, `scale` and `jobs`. Formulas whose structure is clear become
+Word equations (editable in Word), the others pictures; rebuilt tables become Word tables.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 

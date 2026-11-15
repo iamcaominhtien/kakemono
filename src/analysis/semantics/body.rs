@@ -207,8 +207,50 @@ pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[Fo
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
     assign_heading_levels(nodes, candidates, stats, &cfg.body);
+    unmark_contents_entries(nodes);
     classify_running_text(nodes, &cfg.body);
     mark_list_continuations(nodes, &cfg.body);
+}
+
+/// Turns the entries of a book's table of contents that were taken for
+/// headings ("1 The way of the program", "Preface v": bold, short, often
+/// numbered) back into plain text, so that they do not fill the outline of
+/// the document. The table of contents is the run of text blocks after a
+/// "Contents" heading that are entries: blocks ending in leader dots or a
+/// page number (see [`CONTENTS_ENTRY_END`]), and headings followed by such
+/// a block (a chapter whose page number was not read). The run ends at the
+/// first other block, or at a chapter label set alone ("Chapter 1"), which
+/// opens the first chapter.
+fn unmark_contents_entries(nodes: &mut [Node]) {
+    let text_of = |node: &Node| node.text_block().map(|block| block_text(&block.lines));
+    // A chapter label set alone ("Chapter 1") ends in a number too, but
+    // starts the first chapter after the table of contents.
+    let is_entry = |node: &Node| {
+        text_of(node).is_some_and(|text| {
+            let text = text.trim();
+            CONTENTS_ENTRY_END.is_match(text) && CHAPTER_LABEL.find(text).is_none_or(|label| label.end() < text.len())
+        })
+    };
+    let mut idx = 0;
+    while idx < nodes.len() {
+        let starts = matches!(nodes[idx].class, Class::Heading { .. })
+            && text_of(&nodes[idx]).is_some_and(|text| CONTENTS_HEADING.is_match(text.trim()));
+        idx += 1;
+        if !starts {
+            continue;
+        }
+        while idx < nodes.len() {
+            let heading = matches!(nodes[idx].class, Class::Heading { .. });
+            let entry = is_entry(&nodes[idx]) || (heading && nodes.get(idx + 1).is_some_and(is_entry));
+            if !entry {
+                break;
+            }
+            if heading {
+                nodes[idx].class = Class::Unknown;
+            }
+            idx += 1;
+        }
+    }
 }
 
 /// Marks the paragraphs that continue a list item: a paragraph right after

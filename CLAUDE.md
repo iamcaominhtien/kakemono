@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-`kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes:
+`kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes, or to a
+Word document (`.docx`, `src/render/docx/`):
 
 - `hard`: a copy of every page, with a selectable text layer.
 - `hard-95`: like `hard`, but all text is real HTML text placed as in the PDF.
@@ -18,6 +19,7 @@ Read before changing code:
 ```bash
 cargo build --release
 ./target/release/kakemono convert <file.pdf | arXiv id> -m friendly -o out/x.friendly.html   # or --all -o out/dir
+./target/release/kakemono convert <file.pdf> -o out/x.docx                    # Word document (or -f docx)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
@@ -58,7 +60,7 @@ committing.
   1. Run the tests again and see which snapshots changed.
   2. Compare the output text before and after on as many papers as you can (the 8 test papers,
      plus other varied papers if you have them).
-- Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML.
+- Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML and of the Word document.
   - Changing the renderer's CSS, JS or assets also changes the snapshots, because they are
     embedded with `include_str!`.
   - Update the snapshots only when the output change is intended, and commit them with the code.
@@ -116,3 +118,7 @@ committing.
   A PR that mixes kinds gets every label that applies. If a PR fits none of these (for example
   CI only, or refactoring only), create a short, lowercase label that names it (`ci`,
   `refactor`, `tests`) rather than leaving the PR unlabelled.
+- **SonarQube Cloud issues:** after the PR's checks finish, read the new issues SonarQube Cloud
+  reports on it and fix them all in the PR, without waiting to be asked. They are public:
+  `curl -s "https://sonarcloud.io/api/issues/search?componentKeys=iamcaominhtien_rust-pdf-parser&pullRequest=<N>&resolved=false"`.
+  Recurring ones: `rust:S2208` (a wildcard `use x::*` outside a test module: import each name).

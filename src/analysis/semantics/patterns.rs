@@ -72,6 +72,17 @@ pub(crate) static KNOWN_HEADINGS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(abstract|references|bibliography|acknowledge?ments?|appendix|appendices|supplementary materials?|conclusions?|introduction|related work|contents|keywords|index terms|はじめに|まえがき|目次|索引|参考文献|あとがき|前言|序言|目录|lời nói đầu|lời giới thiệu|mục lục|tài liệu tham khảo)$").unwrap()
 });
 
+/// The heading of a book's table of contents ("Contents", "Table of
+/// Contents", "目次", "目录", "Mục lục").
+pub(crate) static CONTENTS_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(?:(?:table of )?contents|目次|目录|mục lục)$").unwrap());
+/// The end of an entry of a table of contents: leader dots (". . . ." or
+/// "....", then the page number when there is one), or a page number in
+/// arabic or lower-case roman figures after the title ("Preface v",
+/// "1 Exploratory data analysis 1").
+pub(crate) static CONTENTS_ENTRY_END: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:(?:\.\s?){4,}\s*(?:\d{1,4}|[ivxlc]{1,6})?|\s(?:\d{1,4}|[ivxlc]{1,6}))$").unwrap());
+
 #[cfg(test)]
 #[allow(clippy::missing_docs_in_private_items)]
 mod tests {
@@ -87,6 +98,20 @@ mod tests {
         assert!(KNOWN_HEADINGS.is_match("Mục lục"));
         assert!(!REF_HEADING.is_match("References to prior work"));
         assert!(ABSTRACT_INLINE.is_match("Abstract—We propose"));
+    }
+
+    #[test]
+    fn contents_entries() {
+        assert!(CONTENTS_HEADING.is_match("Table of Contents"));
+        assert!(CONTENTS_HEADING.is_match("Mục lục"));
+        assert!(!CONTENTS_HEADING.is_match("Contents of the box"));
+        assert!(CONTENTS_ENTRY_END.is_match("1.1 What is a program? . . . . . . . ."));
+        assert!(CONTENTS_ENTRY_END.is_match("0.1 How I wrote this book . . . . . vii"));
+        assert!(CONTENTS_ENTRY_END.is_match("2.4 Script mode.......... 12"));
+        assert!(CONTENTS_ENTRY_END.is_match("Preface v"));
+        assert!(CONTENTS_ENTRY_END.is_match("1 Exploratory data analysis 1"));
+        assert!(!CONTENTS_ENTRY_END.is_match("1 The way of the program"));
+        assert!(!CONTENTS_ENTRY_END.is_match("Preface"));
     }
 
     #[test]
