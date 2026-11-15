@@ -102,13 +102,13 @@
   // One the columns cut anyway (it follows a heading it keeps to) flows too,
   // rather than leave its title bar alone at the foot of a page.
   function flowCode(art,fresh){
-    if(fresh)[].forEach.call(art.querySelectorAll('figure.code.bk-flow'),function(f){f.classList.remove('bk-flow');});
+    if(fresh)art.querySelectorAll('figure.code.bk-flow').forEach(function(f){f.classList.remove('bk-flow');});
     var top=art.getBoundingClientRect().top,th=art.clientHeight,moved=[];
-    [].forEach.call(art.querySelectorAll('figure.code:not(.bk-flow)'),function(f){
-      var prev=f.previousElementSibling,fr=f.getClientRects(),pr=prev&&prev.getClientRects(),pre=f.querySelector('pre');
+    art.querySelectorAll('figure.code:not(.bk-flow)').forEach(function(f){
+      var prev=f.previousElementSibling,fr=f.getClientRects(),pr=prev?.getClientRects(),pre=f.querySelector('pre');
       if(!fr.length)return;
       if(pre&&colOf(pre)>colOf(f)){moved.push(f);return;}
-      if(!pr||!pr.length||fr[0].top-top>4)return;
+      if(!pr?.length||fr[0].top-top>4)return;
       var last=pr[pr.length-1];
       if(colOf(f)===colOf(prev)+1&&(last.bottom-top)/th<0.6)moved.push(f);
     });
@@ -126,8 +126,8 @@
         var start=h,top=function(e){return e.getBoundingClientRect().top-art.getBoundingClientRect().top<4;};while(start.previousElementSibling&&/^H[2-5]$/.test(start.previousElementSibling.tagName))start=start.previousElementSibling;
         // A run of headings that fills a page from its top (a chapter's outline) leaves only its last one to move.
         if(top(start))start=h;
-        if(start.hasAttribute('data-bkb')||top(start))return;
-        start.setAttribute('data-bkb','');start.style.breakBefore='column';changed=true;
+        if(start.dataset.bkb!==undefined||top(start))return;
+        start.dataset.bkb='';start.style.breakBefore='column';changed=true;
       });
       if(!changed)break;
     }
@@ -170,7 +170,7 @@
     return [img.currentSrc||img.src,h?w/h:0];
   }
   function coverPads(art){
-    [].forEach.call(art.querySelectorAll(':scope>.bk-pad'),function(p){p.remove();});
+    art.querySelectorAll(':scope>.bk-pad').forEach(function(p){p.remove();});
     var c=picture(art,'figure.cover img');cover=c[0];coverRatio=c[1];
     c=picture(art,'figure.back-cover img');back=c[0];backRatio=c[1];
     if(cover)for(var i=0;i<per;i++)art.insertBefore(el('div','bk-pad'),art.firstChild);
@@ -188,7 +188,7 @@
     e.style.backgroundSize=src&&ratio&&Math.abs(Math.log(g.pw/g.ph/ratio))>COVER_CROP?'contain':'';
     if(src){e.style.visibility='';e.querySelector('.bk-rh').textContent='';e.querySelector('.bk-folio').textContent='';}
   }
-  function removePads(){[].forEach.call(article.querySelectorAll(':scope>.bk-pad'),function(p){p.remove();});}
+  function removePads(){article.querySelectorAll(':scope>.bk-pad').forEach(function(p){p.remove();});}
   function paginate(){
     measure();
     var art=win.firstElementChild;art.style.setProperty('--bk-x','0px');
@@ -290,10 +290,10 @@
     // A reference too long to move whole to the next page may break across pages.
     // Everything is measured before anything changes (the floats in the
     // probe, beside the article): a long book is laid out once, not once per float.
-    var lis=[].slice.call(art.querySelectorAll('ol.refs li'));
+    var lis=Array.from(art.querySelectorAll('ol.refs li'));
     lis.forEach(function(li){li.classList.remove('bk-long');});
     lis.filter(function(li){return li.getBoundingClientRect().height>g.th*0.25;}).forEach(function(li){li.classList.add('bk-long');});
-    var figs=[].slice.call(art.querySelectorAll('figure.float')),plans=figs.map(function(f){
+    var figs=Array.from(art.querySelectorAll('figure.float')),plans=figs.map(function(f){
       var base=baseOf(f);f._bk=base;if(!base.scalable)return {split:floatH(f,base,null)>g.th};
       var bar=base.wide?20:0,room=pageRoom(f)-bar,k=solve(f,base,room,base.min,1);
       if(!k&&room<g.th-1-bar){room=g.th-1-bar;k=solve(f,base,room,base.min,1);}
@@ -340,7 +340,7 @@
       });
       var changed=false;
       // The scales first (measured in the probe), then the changes.
-      var ks=todo.map(function(t){var f=t[0];return f._k>GAP_MIN?solve(f,f._bk,t[1]-(f._bk.wide?20:0),GAP_MIN,f._k):0;});
+      var ks=todo.map(function(t){var f=t[0],room=t[1];if(f._bk.wide)room-=20;return f._k>GAP_MIN?solve(f,f._bk,room,GAP_MIN,f._k):0;});
       todo.forEach(function(t,i){var f=t[0],k=ks[i];if(k&&k<f._k){scale(f,f._bk,k);f._k=k;changed=true;}});
       // Then where the others move, all measured before any moves; a float
       // whose text another one moves through waits for the next round.
@@ -377,21 +377,37 @@
     s.querySelector('.bk-window>article').style.setProperty('--bk-x',(-p*step)+'px');
     var v=s.querySelector('.verso'),r=s.querySelector('.recto'),closed=!!cover&&p===0,ended=!!back&&p===pages-1;
     v.style.visibility=closed&&per===2?'hidden':'';
-    face(r,closed?cover:ended&&per===1?back:null,closed?coverRatio:backRatio);face(v,ended&&per===2?back:null,backRatio);
+    paintCovers(v,r,closed,ended);
     if(closed)return;
-    if(ended){if(per===2)r.style.visibility='hidden';return;}
-    if(per===2){
-      v.querySelector('.bk-rh').textContent=title;v.querySelector('.bk-folio').textContent=String(p+1);
-      r.querySelector('.bk-rh').textContent=p+1<pages?headAt(p+1):'';r.querySelector('.bk-folio').textContent=p+1<pages?String(p+2):'';
-      r.style.visibility=p+1<pages?'':'hidden';
-      if(p+1===emptyCol)r.querySelector('.bk-rh').textContent='';
-    }else{
-      r.querySelector('.bk-rh').textContent=headAt(p);r.querySelector('.bk-folio').textContent=String(p+1);
+    if(ended){
+      if(per===2)r.style.visibility='hidden';
+      return;
     }
+    if(per===2)paintSpread(v,r,p);else paintPage(r,p);
+  }
+  // The cover on the right page when the book is closed, the back cover where the text ends.
+  function paintCovers(v,r,closed,ended){
+    var recto=null;
+    if(closed)recto=cover;else if(ended&&per===1)recto=back;
+    face(r,recto,closed?coverRatio:backRatio);face(v,ended&&per===2?back:null,backRatio);
+  }
+  // Running heads and folios of the two pages of spread p (the right one may be past the end).
+  function paintSpread(v,r,p){
+    var more=p+1<pages;
+    v.querySelector('.bk-rh').textContent=title;v.querySelector('.bk-folio').textContent=String(p+1);
+    r.querySelector('.bk-rh').textContent=more&&p+1!==emptyCol?headAt(p+1):'';r.querySelector('.bk-folio').textContent=more?String(p+2):'';
+    r.style.visibility=more?'':'hidden';
+  }
+  function paintPage(r,p){r.querySelector('.bk-rh').textContent=headAt(p);r.querySelector('.bk-folio').textContent=String(p+1);}
+  function pageLabel(){
+    if(cover&&page===0)return 'Cover';
+    if(back&&page===pages-1)return 'Back cover';
+    if(per===2&&page+1<pages)return 'Pages '+(page+1)+'–'+(page+2)+' of '+pages;
+    return 'Page '+(page+1)+' of '+pages;
   }
   function show(p,announce){
     page=first(p);paint(real,page);
-    var last=page+per>=pages,label=cover&&page===0?'Cover':back&&page===pages-1?'Back cover':per===2&&page+1<pages?'Pages '+(page+1)+'–'+(page+2)+' of '+pages:'Page '+(page+1)+' of '+pages;
+    var last=page+per>=pages,label=pageLabel();
     countEl.textContent=label;barEl.firstChild.style.width=((Math.min(pages,page+per))/pages*100)+'%';
     var prog=doc.getElementById('progress');if(prog)prog.style.width=((Math.min(pages,page+per))/pages*100)+'%';
     prevBtns.forEach(function(b){b.disabled=page===0;});nextBtns.forEach(function(b){b.disabled=last;});
@@ -667,8 +683,8 @@
   function leave(){
     if(!active)return;
     var keep=blockOnPage(page);if(observer)observer.disconnect();
-    if(keep&&keep.classList.contains('bk-pad'))keep=null;
-    active=false;restoreFloats();restoreNotes();clearFloats(article);removePads();cover=back=null;layout.appendChild(article);view.hidden=true;root.removeAttribute('data-view');
+    if(keep?.classList.contains('bk-pad'))keep=null;
+    active=false;restoreFloats();restoreNotes();clearFloats(article);removePads();cover=back=null;layout.appendChild(article);view.hidden=true;delete root.dataset.view;
     win.firstElementChild&&win.removeChild(win.firstElementChild);
     article.style.removeProperty('--bk-x');clearTocPages();
     if(P.syncToggle)P.syncToggle();if(P.placeSidenotes)P.placeSidenotes();if(P.fitScroll)P.fitScroll();

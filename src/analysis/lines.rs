@@ -1345,7 +1345,7 @@ pub fn take_ruby(lines: &mut Vec<Line>, cfg: &LinesConfig) -> Vec<Line> {
 
 /// Whether `line` is furigana over one of `lines`.
 fn is_ruby_line(line: &Line, lines: &[Line], cfg: &LinesConfig) -> bool {
-    let kana = |ch: char| matches!(ch, '\u{3041}'..='\u{309F}' | '\u{30A0}'..='\u{30FF}');
+    let kana = |ch: char| matches!(ch, '\u{3041}'..='\u{30FF}');
     let kanji = |text: &str| {
         text.chars()
             .any(|ch| matches!(ch, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '\u{3005}'))

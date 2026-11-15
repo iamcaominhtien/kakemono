@@ -80,11 +80,11 @@ impl SymbolFont {
             Self::Dingbats => dingbats(code).map(String::from),
             Self::Stmary => ["\u{2190}", "\u{2192}", "\u{2191}", "\u{2193}"]
                 .get(usize::from(code))
-                .map(|arrow| arrow.to_string()),
+                .map(ToString::to_string),
             Self::Omx => OMX
                 .get(usize::from(code))
                 .filter(|text| !text.is_empty())
-                .map(|text| text.to_string()),
+                .map(ToString::to_string),
             Self::OpenSymbol => None,
         }
     }
@@ -174,7 +174,7 @@ fn oms(code: u8) -> Option<String> {
     }
     OMS.get(usize::from(code))
         .filter(|text| !text.is_empty())
-        .map(|text| text.to_string())
+        .map(ToString::to_string)
 }
 
 /// `MathDesignSymbolA`: the symbols seen in its fonts, and blackboard bold

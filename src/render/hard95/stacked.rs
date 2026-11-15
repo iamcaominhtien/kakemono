@@ -318,6 +318,28 @@ fn clusters_of(runs: &[(usize, usize)], glyph_of_char: &[Option<usize>]) -> Vec<
         .collect()
 }
 
+/// The HTML of character `ch` at position `pos` of the line when it is not
+/// plain text: a tall glyph, which stays in the picture (an unseen gap of
+/// its width), or a tab (a space whose next character is set far apart).
+fn placed_char_html(line: &Line, ch: char, pos: usize, text_info: &LineText<'_>, units: &Units) -> Option<String> {
+    let glyph_of_char = text_info.glyph_of_char;
+    if let Some(glyph_idx) = glyph_of_char[pos]
+        && is_tall(&line.glyphs[glyph_idx])
+    {
+        let glyph = &line.glyphs[glyph_idx];
+        return Some(format!(
+            "<span class=\"ph\" style=\"width:{}\">{}</span>",
+            units.len(glyph.x1 - glyph.x0),
+            esc(&glyph.text)
+        ));
+    }
+    let tab = match (glyph_of_char[pos], glyph_of_char.get(pos + 1)) {
+        (None, Some(&Some(next))) if ch == ' ' => text_info.tabs[next],
+        _ => None,
+    };
+    tab.map(|width| format!("<span class=\"tab\" style=\"width:{}\">&#160;</span>", units.len(width)))
+}
+
 /// Writes the spans of a line, replacing the characters of each cluster by
 /// the cluster drawn glyph by glyph, and setting resized glyphs (see
 /// [`own_size`]) at their size and tabs (see [`tabs_of`]) at their width.
@@ -351,43 +373,20 @@ fn write_line(
                     }
                 }
                 _ => {
-                    // A tab: a space whose next character is set far apart.
-                    let tab = match (glyph_of_char[pos], glyph_of_char.get(pos + 1)) {
-                        (None, Some(&Some(next))) if ch == ' ' => text_info.tabs[next],
-                        _ => None,
-                    };
-                    // A tall glyph stays in the picture: an unseen gap.
-                    if let Some(glyph_idx) = glyph_of_char[pos]
-                        && is_tall(&line.glyphs[glyph_idx])
-                    {
+                    if let Some(html) = placed_char_html(line, ch, pos, text_info, units) {
                         plain.flush(&mut out, span, &mut gaps, units);
-                        let glyph = &line.glyphs[glyph_idx];
-                        out.push_str(&format!(
-                            "<span class=\"ph\" style=\"width:{}\">{}</span>",
-                            units.len(glyph.x1 - glyph.x0),
-                            esc(&glyph.text)
-                        ));
-                        pos += 1;
-                        continue;
-                    }
-                    if let Some(width) = tab {
-                        plain.flush(&mut out, span, &mut gaps, units);
-                        out.push_str(&format!(
-                            "<span class=\"tab\" style=\"width:{}\">&#160;</span>",
-                            units.len(width)
-                        ));
-                        pos += 1;
-                        continue;
-                    }
-                    // Spaces (no glyph) keep the size of the text before them.
-                    if let Some(glyph_idx) = glyph_of_char[pos] {
-                        let size = own_size(line, glyph_idx);
-                        if size != plain.size {
-                            plain.flush(&mut out, span, &mut gaps, units);
-                            plain.size = size;
+                        out.push_str(&html);
+                    } else {
+                        // Spaces (no glyph) keep the size of the text before them.
+                        if let Some(glyph_idx) = glyph_of_char[pos] {
+                            let size = own_size(line, glyph_idx);
+                            if size != plain.size {
+                                plain.flush(&mut out, span, &mut gaps, units);
+                                plain.size = size;
+                            }
                         }
+                        plain.text.push(ch);
                     }
-                    plain.text.push(ch);
                 }
             }
             pos += 1;

@@ -7,7 +7,7 @@
 
 use super::lines::LinesConfig;
 use super::page::{DocStats, PageData};
-use crate::backend::FontInfo;
+use crate::backend::{FontInfo, PathBox};
 use crate::common::geom::Rect;
 use crate::model::FloatKind;
 use crate::model::{Line, LineGlyph};
@@ -1244,30 +1244,11 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     let captioned = page.lines.iter().any(|line| CAPTION.is_match(&line.text()));
-    for path in &page.paths {
-        if path.bbox.width() > cfg.background_path_extent_ratio * page.width
-            && path.bbox.height() > cfg.background_path_extent_ratio * page.height
-        {
-            continue;
-        }
-        // The shading of a box of text is no drawing; nor is the frame of
-        // one on a page without captions (a framed figure of text is still a
-        // figure).
-        let shading = path.filled && !path.stroked;
-        let frame =
-            path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned && !holds_unreadable(page, &path.bbox);
-        if (shading && path.is_white()) || ((shading || frame) && shades_text(page, &path.bbox, cfg)) {
-            continue;
-        }
-        if path.color[3] < cfg.min_path_alpha {
-            continue;
-        }
-        if path.is_hrule() && (inline_rule(page, &path.bbox, cfg) || underline(page, &path.bbox, cfg)) {
-            continue;
-        }
-        if path.is_vrule() && marks_text(page, &path.bbox, cfg) {
-            continue;
-        }
+    for path in page
+        .paths
+        .iter()
+        .filter(|path| path_is_drawing(page, path, captioned, cfg))
+    {
         elements.push(GraphicElement {
             bbox: path.bbox,
             image: false,
@@ -1275,6 +1256,32 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     elements
+}
+
+/// Whether `path` is part of a drawing: not a page frame, not the shading
+/// or (on a page without captions, `captioned`) the frame of a box of text
+/// (a framed figure of text is still a figure), not a white fill or an
+/// invisible path, and not a rule that belongs to the text (a fraction bar,
+/// an underline, the bar beside a box of text).
+fn path_is_drawing(page: &PageData, path: &PathBox, captioned: bool, cfg: &FloatsConfig) -> bool {
+    if path.bbox.width() > cfg.background_path_extent_ratio * page.width
+        && path.bbox.height() > cfg.background_path_extent_ratio * page.height
+    {
+        return false;
+    }
+    let shading = path.filled && !path.stroked;
+    let frame =
+        path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned && !holds_unreadable(page, &path.bbox);
+    if (shading && path.is_white()) || ((shading || frame) && shades_text(page, &path.bbox, cfg)) {
+        return false;
+    }
+    if path.color[3] < cfg.min_path_alpha {
+        return false;
+    }
+    if path.is_hrule() && (inline_rule(page, &path.bbox, cfg) || underline(page, &path.bbox, cfg)) {
+        return false;
+    }
+    !(path.is_vrule() && marks_text(page, &path.bbox, cfg))
 }
 
 /// Whether the area `bbox` holds lines of running text, or the captions of
