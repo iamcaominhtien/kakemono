@@ -202,7 +202,7 @@ struct FlowState {
 /// Only nodes still [`Class::Unknown`] are classified; non-text nodes are
 /// left alone.
 pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[FontInfo], cfg: &SemanticsConfig) {
-    super::contents::mark_contents(nodes, cfg);
+    super::contents::mark_contents(nodes, fonts, cfg);
     super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
@@ -785,7 +785,7 @@ impl FlowState {
 /// "5. H→ γγ channel" come from other fonts and say nothing about the style
 /// of the heading. A block without any such glyph counts all its letters and
 /// numerals instead.
-fn text_frac(lines: &[Line], fonts: &[FontInfo], pred: impl Fn(&FontInfo) -> bool) -> f32 {
+pub(super) fn text_frac(lines: &[Line], fonts: &[FontInfo], pred: impl Fn(&FontInfo) -> bool) -> f32 {
     let count = |ascii_only: bool| {
         let (mut matching, mut total) = (0usize, 0usize);
         for glyph in lines.iter().flat_map(|line| line.glyphs.iter()) {

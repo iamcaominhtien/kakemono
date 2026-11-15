@@ -7,8 +7,10 @@
 
 use std::collections::HashSet;
 
-use super::{Class, Node, NodeKind, SemanticsConfig};
+use super::body::text_frac;
+use super::{Class, Node, NodeKind, SemanticsConfig, block_text};
 use crate::analysis::furniture::roman_value;
+use crate::backend::FontInfo;
 use crate::common::geom::Rect;
 use crate::model::{Line, LineGlyph, Span};
 
@@ -59,6 +61,12 @@ pub struct ContentsConfig {
     pub indent_merge_max_pt: f32,
     /// Deepest level given to an entry.
     pub max_level: u8,
+    /// The page numbers of a page of contents end within this many points
+    /// of the right edge most of them share (their column)...
+    pub number_column_tolerance_pt: f32,
+    /// ... and a number ending there needs only this gap (in font sizes)
+    /// before it: a long title may come close to its page number.
+    pub aligned_number_min_gap_em: f32,
 }
 
 impl Default for ContentsConfig {
@@ -79,6 +87,8 @@ impl Default for ContentsConfig {
             level_min_entries_ratio: 0.03,
             indent_merge_max_pt: 10.0,
             max_level: 4,
+            number_column_tolerance_pt: 1.5,
+            aligned_number_min_gap_em: 0.5,
         }
     }
 }
@@ -101,6 +111,10 @@ struct Entry {
     page: usize,
     /// Left edge of its first line.
     x0: f32,
+    /// Depth of the section number its title starts with ("2.3" is 2).
+    depth: Option<usize>,
+    /// Set in a bold font.
+    bold: bool,
 }
 
 /// Offset that sorts roman page numbers before every arabic one.
@@ -109,12 +123,14 @@ const ROMAN_KEY_OFFSET: i64 = -100_000;
 /// Marks the entries of the tables of contents among the unclassified text
 /// nodes: splits their blocks into one node per entry (the lines up to one
 /// that ends with a page number) and gives each its level, from its indent.
-pub(crate) fn mark_contents(nodes: &mut Vec<Node>, cfg: &SemanticsConfig) {
+pub(crate) fn mark_contents(nodes: &mut Vec<Node>, fonts: &[FontInfo], cfg: &SemanticsConfig) {
+    let bold_min_ratio = cfg.body.bold_min_ratio;
     let cfg = &cfg.contents;
     let pages = contents_pages(nodes, cfg);
     if pages.is_empty() {
         return;
     }
+    let columns = number_columns(nodes, &pages, cfg);
     let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
     let mut entries: Vec<Entry> = Vec::new();
     for node in nodes.drain(..) {
@@ -122,12 +138,22 @@ pub(crate) fn mark_contents(nodes: &mut Vec<Node>, cfg: &SemanticsConfig) {
         match &node.kind {
             NodeKind::Text(block) if on_contents_page => {
                 let block = block.clone();
-                split_entries(node, &block.lines, cfg, &mut out, &mut entries);
+                let column = columns.get(&node.loc.page).copied();
+                split_entries(node, &block.lines, column, cfg, &mut out, &mut entries);
             }
             _ => out.push(node),
         }
     }
-    let levels = indent_levels(&entries, cfg);
+    for entry in &mut entries {
+        if let NodeKind::Text(block) = &out[entry.idx].kind {
+            entry.depth = number_depth(&block_text(&block.lines));
+            entry.bold = text_frac(&block.lines, fonts, |font| font.bold) >= bold_min_ratio;
+        }
+    }
+    let mut levels = indent_levels(&entries, cfg);
+    if numbers_are_deeper(&entries, &levels) {
+        levels = numbered_levels(&entries, cfg);
+    }
     for (entry, level) in entries.into_iter().zip(levels) {
         if let Class::ContentsEntry { level: slot, .. } = &mut out[entry.idx].class {
             *slot = level;
@@ -143,7 +169,7 @@ fn contents_pages(nodes: &[Node], cfg: &ContentsConfig) -> HashSet<usize> {
     let mut stats: std::collections::BTreeMap<usize, (usize, Vec<PageLabel>)> = std::collections::BTreeMap::new();
     for node in nodes.iter().filter(|node| node.class == Class::Unknown) {
         let NodeKind::Text(block) = &node.kind else { continue };
-        let labels = entry_labels(&block.lines, cfg);
+        let labels = entry_labels(&block.lines, None, cfg);
         // A page number set as a line of its own counts with its title.
         let bare = (1..block.lines.len())
             .filter(|&i| labels[i].is_some() && is_bare_number(&block.lines[i]))
@@ -177,13 +203,20 @@ fn contents_pages(nodes: &[Node], cfg: &ContentsConfig) -> HashSet<usize> {
 /// into its entries: each entry runs up to a line that ends with a page
 /// number. Lines left after the last entry stay unclassified. The new
 /// entries are recorded in `entries`.
-fn split_entries(node: Node, lines: &[Line], cfg: &ContentsConfig, out: &mut Vec<Node>, entries: &mut Vec<Entry>) {
+fn split_entries(
+    node: Node,
+    lines: &[Line],
+    column: Option<f32>,
+    cfg: &ContentsConfig,
+    out: &mut Vec<Node>,
+    entries: &mut Vec<Entry>,
+) {
     let NodeKind::Text(block) = &node.kind else {
         unreachable!("only text nodes are split")
     };
     let mut start = 0;
     let mut pieces: Vec<(std::ops::Range<usize>, Option<PageLabel>)> = Vec::new();
-    for (i, label) in entry_labels(lines, cfg).into_iter().enumerate() {
+    for (i, label) in entry_labels(lines, column, cfg).into_iter().enumerate() {
         if let Some(label) = label {
             pieces.push((start..i + 1, Some(label)));
             start = i + 1;
@@ -214,6 +247,8 @@ fn split_entries(node: Node, lines: &[Line], cfg: &ContentsConfig, out: &mut Vec
                     idx: out.len(),
                     page: node.loc.page,
                     x0: part.lines[0].bbox.x0,
+                    depth: None,
+                    bold: false,
                 });
                 Class::ContentsEntry {
                     level: 1,
@@ -272,9 +307,41 @@ fn dangling_title(out: &mut Vec<Node>, node: &Node, first: &Line, cfg: &Contents
 }
 
 /// The page label ending each of `lines`, if any (see [`entry_page`]).
-fn entry_labels(lines: &[Line], cfg: &ContentsConfig) -> Vec<Option<PageLabel>> {
+/// `column` is the right edge of the page numbers of the page, when known.
+fn entry_labels(lines: &[Line], column: Option<f32>, cfg: &ContentsConfig) -> Vec<Option<PageLabel>> {
     (0..lines.len())
-        .map(|i| entry_page(&lines[i], i.checked_sub(1).map(|prev| &lines[prev]), cfg))
+        .map(|i| entry_page(&lines[i], i.checked_sub(1).map(|prev| &lines[prev]), column, cfg))
+        .collect()
+}
+
+/// The right edge shared by most page numbers of each page of contents
+/// (see [`ContentsConfig::number_column_tolerance_pt`]), for the pages that
+/// have one.
+fn number_columns(
+    nodes: &[Node],
+    pages: &HashSet<usize>,
+    cfg: &ContentsConfig,
+) -> std::collections::HashMap<usize, f32> {
+    let mut edges: std::collections::HashMap<usize, Vec<f32>> = std::collections::HashMap::new();
+    for node in nodes {
+        let NodeKind::Text(block) = &node.kind else { continue };
+        if node.class != Class::Unknown || !pages.contains(&node.loc.page) {
+            continue;
+        }
+        for (line, label) in block.lines.iter().zip(entry_labels(&block.lines, None, cfg)) {
+            if label.is_some() {
+                edges.entry(node.loc.page).or_default().push(line.bbox.x1);
+            }
+        }
+    }
+    edges
+        .into_iter()
+        .filter_map(|(page, xs)| {
+            let (mean, count) = clusters(xs, cfg.number_column_tolerance_pt)
+                .into_iter()
+                .max_by_key(|group| group.1)?;
+            (count >= cfg.page_min_entries_count).then_some((page, mean))
+        })
         .collect()
 }
 
@@ -290,13 +357,19 @@ fn is_bare_number(line: &Line) -> bool {
 /// A line that is only a number is the page number of the line before it
 /// (`prev`), when that one stands on the same baseline, well to its left
 /// (the numbers were cut off as a column of their own).
-fn entry_page(line: &Line, prev: Option<&Line>, cfg: &ContentsConfig) -> Option<PageLabel> {
+fn entry_page(line: &Line, prev: Option<&Line>, column: Option<f32>, cfg: &ContentsConfig) -> Option<PageLabel> {
+    let in_column = column.is_some_and(|x1| (line.bbox.x1 - x1).abs() <= cfg.number_column_tolerance_pt);
+    let min_gap_em = if in_column {
+        cfg.aligned_number_min_gap_em
+    } else {
+        cfg.number_min_gap_em
+    };
     if is_bare_number(line) {
         let prev = prev?;
         let text = line.text().trim().to_string();
         let key = page_key(&text, cfg)?;
         let same_row = (line.baseline - prev.baseline).abs() <= cfg.row_max_offset_em * line.size;
-        let apart = line.bbox.x0 - prev.bbox.x1 >= cfg.number_min_gap_em * line.size;
+        let apart = line.bbox.x0 - prev.bbox.x1 >= min_gap_em * line.size;
         return (same_row && apart && prev.text().chars().any(char::is_alphabetic)).then_some(PageLabel { text, key });
     }
     let glyphs: Vec<&LineGlyph> = line
@@ -338,7 +411,7 @@ fn entry_page(line: &Line, prev: Option<&Line>, cfg: &ContentsConfig) -> Option<
             .take_while(|glyph| glyph.text.chars().all(|ch| LEADER_CHARS.contains(&ch)))
             .count();
     let apart = leaders >= cfg.leader_min_dots_count
-        || glyphs[first].x0 - before.x1 >= cfg.number_min_gap_em * before.size.max(glyphs[first].size);
+        || glyphs[first].x0 - before.x1 >= min_gap_em * before.size.max(glyphs[first].size);
     (apart && title_len > 0 && before.text != ",").then_some(PageLabel { text, key })
 }
 
@@ -443,6 +516,64 @@ fn indent_levels(entries: &[Entry], cfg: &ContentsConfig) -> Vec<u8> {
                 .map_or(indent, |step| step.1);
             let rank = ranks.iter().filter(|&&rank| rank <= target).count();
             (rank.max(1) as u8).min(cfg.max_level)
+        })
+        .collect()
+}
+
+/// Depth of the section number that `text` starts with: "2" is 1, "2.3"
+/// is 2, "A.1" (an appendix) is 2. `None` when it starts with no number.
+fn number_depth(text: &str) -> Option<usize> {
+    let token = text.split_whitespace().next()?.trim_end_matches('.');
+    let parts: Vec<&str> = token.split('.').collect();
+    let digits = |part: &str| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit());
+    let first_ok = digits(parts[0])
+        || (parts.len() > 1 && parts[0].len() == 1 && parts[0].chars().all(|ch| ch.is_ascii_uppercase()));
+    (first_ok && parts[1..].iter().all(|part| digits(part))).then_some(parts.len())
+}
+
+/// Whether the section numbers of the entries tell more levels apart than
+/// their indents do: books that set every number at the same left edge
+/// ("1", "1.1" and "1.2" one below the other), so that two depths of
+/// numbers mostly get the same level.
+fn numbers_are_deeper(entries: &[Entry], levels: &[u8]) -> bool {
+    let mut by_depth: std::collections::BTreeMap<usize, std::collections::HashMap<u8, usize>> =
+        std::collections::BTreeMap::new();
+    for (entry, &level) in entries.iter().zip(levels) {
+        if let Some(depth) = entry.depth {
+            *by_depth.entry(depth).or_default().entry(level).or_default() += 1;
+        }
+    }
+    let modal: Vec<u8> = by_depth
+        .values()
+        .filter_map(|counts| {
+            counts
+                .iter()
+                .max_by_key(|&(level, count)| (*count, *level))
+                .map(|(&level, _)| level)
+        })
+        .collect();
+    let distinct: HashSet<u8> = modal.iter().copied().collect();
+    distinct.len() < modal.len()
+}
+
+/// Levels from the section numbers (see [`numbers_are_deeper`]): the depth
+/// of each number; an unnumbered entry is at the top level when bold (a
+/// part, a chapter without a number), else one with the numbered entry
+/// before it ("Exercises" after "2.9").
+fn numbered_levels(entries: &[Entry], cfg: &ContentsConfig) -> Vec<u8> {
+    let mut last = 1;
+    entries
+        .iter()
+        .map(|entry| {
+            let level = match entry.depth {
+                Some(depth) => {
+                    last = depth;
+                    depth
+                }
+                None if entry.bold => 1,
+                None => last,
+            };
+            (level.max(1) as u8).min(cfg.max_level)
         })
         .collect()
 }

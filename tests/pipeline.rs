@@ -607,9 +607,19 @@ fn contents_page() -> String {
         let y = 650 - 14 * row;
         content.push_str(&format!("BT /F1 10 Tf 72 {y} Td ({number}) Tj ET\n"));
         content.push_str(&format!("BT /F1 10 Tf 100 {y} Td ({title}) Tj ET\n"));
-        let x = if *page < 10 { 534 } else { 528 };
+        let x = if *page < 10 { 386 } else { 381 };
         content.push_str(&format!("BT /F1 10 Tf {x} {y} Td ({page}) Tj ET\n"));
     }
+    // A title long enough to come within one font size of its page number
+    // ("Analysis" is 37.2 pt wide in Helvetica 10), the page numbers right
+    // aligned.
+    content.push_str("BT /F1 10 Tf 72 468 Td (13) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 100 468 Td (Dimensionality Reduction with Principal Component) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 331.2 468 Td (Analysis) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 375.4 468 Td (317) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 72 454 Td (13.1) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 100 454 Td (Problem Setting) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 375.4 454 Td (318) Tj ET\n");
     content
 }
 
@@ -627,7 +637,9 @@ fn contents_page_numbers_in_a_column_are_not_line_numbers() {
         .collect();
     assert_eq!(
         pages,
-        ["11", "12", "13", "16", "17", "19", "22", "27", "35", "40", "44", "48"],
+        [
+            "11", "12", "13", "16", "17", "19", "22", "27", "35", "40", "44", "48", "317", "318"
+        ],
         "{:?}",
         doc.blocks
             .iter()
