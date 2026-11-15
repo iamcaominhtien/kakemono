@@ -101,7 +101,7 @@ jobs:
         run: |
           python -m venv .venv
           . .venv/bin/activate
-          pip install "maturin>=1.9,<2" pytest
+          pip install --only-binary :all: --require-hashes -r requirements-dev.txt
           maturin develop --release
           pytest -v tests
 
@@ -144,8 +144,10 @@ jobs:
       - name: Import the wheel
         if: matrix.native
         shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          python -m pip install --no-index --find-links dist kakemono
+          python -m pip install --only-binary :all: --no-index --find-links dist "kakemono==$VERSION"
           python -c "import kakemono; print('kakemono', kakemono.__version__)"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

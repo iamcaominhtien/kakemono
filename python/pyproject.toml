@@ -31,3 +31,7 @@ Changelog = "https://github.com/iamcaominhtien/kakemono/blob/main/CHANGELOG.md"
 module-name = "kakemono._kakemono"
 python-source = "."
 python-packages = ["kakemono"]
+
+[tool.coverage.run]
+# Paths relative to where pytest runs (the repository root in the SonarQube workflow).
+relative_files = true

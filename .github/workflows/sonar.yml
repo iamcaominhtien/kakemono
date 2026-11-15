@@ -62,6 +62,20 @@ jobs:
         if: env.SONAR_TOKEN != ''
         run: cargo llvm-cov --lcov --output-path lcov.info
 
+      # Coverage of the Python package (python/) and its release script.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: env.SONAR_TOKEN != ''
+        with:
+          python-version: "3.12"
+      - name: Python test coverage
+        if: env.SONAR_TOKEN != ''
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --only-binary :all: --require-hashes -r python/requirements-dev.txt
+          maturin develop --release -m python/Cargo.toml
+          pytest python/tests --cov=python/kakemono --cov=scripts --cov-report=xml:coverage-python.xml
+
       - name: SonarQube scan
         if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
