@@ -340,7 +340,7 @@
       });
       var changed=false;
       // The scales first (measured in the probe), then the changes.
-      var ks=todo.map(function(t){var f=t[0],room=t[1];if(f._bk.wide)room-=20;return f._k>GAP_MIN?solve(f,f._bk,room,GAP_MIN,f._k):0;});
+      var ks=todo.map(function(t){var f=t[0],room=t[1];if(f._bk.wide){room-=20;}return f._k>GAP_MIN?solve(f,f._bk,room,GAP_MIN,f._k):0;});
       todo.forEach(function(t,i){var f=t[0],k=ks[i];if(k&&k<f._k){scale(f,f._bk,k);f._k=k;changed=true;}});
       // Then where the others move, all measured before any moves; a float
       // whose text another one moves through waits for the next round.
