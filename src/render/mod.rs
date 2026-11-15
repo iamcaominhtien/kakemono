@@ -1,5 +1,5 @@
-//! HTML output in four fidelity modes (see [`Mode`]), and Word output
-//! ([`render_docx`]).
+//! HTML output in four fidelity modes (see [`Mode`]), Word output
+//! ([`render_docx`]) and Markdown output ([`render_markdown`]).
 
 mod assets;
 mod code;
@@ -9,15 +9,17 @@ mod flow;
 mod friendly;
 mod hard;
 mod hard95;
+mod markdown;
 mod mathml;
 mod medium;
 mod options;
 mod table;
 
 pub(crate) use assets::ImageStore;
-pub use docx::{DocxOptions, render_docx};
+pub use docx::{DocxOptions, DocxOutput, render_docx, render_docx_with_images};
 pub(crate) use escape::*;
 pub(crate) use flow::*;
+pub use markdown::{MarkdownOptions, MarkdownOutput, render_markdown};
 pub(crate) use mathml::math_css;
 pub use mathml::math_html;
 pub use options::{Equations, HtmlOptions, HtmlOutput, Mode, PageImage};

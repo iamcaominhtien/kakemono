@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML or Word (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF into HTML, Word or Markdown (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -38,7 +38,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML or Word documents"
+    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents or Markdown"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -50,7 +50,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML or Word.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word or Markdown.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -111,14 +111,17 @@ enum FormatArg {
     Html,
     /// A Word document (.docx): styles, Word tables and Office Math equations
     Docx,
+    /// Markdown (.md): pipe tables, LaTeX formulas ($$), pictures in an image folder
+    #[value(name = "md", alias = "markdown")]
+    Markdown,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
 enum ImagesArg {
-    /// Embed images in the HTML file (one self-contained file)
+    /// Embed images in the output file (one self-contained file)
     Inline,
-    /// Write images to a folder next to the HTML file
+    /// Write images to a folder next to the output file (Word documents keep them embedded too)
     Files,
 }
 
@@ -176,15 +179,18 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: docx when --output ends in .docx, html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx or .md; html otherwise); --mode applies to html only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML or .docx file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx or .md file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored
-    #[arg(long, value_enum, default_value = "inline")]
-    images: ImagesArg,
+    /// How images are stored [default: inline for HTML and Word, files for Markdown]
+    #[arg(long, value_enum)]
+    images: Option<ImagesArg>,
+    /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
+    #[arg(long, value_name = "DIR")]
+    image_dir: Option<String>,
     /// Resolution of figure/equation images in pixels per PDF point (HTML and Word)
     #[arg(long, default_value_t = 3.0)]
     scale: f32,
@@ -242,12 +248,12 @@ impl OutputPaths {
         }
     }
 
-    /// The Word file: the file named by `--output`, or `<stem>.docx` in
-    /// the output directory.
-    fn docx_file(&self, stem: &str) -> PathBuf {
+    /// The Word or Markdown file: the file named by `--output`, or
+    /// `<stem>.<ext>` in the output directory.
+    fn single_file(&self, stem: &str, ext: &str) -> PathBuf {
         match &self.file {
             Some(file) => file.clone(),
-            None => self.dir.join(format!("{stem}.docx")),
+            None => self.dir.join(format!("{stem}.{ext}")),
         }
     }
 }
@@ -326,15 +332,20 @@ fn write_file(path: &Path, data: &[u8]) -> Result<()> {
 /// document as JSON.
 ///
 /// # Errors
-/// When `--scale` is out of range, `--all` is given for a Word document, the input cannot be loaded or an output
-/// file cannot be written.
+/// When `--scale` is out of range, `--all` is given for a Word or Markdown document, the input cannot be loaded or
+/// an output file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     if !(args.scale > MIN_SCALE && args.scale <= MAX_SCALE) {
         bail!("--scale must be between 0.2 and 8");
     }
     let format = output_format(&args);
-    if format == FormatArg::Docx && args.all {
-        bail!("--all produces the HTML modes; it cannot be used with --format docx");
+    if format != FormatArg::Html && args.all {
+        bail!("--all produces the HTML modes; it cannot be used with --format docx or md");
+    }
+    if let Some(dir) = &args.image_dir
+        && (dir.trim().is_empty() || Path::new(dir).is_absolute() || dir.split(['/', '\\']).any(|part| part == ".."))
+    {
+        bail!("--image-dir must be a relative folder inside the output directory");
     }
     let (paper, stem) = load(&args.input)?;
     let started = Instant::now();
@@ -353,10 +364,10 @@ fn convert(args: ConvertArgs) -> Result<()> {
     );
 
     let paths = OutputPaths::new(args.output.as_ref(), args.all);
-    if format == FormatArg::Docx {
-        write_docx(&paper, &analysis, &args, jobs, &paths.docx_file(&stem))?;
-    } else {
-        write_html(&paper, &analysis, &args, jobs, &paths, &stem)?;
+    match format {
+        FormatArg::Docx => write_docx(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "docx"))?,
+        FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
+        FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
     }
 
     if args.json {
@@ -369,16 +380,57 @@ fn convert(args: ConvertArgs) -> Result<()> {
 }
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
-/// file, HTML otherwise.
+/// file, Markdown when it names a `.md` file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
-        let docx = args
+        let ext = args
             .output
             .as_ref()
             .and_then(|path| path.extension())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("docx"));
-        if docx { FormatArg::Docx } else { FormatArg::Html }
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "docx" => FormatArg::Docx,
+            "md" | "markdown" => FormatArg::Markdown,
+            _ => FormatArg::Html,
+        }
     })
+}
+
+/// The folder of the image files of `file` (relative to its directory):
+/// `--image-dir`, with a subfolder per mode when several modes are written
+/// (`mode`), or `<name>_assets`.
+fn image_dir(args: &ConvertArgs, file: &Path, mode: Option<Mode>) -> String {
+    match (&args.image_dir, mode) {
+        (Some(dir), Some(mode)) if args.all => format!("{}/{}", dir.trim_end_matches(['/', '\\']), mode.name()),
+        (Some(dir), _) => dir.trim_end_matches(['/', '\\']).to_string(),
+        (None, _) => {
+            let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("paper");
+            format!("{stem}_assets")
+        }
+    }
+}
+
+/// Writes the image `files` (paths relative to the directory of `file`) and
+/// returns the size report: ` + N image files in DIR`, or nothing.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_images(file: &Path, files: &[(String, Vec<u8>)]) -> Result<String> {
+    let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    for (rel, data) in files {
+        write_file(&base.join(rel), data)?;
+    }
+    let Some((first, _)) = files.first() else {
+        return Ok(String::new());
+    };
+    let dir = Path::new(first).parent().unwrap_or(Path::new(""));
+    Ok(format!(
+        " + {} image files in {}",
+        files.len(),
+        base.join(dir).display()
+    ))
 }
 
 /// Writes the HTML of each requested mode (`--mode`, or all four with
@@ -419,13 +471,46 @@ fn write_docx(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usiz
         equations: equations(args.equations),
     };
     let started = Instant::now();
-    let data = paper.to_docx(analysis, &opts);
+    let (data, images) = if args.images == Some(ImagesArg::Files) {
+        let out = paper.to_docx_with_images(analysis, &opts, &image_dir(args, file, None));
+        (out.docx, out.files)
+    } else {
+        (paper.to_docx(analysis, &opts), Vec::new())
+    };
     write_file(file, &data)?;
+    let report = write_images(file, &images)?;
     eprintln!(
-        "{:<8} -> {} ({:.1} MB, {:.2}s)",
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
         "docx",
         file.display(),
         data.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Writes `analysis` as Markdown to `file`, with the image files next to it
+/// unless `--images inline`, and reports the result on stderr.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_markdown(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = MarkdownOptions {
+        inline_images: args.images == Some(ImagesArg::Inline),
+        asset_dir: image_dir(args, file, None),
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+    };
+    let started = Instant::now();
+    let out = paper.to_markdown(analysis, &opts);
+    write_file(file, out.markdown.as_bytes())?;
+    let report = write_images(file, &out.files)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
+        "markdown",
+        file.display(),
+        out.markdown.len() as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
     );
     Ok(())
@@ -453,15 +538,10 @@ fn write_mode(
     mode: Mode,
     file: &Path,
 ) -> Result<()> {
-    let file_stem = file
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("paper")
-        .to_string();
     let opts = HtmlOptions {
         mode,
-        inline_images: args.images == ImagesArg::Inline,
-        asset_dir: format!("{file_stem}_assets"),
+        inline_images: args.images != Some(ImagesArg::Files),
+        asset_dir: image_dir(args, file, Some(mode)),
         scale: args.scale,
         page_image: match args.page_image {
             PageImageArg::Svg => PageImage::Svg,
@@ -475,20 +555,12 @@ fn write_mode(
     let started = Instant::now();
     let out = paper.to_html(analysis, &opts);
     write_file(file, out.html.as_bytes())?;
-    let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
-    for (rel, data) in &out.files {
-        write_file(&base.join(rel), data)?;
-    }
+    let report = write_images(file, &out.files)?;
     eprintln!(
-        "{:<8} -> {} ({:.1} MB{}, {:.2}s)",
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
         mode.name(),
         file.display(),
         out.html.len() as f64 / BYTES_PER_MB,
-        if out.files.is_empty() {
-            String::new()
-        } else {
-            format!(" + {} image files", out.files.len())
-        },
         started.elapsed().as_secs_f32()
     );
     Ok(())

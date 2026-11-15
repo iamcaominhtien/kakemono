@@ -43,6 +43,27 @@ def test_to_docx_gives_a_word_document(tmp_path):
         kakemono.to_docx(LIGO, equations="latex")
 
 
+def test_to_docx_can_save_its_pictures(tmp_path):
+    out = tmp_path / "ligo.docx"
+    kakemono.to_docx(LIGO, out, scale=1.0, save_images=True, image_dir="images")
+    assert sorted(p.name for p in (tmp_path / "images").iterdir())[0] == "001-fig.png"
+    with pytest.raises(ValueError, match="needs a path"):
+        kakemono.to_docx(LIGO, save_images=True)
+
+
+def test_to_markdown_writes_text_and_pictures(tmp_path):
+    out = tmp_path / "md" / "ligo.md"
+    text = kakemono.to_markdown(LIGO, out, scale=1.0)
+    assert out.read_text(encoding="utf-8") == text
+    assert "# Observation of Gravitational Waves from a Binary Black Hole Merger" in text
+    assert "](ligo_assets/001-fig.png)" in text
+    assert (tmp_path / "md" / "ligo_assets" / "001-fig.png").is_file()
+    # Without a path, the pictures are embedded.
+    assert "](data:image/png;base64," in kakemono.to_markdown(LIGO, scale=1.0)
+    with pytest.raises(ValueError, match="relative folder"):
+        kakemono.to_markdown(LIGO, out, image_dir="../x")
+
+
 def test_analyze_gives_blocks_in_reading_order():
     doc = kakemono.analyze(str(LIGO))
     kinds = {block["type"] for block in doc["blocks"]}

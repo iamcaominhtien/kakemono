@@ -9,7 +9,8 @@ use super::{DocxOptions, PendingImage};
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style};
 use crate::render::assets::MARK;
 use crate::render::{
-    CAP_LABEL, Equations, code, code_run, figure_alt, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, code, code_run, figure_alt, float_class, is_abstract_text, is_scene_break, plain,
+    stray_equation_number,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -365,7 +366,7 @@ impl<'a> Body<'a> {
                     TEXT_WIDTH_TWIPS
                 };
                 let scale = self.eq_scale;
-                self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale)
+                self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale, "eq")
             }
         };
         let Some(number) = number else {
@@ -435,6 +436,7 @@ impl<'a> Body<'a> {
                 &figure_alt(block, label),
                 TEXT_WIDTH_TWIPS as f32 / TWIPS_PER_PT,
                 1.0,
+                float_class(kind),
             );
             let keep = if caption.is_some() && !caption_first {
                 "<w:keepNext/>"
@@ -464,8 +466,9 @@ impl<'a> Body<'a> {
 
     /// A placeholder for the picture of `spec`, at `scale` times its size
     /// in the PDF, but at most `max_width_pt` wide and
-    /// [`MAX_IMAGE_HEIGHT_PT`] high. The picture is drawn later.
-    fn image_run(&mut self, spec: &ImageSpec, alt: &str, max_width_pt: f32, scale: f32) -> String {
+    /// [`MAX_IMAGE_HEIGHT_PT`] high; `hint` says what it shows (`eq`,
+    /// `fig`, ...). The picture is drawn later.
+    fn image_run(&mut self, spec: &ImageSpec, alt: &str, max_width_pt: f32, scale: f32, hint: &'static str) -> String {
         let width = spec.rect.width().max(1.0) * scale;
         let height = spec.rect.height().max(1.0) * scale;
         let fit = (max_width_pt / width).min(MAX_IMAGE_HEIGHT_PT / height).min(1.0);
@@ -474,6 +477,7 @@ impl<'a> Body<'a> {
             width_emu: (width * fit * EMU_PER_PT).round() as u64,
             height_emu: (height * fit * EMU_PER_PT).round() as u64,
             alt: alt.to_string(),
+            hint,
         });
         format!("{MARK}{}{MARK}", self.images.len() - 1)
     }

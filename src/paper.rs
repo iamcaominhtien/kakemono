@@ -1,11 +1,14 @@
 //! High-level entry points: PDF bytes in, structured document and HTML (or
-//! Word) out.
+//! Word, or Markdown) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
-use crate::render::{DocxOptions, HtmlOptions, HtmlOutput, render, render_docx};
+use crate::render::{
+    DocxOptions, DocxOutput, HtmlOptions, HtmlOutput, MarkdownOptions, MarkdownOutput, render, render_docx,
+    render_docx_with_images, render_markdown,
+};
 use anyhow::Result;
 
 /// A loaded PDF, ready to be analysed and rendered.
@@ -85,6 +88,20 @@ impl Paper {
     /// pictures are drawn from its PDF.
     pub fn to_docx(&self, analysis: &Analysis, opts: &DocxOptions) -> Vec<u8> {
         render_docx(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as a Word document, like [`Paper::to_docx`], and
+    /// also returns each picture of the document as a file of its own in
+    /// `image_dir` (a relative path, such as `images`): the pictures stay
+    /// embedded in the document too.
+    pub fn to_docx_with_images(&self, analysis: &Analysis, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
+        render_docx_with_images(analysis, &self.pdf, opts, image_dir)
+    }
+
+    /// Writes an analysis as Markdown. `analysis` must come from this paper,
+    /// since the pictures are drawn from its PDF.
+    pub fn to_markdown(&self, analysis: &Analysis, opts: &MarkdownOptions) -> MarkdownOutput {
+        render_markdown(analysis, &self.pdf, opts)
     }
 }
 

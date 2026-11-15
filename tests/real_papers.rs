@@ -23,7 +23,7 @@
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -228,6 +228,30 @@ fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
     }
 }
 
+/// Checks a Markdown document: no placeholder left, every picture file
+/// referenced, and every rebuilt formula written as LaTeX.
+fn check_markdown(markdown: &str, files: &[(String, Vec<u8>)], math: usize) {
+    assert!(!markdown.contains('\u{1}'), "markdown: picture placeholder left");
+    assert!(
+        !markdown.contains("data:image"),
+        "markdown: pictures are files by default"
+    );
+    for (name, data) in files {
+        assert!(name.starts_with("images/"), "markdown: {name} is not in images/");
+        assert!(
+            markdown.contains(&format!("]({name})")),
+            "markdown: {name} is not referenced"
+        );
+        assert!(!data.is_empty(), "markdown: {name} is empty");
+    }
+    assert_eq!(
+        markdown.matches("$$\n").count(),
+        2 * math,
+        "markdown: every rebuilt formula is written as LaTeX"
+    );
+    assert!(!markdown.contains("\n\n\n"), "markdown: no runs of blank lines");
+}
+
 /// Compares the outputs of a paper with its stored snapshot, or stores them
 /// when `KAKEMONO_UPDATE_SNAPSHOTS=1`.
 fn check_snapshot(id: &str, snap: &Snapshot) {
@@ -396,6 +420,10 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let parts = docx_parts(&docx);
     check_docx(&parts, math);
     fingerprints.push(("docx", docx_fingerprint(&parts)));
+    // The Markdown document, with its pictures as files.
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
+    check_markdown(&md.markdown, &md.files, math);
+    fingerprints.push(("markdown", fingerprint(&md.markdown, &md.files)));
     let metrics = Metrics {
         title,
         tables,
