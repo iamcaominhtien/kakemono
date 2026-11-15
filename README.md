@@ -8,13 +8,15 @@
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![crates.io](https://img.shields.io/crates/v/kakemono?logo=rust&logoColor=white&color=000000)](https://crates.io/crates/kakemono)
+[![PyPI](https://img.shields.io/pypi/v/kakemono?logo=python&logoColor=white&color=3776ab)](https://pypi.org/project/kakemono/)
+[![docs.rs](https://img.shields.io/docsrs/kakemono?logo=docsdotrs&label=docs.rs)](https://docs.rs/kakemono)
 [![PDF engine](https://img.shields.io/badge/PDF_engine-hayro-orange)](https://github.com/LaurenzV/hayro)
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
 [Features](#features) · [Modes](#the-four-modes) · [Install](#installation) · [Usage](#usage) ·
-[Library](#use-as-a-library) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
+[Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -59,13 +61,16 @@ block whose text changes (after translation) reflows inside its box.
 **Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
 attached to every [release](https://github.com/iamcaominhtien/kakemono/releases/latest).
 
-**From source** (stable Rust):
+**With Cargo** (stable Rust):
 
 ```bash
-cargo install --git https://github.com/iamcaominhtien/kakemono
+cargo install kakemono
 ```
 
 or, in a clone, `cargo build --release`; the executable is `target/release/kakemono`.
+
+**As a library:** `cargo add kakemono` for Rust, `pip install kakemono` for Python (see
+[below](#use-as-a-library)).
 
 ## Usage
 
@@ -136,7 +141,28 @@ let out = paper.to_html(&analysis, &HtmlOptions { mode: Mode::Friendly, ..Defaul
 std::fs::write("paper.html", out.html)?;
 ```
 
-How the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+`paper.to_html` can be called once per mode with the same analysis. `analysis.doc` is the
+document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
+how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Python
+
+```bash
+pip install kakemono
+```
+
+```python
+import kakemono
+
+html = kakemono.convert("paper.pdf")                   # friendly mode, one self-contained page
+html = kakemono.convert("1706.03762", mode="medium")   # an arXiv id or URL works too
+pages = kakemono.convert_all("paper.pdf")              # every mode, from one analysis
+doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
+```
+
+The wheels (Linux, macOS, Windows; Python 3.9+) contain the Rust library: nothing else to install.
+The options are those of the command line (`tables`, `equations`, `page_image`, `embed_fonts`,
+`scale`, `jobs`); see [python/README.md](python/README.md).
 
 ## Limitations
 
@@ -175,13 +201,22 @@ node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 ```
 
-CI runs `cargo fmt`, `cargo clippy`, the tests and the browser checks on every pull request.
+The Python package is tested with `pytest` (needs [maturin](https://www.maturin.rs)):
+
+```bash
+cd python && python -m venv .venv && . .venv/bin/activate
+pip install maturin pytest && maturin develop --release && pytest tests
+```
+
+CI runs `cargo fmt`, `cargo clippy`, the tests, the browser checks and the Python tests (with
+wheels built for every platform) on every pull request.
 
 ## Contributing and releases
 
 Issues and pull requests are welcome; read [ARCHITECTURE.md](ARCHITECTURE.md) and
 [CONTRIBUTING.md](CONTRIBUTING.md) first. Every merge into `main` is released automatically from
-Conventional Commits (version, `CHANGELOG.md`, executables for Linux, macOS and Windows).
+Conventional Commits: version, `CHANGELOG.md`, executables for Linux, macOS and Windows, the crate
+on crates.io and the wheels on PyPI.
 
 ## License
 

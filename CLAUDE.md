@@ -27,6 +27,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lin
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks
 node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
+cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
@@ -66,6 +67,17 @@ committing.
   a regression.
 - A test for a specific bug goes in `tests/real_papers.rs` and is named after the behaviour, for
   example `ligo_radical_is_a_square_root`.
+
+## Public API and packages
+
+- The crate is published on crates.io and the Python package (`python/`) on PyPI, both by the
+  release workflows. Only what `src/lib.rs` re-exports, plus `config`, `model` and `source`, is
+  the public API; changing it is a breaking change (`feat!:`/`fix!:`). The `#[doc(hidden)]`
+  modules are internals.
+- `python/` is a separate crate, not a workspace member: run its `cargo fmt`/`clippy` from inside
+  it. Its version is set from the release tag when wheels are built
+  (`scripts/set-python-version.py`).
+- The package on crates.io holds only what `include` in `Cargo.toml` lists.
 
 ## Renderer JS and CSS
 

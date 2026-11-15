@@ -7,8 +7,10 @@
 # workflow then attaches prebuilt binaries. There is no release PR.
 
 [workspace]
-# Not published to crates.io: versions come from the git tags (`vX.Y.Z`).
+# Versions come from the git tags (`vX.Y.Z`). release-plz does not publish the crate:
+# the `crate` job of the Release workflow runs `cargo publish` for the new tag.
 git_only = true
+publish = false
 # Release on every push to main: `release` releases the version in Cargo.toml as soon
 # as it has no tag yet (there is no release PR to wait for).
 release_always = true

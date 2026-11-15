@@ -1,14 +1,15 @@
-//! Options and tuning parameters of the analysis.
+//! Options and tuning parameters of the analysis. The config struct of each
+//! analysis stage is re-exported here: [`LayoutConfig`] holds one of each.
 
-use crate::analysis::blocks::BlocksConfig;
-use crate::analysis::floats::FloatsConfig;
-use crate::analysis::furniture::FurnitureConfig;
-use crate::analysis::lines::LinesConfig;
-use crate::analysis::math::MathConfig;
-use crate::analysis::order::OrderConfig;
-use crate::analysis::page::PageConfig;
-use crate::analysis::semantics::SemanticsConfig;
-use crate::analysis::tables::TablesConfig;
+pub use crate::analysis::blocks::BlocksConfig;
+pub use crate::analysis::floats::FloatsConfig;
+pub use crate::analysis::furniture::FurnitureConfig;
+pub use crate::analysis::lines::LinesConfig;
+pub use crate::analysis::math::MathConfig;
+pub use crate::analysis::order::OrderConfig;
+pub use crate::analysis::page::PageConfig;
+pub use crate::analysis::semantics::SemanticsConfig;
+pub use crate::analysis::tables::TablesConfig;
 
 /// Options of the analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]
