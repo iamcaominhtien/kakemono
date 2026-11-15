@@ -170,10 +170,10 @@ impl Page<'_> {
         .flatten()
         .collect();
         let colophon = if embedded.is_empty() {
-            "Converted from PDF by paper2html · friendly mode".to_string()
+            "Converted from PDF by kakemono · friendly mode".to_string()
         } else {
             format!(
-                "Converted from PDF by paper2html · friendly mode · {}",
+                "Converted from PDF by kakemono · friendly mode · {}",
                 embedded.join(" · ")
             )
         };
@@ -183,7 +183,7 @@ impl Page<'_> {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="generator" content="paper2html (friendly)">
+<meta name="generator" content="kakemono (friendly)">
 <title>{title}</title>
 <script>{HEAD_JS}</script>
 <style>

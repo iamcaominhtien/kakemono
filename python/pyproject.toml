@@ -1,0 +1,37 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "kakemono"
+description = "Convert PDF papers and books into clean, readable HTML (pure Rust, no poppler or mupdf)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "Cao Minh Tiến" }]
+keywords = ["pdf", "html", "arxiv", "converter", "papers"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/iamcaominhtien/kakemono"
+Repository = "https://github.com/iamcaominhtien/kakemono"
+Changelog = "https://github.com/iamcaominhtien/kakemono/blob/main/CHANGELOG.md"
+
+[tool.maturin]
+# The native module is kakemono._kakemono; the Python code in kakemono/ wraps it.
+module-name = "kakemono._kakemono"
+python-source = "."
+python-packages = ["kakemono"]
+
+[tool.coverage.run]
+# Paths relative to where pytest runs (the repository root in the SonarQube workflow).
+relative_files = true

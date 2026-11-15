@@ -3,7 +3,7 @@
 //! The PDFs are listed (with pinned versions and checksums) in
 //! `tests/data/papers.txt`. Tests never download anything: papers that are
 //! not in `tests/data` are skipped with a note, unless
-//! `P2H_REQUIRE_ALL_PAPERS=1` is set (CI), in which case a missing paper is
+//! `KAKEMONO_REQUIRE_ALL_PAPERS=1` is set (CI), in which case a missing paper is
 //! an error. `scripts/fetch-test-pdfs.sh` downloads them once.
 //!
 //! The expected values are the results of the current code. Counts of things
@@ -11,19 +11,19 @@
 //! are upper bounds and counts of things that should happen (tables rebuilt)
 //! are lower bounds, so an improvement passes and a regression fails. When a
 //! change improves a number, tighten the bound here. Set
-//! `P2H_PRINT_METRICS=1` to print the measured values.
+//! `KAKEMONO_PRINT_METRICS=1` to print the measured values.
 //!
 //! On top of these bounds, every output is compared with a snapshot in
 //! `tests/data/snapshots`: a fingerprint (sha256) of the HTML of each mode and
 //! of the JSON, so that any change in the output, however small, is noticed.
 //! A restructuring of the code must leave them unchanged. When a change of
 //! output is intended, regenerate them with
-//! `P2H_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit them; the
+//! `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit them; the
 //! diff then shows which papers and modes changed. For papers whose licence
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
-use paper2html::model::{BlockKind, FloatKind, MathNode, Span};
-use paper2html::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
+use kakemono::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -62,7 +62,7 @@ fn load(id: &str) -> Option<Paper> {
     let path = data_dir().join(format!("{id}.pdf"));
     match std::fs::read(&path) {
         Ok(data) => Some(Paper::from_bytes(data).expect("valid PDF")),
-        Err(_) if std::env::var("P2H_REQUIRE_ALL_PAPERS").is_ok_and(|v| v == "1") => {
+        Err(_) if std::env::var("KAKEMONO_REQUIRE_ALL_PAPERS").is_ok_and(|v| v == "1") => {
             panic!("{} is missing: run scripts/fetch-test-pdfs.sh", path.display())
         }
         Err(_) => {
@@ -144,7 +144,7 @@ fn fingerprint(html: &str, files: &[(String, Vec<u8>)]) -> String {
 }
 
 /// Compares the outputs of a paper with its stored snapshot, or stores them
-/// when `P2H_UPDATE_SNAPSHOTS=1`.
+/// when `KAKEMONO_UPDATE_SNAPSHOTS=1`.
 fn check_snapshot(id: &str, snap: &Snapshot) {
     let dir = data_dir().join("snapshots");
     let file = dir.join(format!("{id}.txt"));
@@ -152,7 +152,7 @@ fn check_snapshot(id: &str, snap: &Snapshot) {
     let keep_json = FULL_JSON.contains(&id);
     let text: String = snap.fingerprints.iter().map(|(m, h)| format!("{m} {h}\n")).collect();
 
-    if std::env::var("P2H_UPDATE_SNAPSHOTS").is_ok_and(|v| v == "1") {
+    if std::env::var("KAKEMONO_UPDATE_SNAPSHOTS").is_ok_and(|v| v == "1") {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&file, &text).unwrap();
         if keep_json {
@@ -163,7 +163,7 @@ fn check_snapshot(id: &str, snap: &Snapshot) {
 
     let old = std::fs::read_to_string(&file).unwrap_or_else(|_| {
         panic!(
-            "{id}: no snapshot at {}; create it with P2H_UPDATE_SNAPSHOTS=1 cargo test --test real_papers",
+            "{id}: no snapshot at {}; create it with KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers",
             file.display()
         )
     });
@@ -178,7 +178,7 @@ fn check_snapshot(id: &str, snap: &Snapshot) {
         .collect();
     let mut msg = format!(
         "{id}: the output changed ({}).\n\
-         If the change is intended, run P2H_UPDATE_SNAPSHOTS=1 cargo test --test real_papers \
+         If the change is intended, run KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers \
          and commit tests/data/snapshots.",
         changed.join(", ")
     );
@@ -321,7 +321,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
 fn check(e: &Expect) -> Option<Metrics> {
     let paper = load(e.id)?;
     let (m, snapshot) = measure(&paper);
-    if std::env::var("P2H_PRINT_METRICS").is_ok() {
+    if std::env::var("KAKEMONO_PRINT_METRICS").is_ok() {
         eprintln!("{}: {m:?}", e.id);
     }
     assert!(m.title.contains(e.title), "{}: title {:?}", e.id, m.title);
@@ -863,7 +863,7 @@ fn pictures_do_not_cut_text() {
     ] {
         let Some(paper) = load(id) else { continue };
         let analysis = paper.analyze();
-        for cut in paper2html::analysis::crops::cut_glyphs(&analysis.doc, &analysis.loose) {
+        for cut in kakemono::analysis::crops::cut_glyphs(&analysis.doc, &analysis.loose) {
             report.push(format!(
                 "{id} p{} {} #{}: {} glyphs cut by [{:.0},{:.0} {:.0}x{:.0}]: {}",
                 cut.page + 1,

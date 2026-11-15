@@ -1,20 +1,24 @@
 [package]
-name = "paper2html"
+name = "kakemono"
 version = "0.3.0"
 edition = "2024"
 description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes"
-repository = "https://github.com/iamcaominhtien/rust-pdf-parser"
+repository = "https://github.com/iamcaominhtien/kakemono"
+documentation = "https://docs.rs/kakemono"
 readme = "README.md"
+# What goes into the package published on crates.io; the tests, scripts, docs and
+# Python binding stay in the repository only.
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 keywords = ["pdf", "html", "arxiv", "converter", "papers"]
 categories = ["command-line-utilities", "text-processing"]
 license = "MIT"
 
 [lib]
-name = "paper2html"
+name = "kakemono"
 path = "src/lib.rs"
 
 [[bin]]
-name = "paper2html"
+name = "kakemono"
 path = "src/main.rs"
 
 [dependencies]

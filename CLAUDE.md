@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`paper2html`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes:
+`kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes:
 
 - `hard`: a copy of every page, with a selectable text layer.
 - `hard-95`: like `hard`, but all text is real HTML text placed as in the PDF.
@@ -17,16 +17,17 @@ Read before changing code:
 
 ```bash
 cargo build --release
-./target/release/paper2html convert <file.pdf | arXiv id> -m friendly -o out/x.friendly.html   # or --all -o out/dir
-./target/release/paper2html inspect <file.pdf>        # print the detected structure, for debugging
+./target/release/kakemono convert <file.pdf | arXiv id> -m friendly -o out/x.friendly.html   # or --all -o out/dir
+./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-P2H_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers   # when output changes ON PURPOSE
-P2H_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers   # when output changes ON PURPOSE
+KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks
 node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
+cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
@@ -66,6 +67,17 @@ committing.
   a regression.
 - A test for a specific bug goes in `tests/real_papers.rs` and is named after the behaviour, for
   example `ligo_radical_is_a_square_root`.
+
+## Public API and packages
+
+- The crate is published on crates.io and the Python package (`python/`) on PyPI, both by the
+  release workflows. Only what `src/lib.rs` re-exports, plus `config`, `model` and `source`, is
+  the public API; changing it is a breaking change (`feat!:`/`fix!:`). The `#[doc(hidden)]`
+  modules are internals.
+- `python/` is a separate crate, not a workspace member: run its `cargo fmt`/`clippy` from inside
+  it. Its version is set from the release tag when wheels are built
+  (`scripts/set-python-version.py`).
+- The package on crates.io holds only what `include` in `Cargo.toml` lists.
 
 ## Renderer JS and CSS
 

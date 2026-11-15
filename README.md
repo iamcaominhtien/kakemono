@@ -1,16 +1,47 @@
-# paper2html
+<div align="center">
 
-A Rust tool that converts PDF papers and books (a local file or an arXiv ID) into clean HTML with
-continuous text, ready to read on any screen or to feed to translation tools.
+<img src="docs/assets/logo.svg" alt="kakemono logo" width="120" height="120">
 
-- **Pure Rust**, a single executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use
-  [hayro](https://github.com/LaurenzV/hayro).
-- **Continuous text**: lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined
-  across columns and pages, running heads and page numbers removed, footnotes set apart.
-- **Real structure**: tables rebuilt as `<table>`, display formulas as MathML, code listings kept
-  line by line with their indentation, lists, headings and cross-links.
-- **Sharp images**: figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG.
-- **Fast**: a 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode.
+# kakemono
+
+**Turn PDF papers and books into clean, readable HTML — in pure Rust, as a single executable.**
+
+[![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/kakemono?logo=rust&logoColor=white&color=000000)](https://crates.io/crates/kakemono)
+[![PyPI](https://img.shields.io/pypi/v/kakemono?logo=python&logoColor=white&color=3776ab)](https://pypi.org/project/kakemono/)
+[![docs.rs](https://img.shields.io/docsrs/kakemono?logo=docsdotrs&label=docs.rs)](https://docs.rs/kakemono)
+[![PDF engine](https://img.shields.io/badge/PDF_engine-hayro-orange)](https://github.com/LaurenzV/hayro)
+[![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
+
+[Features](#features) · [Modes](#the-four-modes) · [Install](#installation) · [Usage](#usage) ·
+[Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
+
+</div>
+
+---
+
+> *Kakemono* is a Japanese hanging scroll: a work unrolled so that it can be read at a
+> glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
+
+Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
+to feed to translation tools.
+
+```bash
+kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
+```
+
+## Features
+
+| | |
+| --- | --- |
+| 🦀 **Pure Rust** | One executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use [hayro](https://github.com/LaurenzV/hayro). |
+| 📖 **Continuous text** | Lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined across columns and pages, running heads and page numbers removed, footnotes set apart. |
+| 🧱 **Real structure** | Tables rebuilt as `<table>`, display formulas as MathML, code listings kept line by line, lists, headings and cross-links. |
+| 🖼️ **Sharp images** | Figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG. |
+| 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
+| ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
 ## The four modes
 
@@ -27,28 +58,36 @@ block whose text changes (after translation) reflows inside its box.
 
 ## Installation
 
+**Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
+attached to every [release](https://github.com/iamcaominhtien/kakemono/releases/latest).
+
+**With Cargo** (stable Rust):
+
 ```bash
-cargo build --release
+cargo install kakemono
 ```
 
-The executable is `target/release/paper2html`.
+or, in a clone, `cargo build --release`; the executable is `target/release/kakemono`.
+
+**As a library:** `cargo add kakemono` for Rust, `pip install kakemono` for Python (see
+[below](#use-as-a-library)).
 
 ## Usage
 
 ```bash
-paper2html convert 1706.03762
+kakemono convert 1706.03762
 ```
 
 ```bash
-paper2html convert paper.pdf --mode medium -o paper.html
+kakemono convert paper.pdf --mode medium -o paper.html
 ```
 
 ```bash
-paper2html convert paper.pdf --all --json -o out/
+kakemono convert paper.pdf --all --json -o out/
 ```
 
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
-arXiv URL. Downloaded PDFs are cached in `~/.cache/paper2html` (`PAPER2HTML_CACHE` changes it).
+arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
 | Option | Meaning |
 | --- | --- |
@@ -64,9 +103,9 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/paper2html` (`PAPER2HTML_CACH
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
 
-Other commands: `paper2html fetch <id> -o paper.pdf` only downloads; `paper2html inspect paper.pdf`
+Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
 prints the detected structure (headings, paragraphs, figures, formulas; `<math>` marks a formula
-rebuilt as MathML); `paper2html formula picture.png` reads pictures of LaTeX formulas and prints
+rebuilt as MathML); `kakemono formula picture.png` reads pictures of LaTeX formulas and prints
 their MathML (experimental).
 
 ## JSON for translation tools
@@ -94,7 +133,7 @@ cells (`colspan`, `rowspan`) and rules.
 ## Use as a library
 
 ```rust
-use paper2html::{HtmlOptions, Mode, Paper};
+use kakemono::{HtmlOptions, Mode, Paper};
 
 let paper = Paper::from_bytes(std::fs::read("paper.pdf")?)?;
 let analysis = paper.analyze();
@@ -102,7 +141,28 @@ let out = paper.to_html(&analysis, &HtmlOptions { mode: Mode::Friendly, ..Defaul
 std::fs::write("paper.html", out.html)?;
 ```
 
-How the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+`paper.to_html` can be called once per mode with the same analysis. `analysis.doc` is the
+document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
+how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Python
+
+```bash
+pip install kakemono
+```
+
+```python
+import kakemono
+
+html = kakemono.convert("paper.pdf")                   # friendly mode, one self-contained page
+html = kakemono.convert("1706.03762", mode="medium")   # an arXiv id or URL works too
+pages = kakemono.convert_all("paper.pdf")              # every mode, from one analysis
+doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
+```
+
+The wheels (Linux, macOS, Windows; Python 3.9+) contain the Rust library: nothing else to install.
+The options are those of the command line (`tables`, `equations`, `page_image`, `embed_fonts`,
+`scale`, `jobs`); see [python/README.md](python/README.md).
 
 ## Limitations
 
@@ -127,10 +187,10 @@ cargo test --release
   paragraphs broken mid-sentence, words still hyphenated, characters left in the `hard-95`
   background and formulas rebuilt as MathML. The limits are the current results: better passes,
   worse fails; tighten them after an improvement
-  (`P2H_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
+  (`KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
 - **Snapshots**: a hash of each mode's HTML and of the JSON per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
-  `P2H_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
+  `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):
@@ -141,10 +201,23 @@ node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 ```
 
-CI runs `cargo fmt`, `cargo clippy`, the tests and the browser checks on every pull request.
+The Python package is tested with `pytest` (needs [maturin](https://www.maturin.rs)):
 
-## Releases and license
+```bash
+cd python && python -m venv .venv && . .venv/bin/activate
+pip install maturin pytest && maturin develop --release && pytest tests
+```
 
-Every merge into `main` is released automatically from Conventional Commits (version,
-`CHANGELOG.md`, executables for Linux, macOS and Windows). See [CONTRIBUTING.md](CONTRIBUTING.md).
-MIT license; the main dependencies (hayro, vello) are Apache-2.0 or MIT.
+CI runs `cargo fmt`, `cargo clippy`, the tests, the browser checks and the Python tests (with
+wheels built for every platform) on every pull request.
+
+## Contributing and releases
+
+Issues and pull requests are welcome; read [ARCHITECTURE.md](ARCHITECTURE.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md) first. Every merge into `main` is released automatically from
+Conventional Commits: version, `CHANGELOG.md`, executables for Linux, macOS and Windows, the crate
+on crates.io and the wheels on PyPI.
+
+## License
+
+[MIT](LICENSE) © Cao Minh Tiến. The main dependencies (hayro, vello) are Apache-2.0 or MIT.

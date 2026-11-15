@@ -10,7 +10,7 @@
 //
 // usage: node tests/browser/check-hard95.js file.hard-95.html [...]
 // Uses the Playwright package if installed, else playwright-core with the
-// system Chrome (set P2H_CHROME_CHANNEL=chrome, as CI does).
+// system Chrome (set KAKEMONO_CHROME_CHANNEL=chrome, as CI does).
 let pw;
 try {
   pw = require('playwright');
@@ -18,7 +18,7 @@ try {
   pw = require('playwright-core');
 }
 
-const channel = process.env.P2H_CHROME_CHANNEL;
+const channel = process.env.KAKEMONO_CHROME_CHANNEL;
 
 function fail(file, msg) {
   console.error(`FAIL ${file}: ${msg}`);
@@ -43,7 +43,7 @@ function fail(file, msg) {
     );
     const emptyPages = textBeforeScroll.filter((n) => n === 0).length;
 
-    await page.evaluate(() => window.paper2htmlFitAll());
+    await page.evaluate(() => window.kakemonoFitAll());
     const fit = await page.evaluate(() => {
       let lines = 0;
       let misfit = 0;

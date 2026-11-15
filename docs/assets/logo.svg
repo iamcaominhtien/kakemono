@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f0a43a"/><stop offset="1" stop-color="#b5481c"/></linearGradient>
+<radialGradient id="glow" cx="100" cy="100" r="82" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffe0a0" stop-opacity=".5"/><stop offset="1" stop-color="#ffe0a0" stop-opacity="0"/></radialGradient>
+<linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<filter id="sh" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#000" flood-opacity=".35"/></filter>
+<filter id="sh2" x="-40%" y="-40%" width="180%" height="180%"><feDropShadow dx="-3" dy="5" stdDeviation="3" flood-color="#000" flood-opacity=".3"/></filter>
+<linearGradient id="paper" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#f6ecd6"/><stop offset=".5" stop-color="#fffaf0"/><stop offset="1" stop-color="#f1e3c4"/></linearGradient>
+<linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8a3b1f"/><stop offset=".5" stop-color="#5e2412"/><stop offset="1" stop-color="#3d150a"/></linearGradient>
+<linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd98a"/><stop offset="1" stop-color="#c98a2b"/></linearGradient></defs>
+<rect width="200" height="200" rx="46" fill="url(#bg)"/>
+<circle cx="100" cy="100" r="82" fill="url(#glow)"/>
+<rect width="200" height="200" rx="46" fill="url(#gloss)"/>
+<g filter="url(#sh)">
+<rect x="66" y="50" width="68" height="104" fill="url(#paper)"/>
+<rect x="66" y="50" width="68" height="9" fill="#c7a46a" opacity=".55"/>
+<rect x="66" y="145" width="68" height="9" fill="#c7a46a" opacity=".55"/>
+<rect x="58" y="43" width="84" height="9" rx="4.5" fill="url(#wood)"/>
+<rect x="58" y="152" width="84" height="10" rx="5" fill="url(#wood)"/>
+<rect x="52" y="152.5" width="8" height="9" rx="3" fill="url(#cap)"/><rect x="140" y="152.5" width="8" height="9" rx="3" fill="url(#cap)"/>
+<path d="M78 43 L100 28 L122 43" stroke="#5e2412" stroke-width="2" fill="none" stroke-linejoin="round"/>
+<circle cx="100" cy="28" r="2.6" fill="url(#cap)"/>
+</g>
+<rect x="78" y="68" width="30" height="6" rx="3" fill="#3b2a1e" opacity=".85"/><rect x="78" y="84" width="44" height="4.5" rx="2.25" fill="#3b2a1e" opacity=".55"/><rect x="78" y="94" width="44" height="4.5" rx="2.25" fill="#3b2a1e" opacity=".55"/><rect x="78" y="104" width="44" height="4.5" rx="2.25" fill="#3b2a1e" opacity=".55"/><rect x="78" y="114" width="30" height="4.5" rx="2.25" fill="#3b2a1e" opacity=".55"/>
+<rect x="110" y="126" width="13" height="13" rx="2.5" fill="#d23c2a"/><rect x="112.6" y="128.6" width="7.8" height="7.8" rx="1.4" fill="none" stroke="#ffe7d6" stroke-width="1.2"/><circle cx="116.5" cy="132.5" r="1.6" fill="#ffe7d6"/></svg>

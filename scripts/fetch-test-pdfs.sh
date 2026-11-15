@@ -14,7 +14,7 @@ while read -r id sum; do
   [[ "$first" = 1 ]] || sleep 3
   first=0
   echo "downloading $id"
-  curl -fsSL --proto =https --proto-redir =https --retry 3 --retry-delay 5 -A "paper2html-tests" -o "$file.part" "https://arxiv.org/pdf/$id"
+  curl -fsSL --proto =https --proto-redir =https --retry 3 --retry-delay 5 -A "kakemono-tests" -o "$file.part" "https://arxiv.org/pdf/$id"
   if ! echo "$sum  $file.part" | sha256sum -c --status; then
     echo "checksum mismatch for $id" >&2
     rm -f "$file.part"
