@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -86,13 +87,18 @@ pub fn save_pdf(id: &str, dest: &Path) -> Result<()> {
 /// `$XDG_CACHE_HOME/kakemono`, else `~/.cache/kakemono`, else a
 /// directory in the system's temporary directory.
 fn cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("KAKEMONO_CACHE") {
+    cache_dir_from(|name| std::env::var_os(name))
+}
+
+/// [`cache_dir`], reading the environment through `var`.
+fn cache_dir_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    if let Some(dir) = var("KAKEMONO_CACHE") {
         return PathBuf::from(dir);
     }
-    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+    if let Some(dir) = var("XDG_CACHE_HOME") {
         return PathBuf::from(dir).join(CACHE_DIR_NAME);
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = var("HOME") {
         return PathBuf::from(home).join(".cache").join(CACHE_DIR_NAME);
     }
     std::env::temp_dir().join(CACHE_DIR_NAME)
@@ -126,7 +132,28 @@ fn download(id: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_id;
+    use super::{CACHE_DIR_NAME, cache_dir_from, parse_id};
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    /// `KAKEMONO_CACHE` wins, then `XDG_CACHE_HOME`, then `~/.cache`, then
+    /// the temporary directory.
+    #[test]
+    fn cache_dir_order() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+        const ALL: &[(&str, &str)] = &[("KAKEMONO_CACHE", "/c"), ("XDG_CACHE_HOME", "/x"), ("HOME", "/h")];
+        assert_eq!(cache_dir_from(env(ALL)), PathBuf::from("/c"));
+        assert_eq!(cache_dir_from(env(&ALL[1..])), PathBuf::from("/x/kakemono"));
+        assert_eq!(cache_dir_from(env(&ALL[2..])), PathBuf::from("/h/.cache/kakemono"));
+        assert_eq!(cache_dir_from(env(&[])), std::env::temp_dir().join(CACHE_DIR_NAME));
+    }
 
     /// New- and old-style ids, prefixed ids and URLs are recognised; file
     /// names are not.
