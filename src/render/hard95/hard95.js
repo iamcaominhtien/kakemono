@@ -61,7 +61,7 @@
     if(!ln&&!el.classList.contains('pl'))return false;
     el.classList.add('sq');
     el.style.transform='scaleX('+Math.max(k,SQUEEZE_MIN).toFixed(4)+')';
-    if(ln&&!el.classList.contains('end')&&!(el.nextElementSibling&&el.nextElementSibling.classList.contains('sqbr'))){
+    if(ln&&!el.classList.contains('end')&&!el.nextElementSibling?.classList.contains('sqbr')){
       var br=doc.createElement('br');br.className='sqbr';el.after(br);
     }
     return true;
@@ -187,6 +187,7 @@
     var inner=fb.firstElementChild,boxes=[fb].concat([].slice.call(clonesOf(fb))),total=0;
     boxes.forEach(function(b){b.classList.add('rf');total+=b.getBoundingClientRect().height;});
     fb.querySelectorAll('.ln[data-fs0]').forEach(function(l){l.style.fontSize=l.dataset.fs0;});
+    boxes.forEach(function(b){b.querySelectorAll('.ln.sq').forEach(function(l){l.style.transform='';});});
     var lh=Number.parseFloat(getComputedStyle(fb).lineHeight)||0,scale=1;
     inner.style.fontSize='';
     while(scale>0.62&&inner.scrollHeight>total+lh*0.3){scale-=0.03;inner.style.fontSize=Math.round(scale*100)+'%';}
