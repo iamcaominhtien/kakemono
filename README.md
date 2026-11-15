@@ -1,16 +1,42 @@
+<div align="center">
+
+<img src="docs/assets/logo.svg" alt="paper2html logo" width="120" height="120">
+
 # paper2html
 
-A Rust tool that converts PDF papers and books (a local file or an arXiv ID) into clean HTML with
-continuous text, ready to read on any screen or to feed to translation tools.
+**Turn PDF papers and books into clean, readable HTML — in pure Rust, as a single executable.**
 
-- **Pure Rust**, a single executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use
-  [hayro](https://github.com/LaurenzV/hayro).
-- **Continuous text**: lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined
-  across columns and pages, running heads and page numbers removed, footnotes set apart.
-- **Real structure**: tables rebuilt as `<table>`, display formulas as MathML, code listings kept
-  line by line with their indentation, lists, headings and cross-links.
-- **Sharp images**: figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG.
-- **Fast**: a 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode.
+[![Release](https://img.shields.io/github/v/release/iamcaominhtien/rust-pdf-parser?label=release&color=3b5bdb)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/rust-pdf-parser/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/rust-pdf-parser/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-2024_edition-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![PDF engine](https://img.shields.io/badge/PDF_engine-hayro-orange)](https://github.com/LaurenzV/hayro)
+[![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
+
+[Features](#features) · [Modes](#the-four-modes) · [Install](#installation) · [Usage](#usage) ·
+[Library](#use-as-a-library) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
+
+</div>
+
+---
+
+Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
+to feed to translation tools.
+
+```bash
+paper2html convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
+```
+
+## Features
+
+| | |
+| --- | --- |
+| 🦀 **Pure Rust** | One executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use [hayro](https://github.com/LaurenzV/hayro). |
+| 📖 **Continuous text** | Lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined across columns and pages, running heads and page numbers removed, footnotes set apart. |
+| 🧱 **Real structure** | Tables rebuilt as `<table>`, display formulas as MathML, code listings kept line by line, lists, headings and cross-links. |
+| 🖼️ **Sharp images** | Figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG. |
+| 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
+| ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
 ## The four modes
 
@@ -27,11 +53,16 @@ block whose text changes (after translation) reflows inside its box.
 
 ## Installation
 
+**Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
+attached to every [release](https://github.com/iamcaominhtien/rust-pdf-parser/releases/latest).
+
+**From source** (stable Rust):
+
 ```bash
-cargo build --release
+cargo install --git https://github.com/iamcaominhtien/rust-pdf-parser
 ```
 
-The executable is `target/release/paper2html`.
+or, in a clone, `cargo build --release`; the executable is `target/release/paper2html`.
 
 ## Usage
 
@@ -143,8 +174,12 @@ node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 
 CI runs `cargo fmt`, `cargo clippy`, the tests and the browser checks on every pull request.
 
-## Releases and license
+## Contributing and releases
 
-Every merge into `main` is released automatically from Conventional Commits (version,
-`CHANGELOG.md`, executables for Linux, macOS and Windows). See [CONTRIBUTING.md](CONTRIBUTING.md).
-MIT license; the main dependencies (hayro, vello) are Apache-2.0 or MIT.
+Issues and pull requests are welcome; read [ARCHITECTURE.md](ARCHITECTURE.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md) first. Every merge into `main` is released automatically from
+Conventional Commits (version, `CHANGELOG.md`, executables for Linux, macOS and Windows).
+
+## License
+
+[MIT](LICENSE) © Cao Minh Tiến. The main dependencies (hayro, vello) are Apache-2.0 or MIT.
