@@ -437,8 +437,11 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             {
                 text = known;
             }
-            if text.is_empty() || text == "\u{FFFD}" && matches!(glyph.char_code(), 9 | 10 | 13) {
-                // Control codes (a line break typed into a figure label) draw nothing.
+            // Control codes (a line break typed into a figure label) draw
+            // nothing; neither does an unmapped glyph without an outline (a
+            // space of a font without Unicode mapping, padding a form).
+            let blank = font != UNKNOWN_FONT && outline_box.is_none();
+            if text.is_empty() || text == "\u{FFFD}" && (matches!(glyph.char_code(), 9 | 10 | 13) || blank) {
                 continue;
             }
             if self.fonts.infos[font as usize].math_pi {

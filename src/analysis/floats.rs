@@ -1254,7 +1254,8 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         // one on a page without captions (a framed figure of text is still a
         // figure).
         let shading = path.filled && !path.stroked;
-        let frame = path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned;
+        let frame =
+            path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned && !holds_unreadable(page, &path.bbox);
         if (shading && path.is_white()) || ((shading || frame) && shades_text(page, &path.bbox, cfg)) {
             continue;
         }
@@ -1290,6 +1291,14 @@ fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
         .take(cfg.shaded_box_min_captions_count)
         .count();
     text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
+}
+
+/// Whether text inside `bbox` has characters with no Unicode mapping: the
+/// box stays a picture, which shows them.
+fn holds_unreadable(page: &PageData, bbox: &Rect) -> bool {
+    page.lines
+        .iter()
+        .any(|line| bbox.contains(&line.bbox) && line.glyphs.iter().any(|glyph| glyph.text.contains('\u{FFFD}')))
 }
 
 /// The length of `line` in Latin characters: its characters other than

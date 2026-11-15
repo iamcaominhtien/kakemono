@@ -37,10 +37,13 @@ impl SymbolFont {
             Some(Self::Lasy)
         } else if lower.starts_with("mathdesign") && lower.contains("symbola") {
             Some(Self::MathDesignA)
-        } else if (lower.starts_with("mathdesign") && lower.contains("-symbol-")) || tex_font(lower, &["cmsy", "cmbsy"])
+        } else if (lower.starts_with("mathdesign") && lower.contains("-symbol-"))
+            || (tex_font(lower, &["cmsy", "cmbsy"]) || matches!(lower, "txsy" | "pxsy" | "txbsy" | "pxbsy"))
         {
             Some(Self::Oms)
-        } else if (lower.starts_with("mathdesign") && lower.contains("-extension-")) || tex_font(lower, &["cmex"]) {
+        } else if (lower.starts_with("mathdesign") && lower.contains("-extension-"))
+            || (tex_font(lower, &["cmex"]) || matches!(lower, "txex" | "pxex"))
+        {
             Some(Self::Omx)
         } else if lower.starts_with("opensymbol") {
             Some(Self::OpenSymbol)
