@@ -100,6 +100,13 @@ pub struct FurnitureConfig {
     /// Baseline distance (in points) below which another line counts as on
     /// the same row as a candidate, and so does not crowd it.
     pub crowded_min_distance_pt: f32,
+    /// Only text of at least this share of a candidate's size crowds it:
+    /// the small tick labels of a figure right below a running head do
+    /// not make it part of the text...
+    pub crowded_min_size_ratio: f32,
+    /// ... when the candidate is set in at least this size (points): tiny
+    /// labels inside a picture all crowd each other.
+    pub crowded_min_head_size_pt: f32,
     /// Baseline distance (in font sizes of the larger line) below which a
     /// non-candidate line crowds a candidate, making it content: a normal
     /// line pitch is about 1.2 font sizes, and a table set in open rows
@@ -156,6 +163,8 @@ impl Default for FurnitureConfig {
             body_edge_tolerance_pt: 1.0,
             page_number_max_glyphs_count: 12,
             crowded_min_distance_pt: 2.0,
+            crowded_min_size_ratio: 0.7,
+            crowded_min_head_size_pt: 5.0,
             crowded_max_distance_em: 1.75,
             heading_number_max_gap_em: 3.0,
             roman_number_max_offset_count: 4,
@@ -739,14 +748,18 @@ fn mark_running_heads(
                     .any(|&row| (row - line.baseline).abs() <= cfg.crowded_min_distance_pt)
         })
         .collect();
-    for (flag, keep_out) in drop.iter_mut().zip(drop_apart(page, &with_mates, cfg)) {
-        *flag |= keep_out;
+    // A row that ends with the page's own number is a running head even
+    // with text right below it (a margin caption level with a figure).
+    for ((flag, keep_out), &head) in drop.iter_mut().zip(drop_apart(page, &with_mates, cfg)).zip(numbered) {
+        *flag |= keep_out || head;
     }
 }
 
 /// The candidates that stand apart from the content: running heads do. A
 /// candidate with other text right above or below it is content itself
-/// (for instance the header row of a table at the top of a page).
+/// (for instance the header row of a table at the top of a page); the much
+/// smaller labels of a figure do not count (see
+/// [`FurnitureConfig::crowded_min_size_ratio`]).
 fn drop_apart(page: &PageData, candidate: &[bool], cfg: &FurnitureConfig) -> Vec<bool> {
     page.lines
         .iter()
@@ -756,6 +769,8 @@ fn drop_apart(page: &PageData, candidate: &[bool], cfg: &FurnitureConfig) -> Vec
                 && !page.lines.iter().enumerate().any(|(j, other)| {
                     let distance = (other.baseline - line.baseline).abs();
                     !candidate[j]
+                        && (other.size >= cfg.crowded_min_size_ratio * line.size
+                            || line.size < cfg.crowded_min_head_size_pt)
                         && distance > cfg.crowded_min_distance_pt
                         && distance < cfg.crowded_max_distance_em * line.size.max(other.size)
                 })
