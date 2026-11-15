@@ -106,6 +106,19 @@ pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
         }
         let mut run: Vec<Token> = opened.into_iter().chain(tokens[i..end].iter().cloned()).collect();
         let rest = take_closers(&mut tokens, end, &mut run);
+        // The scripts of a closing bracket taken in ("(A⁻¹)ᵀ") go with it.
+        let mut next = end;
+        if rest.is_none()
+            && tokens
+                .get(end)
+                .is_some_and(|token| token.kind == Kind::Text && token.span.text.is_empty())
+        {
+            next = end + 1;
+            while tokens.get(next).is_some_and(|token| token.kind == Kind::Script) {
+                run.push(tokens[next].clone());
+                next += 1;
+            }
+        }
         let raw: String = run.iter().map(|token| token.span.text.as_str()).collect();
         let alt = raw.trim();
         // Symbols alone ("{", "=") are no formula, and glyphs that could not
@@ -118,7 +131,7 @@ pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
         if glued || !alt.contains(char::is_alphanumeric) || alt.contains(char::REPLACEMENT_CHARACTER) {
             text.extend(run.into_iter().map(|token| token.span));
             text.extend(rest);
-            i = end;
+            i = next;
             continue;
         }
         // The spaces at the ends of the run stay in the text around it.
@@ -137,7 +150,7 @@ pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
         if let Some(rest) = rest {
             text.push(rest);
         }
-        i = end;
+        i = next;
     }
     if !text.is_empty() {
         pieces.push(Piece::Text(text));
@@ -830,6 +843,19 @@ mod tests {
             span("9999], and log", 0),
         ];
         assert_eq!(text_of(&split(&spans)), "[β2 ∈ [0.99, 0.9999]], and log");
+    }
+
+    #[test]
+    fn script_after_a_closing_bracket() {
+        let spans = [
+            span("so is (", 0),
+            span("A", MI),
+            span("−1", SUP),
+            span(")", 0),
+            span("⊤", SUP),
+            span(" too", 0),
+        ];
+        assert_eq!(text_of(&split(&spans)), "so is [(A−1)⊤] too");
     }
 
     #[test]

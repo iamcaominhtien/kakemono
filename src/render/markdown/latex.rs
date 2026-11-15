@@ -4,6 +4,7 @@
 //! KaTeX).
 
 use crate::model::MathNode;
+use unicode_normalization::UnicodeNormalization;
 
 /// Symbols written as a LaTeX command (or escaped) rather than as the
 /// character itself: Greek letters, operators, relations, arrows,
@@ -174,6 +175,27 @@ const SYMBOLS: &[(char, &str)] = &[
     ('⊤', "\\top"),
     ('□', "\\square"),
     ('△', "\\triangle"),
+    ('〈', "\\langle"),
+    ('〉', "\\rangle"),
+    ('◦', "\\circ"),
+    ('–', "-"),
+    ('˜', "\\sim"),
+    // Pieces of tall brackets and braces, which TeX draws as one glyph: the
+    // corners of a bracket as ceiling and floor signs, its middle as a bar,
+    // the middle of a brace as a brace; the other brace pieces are left out.
+    ('⎡', "\\lceil"),
+    ('⎢', "\\vert"),
+    ('⎣', "\\lfloor"),
+    ('⎤', "\\rceil"),
+    ('⎥', "\\vert"),
+    ('⎦', "\\rfloor"),
+    ('⎨', "\\{"),
+    ('⎬', "\\}"),
+    ('⎧', ""),
+    ('⎩', ""),
+    ('⎫', ""),
+    ('⎭', ""),
+    ('⎪', ""),
     ('#', "\\#"),
     ('%', "\\%"),
     ('&', "\\&"),
@@ -194,6 +216,10 @@ const ACCENTS: &[(char, &str)] = &[
     ('^', "\\hat"),
     ('ˆ', "\\hat"),
     ('\u{302}', "\\hat"),
+    ('\u{300}', "\\grave"),
+    ('\u{301}', "\\acute"),
+    ('\u{306}', "\\breve"),
+    ('\u{30C}', "\\check"),
     ('~', "\\tilde"),
     ('˜', "\\tilde"),
     ('\u{303}', "\\tilde"),
@@ -506,11 +532,25 @@ fn symbols(text: &str) -> String {
             }
         } else if let Some((_, command)) = SYMBOLS.iter().find(|(symbol, _)| *symbol == ch) {
             push(&mut out, command);
+        } else if let Some(accented) = accented_letter(ch) {
+            push(&mut out, &accented);
         } else {
             push(&mut out, ch.encode_utf8(&mut [0; 4]));
         }
     }
     out
+}
+
+/// A letter with an accent written as one character (`ã`, `ĝ`) as an accent
+/// command over the letter (`\tilde{a}`), or `None` when `ch` is no such
+/// letter.
+fn accented_letter(ch: char) -> Option<String> {
+    let mut parts = std::iter::once(ch).nfd();
+    let (Some(base), Some(mark), None) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    let (_, command) = ACCENTS.iter().find(|(accent, _)| *accent == mark)?;
+    Some(format!("{command}{{{}}}", symbols(&base.to_string())))
 }
 
 /// The plain letter or digit and the alphabet command of a character of
@@ -618,6 +658,12 @@ mod tests {
             },
         ]);
         assert_eq!(latex(&node), "\\sum\\limits_{i=1}^{n}f'");
+    }
+
+    #[test]
+    fn precomposed_accents_and_bracket_pieces() {
+        let node = MathNode::Row(vec![ident("ã"), op("⎡"), ident("ĝ"), op("⎦")]);
+        assert_eq!(latex(&node), "\\tilde{a}\\lceil\\hat{g}\\rfloor");
     }
 
     #[test]
