@@ -629,6 +629,9 @@ fn contents_page_numbers_in_a_column_are_not_line_numbers() {
         pages,
         ["11", "12", "13", "16", "17", "19", "22", "27", "35", "40", "44", "48"],
         "{:?}",
-        doc.blocks.iter().map(|block| (&block.kind, block.text())).collect::<Vec<_>>()
+        doc.blocks
+            .iter()
+            .map(|block| (&block.kind, block.text()))
+            .collect::<Vec<_>>()
     );
 }
