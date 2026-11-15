@@ -8,6 +8,7 @@ use crate::common::geom::{Rect, median, weighted_mode};
 use crate::model::style::{BOLD, ITALIC, MATH, MONO, SANS, SMALL_CAPS, SUB, SUP};
 use crate::model::{FRACTION_TERM, Line, LineGlyph, RotatedText};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use unicode_normalization::UnicodeNormalization;
 
 /// A line of at most this many glyphs, all brackets or separators (")",
@@ -16,10 +17,10 @@ const FIXED_PITCH_BRACKETS_MAX: usize = 3;
 /// Equal open gaps in a row that make a short spread word ("err"), enough
 /// for a line next to a code listing to belong to it.
 const FIXED_PITCH_SHORT_RUN: usize = 2;
-/// Height (in points) of the bands of baselines in which copies of a glyph
-/// are looked for; a copy is looked for in its band and the two next to it,
-/// so offsets up to this height are found.
-const DUPLICATE_BAND_PT: f32 = 8.0;
+/// Side (in points) of the square cells in which the glyphs of a page are
+/// kept to find their copies: a copy is looked for in the cells within its
+/// tolerance, so the size only affects speed, not what is found.
+const DUPLICATE_CELL_PT: f32 = 8.0;
 /// Longest run of tight gaps in a row that can be word spaces: the two
 /// around a one-letter word. Longer runs are letter-spaced text.
 const TIGHT_SPACE_MAX_RUN: usize = 2;
@@ -107,6 +108,7 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     fraction_denominator_max_drop_em: 1.4,
     fraction_term_max_size_ratio: 0.85,
     fraction_term_max_glyphs_count: 8,
+    fraction_lines_max_distance_em: 3.0,
     blank_max_thickness_pt: 1.5,
     blank_max_drop_em: 0.4,
     blank_max_rise_em: 0.1,
@@ -343,6 +345,9 @@ pub struct LinesConfig {
     pub fraction_term_max_size_ratio: f32,
     /// Most glyphs of each term of a fraction gathered from rows of its own.
     pub fraction_term_max_glyphs_count: usize,
+    /// Lines whose baseline is farther than this (font sizes of the line of
+    /// the fraction) from its bar are not searched for its terms.
+    pub fraction_lines_max_distance_em: f32,
     /// A thin horizontal rule (at most this thick, points) ...
     pub blank_max_thickness_pt: f32,
     /// ... on or just below the baseline of a word (at most this many font
@@ -791,11 +796,14 @@ fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usi
         };
         reach && centre >= bar.x0 - slack && centre <= bar.x1 + slack
     };
+    // Lines far from the bar hold no term (a line's scripts stay within an
+    // em of its baseline).
+    let near = |line: &Line| (line.baseline - cy).abs() <= cfg.fraction_lines_max_distance_em * size;
     let found = |sign: i8| {
         lines
             .iter()
             .enumerate()
-            .filter(|&(idx, _)| idx != host)
+            .filter(|&(idx, line)| idx != host && near(line))
             .flat_map(|(idx, line)| (0..line.glyphs.len()).map(move |k| (idx, k)))
             .filter(|&(idx, k)| term(&lines[idx].glyphs[k], sign))
             .map(|(idx, k)| (idx, k, sign))
@@ -942,7 +950,8 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
             rotated.push(glyph, cfg);
             continue;
         }
-        if let Some(kept) = copies.find(glyph, cfg) {
+        let hash = GlyphCopies::hash(glyph);
+        if let Some(kept) = copies.find(glyph, hash, cfg) {
             // The copy drawn last is the one on top, the one that is seen.
             if glyphs[kept].color == display_color(glyph.color, cfg) {
                 glyphs[kept].extra.push((glyph.x, glyph.y));
@@ -953,7 +962,7 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
             }
             continue;
         }
-        copies.insert(glyph, glyphs.len());
+        copies.insert(glyph, hash, glyphs.len());
         glyphs.push(line_glyph(glyph, cfg));
     }
     let blanks = blank_glyphs(raw, &glyphs, cfg);
@@ -981,23 +990,33 @@ fn blank_glyphs(raw: &RawPage, glyphs: &[LineGlyph], cfg: &LinesConfig) -> Vec<L
         .map(|rule| rule.bbox)
         .collect();
     let mut blanks = Vec::new();
+    if rules.is_empty() {
+        return blanks;
+    }
+    // The glyphs by height: each rule is compared only with those that can
+    // stand beside, over or under it (a page of a plot has many rules).
+    let mut by_y: Vec<&LineGlyph> = glyphs.iter().collect();
+    by_y.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let max_size = glyphs.iter().map(|glyph| glyph.size).fold(0.0, f32::max);
+    let band = 2.0 * cfg.blank_stacked_max_distance_em * max_size;
     for (idx, &bbox) in rules.iter().enumerate() {
-        if part_of_drawing(raw, &rules, idx, cfg) || part_of_formula(glyphs, &bbox, cfg) {
-            continue;
-        }
         let cy = bbox.cy();
+        let from = by_y.partition_point(|glyph| glyph.y < cy - band);
+        let to = by_y.partition_point(|glyph| glyph.y <= cy + band);
+        let near = &by_y[from..to];
         let on_baseline = |glyph: &&LineGlyph| {
             cy - glyph.y >= -cfg.blank_max_rise_em * glyph.size && cy - glyph.y <= cfg.blank_max_drop_em * glyph.size
         };
-        let neighbour = glyphs.iter().filter(on_baseline).find(|glyph| {
+        let neighbour = near.iter().copied().filter(on_baseline).find(|glyph| {
             let reach = cfg.blank_max_gap_em * glyph.size;
             (glyph.x1 <= bbox.x0 + reach / 4.0 && bbox.x0 - glyph.x1 <= reach)
                 || (glyph.x0 >= bbox.x1 - reach / 4.0 && glyph.x0 - bbox.x1 <= reach)
         });
         // After an operator ("f(x) = ―"), the rule is a fraction bar whose
         // terms are not text.
-        let after_operator = glyphs
+        let after_operator = near
             .iter()
+            .copied()
             .filter(on_baseline)
             .filter(|glyph| glyph.x1 <= bbox.x0 + glyph.size * cfg.blank_max_gap_em / 4.0)
             .max_by(|a, b| a.x1.total_cmp(&b.x1))
@@ -1011,6 +1030,9 @@ fn blank_glyphs(raw: &RawPage, glyphs: &[LineGlyph], cfg: &LinesConfig) -> Vec<L
         let Some(word) = neighbour.filter(|_| !after_operator) else {
             continue;
         };
+        if part_of_formula(near, &bbox, cfg) || part_of_drawing(raw, &rules, idx, cfg) {
+            continue;
+        }
         let count = ((bbox.width() / (cfg.blank_underscore_em * word.size)).round() as usize)
             .clamp(1, cfg.blank_max_underscores_count);
         let mut blank = word.clone();
@@ -1051,7 +1073,7 @@ fn part_of_drawing(raw: &RawPage, rules: &[Rect], idx: usize, cfg: &LinesConfig)
 /// over it (underlined words, a numerator) or right under it (a
 /// denominator, a radicand), a radical sign at its start, or the curl
 /// pieces of a horizontal brace beside it.
-fn part_of_formula(glyphs: &[LineGlyph], bbox: &Rect, cfg: &LinesConfig) -> bool {
+fn part_of_formula(glyphs: &[&LineGlyph], bbox: &Rect, cfg: &LinesConfig) -> bool {
     let cy = bbox.cy();
     let stacked = |glyph: &LineGlyph, factor: f32| {
         (glyph.y - cy).abs() <= factor * cfg.blank_stacked_max_distance_em * glyph.size
@@ -1097,50 +1119,110 @@ fn is_off_page(glyph: &Glyph, raw: &RawPage, cfg: &LinesConfig) -> bool {
         || glyph.y > raw.height + cfg.page_margin_pt
 }
 
-/// A kept glyph: its index among the line glyphs and its origin.
-type KeptGlyph = (usize, f32, f32);
+/// A kept glyph: its index among the line glyphs, its origin, and the next
+/// kept glyph of its cell (see [`GlyphCopies`]).
+struct KeptGlyph {
+    /// Index among the line glyphs.
+    idx: usize,
+    /// Origin, x.
+    x: f32,
+    /// Origin, y (baseline).
+    y: f32,
+    /// The kept glyph of the same cell recorded before this one, in
+    /// [`GlyphCopies::kept`].
+    next: Option<usize>,
+}
 
-/// The glyphs kept so far on a page, by text and band of baselines, to find
-/// a glyph drawn again at (nearly) the same place.
+/// The glyphs kept so far on a page, by text and cell of their origin, to
+/// find a glyph drawn again at (nearly) the same place.
 #[derive(Default)]
 struct GlyphCopies {
-    /// (hash of the text, band of the baseline) -> the kept glyphs.
-    by_band: HashMap<(u64, i32), Vec<KeptGlyph>>,
+    /// (hash of the text, cell row, cell column) -> the last kept glyph of
+    /// that cell, in `kept`.
+    cells: HashMap<(u64, i32, i32), usize, BuildHasherDefault<FnvHasher>>,
+    /// The kept glyphs, each cell's chained through [`KeptGlyph::next`]:
+    /// one list for all cells, so that a new cell costs no allocation.
+    kept: Vec<KeptGlyph>,
 }
 
 impl GlyphCopies {
-    /// Index of a kept glyph of which `glyph` is a copy (see
-    /// [`LinesConfig::duplicate_max_offset_em`]), if any.
-    fn find(&self, glyph: &Glyph, cfg: &LinesConfig) -> Option<usize> {
+    /// Index of a kept glyph of which `glyph` (of text hash `hash`, see
+    /// [`Self::hash`]) is a copy (see
+    /// [`LinesConfig::duplicate_max_offset_em`]), if any. Only the cells
+    /// that the tolerance square around the glyph's origin touches are
+    /// searched: usually one.
+    fn find(&self, glyph: &Glyph, hash: u64, cfg: &LinesConfig) -> Option<usize> {
         let tol = if glyph.text.contains('\u{FFFD}') {
             UNKNOWN_DUPLICATE_MAX_OFFSET_PT
         } else {
             cfg.duplicate_max_offset_em * glyph.size
         };
-        let (hash, band) = Self::key(glyph);
-        (band - 1..=band + 1)
-            .filter_map(|band| self.by_band.get(&(hash, band)))
-            .flatten()
-            .find(|(_, x, y)| (glyph.x - x).abs() <= tol && (glyph.y - y).abs() <= tol)
-            .map(|&(idx, _, _)| idx)
+        for row in cell(glyph.y - tol)..=cell(glyph.y + tol) {
+            for column in cell(glyph.x - tol)..=cell(glyph.x + tol) {
+                let mut at = self.cells.get(&(hash, row, column)).copied();
+                while let Some(i) = at {
+                    let kept = &self.kept[i];
+                    if (glyph.x - kept.x).abs() <= tol && (glyph.y - kept.y).abs() <= tol {
+                        return Some(kept.idx);
+                    }
+                    at = kept.next;
+                }
+            }
+        }
+        None
     }
 
-    /// Records `glyph`, kept at index `idx`.
-    fn insert(&mut self, glyph: &Glyph, idx: usize) {
-        self.by_band
-            .entry(Self::key(glyph))
-            .or_default()
-            .push((idx, glyph.x, glyph.y));
+    /// Records `glyph` (of text hash `hash`), kept at index `idx`.
+    fn insert(&mut self, glyph: &Glyph, hash: u64, idx: usize) {
+        let at = self.kept.len();
+        let next = self.cells.insert((hash, cell(glyph.y), cell(glyph.x)), at);
+        self.kept.push(KeptGlyph {
+            idx,
+            x: glyph.x,
+            y: glyph.y,
+            next,
+        });
     }
 
-    /// Hash of the text and band of the baseline of a glyph.
-    fn key(glyph: &Glyph) -> (u64, i32) {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        glyph.text.hash(&mut hasher);
-        (hasher.finish(), (glyph.y / DUPLICATE_BAND_PT).floor() as i32)
+    /// Hash of the text of a glyph.
+    fn hash(glyph: &Glyph) -> u64 {
+        let mut hasher = FnvHasher::default();
+        hasher.write(glyph.text.as_bytes());
+        hasher.finish()
     }
 }
+
+/// The cell (see [`DUPLICATE_CELL_PT`]) of a coordinate.
+fn cell(coord: f32) -> i32 {
+    (coord / DUPLICATE_CELL_PT).floor() as i32
+}
+
+/// The FNV-1a hash: much faster than the default hasher on the short keys
+/// of [`GlyphCopies`], looked up once per glyph of the document.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(FNV_OFFSET_BASIS)
+    }
+}
+
+impl Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+        }
+    }
+}
+
+/// The offset basis of the 64-bit FNV hash.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// The prime of the 64-bit FNV hash.
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 /// The colour a glyph is shown in: near-black becomes black.
 fn display_color(color: [u8; 3], cfg: &LinesConfig) -> [u8; 3] {

@@ -50,18 +50,21 @@ impl Default for CodeConfig {
 /// do not read as code (see [`is_listing`]).
 pub(crate) fn mark_code(nodes: &mut Vec<Node>, fonts: &[FontInfo], cfg: &SemanticsConfig) {
     let cfg = &cfg.code;
-    let mut idx = 0;
-    while idx < nodes.len() {
-        let pieces = match &nodes[idx].kind {
-            NodeKind::Text(block) if nodes[idx].class == Class::Unknown => code_runs(&block.lines, fonts, cfg),
+    // One pass that builds the new list: removing and inserting in the
+    // middle of a long book's nodes would move all those after, each time.
+    let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
+    for node in nodes.drain(..) {
+        let pieces = match &node.kind {
+            NodeKind::Text(block) if node.class == Class::Unknown => code_runs(&block.lines, fonts, cfg),
             _ => Vec::new(),
         };
-        let count = pieces.len().max(1);
-        if !pieces.is_empty() {
-            split_node(nodes, idx, &pieces);
+        if pieces.is_empty() {
+            out.push(node);
+        } else {
+            split_node(node, &pieces, &mut out);
         }
-        idx += count;
     }
+    *nodes = out;
     join_listings(nodes, cfg);
     for node in nodes.iter_mut() {
         if node.class == Class::Code
@@ -176,8 +179,7 @@ fn is_listing(lines: &[Line], cfg: &CodeConfig) -> bool {
 
 /// Replaces node `idx` by one node per piece, in order; code pieces get
 /// class [`Class::Code`].
-fn split_node(nodes: &mut Vec<Node>, idx: usize, pieces: &[(std::ops::Range<usize>, bool)]) {
-    let node = nodes.remove(idx);
+fn split_node(node: Node, pieces: &[(std::ops::Range<usize>, bool)], out: &mut Vec<Node>) {
     let NodeKind::Text(block) = &node.kind else {
         unreachable!("only text nodes are split")
     };
@@ -185,46 +187,52 @@ fn split_node(nodes: &mut Vec<Node>, idx: usize, pieces: &[(std::ops::Range<usiz
         let mut part = block.clone();
         part.lines = block.lines[range.clone()].to_vec();
         part.bbox = lines_bbox(&part.lines);
-        nodes.insert(
-            idx + offset,
-            Node {
-                kind: NodeKind::Text(part),
-                loc: node.loc,
-                class: if *code { Class::Code } else { Class::Unknown },
-                tail: node.tail,
-                leaf_left: node.leaf_left,
-                leaf_right: node.leaf_right,
-                strip_prefix: if offset == 0 { node.strip_prefix } else { 0 },
-            },
-        );
+        out.push(Node {
+            kind: NodeKind::Text(part),
+            loc: node.loc,
+            class: if *code { Class::Code } else { Class::Unknown },
+            tail: node.tail,
+            leaf_left: node.leaf_left,
+            leaf_right: node.leaf_right,
+            strip_prefix: if offset == 0 { node.strip_prefix } else { 0 },
+        });
     }
 }
 
 /// Joins consecutive listings of the same page and column whose lines are
 /// close enough to be one program.
 fn join_listings(nodes: &mut Vec<Node>, cfg: &CodeConfig) {
-    let mut idx = 0;
-    while idx + 1 < nodes.len() {
-        if let (Class::Code, Class::Code) = (&nodes[idx].class, &nodes[idx + 1].class)
-            && nodes[idx].loc.page == nodes[idx + 1].loc.page
-            && nodes[idx].tail == (nodes[idx + 1].loc.page, nodes[idx + 1].loc.leaf)
-            && let (NodeKind::Text(first), NodeKind::Text(second)) = (&nodes[idx].kind, &nodes[idx + 1].kind)
-            && let (Some(last), Some(next)) = (first.lines.last(), second.lines.first())
-            && next.baseline > last.baseline
-            && next.baseline - last.baseline <= cfg.merge_max_gap_em * last.size.max(next.size)
+    let mut out: Vec<Node> = Vec::with_capacity(nodes.len());
+    for node in nodes.drain(..) {
+        if let Some(prev) = out.last_mut()
+            && continues_listing(prev, &node, cfg)
+            && let NodeKind::Text(more) = node.kind
         {
-            let next_node = nodes.remove(idx + 1);
-            let NodeKind::Text(more) = next_node.kind else {
-                unreachable!("checked above")
-            };
-            if let NodeKind::Text(block) = &mut nodes[idx].kind {
+            if let NodeKind::Text(block) = &mut prev.kind {
                 block.lines.extend(more.lines);
                 block.bbox = lines_bbox(&block.lines);
             }
-            nodes[idx].tail = next_node.tail;
+            prev.tail = node.tail;
             continue;
         }
-        idx += 1;
+        out.push(node);
+    }
+    *nodes = out;
+}
+
+/// Whether the listing `next` goes on from the listing `prev`: the next
+/// block of the same page and column, close below it.
+fn continues_listing(prev: &Node, next: &Node, cfg: &CodeConfig) -> bool {
+    if let (Class::Code, Class::Code) = (&prev.class, &next.class)
+        && prev.loc.page == next.loc.page
+        && prev.tail == (next.loc.page, next.loc.leaf)
+        && let (NodeKind::Text(first), NodeKind::Text(second)) = (&prev.kind, &next.kind)
+        && let (Some(last), Some(following)) = (first.lines.last(), second.lines.first())
+    {
+        following.baseline > last.baseline
+            && following.baseline - last.baseline <= cfg.merge_max_gap_em * last.size.max(following.size)
+    } else {
+        false
     }
 }
 

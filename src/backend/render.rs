@@ -368,13 +368,21 @@ fn recompress_png(engine: &base64::engine::GeneralPurpose, payload: &str) -> Opt
 }
 
 /// Whether the RGBA pixels hold at least `min` distinct colours (alpha
-/// ignored). Stops counting as soon as they do.
+/// ignored). Stops counting as soon as they do. The colours seen are bits
+/// of a 2^24-bit set (2 MB), much faster than hashing every pixel of a
+/// picture of few colours, which is read to the end.
 fn many_colours(rgba: &[u8], min: usize) -> bool {
-    let mut seen: HashSet<[u8; 3]> = HashSet::with_capacity(min);
+    let mut seen = vec![0u64; (1 << 24) / 64];
+    let mut count = 0usize;
     for pixel in rgba.as_chunks::<4>().0 {
-        seen.insert([pixel[0], pixel[1], pixel[2]]);
-        if seen.len() >= min {
-            return true;
+        let colour = (usize::from(pixel[0]) << 16) | (usize::from(pixel[1]) << 8) | usize::from(pixel[2]);
+        let (word, bit) = (colour / 64, 1u64 << (colour % 64));
+        if seen[word] & bit == 0 {
+            seen[word] |= bit;
+            count += 1;
+            if count >= min {
+                return true;
+            }
         }
     }
     false
