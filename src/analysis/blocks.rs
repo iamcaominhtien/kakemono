@@ -492,6 +492,9 @@ struct RowFeatures {
     multi: bool,
     /// The row contains a relation sign ("=", "≤", ...).
     has_relation: bool,
+    /// The row starts with an operator or is a single function term
+    /// ("P(A)"): a line of a display set in text letters.
+    continues_display: bool,
 }
 
 /// A rule of the equation classification: whether a row is a display
@@ -930,6 +933,10 @@ fn classify_text_row(
 /// Big operators, whose limits are set above and below them.
 const BIG_OPERATORS: &[&str] = &["∑", "∏", "∐", "⋃", "⋂", "⨁", "⨂", "⨀", "⋁", "⋀", "⨄", "⨆"];
 
+/// A single function term, as the denominator of a fraction in a display
+/// set in text letters: "P(mammogram+)", "Var(X)".
+static FUNCTION_TERM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]{1,4} ?\([^()]{1,40}\)$").unwrap());
+
 /// Little words of English sentences, rare in displayed formulas.
 const SENTENCE_WORDS: &[&str] = &[
     "the", "we", "is", "are", "that", "this", "which", "for", "and", "with", "have", "has", "be", "can", "then",
@@ -941,12 +948,28 @@ fn sentence_words(lines: &[&Line]) -> usize {
     lines
         .iter()
         .map(|line| {
-            line.text()
+            outside_parentheses(&line.text())
                 .split(|ch: char| !ch.is_ascii_alphabetic())
                 .filter(|word| SENTENCE_WORDS.iter().any(|known| known.eq_ignore_ascii_case(word)))
                 .count()
         })
         .sum()
+}
+
+/// `text` without what is inside parentheses: the arguments of a function
+/// written in words ("P(has BC and mammogram+)") are not a sentence.
+fn outside_parentheses(text: &str) -> String {
+    let mut depth = 0usize;
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The equation number of a row (lines sorted left to right): its last line
@@ -983,6 +1006,15 @@ impl RowFeatures {
         let has_relation = content
             .iter()
             .any(|line| line.glyphs.iter().any(|glyph| is_relation(&glyph.text)));
+        let text = content.iter().map(|line| line.text()).collect::<Vec<_>>().join(" ");
+        let text = text.trim();
+        // A line of a display set in text letters: it goes on from the line
+        // above ("+ P(no BC)P(mammogram+ | no BC)"), or it is one function
+        // term (the denominator "P(mammogram+)").
+        let operator_start = text.starts_with([
+            '+', '\u{2212}', '=', '\u{D7}', '\u{B7}', '\u{2248}', '\u{2264}', '\u{2265}',
+        ]);
+        let call_only = FUNCTION_TERM.is_match(text);
         Self {
             numbered,
             n_chars: stats.n_chars,
@@ -995,6 +1027,7 @@ impl RowFeatures {
             isolated,
             multi,
             has_relation,
+            continues_display: operator_start || call_only,
         }
     }
 }
@@ -1065,6 +1098,10 @@ fn weak_equation(row: &RowFeatures, cfg: &BlocksConfig) -> bool {
         && row.n_chars <= cfg.weak_max_chars
         && row.prose_frac <= cfg.weak_max_prose_ratio)
         || (row.math_frac >= cfg.weak_min_math_ratio && row.prose_frac <= cfg.weak_math_max_prose_ratio)
+        || (row.continues_display
+            && row.n_chars <= cfg.weak_max_chars
+            && row.left_indent >= cfg.weak_min_margin_em * row.em
+            && row.right_slack >= cfg.weak_min_margin_em * row.em)
         || (row.n_chars <= cfg.weak_tiny_max_chars
             && row.prose_frac == 0.0
             && row.left_indent >= cfg.weak_min_margin_em * row.em
