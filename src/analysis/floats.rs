@@ -102,6 +102,16 @@ pub struct FloatsConfig {
     pub caption_left_overhang_em: f32,
     /// A caption line may end at most this far right of the caption so far.
     pub caption_right_overhang_pt: f32,
+    /// A caption at most this wide (in sizes of its text) is a narrow one,
+    /// set in a margin: its lines are ragged on the right, so a line flush
+    /// with its left edge continues it however far right it ends (within
+    /// that width).
+    pub narrow_caption_max_width_em: f32,
+    /// A narrow caption beside a component (left or right of it, its top
+    /// within the component's height) claims it when the gap between them
+    /// is at most this (points): a book that sets its captions in the
+    /// margin beside the figure.
+    pub beside_max_gap_pt: f32,
     /// A line that starts with its own punctuated label within this
     /// distance of the caption's left edge starts the next caption.
     pub caption_next_label_tol_pt: f32,
@@ -443,6 +453,8 @@ impl Default for FloatsConfig {
             caption_size_tol_pt: 0.4,
             caption_left_overhang_em: 2.0,
             caption_right_overhang_pt: 2.0,
+            narrow_caption_max_width_em: 15.0,
+            beside_max_gap_pt: 150.0,
             caption_next_label_tol_pt: 2.0,
             caption_word_space_em: 0.3,
             caption_short_line_slack_pt: 2.0,
@@ -1148,8 +1160,14 @@ fn next_caption_line(
         if line.bbox.x_overlap(bbox) <= 0.0 {
             continue;
         }
+        // A narrow caption (in a margin) is ragged on the right: a line
+        // flush with its left edge continues it, however long.
+        let narrow_max = cfg.narrow_caption_max_width_em * head_size;
+        let ragged = bbox.width() <= narrow_max
+            && (line.bbox.x0 - bbox.x0).abs() <= cfg.caption_right_overhang_pt
+            && line.bbox.x1 <= bbox.x0 + narrow_max;
         if line.bbox.x0 < bbox.x0 - cfg.caption_left_overhang_em * head_size
-            || line.bbox.x1 > bbox.x1 + cfg.caption_right_overhang_pt
+            || (line.bbox.x1 > bbox.x1 + cfg.caption_right_overhang_pt && !ragged)
         {
             continue;
         }
@@ -1680,6 +1698,11 @@ fn pair_score(
     let cfg = ctx.cfg;
     let (cap_box, comp_box) = (&caption.bbox, &comp.bbox);
     let overlap = cap_box.x_overlap(comp_box);
+    if overlap <= 0.0
+        && let Some(score) = beside_score(ctx, caption, comp)
+    {
+        return Some(score);
+    }
     if overlap < cfg.pair_overlap_ratio * cap_box.width().min(comp_box.width()) {
         return None;
     }
@@ -1705,6 +1728,23 @@ fn pair_score(
     let mismatch = kind_mismatch(caption.kind, comp.table_like, cfg);
     let misalign = misalignment(cap_box, comp_box, cfg);
     Some((dist + penalty + mismatch + misalign, above))
+}
+
+/// The score of a narrow caption set beside a component, in the margin
+/// (see [`FloatsConfig::beside_max_gap_pt`]): the gap between them, and
+/// whether the component is above the caption (its middle is higher).
+/// `None` when the caption is not narrow, not beside the component, or its
+/// top is not within the component's height.
+fn beside_score(ctx: &PageContext, caption: &Caption, comp: &Component) -> Option<(f32, bool)> {
+    let cfg = ctx.cfg;
+    let (cap_box, comp_box) = (&caption.bbox, &comp.bbox);
+    let size = ctx.page.lines[*caption.lines.first()?].size.max(1.0);
+    if cap_box.width() > cfg.narrow_caption_max_width_em * size {
+        return None;
+    }
+    let gap = (cap_box.x0 - comp_box.x1).max(comp_box.x0 - cap_box.x1);
+    let level = cap_box.y0 >= comp_box.y0 - cfg.side_tol_pt && cap_box.y0 <= comp_box.y1;
+    (gap >= 0.0 && gap <= cfg.beside_max_gap_pt && level).then(|| (gap, comp_box.cy() < cap_box.cy()))
 }
 
 /// Score penalty for a float on an unusual side of its caption.
@@ -2035,7 +2075,12 @@ fn settle_region(
         region = absorb_rotated_labels(ctx, region);
         region = absorb_edge_ticks(ctx, absorbed, float_idx, region);
     }
-    if let Some(cap_idx) = float.cap {
+    // A caption beside its float (in the margin) neither bounds it above or
+    // below nor has lines between them to take.
+    let beside = float
+        .cap
+        .is_some_and(|cap_idx| ctx.captions[cap_idx].bbox.x_overlap(&region) <= 0.0);
+    if let Some(cap_idx) = float.cap.filter(|_| !beside) {
         let caption = &ctx.captions[cap_idx];
         region = absorb_between_caption(ctx, absorbed, float_idx, region, caption, float.above);
         // Never let the image overlap its own caption.
