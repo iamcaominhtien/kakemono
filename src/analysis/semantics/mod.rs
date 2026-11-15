@@ -11,6 +11,7 @@
 pub(crate) mod assemble;
 pub(crate) mod body;
 pub(crate) mod code;
+pub(crate) mod contents;
 pub(crate) mod front_matter;
 pub(crate) mod links;
 pub(crate) mod paragraphs;
@@ -22,6 +23,7 @@ pub(crate) mod text;
 pub use assemble::AssembleConfig;
 pub use body::BodyConfig;
 pub use code::CodeConfig;
+pub use contents::ContentsConfig;
 pub use front_matter::FrontMatterConfig;
 pub use paragraphs::ParagraphsConfig;
 pub use references::ReferencesConfig;
@@ -70,6 +72,8 @@ pub struct SemanticsConfig {
     pub body: BodyConfig,
     /// Detection of code listings.
     pub code: CodeConfig,
+    /// Detection of tables of contents.
+    pub contents: ContentsConfig,
     /// Cutting numbered italic headings off the paragraph they start.
     pub run_in: RunInConfig,
     /// Splitting bibliography blocks into one entry each.
@@ -93,6 +97,7 @@ impl Default for SemanticsConfig {
             front_matter: FrontMatterConfig::default(),
             body: BodyConfig::default(),
             code: CodeConfig::default(),
+            contents: ContentsConfig::default(),
             run_in: RunInConfig::default(),
             references: ReferencesConfig::default(),
             paragraphs: ParagraphsConfig::default(),
@@ -138,6 +143,13 @@ pub(crate) enum Class {
     Reference,
     /// A code listing, kept line by line.
     Code,
+    /// An entry of a table of contents.
+    ContentsEntry {
+        /// Nesting level, 1 for the outermost entries.
+        level: u8,
+        /// The page label as printed ("47", "xi").
+        page: String,
+    },
 }
 
 /// The content of a node: the raw block it was made from.

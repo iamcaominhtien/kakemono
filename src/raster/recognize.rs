@@ -642,6 +642,8 @@ fn placed_glyph(text: &str, font: u16, rect: &Rect, baseline: f32, size: f32, sc
         font,
         script: 0,
         space_before: false,
+        drawn_space: false,
+        link: None,
         ink,
         ox: ink.x0,
         oy: baseline * scale,

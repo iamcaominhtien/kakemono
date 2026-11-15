@@ -345,6 +345,11 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
             out.push_str(&figure_html(block, *kind, image, label, &id, images, ctx));
         }
         BlockKind::Code => out.push_str(&code_html(block, &id)),
+        BlockKind::ContentsEntry { level, page } => out.push_str(&format!(
+            "<p{id} class=\"toc toc{level}\"><span class=\"toc-t\">{}</span><span class=\"toc-p\">{}</span></p>\n",
+            spans_html(&block.spans),
+            esc(page)
+        )),
     }
 }
 

@@ -83,6 +83,10 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     row_script_max_size_ratio: 0.9,
     space_gap_em: 0.14,
     tight_space_gap_em: 0.085,
+    drawn_space_min_gap_em: 0.08,
+    link_probe_height_em: 0.3,
+    link_margin_pt: 0.5,
+    drawn_space_max_offset_em: 0.2,
     tight_space_min_count: 3,
     tight_space_ratio: 3.0,
     fixed_pitch_min_run: 3,
@@ -266,6 +270,18 @@ pub struct LinesConfig {
     /// between neighbouring glyphs of the line (letter-spaced text has
     /// wider gaps everywhere and is left alone).
     pub tight_space_gap_em: f32,
+    /// A gap where the PDF draws a space character is a word space when it
+    /// is wider than this (font sizes); narrower ones are kerning around a
+    /// space drawn over the letters.
+    pub drawn_space_min_gap_em: f32,
+    /// A glyph is in a link area when the point this many font sizes above
+    /// the middle of its baseline is (the middle of a lowercase letter).
+    pub link_probe_height_em: f32,
+    /// Link areas are widened by this much (points) on every side.
+    pub link_margin_pt: f32,
+    /// A drawn space belongs to the next glyph when their baselines differ
+    /// by at most this (font sizes of the space).
+    pub drawn_space_max_offset_em: f32,
     /// Fewest tight word gaps a line needs before they count as spaces (see
     /// [`tight_space_gap_em`](Self::tight_space_gap_em)).
     pub tight_space_min_count: usize,
@@ -935,14 +951,22 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
     let mut copies = GlyphCopies::default();
     let mut glyphs: Vec<LineGlyph> = Vec::new();
     let mut rotated = RotatedRuns::default();
+    // Origin and size of a space character just drawn, for the next glyph.
+    let mut space: Option<(f32, f32, f32)> = None;
 
     for glyph in &raw.glyphs {
         if glyph.invisible && has_visible {
             continue;
         }
         if glyph.text.trim().is_empty() {
+            if glyph.text.contains(' ') && glyph.dir != Dir::Rotated {
+                space = Some((glyph.x, glyph.y, glyph.size));
+            }
             continue;
         }
+        let spaced = space
+            .take()
+            .is_some_and(|(x, y, size)| (glyph.y - y).abs() <= cfg.drawn_space_max_offset_em * size && glyph.x > x);
         if is_off_page(glyph, raw, cfg) {
             continue;
         }
@@ -963,7 +987,10 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
             continue;
         }
         copies.insert(glyph, hash, glyphs.len());
-        glyphs.push(line_glyph(glyph, cfg));
+        let mut kept = line_glyph(glyph, cfg);
+        kept.drawn_space = spaced;
+        kept.link = link_at(raw, glyph, cfg);
+        glyphs.push(kept);
     }
     let blanks = blank_glyphs(raw, &glyphs, cfg);
     glyphs.extend(blanks);
@@ -1103,12 +1130,30 @@ fn line_glyph(glyph: &Glyph, cfg: &LinesConfig) -> LineGlyph {
         font: glyph.font,
         script: 0,
         space_before: false,
+        drawn_space: false,
+        link: None,
         ink: glyph.ink,
         ox: glyph.x,
         oy: glyph.y,
         extra: Vec::new(),
         color: display_color(glyph.color, cfg),
     }
+}
+
+/// The URL of the link area of the page that holds the middle of `glyph`.
+fn link_at(raw: &RawPage, glyph: &Glyph, cfg: &LinesConfig) -> Option<std::sync::Arc<str>> {
+    if raw.links.is_empty() {
+        return None;
+    }
+    let x = glyph.x + glyph.adv.max(0.0) / 2.0;
+    let y = glyph.y - cfg.link_probe_height_em * glyph.size;
+    raw.links
+        .iter()
+        .find(|link| {
+            let tol = cfg.link_margin_pt;
+            x >= link.rect.x0 - tol && x <= link.rect.x1 + tol && y >= link.rect.y0 - tol && y <= link.rect.y1 + tol
+        })
+        .map(|link| link.uri.clone())
 }
 
 /// Whether the glyph's origin lies clearly outside the page.
@@ -1669,7 +1714,9 @@ fn spread_of(glyphs: &[LineGlyph], size: f32, cfg: &LinesConfig) -> Spread {
 /// [`LinesConfig::space_gap_em`]. They count as spaces when the line has at
 /// least [`LinesConfig::tight_space_min_count`] of them and each is well
 /// above the usual gap between the letters of the line; a single such gap
-/// in a line of normal spaces is kerning (math italics, "WH").
+/// in a line of normal spaces is kerning (math italics, "WH"). A gap where
+/// the PDF draws a space character is a space when it is at least
+/// [`LinesConfig::drawn_space_min_gap_em`].
 fn mark_spaces(glyphs: &mut [LineGlyph], size: f32, fixed_pitch: bool, cfg: &LinesConfig) {
     let n = glyphs.len();
     let usual_gap = median_glyph_gap(glyphs).max(0.0);
@@ -1725,7 +1772,9 @@ fn mark_spaces(glyphs: &mut [LineGlyph], size: f32, fixed_pitch: bool, cfg: &Lin
         glyph.space_before = if fixed_pitch {
             gaps[i].0 > cfg.fixed_pitch_space_gap_em * gaps[i].1
         } else {
-            gaps[i].0 > cfg.space_gap_em * gaps[i].1 || (tight_spaces && tight[i])
+            gaps[i].0 > cfg.space_gap_em * gaps[i].1
+                || (tight_spaces && tight[i])
+                || (glyph.drawn_space && gaps[i].0 > cfg.drawn_space_min_gap_em * gaps[i].1)
         };
     }
     if let Some(glyph) = glyphs.first_mut() {
@@ -2326,6 +2375,8 @@ mod tests {
             font: 0,
             script: 0,
             space_before: false,
+            drawn_space: false,
+            link: None,
             ink: Rect::new(ink_x0, 93.0, ink_x1, 101.0),
             ox: x0,
             oy: 100.0,
@@ -2394,6 +2445,8 @@ mod ruby_tests {
                     font: 0,
                     script: 0,
                     space_before: false,
+                    drawn_space: false,
+                    link: None,
                     ink: Rect::new(x0, baseline - 0.8 * size, x0 + size, baseline),
                     ox: x0,
                     oy: baseline,

@@ -187,6 +187,7 @@ pub(crate) fn kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::Footnote { .. } => "footnote",
         BlockKind::Reference { .. } => "reference",
         BlockKind::Code => "code",
+        BlockKind::ContentsEntry { .. } => "contents-entry",
     }
 }
 

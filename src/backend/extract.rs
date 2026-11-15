@@ -213,6 +213,54 @@ pub struct RawPage {
     /// only table rules are read from them, the detection of figures and
     /// captions does not see them.
     pub pixel_rules: Vec<PathBox>,
+    /// Areas of the page that link to a web address.
+    pub links: Vec<LinkArea>,
+}
+
+/// An area of a page that opens a URL (a link annotation).
+#[derive(Debug, Clone)]
+pub struct LinkArea {
+    /// The area, in page coordinates.
+    pub rect: Rect,
+    /// The URL.
+    pub uri: std::sync::Arc<str>,
+}
+
+/// URL schemes kept from link annotations; others (`javascript:`, local
+/// files) are dropped.
+const LINK_SCHEMES: &[&str] = &["http://", "https://", "mailto:", "ftp://"];
+
+/// The link annotations of `page` that open a URL, in page coordinates.
+fn uri_links(page: &Page<'_>) -> Vec<LinkArea> {
+    use hayro_syntax::object::{Array, Dict, Name, Rect as PdfRect, String as PdfString};
+    let transform = page.initial_transform(true).to_kurbo();
+    let Some(annots) = page.raw().get::<Array>(b"Annots") else {
+        return Vec::new();
+    };
+    annots
+        .iter::<Dict>()
+        .filter_map(|annot| {
+            if annot.get::<Name>(b"Subtype")?.as_ref() != b"Link" {
+                return None;
+            }
+            let action = annot.get::<Dict>(b"A")?;
+            if action.get::<Name>(b"S")?.as_ref() != b"URI" {
+                return None;
+            }
+            let uri = action.get::<PdfString>(b"URI")?;
+            let uri = std::str::from_utf8(uri.as_bytes()).ok()?.trim();
+            let lower = uri.to_ascii_lowercase();
+            if !LINK_SCHEMES.iter().any(|scheme| lower.starts_with(scheme)) {
+                return None;
+            }
+            let area = annot.get::<PdfRect>(b"Rect")?;
+            let area = transform.transform_rect_bbox(kurbo::Rect::new(area.x0, area.y0, area.x1, area.y1));
+            Some(LinkArea {
+                rect: Rect::new(area.x0 as f32, area.y0 as f32, area.x1 as f32, area.y1 as f32),
+                uri: std::sync::Arc::from(uri),
+            })
+        })
+        .collect()
 }
 
 /// The interpreter's output device: receives drawing operations and
@@ -572,6 +620,7 @@ pub fn extract_page<'a>(
         clips: Vec::new(),
     };
     interpret_page(page, &mut ctx, &mut device);
+    device.page.links = uri_links(page);
     device.page
 }
 

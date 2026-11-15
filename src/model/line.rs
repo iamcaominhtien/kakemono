@@ -32,6 +32,11 @@ pub struct LineGlyph {
     /// A word space precedes this glyph (decided from the gap to the
     /// previous glyph; always false for the first glyph of a line).
     pub space_before: bool,
+    /// The PDF draws a space character right before this glyph, on its
+    /// baseline: a word space however narrow the gap.
+    pub drawn_space: bool,
+    /// The URL of the link area of the page the glyph lies in, if any.
+    pub link: Option<std::sync::Arc<str>>,
     /// Bounding box of the glyph's outline.
     pub ink: Rect,
     /// Origin of the glyph as drawn in the PDF (identifies the glyph in the

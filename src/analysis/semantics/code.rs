@@ -325,6 +325,8 @@ mod tests {
                 font: 0,
                 script: 0,
                 space_before: after_space,
+                drawn_space: false,
+                link: None,
                 ink: Rect::new(x, baseline - 7.0, x + 6.0, baseline),
                 ox: x,
                 oy: baseline,

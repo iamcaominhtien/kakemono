@@ -509,6 +509,7 @@ fn kind_label(kind: &BlockKind) -> String {
         BlockKind::Paragraph { in_abstract: true } => "ABSTRACT".into(),
         BlockKind::Paragraph { .. } => "P".into(),
         BlockKind::Code => "CODE".into(),
+        BlockKind::ContentsEntry { level, page } => format!("TOC{level} {page}"),
         BlockKind::ListItem { marker } => format!("LI {}", marker.clone().unwrap_or_default()),
         BlockKind::ListContinuation => "LI+".to_string(),
         BlockKind::Equation { number, image } => format!(

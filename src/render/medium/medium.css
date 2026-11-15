@@ -30,7 +30,12 @@ h1.title{font-size:1.72em;line-height:1.2;text-align:center;margin:.6em 0 .9em;t
 .au-line code{font-size:.9em}
 .note{font-size:.9em;color:var(--muted);text-align:center;margin:0 0 .8em}
 p.scene-break{text-align:center}
-.chapno{display:block;font-size:.65em;letter-spacing:.06em;text-transform:uppercase;opacity:.75}
+.chapno{display:block;font-size:.5em;letter-spacing:.06em;text-transform:uppercase;opacity:.75;margin-bottom:.3em}
+h2.chapter{font-size:1.9em;line-height:1.15;margin:1.6em 0 1.1em;text-wrap:balance}
+.toc{display:flex;align-items:baseline;margin:0 0 .18em;text-align:left;hyphens:manual}
+.toc::after{content:"";flex:1 1 1em;order:1;margin:0 .35em;border-bottom:1px dotted currentColor;opacity:.35}
+.toc-p{order:2;font-variant-numeric:tabular-nums}
+.toc1{font-weight:700;margin-top:.7em}.toc2{padding-left:1.2em}.toc3{padding-left:2.4em}.toc4{padding-left:3.6em}
 h2,h3,h4,h5{line-height:1.25;margin:1.15em 0 .5em;break-after:avoid;font-weight:700}
 h2{font-size:1.2em}
 h3{font-size:1.06em}

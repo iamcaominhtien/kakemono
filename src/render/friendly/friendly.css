@@ -122,7 +122,11 @@ h1.title{font-family:var(--serif);font-size:var(--fs-title);line-height:var(--lh
   text-decoration:underline;text-underline-offset:3px;justify-self:start}
 p.note{font-family:var(--sans);font-size:var(--fs-meta);line-height:1.5;color:var(--ink-3);margin:0 0 var(--s3);text-align:left;hyphens:manual}
 p.scene-break{text-align:center;text-indent:0;margin:var(--s3) 0;hyphens:manual}
-h2.chapter{font-size:calc(var(--fs-h2)*1.3)}
+h2.chapter{font-size:calc(var(--fs-h2)*1.75);line-height:1.15;margin-top:var(--s7)}
+p.toc{display:flex;align-items:baseline;margin:0 0 var(--s1);text-indent:0;text-align:left;hyphens:manual}
+p.toc::after{content:"";flex:1 1 1em;order:1;margin:0 .4em;border-bottom:1px dotted var(--ink-3);opacity:.6}
+.toc-p{order:2;font-family:var(--sans);font-size:var(--fs-meta);color:var(--ink-3);font-variant-numeric:tabular-nums}
+p.toc1{font-weight:600;margin-top:var(--s3)}p.toc2{padding-left:1.25em}p.toc3{padding-left:2.5em}p.toc4{padding-left:3.75em}
 .chapno{display:block;font-family:var(--sans);font-size:.45em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin-bottom:.4em}
 .abstract{border-top:var(--heavy) solid var(--ink);border-bottom:var(--hair) solid var(--rule);padding:var(--s4) 0 var(--s5);margin:var(--s6) 0 var(--s7)}
 .abstract-label,h2.abstract-heading{font:600 var(--fs-label)/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--rubric);margin:0 0 var(--s3)}

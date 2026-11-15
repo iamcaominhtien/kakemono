@@ -28,6 +28,9 @@ static PREPRINT_FOOT: LazyLock<Regex> =
 /// ("___-1", "___0", "___+1").
 static PRINTER_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^_+[-+]?\d*$").unwrap());
 
+/// Characters that separate a page number from the title in a running
+/// head ("Preface | xv").
+const RUNNING_HEAD_SEPARATORS: &str = "|\u{2502}\u{00B7}\u{2022}";
 /// A line that is nothing but a page number: arabic or roman, optionally
 /// "page N", "N of M" or "N/M", with up to three decorating non-word
 /// characters on each side ("- 3 -", "[iv]").
@@ -738,7 +741,7 @@ fn row_edge_roman(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Opti
 
 /// The value of the lowercase roman numeral `text`, when it is one written
 /// in the usual subtractive form.
-fn roman_value(text: &str) -> Option<i64> {
+pub(crate) fn roman_value(text: &str) -> Option<i64> {
     let digit = |ch: char| match ch {
         'i' => Some(1),
         'v' => Some(5),
@@ -780,7 +783,8 @@ fn to_roman(mut value: i64) -> String {
 
 /// The run of glyphs accepted by `accept` at either end of the row `row`,
 /// set apart from the rest of the row by more than
-/// `heading_number_max_gap_em`.
+/// `heading_number_max_gap_em`, or by a separator (see
+/// [`RUNNING_HEAD_SEPARATORS`]).
 fn row_edge_token(
     page: &PageData,
     row: &[usize],
@@ -794,7 +798,12 @@ fn row_edge_token(
     let lead = glyphs.iter().take_while(accepted).count();
     let trail = glyphs.iter().rev().take_while(accepted).count();
     let token = |part: &[&LineGlyph]| part.iter().map(|glyph| glyph.text.as_str()).collect::<String>();
-    let apart = |left: &LineGlyph, right: &LineGlyph| right.x0 - left.x1 > cfg.heading_number_max_gap_em * left.size;
+    // A number next to a separator ("Preface | xv", "96 | Chapter 2") is
+    // set apart by it, however close.
+    let separator = |glyph: &LineGlyph| glyph.text.chars().all(|ch| RUNNING_HEAD_SEPARATORS.contains(ch));
+    let apart = |left: &LineGlyph, right: &LineGlyph| {
+        right.x0 - left.x1 > cfg.heading_number_max_gap_em * left.size || separator(left) || separator(right)
+    };
     if lead > 0 && lead < glyphs.len() && apart(glyphs[lead - 1], glyphs[lead]) {
         return Some(token(&glyphs[..lead]));
     }

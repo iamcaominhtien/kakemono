@@ -199,6 +199,8 @@ mod tests {
                     font: u16::from(*italic),
                     script: 0,
                     space_before: (after_space || i == 0 && !glyphs.is_empty()) && x > 0.0,
+                    drawn_space: false,
+                    link: None,
                     ink: Rect::new(x, baseline - 8.0, x + 10.0, baseline),
                     ox: x,
                     oy: baseline,
