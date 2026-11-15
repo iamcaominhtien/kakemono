@@ -29,6 +29,14 @@ const MAX_IMAGE_SIDE_PX: u32 = 2600;
 /// JPEG quality of recompressed images: visually lossless for photographs
 /// and plots at a fraction of the PNG size.
 const JPEG_QUALITY: u8 = 88;
+/// A rendered region whose PNG is smaller than this (bytes) stays a PNG:
+/// small pictures are line art or save little.
+const PHOTO_MIN_PNG_BYTES: usize = 64_000;
+/// A rendered region with at least this many distinct colours is a
+/// photograph or a painting, which JPEG compresses well. Line art, plots
+/// and text, even anti-aliased, have far fewer and stay PNG (sharp edges).
+const PHOTO_MIN_COLOURS: usize = 4096;
+
 /// Start of the line that draws a glyph in hayro's SVG output.
 const GLYPH_USE_PREFIX: &str = "<use xlink:href=\"#";
 /// Attribute holding the placement of a glyph.
@@ -37,6 +45,16 @@ const TRANSFORM_ATTR: &str = "transform=\"";
 const GLYPH_DEF_PREFIX: &str = "<path id=\"";
 /// End of the definition of a glyph that draws nothing (a space).
 const BLANK_GLYPH_SUFFIX: &str = " d=\"\"/>";
+/// The attribute hayro's SVG output gives a picture without the PDF's
+/// `/Interpolate` flag: nearest-neighbour scaling. When the browser shrinks
+/// such a picture it drops whole rows of pixels, so that the thin gap
+/// between a tick mark and its label vanishes and the tick runs into the
+/// label. See [`smooth_fine_images`].
+const PIXELATED_STYLE: &str = " style=\"image-rendering: pixelated\"";
+/// A picture whose pixels are smaller than this (in points) is smoothed;
+/// larger pixels are blocks the author meant to show (a heat map of 14 by
+/// 14 cells), and stay sharp.
+const PIXELATED_MIN_PIXEL_PT: f64 = 1.0;
 
 /// Draws pages and page regions of one PDF. Keeps the render caches between
 /// calls, so it should be reused for all the pictures a thread draws.
@@ -70,6 +88,35 @@ impl<'a> PageRenderer<'a> {
     /// transparent instead of white. Returns `None` when the page does not
     /// exist or the PNG cannot be encoded.
     pub fn region_png(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<(Vec<u8>, u32, u32)> {
+        let pixmap = self.region_pixmap(page, rect, scale, transparent)?;
+        let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        let png = pixmap.into_png().ok()?;
+        Some((png, width, height))
+    }
+
+    /// Like [`Self::region_png`], but a picture with many colours (a
+    /// photograph, a painted illustration) is given as a JPEG when that is
+    /// less than half the size (see [`PHOTO_MIN_PNG_BYTES`]). Returns the
+    /// data and whether it is a JPEG.
+    pub fn region_picture(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<(Vec<u8>, bool)> {
+        let pixmap = self.region_pixmap(page, rect, scale, transparent)?;
+        let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        // On white, every pixel is opaque: premultiplied is plain RGBA.
+        let rgba = (!transparent).then(|| pixmap.data_as_u8_slice().to_vec());
+        let png = pixmap.into_png().ok()?;
+        if let Some(rgba) = rgba
+            && png.len() >= PHOTO_MIN_PNG_BYTES
+            && many_colours(&rgba, PHOTO_MIN_COLOURS)
+            && let Some(jpeg) = encode_jpeg(&rgba, width, height)
+            && jpeg.len() * 2 < png.len()
+        {
+            return Some((jpeg, true));
+        }
+        Some((png, false))
+    }
+
+    /// Renders `rect` of a page into a pixmap (see [`Self::region_png`]).
+    fn region_pixmap(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<Pixmap> {
         let page = self.pdf.pages().get(page)?;
         let (scale, width, height) = region_bitmap(rect, scale);
         let (width_px, height_px) = (width as u16, height as u16);
@@ -95,8 +142,7 @@ impl<'a> PageRenderer<'a> {
                 ..Default::default()
             },
         );
-        let png = pixmap.into_png().ok()?;
-        Some((png, width_px as u32, height_px as u32))
+        Some(pixmap)
     }
 
     /// Renders a whole page on white at `scale` pixels per point (see
@@ -149,7 +195,8 @@ impl<'a> PageRenderer<'a> {
     }
 
     /// The page as an SVG document on a white background, with large opaque
-    /// embedded images recompressed (see [`compact_images`]). Returns `None`
+    /// embedded images recompressed (see [`compact_images`]) and fine ones
+    /// smoothed when scaled (see [`smooth_fine_images`]). Returns `None`
     /// when the page does not exist.
     pub fn page_svg(&self, page: usize) -> Option<String> {
         let pdf_page = self.pdf.pages().get(page)?;
@@ -161,8 +208,62 @@ impl<'a> PageRenderer<'a> {
                 bg_color: SVG_BACKGROUND,
             },
         );
-        Some(compact_images(svg))
+        Some(smooth_fine_images(compact_images(svg)))
     }
+}
+
+/// Draws an SVG picture of a page (one written by
+/// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
+/// at `scale` pixels per point. Returns `None` when the SVG cannot be read.
+pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
+    let size = tree.size().to_int_size().scale_by(scale)?;
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
+    pixmap.fill(tiny_skia::Color::WHITE);
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
+}
+
+/// Lets the browser smooth the pictures of an SVG page whose pixels are
+/// smaller than [`PIXELATED_MIN_PIXEL_PT`], as PDF viewers do, by removing
+/// their [`PIXELATED_STYLE`]. The size of a pixel is read from the
+/// `transform="matrix(a b c d e f)"` of the `<image>` (the square root of
+/// the area a pixel covers); pictures placed otherwise are left alone.
+fn smooth_fine_images(svg: String) -> String {
+    if !svg.contains(PIXELATED_STYLE) {
+        return svg;
+    }
+    let mut out = String::with_capacity(svg.len());
+    for line in svg.split_inclusive('\n') {
+        let pixel_pt = line.contains(PIXELATED_STYLE).then(|| image_pixel_pt(line)).flatten();
+        match pixel_pt {
+            Some(size) if size < PIXELATED_MIN_PIXEL_PT => out.push_str(&line.replacen(PIXELATED_STYLE, "", 1)),
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// The size of a pixel (in points) of the `<image>` element on `line`,
+/// from its `matrix(...)` transform; `None` when there is no such element.
+fn image_pixel_pt(line: &str) -> Option<f64> {
+    let rest = &line[line.find("<image ")?..];
+    let matrix = &rest[rest.find("matrix(")? + "matrix(".len()..];
+    let values: Vec<f64> = matrix[..matrix.find(')')?]
+        .split([' ', ','])
+        .filter(|value| !value.is_empty())
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let [x_scale, y_skew, x_skew, y_scale, ..] = values.as_slice() else {
+        return None;
+    };
+    Some((x_scale * y_scale - y_skew * x_skew).abs().sqrt())
 }
 
 /// Parses a line that draws a glyph: returns the referenced glyph id and
@@ -266,6 +367,42 @@ fn recompress_png(engine: &base64::engine::GeneralPurpose, payload: &str) -> Opt
         .filter(|jpeg| jpeg.len() * 4 / 3 < len)
 }
 
+/// Whether the RGBA pixels hold at least `min` distinct colours (alpha
+/// ignored). Stops counting as soon as they do. The colours seen are bits
+/// of a 2^24-bit set (2 MB), much faster than hashing every pixel of a
+/// picture of few colours, which is read to the end.
+fn many_colours(rgba: &[u8], min: usize) -> bool {
+    let mut seen = vec![0u64; (1 << 24) / 64];
+    let mut count = 0usize;
+    for pixel in rgba.as_chunks::<4>().0 {
+        let colour = (usize::from(pixel[0]) << 16) | (usize::from(pixel[1]) << 8) | usize::from(pixel[2]);
+        let (word, bit) = (colour / 64, 1u64 << (colour % 64));
+        if seen[word] & bit == 0 {
+            seen[word] |= bit;
+            count += 1;
+            if count >= min {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The opaque RGBA pixels as a JPEG of quality [`JPEG_QUALITY`].
+fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let rgb: Vec<u8> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .ok()?;
+    Some(jpeg)
+}
+
 /// The scale and pixel size of the bitmap of `rect` (page points) drawn at
 /// `scale` pixels per point by [`PageRenderer::region_png`]: the scale is
 /// lowered so that no side exceeds [`MAX_BITMAP_SIDE_PX`]. The HTML gives
@@ -278,4 +415,23 @@ pub fn region_bitmap(rect: Rect, scale: f32) -> (f32, u32, u32) {
     let width = (rect.width() * scale).ceil().max(1.0) as u32;
     let height = (rect.height() * scale).ceil().max(1.0) as u32;
     (scale, width, height)
+}
+
+#[cfg(test)]
+mod smoothing_tests {
+    use super::smooth_fine_images;
+
+    #[test]
+    fn fine_pictures_are_smoothed_and_coarse_ones_stay_sharp() {
+        let line = |scale: f64| {
+            format!(
+                "<image transform=\"matrix({scale} 0 0 {scale} 10 20)\" xlink:href=\"data:image/png;base64,AAAA\" \
+width=\"484\" height=\"209\" preserveAspectRatio=\"none\" style=\"image-rendering: pixelated\"/>\n"
+            )
+        };
+        // A scanned figure: 0.59 pt per pixel, smoothed.
+        assert!(!smooth_fine_images(line(0.588843)).contains("pixelated"));
+        // A heat map of big cells: 1.8 pt per pixel, kept sharp.
+        assert!(smooth_fine_images(line(1.8)).contains("pixelated"));
+    }
 }

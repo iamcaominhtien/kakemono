@@ -7,6 +7,7 @@
 //! the font program's contents and the glyph id.
 
 use super::mathabx::MathAbx;
+use super::symbols::SymbolFont;
 use hayro_font::{Font, FontCache, FontGlyph, GlyphId};
 use hayro_interpret::InterpreterSettings;
 use hayro_syntax::object::{Array, Dict, Name, Number, Stream};
@@ -27,6 +28,8 @@ const FLAG_FIXED_PITCH: u32 = 1;
 const FLAG_SERIF: u32 = 2;
 /// Font descriptor flag (bit 7): the glyphs are italic.
 const FLAG_ITALIC: u32 = 1 << 6;
+/// Font descriptor flag (bit 18): the lower-case letters are small capitals.
+const FLAG_SMALL_CAP: u32 = 1 << 17;
 /// Font descriptor flag (bit 19): draw bold even at small sizes, set for
 /// bold fonts.
 const FLAG_FORCE_BOLD: u32 = 1 << 18;
@@ -112,6 +115,12 @@ const MATH_PI_PREFIX: &str = "advp4c4e74";
 const RADICAL_PI_PREFIX: &str = "advp4c4e46";
 /// Name fragments (lower case) of the "Mathematical Pi 1" font.
 const MATH_PI_PATTERNS: &[&str] = &["mathematicalpi-one", "mathpi-one"];
+/// Name fragments (lower case) of small-capitals fonts: TeX's `cmcsc10`, the EC fonts'
+/// `eccc1000`, Latin Modern's `LMRomanCaps10`, and "SmallCaps" names.
+const SMALL_CAPS_PATTERNS: &[&str] = &["cmcsc", "eccc", "romancaps", "smallcaps"];
+/// Name endings of small-capitals fonts of type foundries ("Minion-RegularSC",
+/// "TimesNewRomanPS-SC").
+const SMALL_CAPS_SUFFIXES: &[&str] = &["sc", "-sc", "smcp"];
 /// Name fragments (lower case) of sans-serif fonts.
 const SANS_PATTERNS: &[&str] = &[
     "helvet",
@@ -134,7 +143,26 @@ const SANS_PATTERNS: &[&str] = &[
     "univers",
     "phv",
     "sfss",
+    "myriad",
+    "avantgarde",
+    "gillsans",
+    "din-",
+    // Japanese, Chinese and Korean sans-serif families (Gothic, Hei).
+    "gothic",
+    "shingo",
+    "kakugo",
+    "marugo",
+    "meiryo",
+    "heiti",
+    "simhei",
+    "yahei",
+    "dotum",
+    "gulim",
 ];
+
+/// Linux Libertine and Linux Biolinum (not their successor Libertinus,
+/// which encodes its glyphs differently).
+const LIBERTINE_PATTERNS: &[&str] = &["linlibertine", "linbiolinum"];
 
 /// What the analysis needs to know about a font, inferred from its name and
 /// font descriptor.
@@ -162,6 +190,18 @@ pub struct FontInfo {
     pub mathabx: Option<MathAbx>,
     /// Sans-serif text font (never set for math or monospaced fonts).
     pub sans: bool,
+    /// Small-capitals font (see [`SMALL_CAPS_PATTERNS`]).
+    #[serde(default)]
+    pub small_caps: bool,
+    /// Linux Libertine or Biolinum, whose ligatures, small capitals and
+    /// old-style figures are mapped to private-use code points (see
+    /// `extract::libertine_text`).
+    #[serde(default)]
+    pub libertine: bool,
+    /// A symbol font of known encoding (`lasy`, MathDesign, Dingbats),
+    /// whose glyphs without a Unicode mapping are read by character code.
+    #[serde(default)]
+    pub symbols: Option<SymbolFont>,
 }
 
 impl FontInfo {
@@ -189,8 +229,16 @@ impl FontInfo {
 
         let math_pi = lower.starts_with(MATH_PI_PREFIX) || contains_any(&lower, MATH_PI_PATTERNS);
         let sans = !math && !mono && contains_any(&lower, SANS_PATTERNS);
+        let small_caps = !math
+            && (flags & FLAG_SMALL_CAP != 0
+                || contains_any(&lower, SMALL_CAPS_PATTERNS)
+                || SMALL_CAPS_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix)));
+        let libertine = contains_any(&lower, LIBERTINE_PATTERNS);
         Self {
+            symbols: SymbolFont::from_name(&lower),
             sans,
+            small_caps,
+            libertine,
             name,
             bold: bold && !math_pi,
             italic: italic && !math_pi,
@@ -505,5 +553,16 @@ mod tests {
 
         assert!(FontInfo::from_name("SFTT1000", 0, 0.0, 0.0).mono);
         assert!(!FontInfo::from_name("Helvetica", 0, 0.0, 0.0).bold);
+    }
+
+    #[test]
+    fn small_caps_fonts() {
+        assert!(FontInfo::from_name("ABCDEF+CMCSC10", 0, 0.0, 0.0).small_caps);
+        assert!(FontInfo::from_name("LMRomanCaps10-Regular", 0, 0.0, 0.0).small_caps);
+        assert!(FontInfo::from_name("MinionPro-RegularSC", 0, 0.0, 0.0).small_caps);
+        // The subset tag is not part of the name.
+        assert!(!FontInfo::from_name("EXCSCL+Helvetica", 0, 0.0, 0.0).small_caps);
+        assert!(!FontInfo::from_name("CMR10", 0, 0.0, 0.0).small_caps);
+        assert!(FontInfo::from_name("CMEULC+LASY10", 0, 0.0, 0.0).symbols.is_some());
     }
 }

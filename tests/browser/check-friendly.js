@@ -22,7 +22,8 @@
 //  - book view layout: a figure or table is on one page with its caption
 //    (except one too long for a page, which may split), no heading ends a
 //    page, and no page is more than 60% empty (except before a heading, or
-//    a float of more than half a page, and the last page).
+//    a float of more than half a page, the last page, and the blank pages
+//    around a book's covers).
 //
 // usage: node tests/browser/check-friendly.js file.friendly.html [...]
 // Uses the Playwright package if installed, else playwright-core with the
@@ -178,6 +179,16 @@ function layoutProblems() {
     const big = k.matches('figure.float') && k.getBoundingClientRect().height > th * 0.5;
     if (c < pages && (heading || big)) excused[c] = true;
   }
+  // The blank pages around a book's covers are empty on purpose, and the
+  // text before the back cover may end anywhere.
+  art.querySelectorAll(':scope > .bk-pad').forEach((pad) => {
+    const r = pad.getClientRects()[0];
+    const c = r ? col(r.left) : pages;
+    if (c < pages) {
+      fill[c] = 1;
+      excused[c] = true;
+    }
+  });
   const empty = [];
   for (let c = 0; c < pages - 1; c++) if (fill[c] < 0.4 && !excused[c + 1]) empty.push(`${c + 1} (${Math.round(fill[c] * 100)}%)`);
   const apart = [];

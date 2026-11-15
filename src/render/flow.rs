@@ -14,6 +14,9 @@ static SECTION_NUMBER: LazyLock<Regex> =
 /// (a phone, a book page): text in it stays readable, and the picture
 /// scrolls sideways instead.
 const LEGIBLE_MIN_SCALE: f32 = 0.7;
+/// A picture on the first page that covers at least this fraction of it is
+/// the cover of a book.
+const COVER_MIN_AREA_RATIO: f32 = 0.8;
 
 /// How image widths are expressed in a given mode.
 pub(crate) enum WidthUnit {
@@ -57,6 +60,36 @@ pub(crate) struct FlowCtx {
     /// section numbers, reference and list labels, figure plates, caption
     /// labels without punctuation, numeric table columns.
     pub offprint: bool,
+    /// Ids of the blocks that are the front and the back cover of the book
+    /// (see [`cover_blocks`]), whose figures get the `cover` and
+    /// `back-cover` classes: the book view sets them as pages of their own.
+    pub covers: (Option<usize>, Option<usize>),
+}
+
+/// The ids of the blocks that are the front and the back cover of a book:
+/// the first figure, when it is a picture on the first page covering most
+/// of it (see [`COVER_MIN_AREA_RATIO`]), and the last one, when it is such
+/// a picture on the last page. `None` for papers.
+pub(crate) fn cover_blocks(doc: &Document) -> (Option<usize>, Option<usize>) {
+    let mut figures = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { .. }));
+    let covering = |block: &Block, page_idx: usize| {
+        let BlockKind::Figure { image: Some(image), .. } = &block.kind else {
+            return false;
+        };
+        doc.pages.get(page_idx).is_some_and(|page| {
+            image.page == page_idx && image.rect.area() >= COVER_MIN_AREA_RATIO * page.width * page.height
+        })
+    };
+    let front = figures.next().filter(|block| covering(block, 0)).map(|block| block.id);
+    let last_page = doc.pages.len().saturating_sub(1);
+    let back = figures
+        .next_back()
+        .filter(|block| last_page > 0 && covering(block, last_page))
+        .map(|block| block.id);
+    (front, back)
 }
 
 /// A run of consecutive blocks that share a container element.
@@ -147,7 +180,8 @@ fn stray_equation_number(block: &Block) -> Option<String> {
 }
 
 /// The end of the run of code paragraphs starting at `blocks[start]`, when
-/// the run has at least two lines (one monospaced line stays inline code).
+/// the run has at least two lines (one monospaced line stays inline code)
+/// or holds a listing found by the analysis.
 fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
     let end = start
         + blocks[start..]
@@ -155,7 +189,10 @@ fn code_run(blocks: &[&Block], start: usize) -> Option<usize> {
             .take_while(|block| code::is_code_paragraph(block))
             .count();
     let lines: usize = blocks[start..end].iter().map(|block| block.lines.len()).sum();
-    (lines >= 2).then_some(end)
+    let listing = blocks[start..end]
+        .iter()
+        .any(|block| matches!(block.kind, BlockKind::Code));
+    (lines >= 2 || listing).then_some(end)
 }
 
 /// Author groups as cards.
@@ -190,7 +227,7 @@ pub(crate) fn authors_html(blocks: &[&Block]) -> String {
 /// floats, equations and footnotes do not interrupt an abstract.
 fn group_of(block: &Block, current: Group) -> Group {
     match &block.kind {
-        BlockKind::ListItem { .. } => Group::List,
+        BlockKind::ListItem { .. } | BlockKind::ListContinuation => Group::List,
         BlockKind::Reference { .. } => Group::Refs,
         BlockKind::Paragraph { in_abstract: true } => Group::Abstract,
         // Floats, equations and footnotes do not interrupt a group.
@@ -238,6 +275,14 @@ fn is_abstract_text(spans: &[Span]) -> bool {
         .eq_ignore_ascii_case("abstract")
 }
 
+/// Whether `spans` are a scene break of a novel: a paragraph of only
+/// "#", "*" or "⁂" marks ("#", "* * *"), centred in the book.
+fn is_scene_break(spans: &[Span]) -> bool {
+    let text = plain(spans);
+    let marks: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    !marks.is_empty() && marks.len() <= 5 && marks.iter().all(|ch| matches!(ch, '#' | '*' | '\u{2042}'))
+}
+
 /// Writes one block. Titles and author blocks are written by the modes
 /// themselves and are skipped here.
 fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &mut String) {
@@ -252,6 +297,14 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
             } else {
                 ""
             };
+            if let Some((label, rest)) = chapter_label(&block.spans).filter(|_| cls.is_empty()) {
+                out.push_str(&format!(
+                    "<{tag}{id} class=\"chapter\"><span class=\"chapno\">{}</span> {}</{tag}>\n",
+                    esc(&label),
+                    spans_html(&rest)
+                ));
+                return;
+            }
             match section_number(&block.spans).filter(|_| ctx.offprint && cls.is_empty()) {
                 Some((number, rest)) => out.push_str(&format!(
                     "<{tag}{id} class=\"hang\"><span class=\"secno\">{}</span>{}</{tag}>\n",
@@ -261,6 +314,12 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 None => out.push_str(&format!("<{tag}{id}{cls}>{}</{tag}>\n", spans_html(&block.spans))),
             }
         }
+        BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
+            out.push_str(&format!(
+                "<p{id} class=\"scene-break\">{}</p>\n",
+                spans_html(&block.spans)
+            ));
+        }
         BlockKind::Paragraph { .. } => out.push_str(&format!("<p{id}>{}</p>\n", spans_html(&block.spans))),
         BlockKind::ListItem { marker } => {
             let cls = if marker.is_some() { " class=\"labeled\"" } else { "" };
@@ -269,6 +328,9 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
                 None => spans_html(&block.spans),
             };
             out.push_str(&format!("<li{id}{cls}>{body}</li>\n"));
+        }
+        BlockKind::ListContinuation => {
+            out.push_str(&format!("<li{id} class=\"more\">{}</li>\n", spans_html(&block.spans)))
         }
         BlockKind::Reference { label } => {
             let body = match label.as_deref().filter(|_| ctx.offprint) {
@@ -282,7 +344,29 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
         BlockKind::Figure { kind, image, label } => {
             out.push_str(&figure_html(block, *kind, image, label, &id, images, ctx));
         }
+        BlockKind::Code => out.push_str(&code_html(block, &id)),
     }
+}
+
+/// A code listing: its rows in a `pre` element, with their indentation.
+/// The rows are monospaced as a whole, so their spans keep only bold and
+/// italic.
+fn code_html(block: &Block, id: &str) -> String {
+    let rows: Vec<String> = block
+        .rows
+        .iter()
+        .map(|row| {
+            let spans: Vec<Span> = row
+                .iter()
+                .map(|span| Span {
+                    style: span.style & !style::MONO,
+                    ..span.clone()
+                })
+                .collect();
+            spans_html(&spans)
+        })
+        .collect();
+    format!("<pre class=\"code\"{id}><code>{}</code></pre>\n", rows.join("\n"))
 }
 
 /// A footnote, with its marker (if any) as a superscript (in the friendly
@@ -343,6 +427,13 @@ fn figure_html(
     ctx: &FlowCtx,
 ) -> String {
     let cls = float_class(kind);
+    let cover = if ctx.covers.0 == Some(block.id) {
+        " cover"
+    } else if ctx.covers.1 == Some(block.id) {
+        " back-cover"
+    } else {
+        ""
+    };
     // A float whose text is all code is a listing.
     if ctx.offprint
         && kind == FloatKind::Algorithm
@@ -407,7 +498,7 @@ fn figure_html(
     } else {
         format!("{img}{cap}")
     };
-    format!("<figure class=\"float {cls}\"{id}>{inner}</figure>\n")
+    format!("<figure class=\"float {cls}{cover}\"{id}>{inner}</figure>\n")
 }
 
 /// The section number at the start of a heading and the rest of its spans,
@@ -421,6 +512,17 @@ fn section_number(spans: &[Span]) -> Option<(String, Vec<Span>)> {
     let mut rest = spans.to_vec();
     rest[0].text = first.text[found.end()..].to_string();
     Some((found.as_str().trim_end().to_string(), rest))
+}
+
+/// A heading that starts with a chapter label ("Chapter 1 The way of the
+/// program"): the label and the rest of the heading.
+fn chapter_label(spans: &[Span]) -> Option<(String, Vec<Span>)> {
+    let first = spans.first()?;
+    let found = crate::analysis::semantics::patterns::CHAPTER_LABEL.find(&first.text)?;
+    let mut rest = spans.to_vec();
+    rest[0].text = first.text[found.end()..].trim_start().to_string();
+    let has_rest = rest.iter().any(|span| !span.text.trim().is_empty());
+    has_rest.then(|| (found.as_str().trim_end().to_string(), rest))
 }
 
 /// A list item whose text starts with its `marker` ("(1)", "a."): the

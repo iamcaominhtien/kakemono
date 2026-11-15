@@ -87,6 +87,8 @@ pub struct PageData {
     /// Rules drawn as stretched pictures of one pixel (table rules of some
     /// typesetters); see [`RawPage::pixel_rules`].
     pub pixel_rules: Vec<PathBox>,
+    /// The last page of the document (where a book has its back cover).
+    pub last: bool,
 }
 
 impl PageData {
@@ -103,6 +105,7 @@ impl PageData {
             images: raw.images,
             paths: raw.paths,
             pixel_rules: raw.pixel_rules,
+            last: false,
         }
     }
 

@@ -20,7 +20,7 @@ use crate::model::FloatKind;
 use crate::model::Line;
 use crate::model::Loc;
 use crate::model::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Value of [`LineGlyph::script`] for a superscript glyph.
 const SUPERSCRIPT: i8 = 1;
@@ -165,9 +165,27 @@ pub(crate) fn build_document(
             .get(stats.body_font as usize)
             .map(|font| font.name.clone())
             .unwrap_or_default(),
+        math_font: main_math_font(pages, fonts),
         blocks,
     };
     (doc, loose)
+}
+
+/// PostScript name of the math font with the most glyphs, or an empty
+/// string when no glyph is in a math font.
+fn main_math_font(pages: &[PageData], fonts: &[FontInfo]) -> String {
+    let mut counts: HashMap<u16, usize> = HashMap::new();
+    for glyph in pages.iter().flat_map(|page| &page.lines).flat_map(|line| &line.glyphs) {
+        if fonts.get(glyph.font as usize).is_some_and(|font| font.math) {
+            *counts.entry(glyph.font).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|&(font, count)| (count, std::cmp::Reverse(font)))
+        .and_then(|(font, _)| fonts.get(font as usize))
+        .map(|font| font.name.clone())
+        .unwrap_or_default()
 }
 
 /// Whether a glyph's text is one of the symbols used as footnote marks
@@ -246,6 +264,7 @@ impl Assembler<'_> {
                 };
                 (BlockKind::ListItem { marker }, built)
             }
+            Class::ListContinuation => (BlockKind::ListContinuation, self.text.build(lines, 0, 0)),
             Class::Reference => {
                 let built = self.text.build(lines, 0, 0);
                 let label = reference_label(&spans_text(&built.spans));
@@ -260,6 +279,14 @@ impl Assembler<'_> {
                     strip_chars(&mut built.spans, strip_prefix);
                 }
                 (BlockKind::Paragraph { in_abstract }, built)
+            }
+            Class::Code => {
+                // The lines keep their breaks and indentation; the hard
+                // renderers still use the lines as built.
+                let mut built = self.text.build(lines, 0, 0);
+                rows = super::code::code_rows(lines, self.text.fonts);
+                built.spans = rows.join(&Span::plain("\n"));
+                (BlockKind::Code, built)
             }
             Class::Unknown => (
                 BlockKind::Paragraph { in_abstract: false },
@@ -353,7 +380,19 @@ impl Assembler<'_> {
     fn equation_block(&mut self, id: usize, loc: Loc, equation: EquationBlock) -> Block {
         let mut lines = equation.lines;
         lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
-        let alt = lines.iter().map(|line| line.text()).collect::<Vec<_>>().join(" ");
+        // As read, with inline fractions as "1/2".
+        let read = |line: &Line| {
+            if line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+                self.text
+                    .line_spans(line)
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            } else {
+                line.text()
+            }
+        };
+        let alt = lines.iter().map(read).collect::<Vec<_>>().join(" ");
         let margin = self.cfg.equation_margin_pt;
         let rect = equation
             .bbox

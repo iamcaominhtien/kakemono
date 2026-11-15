@@ -121,6 +121,9 @@ h1.title{font-family:var(--serif);font-size:var(--fs-title);line-height:var(--lh
 .au-more{font:500 var(--fs-meta)/1 var(--sans);color:var(--link);background:none;border:0;padding:0;min-height:44px;cursor:pointer;
   text-decoration:underline;text-underline-offset:3px;justify-self:start}
 p.note{font-family:var(--sans);font-size:var(--fs-meta);line-height:1.5;color:var(--ink-3);margin:0 0 var(--s3);text-align:left;hyphens:manual}
+p.scene-break{text-align:center;text-indent:0;margin:var(--s3) 0;hyphens:manual}
+h2.chapter{font-size:calc(var(--fs-h2)*1.3)}
+.chapno{display:block;font-family:var(--sans);font-size:.45em;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin-bottom:.4em}
 .abstract{border-top:var(--heavy) solid var(--ink);border-bottom:var(--hair) solid var(--rule);padding:var(--s4) 0 var(--s5);margin:var(--s6) 0 var(--s7)}
 .abstract-label,h2.abstract-heading{font:600 var(--fs-label)/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--rubric);margin:0 0 var(--s3)}
 h2.abstract-heading{margin:var(--s6) 0 0;padding-top:var(--s4);border-top:var(--heavy) solid var(--ink)}
@@ -157,6 +160,7 @@ ul.list{margin:0 0 var(--s4);padding-left:1.4em;list-style:none}
 ul.list li{position:relative;margin:0 0 var(--s2);text-align:left}
 ul.list li::before{content:"";position:absolute;left:-1.05em;top:.72em;width:.32em;height:.32em;background:var(--ink-3)}
 ul.list li.labeled::before{display:none}
+ul.list li.more::before{display:none}
 ul.list li.labeled .lbl{margin-left:-1.4em;display:inline-block;min-width:1.4em;padding-right:.3em;color:var(--rubric);font-variant-numeric:tabular-nums}
 aside.footnote{font-size:var(--fs-note);line-height:var(--lh-note);color:var(--ink-2);margin:var(--s4) 0 var(--s5);padding-top:var(--s2);position:relative}
 aside.footnote::before{content:"";position:absolute;top:0;left:0;width:3rem;border-top:var(--hair) solid var(--rule-strong)}
@@ -366,6 +370,10 @@ article>*{grid-column:text;min-width:0}
 /* A caption stays with its figure or table; one that cannot shrink to a page splits after its first rows.
    A caption alone in its figure keeps nothing: its break-avoid would pass to the figure's edges and glue it to its neighbours. */
 .bk-window figure.bk-split{break-inside:auto}
+.bk-window .bk-pad{height:var(--th);break-after:column}
+.bk-window .bk-pad.bk-back{break-before:column}
+.bk-window figure.cover,.bk-window figure.back-cover{display:none}
+.bk-paper.bk-cover{background-color:var(--paper);background-position:center;background-size:cover;background-repeat:no-repeat}
 .bk-window ol.refs li.bk-long{break-inside:auto}
 .bk-window figure>figcaption:first-child:not(:last-child){break-after:avoid}
 .bk-window figure>figcaption:last-child:not(:first-child){break-before:avoid}
@@ -384,6 +392,9 @@ article>*{grid-column:text;min-width:0}
 /* A picture of a table keeps at least 70% of its size on the page, the box scrolls for the rest. */
 .bk-window .tbl-wrap>img,.bk-window figure .tbl-wrap>img[data-bkw]{max-width:none!important;max-height:var(--th);object-fit:contain}
 .bk-window pre.listing{max-height:calc(var(--th) - 5rem);overflow:auto}
+.bk-window figure.code.bk-flow{break-inside:auto}.bk-window figure.code.bk-flow .code-head{break-after:avoid}
+.bk-window figure.code.bk-flow pre.listing{max-height:none;overflow:visible;white-space:pre-wrap}.bk-window figure.code.bk-flow pre.listing code{min-width:0}.bk-window figure.code.bk-flow .l{break-inside:avoid;padding-left:2ch;text-indent:-2ch}
+.bk-window figure.code.bk-flow pre.numbered .l{--ln:calc(2.25em + 2 * var(--s3) + var(--hair));padding-left:calc(var(--ln) + 2ch);text-indent:calc(-1 * var(--ln) - 2ch)}
 .bk-window aside.footnote.side{position:relative;grid-column:auto;width:auto;top:auto!important}
 .bk-window .colophon{margin-top:var(--s5);break-before:avoid}
 /* The page edge clips: the hover bleed of reference entries stays inside the text block. */

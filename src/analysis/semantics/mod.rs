@@ -10,6 +10,7 @@
 
 pub(crate) mod assemble;
 pub(crate) mod body;
+pub(crate) mod code;
 pub(crate) mod front_matter;
 pub(crate) mod links;
 pub(crate) mod paragraphs;
@@ -20,6 +21,7 @@ pub(crate) mod text;
 
 pub use assemble::AssembleConfig;
 pub use body::BodyConfig;
+pub use code::CodeConfig;
 pub use front_matter::FrontMatterConfig;
 pub use paragraphs::ParagraphsConfig;
 pub use references::ReferencesConfig;
@@ -66,6 +68,8 @@ pub struct SemanticsConfig {
     pub front_matter: FrontMatterConfig,
     /// Classification of headings, paragraphs, list items and references.
     pub body: BodyConfig,
+    /// Detection of code listings.
+    pub code: CodeConfig,
     /// Cutting numbered italic headings off the paragraph they start.
     pub run_in: RunInConfig,
     /// Splitting bibliography blocks into one entry each.
@@ -88,6 +92,7 @@ impl Default for SemanticsConfig {
             small_caps_min_sizes_count: 2,
             front_matter: FrontMatterConfig::default(),
             body: BodyConfig::default(),
+            code: CodeConfig::default(),
             run_in: RunInConfig::default(),
             references: ReferencesConfig::default(),
             paragraphs: ParagraphsConfig::default(),
@@ -127,8 +132,12 @@ pub(crate) enum Class {
         /// The label is a bullet symbol rather than a number or letter.
         bullet: bool,
     },
+    /// A further paragraph of the list item before it.
+    ListContinuation,
     /// One entry of the bibliography.
     Reference,
+    /// A code listing, kept line by line.
+    Code,
 }
 
 /// The content of a node: the raw block it was made from.

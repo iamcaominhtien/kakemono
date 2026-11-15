@@ -8,9 +8,11 @@
 //! inside the line; the rest of the line stays flowing text.
 //!
 //! Glyphs on the baseline whose size differs from the line's (small
-//! capitals, a big operator in the text) keep their own size.
+//! capitals, a big operator in the text) keep their own size, and wide gaps
+//! (tabs, as in a table of contents) keep their width.
 
-use super::{Units, gaps_of, span_html, spans_h95};
+use super::{Units, esc, gaps_of, is_tall, span_html, spans_h95};
+use crate::common::geom::median;
 use crate::model::{Line, SUB, SUP, Span};
 
 /// A glyph is raised or lowered when its baseline is further than this (in
@@ -27,6 +29,21 @@ const STACK_MIN_RISE_EM: f32 = 0.4;
 /// font size of the line by more than this fraction (small capitals are
 /// about 80% of the capitals).
 const RESIZED_MIN_RATIO: f32 = 0.08;
+/// A gap between two glyphs of a line wider than this (in em of the line
+/// font size) is a tab: the space before the page number of a table of
+/// contents entry, between a chapter number and its title, between the page
+/// number and the title of a running head. It keeps its width in the PDF
+/// instead of being one word space that the line-fitting script would
+/// stretch letter by letter. Word spaces are about a third of an em.
+const TAB_MIN_GAP_EM: f32 = 0.8;
+/// ... and at least this many times the median of the word spaces of the
+/// line (its gaps narrower than [`TAB_MIN_GAP_EM`]): a justified line with
+/// loose word spaces has no tab.
+const TAB_MIN_SPACE_RATIO: f32 = 3.0;
+/// A line whose gaps are all wider than [`TAB_MIN_GAP_EM`] has tabs only
+/// when there are at most this many ("1 ⇥ Introduction", "Index ⇥ 297");
+/// more is a loosely justified line.
+const TAB_MAX_ALONE_COUNT: usize = 2;
 
 /// Consecutive glyphs of a line drawn at their own place.
 struct Cluster {
@@ -37,6 +54,19 @@ struct Cluster {
     /// Range of the characters of the line text (the concatenated spans)
     /// the glyphs stand for, spaces between them included.
     chars: std::ops::Range<usize>,
+}
+
+/// What is known of the text of a line, character by character and glyph
+/// by glyph.
+struct LineText<'a> {
+    /// For each character of the line text, the glyph it stands for (see
+    /// [`glyph_of_chars`]).
+    glyph_of_char: &'a [Option<usize>],
+    /// Widths of the gaps left for glyphs without Unicode value (see
+    /// [`gaps_of`]).
+    gaps: &'a [f32],
+    /// For each glyph, the width of the tab before it (see [`tabs_of`]).
+    tabs: &'a [Option<f32>],
 }
 
 /// Text of one span waiting to be written, all at one size.
@@ -68,25 +98,86 @@ impl Plain {
 /// markup and whether the text ended with a space (which the caller places
 /// outside the line element).
 ///
-/// Lines without stacked or resized glyphs, and lines whose text cannot be
-/// matched to their glyphs, are written as plain styled text.
+/// Lines without stacked or resized glyphs or tabs, and lines whose text
+/// cannot be matched to their glyphs, are written as plain styled text.
 pub(super) fn line_html(line: &Line, spans: &[Span], units: &Units) -> (String, bool) {
     let gaps = gaps_of(line);
     let runs = stacked_runs(line);
-    if runs.is_empty() && !(0..line.glyphs.len()).any(|idx| own_size(line, idx).is_some()) {
+    let tabs = tabs_of(line);
+    if runs.is_empty()
+        && tabs.iter().all(Option::is_none)
+        && !line.glyphs.iter().any(is_tall)
+        && !(0..line.glyphs.len()).any(|idx| own_size(line, idx).is_some())
+    {
         return spans_h95(spans, &gaps);
     }
     let Some(glyph_of_char) = glyph_of_chars(line, spans) else {
         return spans_h95(spans, &gaps);
     };
     let clusters = clusters_of(&runs, &glyph_of_char);
-    write_line(line, spans, &clusters, &glyph_of_char, &gaps, units)
+    let text_info = LineText {
+        glyph_of_char: &glyph_of_char,
+        gaps: &gaps,
+        tabs: &tabs,
+    };
+    write_line(line, spans, &clusters, &text_info, units)
 }
 
-/// Runs of consecutive raised or lowered glyphs that contain two stacked
-/// glyphs, as (first, end) glyph indices. Runs with a glyph that has no
-/// Unicode value are left out (such glyphs stay in the page picture).
+/// For each glyph of `line`, the width (in points) of the gap before it when
+/// that gap is a tab (see [`TAB_MIN_GAP_EM`] and [`TAB_MIN_SPACE_RATIO`]).
+fn tabs_of(line: &Line) -> Vec<Option<f32>> {
+    let spaces: Vec<f32> = (1..line.glyphs.len())
+        .filter(|&idx| line.glyphs[idx].space_before)
+        .map(|idx| line.glyphs[idx].x0 - line.glyphs[idx - 1].x1)
+        .collect();
+    let min_gap = TAB_MIN_GAP_EM * line.size;
+    // The word spaces of the line, against which a wide gap is measured
+    // (other wide gaps would hide a tab: "2 ⇥ Descriptive Statistics ⇥ 67").
+    let words: Vec<f32> = spaces.iter().copied().filter(|&gap| gap <= min_gap).collect();
+    let wide_count = spaces.len() - words.len();
+    if words.is_empty() && wide_count > TAB_MAX_ALONE_COUNT {
+        // Nothing but wide gaps: a loose justified line, not tabs.
+        return vec![None; line.glyphs.len()];
+    }
+    let word_space = median(&words, 0.0);
+    std::iter::once(None)
+        .chain(line.glyphs.windows(2).map(|pair| {
+            let gap = pair[1].x0 - pair[0].x1;
+            (pair[1].space_before && gap > min_gap && gap >= TAB_MIN_SPACE_RATIO * word_space).then_some(gap)
+        }))
+        .take(line.glyphs.len())
+        .collect()
+}
+
+/// Runs of consecutive glyphs that contain two stacked glyphs, as (first,
+/// end) glyph indices: runs of raised or lowered glyphs (an inline fraction,
+/// a fraction as an exponent), and runs of glyphs that overlap each other
+/// horizontally (limits under `lim`, whose glyphs interleave with its
+/// letters from left to right), merged where they meet. Runs with a glyph
+/// that has no Unicode value are left out (such glyphs stay in the page
+/// picture).
 fn stacked_runs(line: &Line) -> Vec<(usize, usize)> {
+    let mut runs = off_baseline_runs(line);
+    runs.extend(overlapping_runs(line));
+    runs.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (first, end) in runs {
+        match merged.last_mut() {
+            Some(last) if first < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((first, end)),
+        }
+    }
+    merged.retain(|&(first, end)| {
+        has_stacked_pair(line, first, end)
+            && !line.glyphs[first..end]
+                .iter()
+                .any(|glyph| glyph.text.contains('\u{FFFD}'))
+    });
+    merged
+}
+
+/// Runs of consecutive raised or lowered glyphs, as (first, end) indices.
+fn off_baseline_runs(line: &Line) -> Vec<(usize, usize)> {
     let off_baseline = |idx: usize| (line.glyphs[idx].y - line.baseline).abs() > OFF_BASELINE_EM * line.size;
     let mut runs = Vec::new();
     let mut idx = 0;
@@ -99,8 +190,27 @@ fn stacked_runs(line: &Line) -> Vec<(usize, usize)> {
         while idx < line.glyphs.len() && off_baseline(idx) {
             idx += 1;
         }
-        let glyphs = &line.glyphs[first..idx];
-        if has_stacked_pair(line, first, idx) && !glyphs.iter().any(|glyph| glyph.text.contains('\u{FFFD}')) {
+        runs.push((first, idx));
+    }
+    runs
+}
+
+/// Runs of at least two consecutive glyphs each of which starts left of the
+/// right end of the ones before it in the run (by more than
+/// [`STACK_MIN_OVERLAP_PT`]), as (first, end) indices.
+fn overlapping_runs(line: &Line) -> Vec<(usize, usize)> {
+    let glyphs = &line.glyphs;
+    let mut runs = Vec::new();
+    let mut idx = 0;
+    while idx < glyphs.len() {
+        let first = idx;
+        let mut right = glyphs[idx].x1;
+        idx += 1;
+        while idx < glyphs.len() && glyphs[idx].x0 < right - STACK_MIN_OVERLAP_PT {
+            right = right.max(glyphs[idx].x1);
+            idx += 1;
+        }
+        if idx - first >= 2 {
             runs.push((first, idx));
         }
     }
@@ -109,11 +219,16 @@ fn stacked_runs(line: &Line) -> Vec<(usize, usize)> {
 
 /// The font size of glyph `idx` of `line` when the glyph sits on the
 /// baseline but is clearly smaller or larger than the line (see
-/// [`RESIZED_MIN_RATIO`]); `None` otherwise.
+/// [`RESIZED_MIN_RATIO`]), or is clearly larger wherever it sits; `None`
+/// otherwise.
 fn own_size(line: &Line, idx: usize) -> Option<f32> {
     let glyph = &line.glyphs[idx];
     let on_baseline = (glyph.y - line.baseline).abs() <= OFF_BASELINE_EM * line.size;
-    (on_baseline && (glyph.size - line.size).abs() > RESIZED_MIN_RATIO * line.size).then_some(glyph.size)
+    let resized = (glyph.size - line.size).abs() > RESIZED_MIN_RATIO * line.size;
+    // Larger than the line is never a superscript, wherever its baseline
+    // ("初級1" at 18 pt in a running foot of 9 pt type).
+    let larger = glyph.size > line.size * (1.0 + RESIZED_MIN_RATIO);
+    ((on_baseline && resized) || larger).then_some(glyph.size)
 }
 
 /// Whether two glyphs of `line.glyphs[first..end]` sit one over the other.
@@ -155,7 +270,35 @@ fn glyph_of_chars(line: &Line, spans: &[Span]) -> Option<Vec<Option<usize>>> {
         map.push(None);
         Some(map)
     } else {
-        None
+        reordered_glyph_of_chars(&expected, &text)
+    }
+}
+
+/// [`glyph_of_chars`] for a text whose characters are the glyphs' in another
+/// order: the text of an inline fraction gives the numerator first, while
+/// the glyphs go from left to right (`√ d c − 1` for `c` over `√d−1`).
+/// Each character takes the first glyph not yet taken that stands for it;
+/// spaces stand for no glyph. Returns `None` unless every glyph is taken,
+/// except a hyphen at the end of the line that the text dropped.
+fn reordered_glyph_of_chars(expected: &[(char, Option<usize>)], text: &[char]) -> Option<Vec<Option<usize>>> {
+    let mut taken = vec![false; expected.len()];
+    let mut map = Vec::with_capacity(text.len());
+    for &ch in text {
+        if ch == ' ' {
+            map.push(None);
+            continue;
+        }
+        let pos = (0..expected.len()).find(|&pos| !taken[pos] && expected[pos].0 == ch)?;
+        taken[pos] = true;
+        map.push(expected[pos].1);
+    }
+    let left: Vec<usize> = (0..expected.len())
+        .filter(|&pos| !taken[pos] && expected[pos].0 != ' ')
+        .collect();
+    match left.as_slice() {
+        [] => Some(map),
+        [pos] if *pos + 1 == expected.len() && expected[*pos].0 == '-' => Some(map),
+        _ => None,
     }
 }
 
@@ -175,18 +318,40 @@ fn clusters_of(runs: &[(usize, usize)], glyph_of_char: &[Option<usize>]) -> Vec<
         .collect()
 }
 
+/// The HTML of character `ch` at position `pos` of the line when it is not
+/// plain text: a tall glyph, which stays in the picture (an unseen gap of
+/// its width), or a tab (a space whose next character is set far apart).
+fn placed_char_html(line: &Line, ch: char, pos: usize, text_info: &LineText<'_>, units: &Units) -> Option<String> {
+    let glyph_of_char = text_info.glyph_of_char;
+    if let Some(glyph_idx) = glyph_of_char[pos]
+        && is_tall(&line.glyphs[glyph_idx])
+    {
+        let glyph = &line.glyphs[glyph_idx];
+        return Some(format!(
+            "<span class=\"ph\" style=\"width:{}\">{}</span>",
+            units.len(glyph.x1 - glyph.x0),
+            esc(&glyph.text)
+        ));
+    }
+    let tab = match (glyph_of_char[pos], glyph_of_char.get(pos + 1)) {
+        (None, Some(&Some(next))) if ch == ' ' => text_info.tabs[next],
+        _ => None,
+    };
+    tab.map(|width| format!("<span class=\"tab\" style=\"width:{}\">&#160;</span>", units.len(width)))
+}
+
 /// Writes the spans of a line, replacing the characters of each cluster by
 /// the cluster drawn glyph by glyph, and setting resized glyphs (see
-/// [`own_size`]) at their size.
+/// [`own_size`]) at their size and tabs (see [`tabs_of`]) at their width.
 fn write_line(
     line: &Line,
     spans: &[Span],
     clusters: &[Cluster],
-    glyph_of_char: &[Option<usize>],
-    gaps: &[f32],
+    text_info: &LineText<'_>,
     units: &Units,
 ) -> (String, bool) {
-    let mut gaps = gaps.iter();
+    let glyph_of_char = text_info.glyph_of_char;
+    let mut gaps = text_info.gaps.iter();
     let mut out = String::new();
     let mut trailing = false;
     let mut pos = 0usize;
@@ -208,15 +373,20 @@ fn write_line(
                     }
                 }
                 _ => {
-                    // Spaces (no glyph) keep the size of the text before them.
-                    if let Some(glyph_idx) = glyph_of_char[pos] {
-                        let size = own_size(line, glyph_idx);
-                        if size != plain.size {
-                            plain.flush(&mut out, span, &mut gaps, units);
-                            plain.size = size;
+                    if let Some(html) = placed_char_html(line, ch, pos, text_info, units) {
+                        plain.flush(&mut out, span, &mut gaps, units);
+                        out.push_str(&html);
+                    } else {
+                        // Spaces (no glyph) keep the size of the text before them.
+                        if let Some(glyph_idx) = glyph_of_char[pos] {
+                            let size = own_size(line, glyph_idx);
+                            if size != plain.size {
+                                plain.flush(&mut out, span, &mut gaps, units);
+                                plain.size = size;
+                            }
                         }
+                        plain.text.push(ch);
                     }
-                    plain.text.push(ch);
                 }
             }
             pos += 1;
@@ -266,8 +436,9 @@ fn cluster_html(
             css.push_str(&format!(";margin-right:{}", units.len(right - glyph.x1)));
         }
         cursor = glyph.x1;
+        let class = if is_tall(glyph) { "sg ph" } else { "sg" };
         out.push_str(&format!(
-            "<span class=\"sg\" style=\"{css}\">{}</span>",
+            "<span class=\"{class}\" style=\"{css}\">{}</span>",
             span_html(&style, &glyph.text, &mut [].iter())
         ));
     }
@@ -282,4 +453,86 @@ fn span_of_chars(spans: &[Span]) -> Vec<usize> {
         .enumerate()
         .flat_map(|(idx, span)| std::iter::repeat_n(idx, span.text.chars().count()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::geom::Rect;
+    use crate::model::LineGlyph;
+
+    /// A line of 10 pt type with one glyph per word, each word 20 pt wide
+    /// and starting at the given position.
+    fn line(starts: &[f32]) -> Line {
+        let glyphs: Vec<LineGlyph> = starts
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| LineGlyph {
+                text: "w".to_string(),
+                x0: x,
+                x1: x + 20.0,
+                y: 100.0,
+                size: 10.0,
+                font: 0,
+                script: 0,
+                space_before: i > 0,
+                ink: Rect::new(x, 93.0, x + 20.0, 100.0),
+                ox: x,
+                oy: 100.0,
+                extra: Vec::new(),
+                color: [0; 3],
+            })
+            .collect();
+        Line {
+            page: 0,
+            bbox: Rect::new(starts[0], 90.0, starts[starts.len() - 1] + 20.0, 102.0),
+            ink: Rect::new(starts[0], 93.0, starts[starts.len() - 1] + 20.0, 100.0),
+            baseline: 100.0,
+            size: 10.0,
+            font: 0,
+            glyphs,
+            fixed_pitch: false,
+        }
+    }
+
+    #[test]
+    fn inline_fraction_text_is_matched_to_its_glyphs() {
+        // "≤ c/√(d−1)": the text gives the numerator first, the glyphs go from
+        // left to right (the radical starts left of the "c" above it).
+        let mut fraction = line(&[0.0, 12.0, 15.0, 16.0, 19.0, 23.0]);
+        for (glyph, text) in fraction.glyphs.iter_mut().zip(["≤", "√", "d", "c", "−", "1"]) {
+            glyph.text = text.to_string();
+            glyph.space_before = false;
+        }
+        let spans = [Span {
+            text: "≤c √d−1".to_string(),
+            style: 0,
+            href: None,
+            color: [0; 3],
+        }];
+        let map = glyph_of_chars(&fraction, &spans).expect("the text is the glyphs reordered");
+        assert_eq!(map, vec![Some(0), Some(3), None, Some(1), Some(2), Some(4), Some(5)]);
+    }
+
+    #[test]
+    fn page_number_of_a_contents_entry_is_after_a_tab() {
+        // "1.1 Finding Words  ........  12": word spaces of 3 pt, then 120 pt.
+        let tabs = tabs_of(&line(&[0.0, 23.0, 46.0, 186.0]));
+        assert_eq!(tabs, vec![None, None, None, Some(120.0)]);
+    }
+
+    #[test]
+    fn chapter_number_and_page_number_are_both_tabs() {
+        // "2 ⇥ Descriptive Statistics ⇥ 67": two gaps of about 1 em around
+        // one word space of 3 pt.
+        let tabs = tabs_of(&line(&[0.0, 30.0, 53.0, 83.0]));
+        assert_eq!(tabs, vec![None, Some(10.0), None, Some(10.0)]);
+    }
+
+    #[test]
+    fn loose_justified_line_has_no_tab() {
+        // Word spaces of 18 to 22 pt: all wide, none much wider than the others.
+        let tabs = tabs_of(&line(&[0.0, 38.0, 80.0, 120.0]));
+        assert!(tabs.iter().all(Option::is_none));
+    }
 }

@@ -6,6 +6,17 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// The label of a chapter or part set as a heading of its own above the
+/// chapter's title: "Chapter 1", "PART II", "CHAPTER 3:", "Appendix A".
+pub(crate) static CHAPTER_LABEL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?i:chapter|part|appendix|lesson|unit)\s+(?:\d{1,3}|[IVXLC]{1,6}|[A-Z])[.:]?(?:\s|$)").unwrap()
+});
+
+/// A line of dialogue in a language course: a speaker letter and a colon,
+/// after an optional example label ("Ａ：すみません。", "［例］▶ Ｂ：はい").
+pub(crate) static DIALOGUE_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:［\s*例\s*］\s*▶?\s*)?[A-ZＡ-Ｚ]\s*[：:]\s*\S").unwrap());
+
 /// Arabic section number and title: "3", "3.2", "3.2.1." followed by the
 /// title (up to four levels of at most two digits each).
 pub(crate) static HEADING_NUM: LazyLock<Regex> =
@@ -53,10 +64,12 @@ pub(crate) static REF_HEADING: LazyLock<Regex> = LazyLock::new(|| {
 /// e.g. `[12]` or `[Vas17]`) or "12." (captured as `b`).
 pub(crate) static REF_LABEL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\[(?P<a>[^\]]{1,24})\]|(?P<b>\d{1,3})\.(?:\s|$))").unwrap());
-/// Unnumbered headings common to papers ("Introduction", "Acknowledgments",
-/// "References"); such a text is a heading even without a number.
+/// Unnumbered headings common to papers and books ("Introduction",
+/// "Acknowledgments", "References"; the preface, contents and index of
+/// Japanese, Chinese and Vietnamese books); such a text is a heading even
+/// without a number, and never a title.
 pub(crate) static KNOWN_HEADINGS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(abstract|references|bibliography|acknowledge?ments?|appendix|appendices|supplementary materials?|conclusions?|introduction|related work|contents|keywords|index terms)$").unwrap()
+    Regex::new(r"(?i)^(abstract|references|bibliography|acknowledge?ments?|appendix|appendices|supplementary materials?|conclusions?|introduction|related work|contents|keywords|index terms|はじめに|まえがき|目次|索引|参考文献|あとがき|前言|序言|目录|lời nói đầu|lời giới thiệu|mục lục|tài liệu tham khảo)$").unwrap()
 });
 
 #[cfg(test)]
@@ -70,6 +83,8 @@ mod tests {
         assert!(HEADING_ROMAN.is_match("IV. EXPERIMENTS"));
         assert!(REF_HEADING.is_match("References"));
         assert!(REF_HEADING.is_match("7 References"));
+        assert!(KNOWN_HEADINGS.is_match("はじめに"));
+        assert!(KNOWN_HEADINGS.is_match("Mục lục"));
         assert!(!REF_HEADING.is_match("References to prior work"));
         assert!(ABSTRACT_INLINE.is_match("Abstract—We propose"));
     }

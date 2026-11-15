@@ -3,6 +3,7 @@
 //! the bounding boxes of vector drawing operations.
 
 use super::fonts::{FontRegistry, UNKNOWN_FONT};
+use super::symbols::MAPSTO_STEM;
 use crate::common::geom::Rect;
 use hayro_interpret::font::{Glyph as PdfGlyph, GlyphRun};
 use hayro_interpret::hayro_cmap::BfString;
@@ -79,6 +80,9 @@ const PIXEL_RULE_COLOR: [u8; 4] = [0, 0, 0, 255];
 /// A single-pixel picture is a rule when its thin side is at most this
 /// (in points).
 const PIXEL_RULE_MAX_THICKNESS_PT: f32 = 2.0;
+/// The arrow of ↦ starts within this distance of its stem (in em), on the
+/// same baseline.
+const MAPSTO_MAX_OFFSET_EM: f32 = 0.3;
 
 /// Text direction of a glyph, quantised to quarter turns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +279,24 @@ impl GlyphPlacement {
 }
 
 impl Extractor<'_, '_> {
+    /// Joins an arrow at `placement` to the stem of ↦ drawn just before it
+    /// ([`MAPSTO_STEM`]): the stem glyph takes the arrow's extent. Returns
+    /// whether the arrow was joined.
+    fn join_mapsto(&mut self, placement: &GlyphPlacement, adv: f32, ink: Rect) -> bool {
+        let Some(stem) = self.page.glyphs.last_mut() else {
+            return false;
+        };
+        let (x, y) = (placement.origin.x as f32, placement.origin.y as f32);
+        let near = (stem.y - y).abs() <= MAPSTO_MAX_OFFSET_EM * placement.size
+            && (x - stem.x).abs() <= MAPSTO_MAX_OFFSET_EM * placement.size;
+        if stem.text != MAPSTO_STEM || !near {
+            return false;
+        }
+        stem.adv = (x + adv - stem.x).max(stem.adv);
+        stem.ink = stem.ink.union(&ink);
+        true
+    }
+
     /// The active clip rectangle.
     fn clip(&self) -> kurbo::Rect {
         self.clips.last().copied().unwrap_or(self.page_rect)
@@ -400,11 +422,26 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             };
             let (unicode, advance, font, outline_box) = self.describe_glyph(glyph);
             let info = &self.fonts.infos[font as usize];
-            let mut text = match info.mathabx {
-                Some(abx) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
-                None => glyph_text(unicode),
+            let private = match (&unicode, info.symbols) {
+                (Some(BfString::Char(ch)), Some(symbols)) => symbols.private_text(*ch),
+                _ => None,
             };
-            if text.is_empty() {
+            let mut text = match (info.mathabx, private) {
+                (Some(abx), _) => abx.text(glyph.char_code()).unwrap_or("\u{FFFD}").to_string(),
+                (None, Some(known)) => known.to_string(),
+                (None, None) => glyph_text(unicode, info.libertine),
+            };
+            // A symbol font of known encoding fills in what the PDF leaves unmapped.
+            if text == "\u{FFFD}"
+                && let Some(known) = info.symbols.and_then(|symbols| symbols.text(glyph.char_code()))
+            {
+                text = known;
+            }
+            // Control codes (a line break typed into a figure label) draw
+            // nothing; neither does an unmapped glyph without an outline (a
+            // space of a font without Unicode mapping, padding a form).
+            let blank = font != UNKNOWN_FONT && outline_box.is_none();
+            if text.is_empty() || text == "\u{FFFD}" && (matches!(glyph.char_code(), 9 | 10 | 13) || blank) {
                 continue;
             }
             if self.fonts.infos[font as usize].math_pi {
@@ -429,6 +466,9 @@ impl<'a> Device<'a> for Extractor<'_, 'a> {
             // scaled text keeps correct advances.
             let adv = advance.unwrap_or(DEFAULT_ADVANCE_UNITS) as f64 / GLYPH_UNITS_PER_EM * placement.x_scale;
             let ink = ink_box(outline_box, transform, &placement, adv);
+            if text == "\u{2192}" && self.join_mapsto(&placement, adv as f32, ink) {
+                continue;
+            }
             self.page.glyphs.push(Glyph {
                 text,
                 x: placement.origin.x as f32,
@@ -545,24 +585,53 @@ fn paint_color(paint: &Paint<'_>) -> [u8; 4] {
 
 /// The normalised text of a glyph's Unicode mapping: U+FFFD when there is
 /// none, and empty when the mapping holds only characters that are dropped
-/// (control characters, zero-width spaces).
-fn glyph_text(unicode: Option<BfString>) -> String {
+/// (control characters, zero-width spaces). The private-use code points of
+/// Linux Libertine are read first when `libertine` is set.
+fn glyph_text(unicode: Option<BfString>, libertine: bool) -> String {
     let mut text = String::new();
-    match unicode {
-        Some(BfString::Char(ch)) => {
-            let mut buf = [0u8; 4];
-            normalize_text(ch.encode_utf8(&mut buf), &mut text);
-        }
-        Some(BfString::String(string)) => normalize_text(&string, &mut text),
-        None => text.push('\u{FFFD}'),
+    let raw = match unicode {
+        Some(BfString::Char(ch)) => ch.to_string(),
+        Some(BfString::String(string)) => string,
+        None => return '\u{FFFD}'.to_string(),
+    };
+    if libertine {
+        normalize_text(&libertine_text(&raw), &mut text);
+    } else {
+        normalize_text(&raw, &mut text);
     }
     text
+}
+
+/// Reads the private-use code points that Linux Libertine and Biolinum give
+/// their ligatures ("Th", "tt", "ft", ...), small capitals (as lowercase
+/// letters) and old-style figures. Other characters are kept.
+fn libertine_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let code = ch as u32;
+        match code {
+            0xE039 => out.push_str("ft"),
+            0xE03A => out.push_str("ck"),
+            0xE03B => out.push_str("ch"),
+            0xE03C => out.push_str("tt"),
+            0xE048 => out.push_str("Qu"),
+            0xE049 => out.push_str("Th"),
+            0xE0E0 => out.push('f'),
+            0xE051..=0xE06A => out.push(char::from(b'a' + (code - 0xE051) as u8)),
+            0xE118..=0xE121 => out.push(char::from(b'0' + (code - 0xE118) as u8)),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Appends `text` to `out`, expanding Latin ligatures, turning special
 /// spaces into plain spaces and soft or non-breaking hyphens into `-`, and
 /// dropping control characters, zero-width characters and the byte-order
 /// mark, so that text from different PDF producers compares equal.
+/// Private-use characters (a ligature such as "ft" that the font maps to a
+/// code of its own) become U+FFFD: no other font draws them, so the glyph
+/// must stay in the page picture.
 fn normalize_text(text: &str, out: &mut String) {
     for ch in text.chars() {
         match ch {
@@ -576,8 +645,31 @@ fn normalize_text(text: &str, out: &mut String) {
             '\u{00AD}' => out.push('-'),
             '\u{2010}' | '\u{2011}' => out.push('-'),
             '\u{0}'..='\u{1F}' | '\u{7F}' | '\u{200B}'..='\u{200F}' | '\u{FEFF}' => {}
+            '\u{F8E5}'..='\u{F8FE}' => out.push(symbol_piece(ch)),
+            // Adobe's code points for old-style figures and small capitals
+            // (Garamond Expert and other expert sets).
+            '\u{F730}'..='\u{F739}' => out.push(char::from(b'0' + (ch as u32 - 0xF730) as u8)),
+            '\u{F761}'..='\u{F77A}' => out.push(char::from(b'a' + (ch as u32 - 0xF761) as u8)),
+            '\u{E000}'..='\u{F8FF}' => out.push('\u{FFFD}'),
             other => out.push(other),
         }
+    }
+}
+
+/// The Unicode piece of a large delimiter or integral that the Adobe Symbol
+/// encoding puts in the private-use area (U+F8E5 to U+F8FE), as TeX's cmex
+/// and other math extension fonts are mapped in PDFs.
+fn symbol_piece(ch: char) -> char {
+    const PIECES: [char; 26] = [
+        '\u{F8E5}', '\u{F8E6}', '\u{23AF}', '\u{AE}', '\u{A9}', '\u{2122}', '\u{239B}', '\u{239C}', '\u{239D}',
+        '\u{23A1}', '\u{23A2}', '\u{23A3}', '\u{23A7}', '\u{23A8}', '\u{23A9}', '\u{23AA}', '\u{23AE}', '\u{239E}',
+        '\u{239F}', '\u{23A0}', '\u{23A4}', '\u{23A5}', '\u{23A6}', '\u{23AB}', '\u{23AC}', '\u{23AD}',
+    ];
+    let piece = PIECES[(ch as u32 - 0xF8E5) as usize];
+    if ('\u{E000}'..='\u{F8FF}').contains(&piece) {
+        '\u{FFFD}'
+    } else {
+        piece
     }
 }
 
@@ -633,5 +725,38 @@ fn ink_box(outline_box: Option<kurbo::Rect>, transform: Affine, placement: &Glyp
             (origin.x + adv) as f32,
             origin.y as f32 + FALLBACK_INK_DESCENT_EM * size,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_text;
+
+    #[test]
+    fn private_use_ligature_is_unknown() {
+        // Linux Libertine maps its "ft" ligature to U+E039.
+        let mut text = String::new();
+        normalize_text("le\u{E039}most", &mut text);
+        assert_eq!(text, "le\u{FFFD}most");
+    }
+
+    #[test]
+    fn libertine_private_use_glyphs_are_read() {
+        use super::libertine_text;
+        assert_eq!(
+            libertine_text("\u{E049}e pa\u{E03C}ern a\u{E039}er"),
+            "The pattern after"
+        );
+        assert_eq!(
+            libertine_text("\u{E05D}\u{E059}\u{E064} \u{E119}\u{E121}\u{E11F}\u{E120}"),
+            "mit 1978"
+        );
+    }
+
+    #[test]
+    fn delimiter_pieces_are_read() {
+        let mut text = String::new();
+        normalize_text("\u{F8EB}\u{F8F4}\u{F8FE}", &mut text);
+        assert_eq!(text, "\u{239B}\u{23AA}\u{23AD}");
     }
 }

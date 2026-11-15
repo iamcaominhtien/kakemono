@@ -13,7 +13,7 @@ pub mod style;
 use crate::common::geom::Rect;
 use serde::Serialize;
 
-pub use line::{Line, LineGlyph, RotatedText};
+pub use line::{FRACTION_TERM, Line, LineGlyph, RotatedText};
 pub use math::MathNode;
 pub use style::*;
 
@@ -204,6 +204,8 @@ pub enum BlockKind {
         /// `None` for bullet lists.
         marker: Option<String>,
     },
+    /// A further paragraph of the list item before it.
+    ListContinuation,
     /// A displayed formula, shown as an image of its area.
     Equation {
         /// The area of the page that shows the formula.
@@ -231,6 +233,8 @@ pub enum BlockKind {
         /// Citation label ("12", "Smith et al. 2020"), if the entry has one.
         label: Option<String>,
     },
+    /// A code listing; `Block::rows` holds its lines, indented with spaces.
+    Code,
 }
 
 /// A unit of content of the document (paragraph, heading, figure, ...), in
@@ -334,6 +338,9 @@ pub struct Document {
     pub leading: f32,
     /// PostScript name of the font of the running text.
     pub body_font: String,
+    /// PostScript name of the math font with the most glyphs (empty when
+    /// the document has no math font).
+    pub math_font: String,
     /// All content, in reading order.
     pub blocks: Vec<Block>,
 }

@@ -9,7 +9,8 @@
 //! draw them.
 
 use super::page::PageData;
-use crate::model::Line;
+use crate::common::geom::Rect;
+use crate::model::{Line, LineGlyph};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -22,6 +23,10 @@ static PAGE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]?\d{2,}
 /// to Physics Letters B" (elsarticle), "Preprint. Under review." (NeurIPS).
 static PREPRINT_FOOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?i:preprint submitted to\b|preprint\. under review)").unwrap());
+
+/// A printer's position mark: underscores, then an optional signed number
+/// ("___-1", "___0", "___+1").
+static PRINTER_MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^_+[-+]?\d*$").unwrap());
 
 /// A line that is nothing but a page number: arabic or roman, optionally
 /// "page N", "N of M" or "N/M", with up to three decorating non-word
@@ -93,13 +98,23 @@ pub struct FurnitureConfig {
     /// (such as the header of a table of numbers) reaches about 1.5.
     pub crowded_max_distance_em: f32,
     /// A number followed on its row, within this many font sizes, by text
-    /// that is not furniture is a heading's number, not a page number.
+    /// that is not furniture is a heading's number, not a page number. A
+    /// number set farther apart at either end of the top or bottom row of a
+    /// page is the page number of a book's running head ("46   Chapter 4.
+    /// Cumulative distribution functions").
     pub heading_number_max_gap_em: f32,
+    /// A roman page number in a running head ("vi Preface") is at most
+    /// this many pages below the page's position in the file (covers before
+    /// the front matter).
+    pub roman_number_max_offset_count: i64,
     /// The offset of printed page numbers to page indexes is the one at
     /// least this many pages ...
     pub number_offset_min_pages: usize,
     /// ... and this fraction of the pages agree on.
     pub number_offset_min_ratio: f32,
+    /// A printer's mark ("___-1") is at least this many font sizes away
+    /// from the words beside it on its row.
+    pub printer_mark_min_gap_em: f32,
 }
 
 impl Default for FurnitureConfig {
@@ -123,8 +138,10 @@ impl Default for FurnitureConfig {
             crowded_min_distance_pt: 2.0,
             crowded_max_distance_em: 1.75,
             heading_number_max_gap_em: 3.0,
+            roman_number_max_offset_count: 4,
             number_offset_min_pages: 3,
             number_offset_min_ratio: 0.3,
+            printer_mark_min_gap_em: 3.0,
         }
     }
 }
@@ -287,9 +304,12 @@ fn count_head_foot_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<R
 /// Removes the furniture lines of one page and returns them in their
 /// original order.
 fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> Vec<Line> {
-    let body = body_extent(page, repeats, cfg);
+    let outer = body_extent(page, repeats, &numbered_heads(page, repeats.number_offset, cfg), cfg);
+    let marks = take_printer_marks(page, &outer, cfg);
+    let numbered = numbered_heads(page, repeats.number_offset, cfg);
+    let body = body_extent(page, repeats, &numbered, cfg);
     let mut drop = margin_line_numbers(page, &body, cfg);
-    mark_running_heads(page, &body, repeats, cfg, &mut drop);
+    mark_running_heads(page, &body, repeats, &numbered, cfg, &mut drop);
 
     let mut kept = Vec::with_capacity(page.lines.len());
     let mut removed = Vec::new();
@@ -302,7 +322,97 @@ fn remove_page_furniture(page: &mut PageData, repeats: &RepeatCounts, cfg: &Furn
     }
     page.lines = kept;
     drop_head_rules(page, &removed, &body, cfg);
+    removed.extend(marks);
     removed
+}
+
+/// Takes the printer's marks out of the lines of a page and returns them:
+/// the position marks a layout program prints in the margin ("___-1",
+/// "___0", "___1"), which share a baseline with lines of the text and were
+/// read as part of them. A mark is a word of underscores (cut by the
+/// page's crop box, it may keep one only), with an optional signed number,
+/// beside the text block `body` and set apart from the rest of its line by
+/// more than [`printer_mark_min_gap_em`](FurnitureConfig::printer_mark_min_gap_em).
+fn take_printer_marks(page: &mut PageData, body: &BodyExtent, cfg: &FurnitureConfig) -> Vec<Line> {
+    let mut marks = Vec::new();
+    let mut kept = Vec::with_capacity(page.lines.len());
+    for line in std::mem::take(&mut page.lines) {
+        let words = word_ranges(&line);
+        let is_mark = |range: &std::ops::Range<usize>| {
+            let text: String = line.glyphs[range.clone()]
+                .iter()
+                .map(|glyph| glyph.text.as_str())
+                .collect();
+            PRINTER_MARK.is_match(&text)
+        };
+        let apart = |i: usize| {
+            let range = &words[i];
+            let gap_before = i
+                .checked_sub(1)
+                .map(|prev| line.glyphs[range.start].x0 - line.glyphs[words[prev].end - 1].x1);
+            let gap_after = words
+                .get(i + 1)
+                .map(|next| line.glyphs[next.start].x0 - line.glyphs[range.end - 1].x1);
+            let far = |gap: Option<f32>| gap.is_none_or(|gap| gap > cfg.printer_mark_min_gap_em * line.size);
+            far(gap_before) && far(gap_after)
+        };
+        // Beside the text block, not in it: a row of underscores in the
+        // text is a blank to fill in, or a rule in a listing.
+        let beside = |range: &std::ops::Range<usize>| {
+            line.glyphs[range.start].x0 >= body.right - cfg.body_edge_tolerance_pt
+                || line.glyphs[range.end - 1].x1 <= body.left + cfg.body_edge_tolerance_pt
+        };
+        let mark_words: Vec<usize> = (0..words.len())
+            .filter(|&i| is_mark(&words[i]) && beside(&words[i]) && apart(i))
+            .collect();
+        if mark_words.is_empty() {
+            kept.push(line);
+            continue;
+        }
+        let in_mark = |idx: usize| mark_words.iter().any(|&i| words[i].contains(&idx));
+        let (mark, rest): (Vec<_>, Vec<_>) = line
+            .glyphs
+            .iter()
+            .cloned()
+            .enumerate()
+            .partition(|(idx, _)| in_mark(*idx));
+        marks.push(with_glyphs(&line, mark.into_iter().map(|(_, glyph)| glyph).collect()));
+        let rest: Vec<LineGlyph> = rest.into_iter().map(|(_, glyph)| glyph).collect();
+        if !rest.is_empty() {
+            kept.push(with_glyphs(&line, rest));
+        }
+    }
+    page.lines = kept;
+    marks
+}
+
+/// The glyph index ranges of the words of a line (split at word spaces).
+fn word_ranges(line: &Line) -> Vec<std::ops::Range<usize>> {
+    let mut words: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, glyph) in line.glyphs.iter().enumerate() {
+        match words.last_mut() {
+            Some(word) if !glyph.space_before => word.end = i + 1,
+            _ => words.push(i..i + 1),
+        }
+    }
+    words
+}
+
+/// `line` with only `glyphs` (a part of its glyphs, in order), its boxes
+/// fitted to them.
+fn with_glyphs(line: &Line, mut glyphs: Vec<LineGlyph>) -> Line {
+    if let Some(first) = glyphs.first_mut() {
+        first.space_before = false;
+    }
+    let x0 = glyphs.first().map_or(line.bbox.x0, |glyph| glyph.x0);
+    let x1 = glyphs.last().map_or(line.bbox.x1, |glyph| glyph.x1);
+    let ink = glyphs.iter().fold(Rect::EMPTY, |acc, glyph| acc.union(&glyph.ink));
+    Line {
+        bbox: Rect::new(x0, line.bbox.y0, x1, line.bbox.y1),
+        ink,
+        glyphs,
+        ..line.clone()
+    }
 }
 
 /// Removes the rules that underline a running head (or top a running foot):
@@ -330,9 +440,17 @@ fn drop_head_rules(page: &mut PageData, removed: &[Line], body: &BodyExtent, cfg
 
 /// Extent of the main text: the long lines that are not running heads. When
 /// there are none, the whole page.
-fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> BodyExtent {
+fn body_extent(page: &PageData, repeats: &RepeatCounts, numbered: &[bool], cfg: &FurnitureConfig) -> BodyExtent {
     let is_repeated =
         |line: &Line| band(page, line, cfg).is_some_and(|line_band| repeats.is_repeated(&line.text(), line_band));
+    // The lines of a numbered running head are not text either.
+    let lines: Vec<&Line> = page
+        .lines
+        .iter()
+        .zip(numbered)
+        .filter(|(_, head)| !**head)
+        .map(|(line, _)| line)
+        .collect();
     // A first page's foot may set a journal line on the row of the page id
     // that the other pages repeat alone ("0031-9007/16/116(6)/061102(16)
     // 061102-1 Published by ..."): that row is not text.
@@ -346,9 +464,9 @@ fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -
         })
         .map(|line| line.baseline)
         .collect();
-    let body: Vec<&Line> = page
-        .lines
+    let body: Vec<&Line> = lines
         .iter()
+        .copied()
         .filter(|line| line.char_count() >= cfg.body_line_min_glyphs_count && !is_repeated(line))
         .filter(|line| !PREPRINT_FOOT.is_match(line.text().trim()))
         .filter(|line| {
@@ -359,9 +477,9 @@ fn body_extent(page: &PageData, repeats: &RepeatCounts, cfg: &FurnitureConfig) -
         .collect();
     // A page with no long line (a lone "Appendix" heading): its other text,
     // without page numbers, is the text block.
-    let short: Vec<&Line> = page
-        .lines
+    let short: Vec<&Line> = lines
         .iter()
+        .copied()
         .filter(|line| !PAGE_NUMBER.is_match(line.text().trim()) && !is_repeated(line))
         .collect();
     let (top, bottom) = if body.is_empty() && short.is_empty() {
@@ -432,13 +550,15 @@ fn mark_running_heads(
     page: &PageData,
     body: &BodyExtent,
     repeats: &RepeatCounts,
+    numbered: &[bool],
     cfg: &FurnitureConfig,
     drop: &mut [bool],
 ) {
     let mut candidate: Vec<bool> = page
         .lines
         .iter()
-        .map(|line| is_furniture_candidate(page, line, body, repeats, cfg))
+        .zip(numbered)
+        .map(|(line, &head)| head || is_furniture_candidate(page, line, body, repeats, cfg))
         .collect();
     // A number right before other text on its row is the number of a
     // heading at the top of the page ("1   Introduction"), not a page number.
@@ -556,6 +676,11 @@ fn page_number_offset(pages: &[PageData], cfg: &FurnitureConfig) -> i64 {
             .iter()
             .filter(|line| is_extreme_line(page, line, cfg) && alone_on_row(page, line, cfg))
             .filter_map(|line| line.text().trim().parse::<i64>().ok())
+            .chain(
+                edge_rows(page, cfg)
+                    .into_iter()
+                    .filter_map(|row| row_edge_number(page, &row, cfg)),
+            )
             .map(|number| number - (page.index as i64 + 1))
             .collect();
         for offset in offsets {
@@ -570,6 +695,135 @@ fn page_number_offset(pages: &[PageData], cfg: &FurnitureConfig) -> i64 {
         .filter(|&(_, count)| count >= needed)
         .max_by_key(|&(offset, count)| (count, -offset.abs()))
         .map_or(0, |(offset, _)| offset)
+}
+
+/// The top and the bottom row of a page: the indexes of the lines on the
+/// baseline of its highest line, and of its lowest.
+fn edge_rows(page: &PageData, cfg: &FurnitureConfig) -> Vec<Vec<usize>> {
+    let row_of = |baseline: f32| -> Vec<usize> {
+        (0..page.lines.len())
+            .filter(|&i| (page.lines[i].baseline - baseline).abs() <= cfg.crowded_min_distance_pt)
+            .collect()
+    };
+    let top = page.lines.iter().min_by(|a, b| a.bbox.y0.total_cmp(&b.bbox.y0));
+    let bottom = page.lines.iter().max_by(|a, b| a.bbox.y1.total_cmp(&b.bbox.y1));
+    let mut rows = Vec::new();
+    if let Some(line) = top {
+        rows.push(row_of(line.baseline));
+    }
+    if let Some(line) = bottom {
+        let row = row_of(line.baseline);
+        if !rows.contains(&row) {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+/// The number at the start or the end of a row of text, set apart from the
+/// rest of the row by more than
+/// [`heading_number_max_gap_em`](FurnitureConfig::heading_number_max_gap_em):
+/// the page number of a running head. `None` when there is none.
+fn row_edge_number(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Option<i64> {
+    row_edge_token(page, row, cfg, |ch| ch.is_ascii_digit())?.parse().ok()
+}
+
+/// The value of a lowercase roman page number ("vi", "xxii") set apart at
+/// either end of the row `row` (front matter), as [`row_edge_number`].
+fn row_edge_roman(page: &PageData, row: &[usize], cfg: &FurnitureConfig) -> Option<i64> {
+    roman_value(&row_edge_token(page, row, cfg, |ch| {
+        matches!(ch, 'i' | 'v' | 'x' | 'l')
+    })?)
+}
+
+/// The value of the lowercase roman numeral `text`, when it is one written
+/// in the usual subtractive form.
+fn roman_value(text: &str) -> Option<i64> {
+    let digit = |ch: char| match ch {
+        'i' => Some(1),
+        'v' => Some(5),
+        'x' => Some(10),
+        'l' => Some(50),
+        _ => None,
+    };
+    let values: Vec<i64> = text.chars().map(digit).collect::<Option<_>>()?;
+    let mut total = 0;
+    for (idx, value) in values.iter().enumerate() {
+        if values.get(idx + 1).is_some_and(|next| next > value) {
+            total -= value;
+        } else {
+            total += value;
+        }
+    }
+    (total > 0 && to_roman(total) == text).then_some(total)
+}
+
+/// `value` (1 to 89) as a lowercase roman numeral.
+fn to_roman(mut value: i64) -> String {
+    let mut out = String::new();
+    for (step, numeral) in [
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ] {
+        while value >= step {
+            out.push_str(numeral);
+            value -= step;
+        }
+    }
+    out
+}
+
+/// The run of glyphs accepted by `accept` at either end of the row `row`,
+/// set apart from the rest of the row by more than
+/// `heading_number_max_gap_em`.
+fn row_edge_token(
+    page: &PageData,
+    row: &[usize],
+    cfg: &FurnitureConfig,
+    accept: impl Fn(char) -> bool,
+) -> Option<String> {
+    let mut glyphs: Vec<&LineGlyph> = row.iter().flat_map(|&i| page.lines[i].glyphs.iter()).collect();
+    glyphs.retain(|glyph| !glyph.text.trim().is_empty());
+    glyphs.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    let accepted = |glyph: &&&LineGlyph| glyph.text.chars().all(&accept);
+    let lead = glyphs.iter().take_while(accepted).count();
+    let trail = glyphs.iter().rev().take_while(accepted).count();
+    let token = |part: &[&LineGlyph]| part.iter().map(|glyph| glyph.text.as_str()).collect::<String>();
+    let apart = |left: &LineGlyph, right: &LineGlyph| right.x0 - left.x1 > cfg.heading_number_max_gap_em * left.size;
+    if lead > 0 && lead < glyphs.len() && apart(glyphs[lead - 1], glyphs[lead]) {
+        return Some(token(&glyphs[..lead]));
+    }
+    let first = glyphs.len() - trail;
+    if trail > 0 && first > 0 && apart(glyphs[first - 1], glyphs[first]) {
+        return Some(token(&glyphs[first..]));
+    }
+    None
+}
+
+/// The lines of a book's running head that carries the page number
+/// (see [`row_edge_number`]): the top or bottom row of the page when the
+/// number set apart at its end is the page's own number. One flag per line.
+fn numbered_heads(page: &PageData, offset: i64, cfg: &FurnitureConfig) -> Vec<bool> {
+    let mut heads = vec![false; page.lines.len()];
+    for row in edge_rows(page, cfg) {
+        let page_number = page.index as i64 + 1;
+        let arabic = row_edge_number(page, &row, cfg) == Some(page_number + offset);
+        // Front matter counts its pages in roman numerals from the first
+        // page, or from just after the cover.
+        let roman = row_edge_roman(page, &row, cfg)
+            .is_some_and(|value| value <= page_number && page_number - value <= cfg.roman_number_max_offset_count);
+        if arabic || roman {
+            for i in row {
+                heads[i] = true;
+            }
+        }
+    }
+    heads
 }
 
 /// Whether no other line shares the row of `line` (a footnote's number
@@ -587,4 +841,20 @@ fn is_extreme_line(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> bool 
     let tol = cfg.body_edge_tolerance_pt;
     page.lines.iter().all(|other| other.bbox.y0 >= line.bbox.y0 - tol)
         || page.lines.iter().all(|other| other.bbox.y1 <= line.bbox.y1 + tol)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::roman_value;
+
+    #[test]
+    fn roman_page_numbers_are_read() {
+        assert_eq!(roman_value("vi"), Some(6));
+        assert_eq!(roman_value("xxii"), Some(22));
+        assert_eq!(roman_value("xlix"), Some(49));
+        // Not written the usual way, or not a numeral.
+        assert_eq!(roman_value("iiii"), None);
+        assert_eq!(roman_value("vx"), None);
+        assert_eq!(roman_value("vim"), None);
+    }
 }

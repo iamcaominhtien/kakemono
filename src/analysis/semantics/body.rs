@@ -52,7 +52,7 @@ pub struct BodyConfig {
     /// letter label is a list item or a run-in paragraph.
     pub letter_heading_max_words_count: usize,
     /// A block that ends with a period and has more words than this is a
-    /// sentence, not a heading.
+    /// sentence, not a heading, numbered or not.
     pub sentence_max_heading_words_count: usize,
     /// The last line of a block reaching to within this distance (points) of
     /// the block's right edge is a full line, as in running text.
@@ -91,6 +91,16 @@ pub struct BodyConfig {
     /// Last page index (0-based) on which an inline "Abstract—" label starts
     /// the abstract; later it is ordinary text.
     pub inline_abstract_max_page_idx: usize,
+    /// A paragraph after a list item whose left edge is within this
+    /// distance (em) of the item's text (its second line) continues the
+    /// item.
+    pub list_continuation_max_offset_em: f32,
+    /// ... provided the item's text is indented by at least this much (em)
+    /// from its label.
+    pub list_continuation_min_indent_em: f32,
+    /// A sentence of a language course is mostly in CJK characters (at
+    /// least this share), and its translation mostly in Latin letters.
+    pub translated_min_script_ratio: f32,
 }
 
 impl Default for BodyConfig {
@@ -118,6 +128,9 @@ impl Default for BodyConfig {
             centered_title_tolerance_pt: 4.0,
             abstract_max_pages_count: 1,
             inline_abstract_max_page_idx: 1,
+            list_continuation_max_offset_em: 0.3,
+            list_continuation_min_indent_em: 0.5,
+            translated_min_script_ratio: 0.6,
         }
     }
 }
@@ -185,10 +198,100 @@ struct FlowState {
 /// Only nodes still [`Class::Unknown`] are classified; non-text nodes are
 /// left alone.
 pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[FontInfo], cfg: &SemanticsConfig) {
+    super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
     assign_heading_levels(nodes, candidates, stats, &cfg.body);
     classify_running_text(nodes, &cfg.body);
+    mark_list_continuations(nodes, &cfg.body);
+}
+
+/// Marks the paragraphs that continue a list item: a paragraph right after
+/// an item (or another continuation), in the same column, whose lines start
+/// where the item's text does, to the right of the item's label.
+fn mark_list_continuations(nodes: &mut [Node], cfg: &BodyConfig) {
+    // The left edge of the text of the list item being continued.
+    let mut item_text_left: Option<f32> = None;
+    for idx in 0..nodes.len() {
+        let Some(block) = nodes[idx].text_block() else {
+            continue;
+        };
+        let em = block.lines.first().map_or(0.0, |line| line.size);
+        match nodes[idx].class {
+            Class::ListItem { .. } => {
+                item_text_left = match block.lines.as_slice() {
+                    [first, second, ..]
+                        if second.bbox.x0 - first.bbox.x0 >= cfg.list_continuation_min_indent_em * em =>
+                    {
+                        Some(second.bbox.x0)
+                    }
+                    _ => None,
+                };
+                continue;
+            }
+            Class::ListContinuation => continue,
+            Class::Paragraph { in_abstract: false } => {}
+            _ => {
+                item_text_left = None;
+                continue;
+            }
+        }
+        let same_column = idx > 0 && nodes[idx - 1].loc.page == nodes[idx].loc.page;
+        let aligned =
+            item_text_left.is_some_and(|left| (block.left - left).abs() <= cfg.list_continuation_max_offset_em * em);
+        if same_column && aligned {
+            nodes[idx].class = Class::ListContinuation;
+        } else {
+            item_text_left = None;
+        }
+    }
+}
+
+/// Whether the text block `nodes[idx]`, of text `text`, is a sentence of a
+/// language course rather than a heading: a line of dialogue ("Ａ：はい、
+/// 何ですか？"), or an unnumbered sentence written mostly in CJK characters
+/// that ends with a full stop, or with other punctuation and is followed by
+/// its translation (a block mostly in Latin letters, in a smaller size).
+fn is_translated_sentence(nodes: &[Node], idx: usize, text: &str, cfg: &BodyConfig) -> bool {
+    if DIALOGUE_LINE.is_match(text) {
+        return true;
+    }
+    // A numbered task ("2 自分の近況を話しましょう。") stays a heading.
+    let numbered = text
+        .trim_start_matches(['(', '（', ' '])
+        .starts_with(|ch: char| ch.is_ascii_digit());
+    let ends_sentence = !numbered && text.ends_with(['。', '？', '！', '?', '!']);
+    if !ends_sentence || script_ratio(text, is_cjk) < cfg.translated_min_script_ratio {
+        return false;
+    }
+    // A full stop ends a sentence: headings do not end with one.
+    if text.ends_with('。') {
+        return true;
+    }
+    let (Some(block), Some(next)) = (nodes[idx].text_block(), nodes.get(idx + 1)) else {
+        return false;
+    };
+    let Some(next_block) = next.text_block().filter(|_| next.loc.page == nodes[idx].loc.page) else {
+        return false;
+    };
+    let next_text = block_text(&next_block.lines);
+    script_ratio(&next_text, |ch| ch.is_ascii_alphabetic()) >= cfg.translated_min_script_ratio
+        && block_size(&next_block.lines) < block_size(&block.lines)
+}
+
+/// The share of the non-space characters of `text` that `pred` accepts.
+fn script_ratio(text: &str, pred: impl Fn(char) -> bool) -> f32 {
+    // Blanks to fill in ("____") are not part of the script.
+    let chars: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace() && *ch != '_').collect();
+    if chars.is_empty() {
+        return 0.0;
+    }
+    chars.iter().filter(|&&ch| pred(ch)).count() as f32 / chars.len() as f32
+}
+
+/// A Chinese or Japanese character (kana, kanji) or CJK punctuation.
+fn is_cjk(ch: char) -> bool {
+    matches!(ch, '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{9FFF}' | '\u{FF00}'..='\u{FFEF}')
 }
 
 /// Pass 1: the unclassified text blocks that look like headings, in
@@ -213,10 +316,16 @@ fn find_heading_candidates(
         let Some(features) = heading_features(block, text.trim(), body_size, fonts, cfg) else {
             continue;
         };
-        if THEOREM_LABEL.is_match(features.text) {
+        if THEOREM_LABEL.is_match(features.text) || is_translated_sentence(nodes, idx, features.text, &cfg.body) {
             continue;
         }
-        let number = heading_number(&features, seen_refs, &cfg.body);
+        // A numbered sentence not set in bold ("4. Use the modified version
+        // of do_twice to call print_twice twice.") is an item of a list, not
+        // a section.
+        let sentence = !features.bold
+            && features.text.ends_with('.')
+            && features.words > cfg.body.sentence_max_heading_words_count;
+        let number = heading_number(&features, seen_refs, &cfg.body).filter(|_| !sentence);
         let is_heading = number.is_some()
             || is_known_heading(&features, &cfg.body)
             || is_styled_heading(&features, block, &cfg.body);

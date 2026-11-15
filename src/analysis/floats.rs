@@ -7,7 +7,7 @@
 
 use super::lines::LinesConfig;
 use super::page::{DocStats, PageData};
-use crate::backend::FontInfo;
+use crate::backend::{FontInfo, PathBox};
 use crate::common::geom::Rect;
 use crate::model::FloatKind;
 use crate::model::{Line, LineGlyph};
@@ -29,7 +29,7 @@ const UNLABELLED: u32 = u32::MAX;
 /// standing alone is a caption; a bare "Fig. 3 shows" is a reference.
 static CAPTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(?P<kind>Supplementary\s+Figure|Supplementary\s+Table|Extended\s+Data\s+Fig\.?|Extended\s+Data\s+Table|Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?P<num>\d+[a-z]?|[IVXLC]+|[A-Z]\.?\d+|S\d+)\s*(?P<punct>[:.|—–-]|$)?",
+        r"^(?P<kind>Supplementary\s+Figure|Supplementary\s+Table|Extended\s+Data\s+Fig\.?|Extended\s+Data\s+Table|Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?P<num>\d+(?:\.\d+)*[a-z]?|[IVXLC]+|[A-Z]\.?\d+|S\d+)\s*(?P<punct>[:.|—–-]|$)?",
     )
     .unwrap()
 });
@@ -141,9 +141,27 @@ pub struct FloatsConfig {
     /// Images covering more than this fraction of the page are page
     /// backgrounds (scans, watermarks) and are ignored.
     pub background_image_area_ratio: f32,
+    /// ... except on the first or the last page when it has at most this
+    /// many lines of text: that is the cover (or the back cover) of a book,
+    /// a picture with its title and authors on it, and it is kept as a
+    /// figure.
+    pub cover_max_lines_count: usize,
     /// Paths spanning more than this fraction of the page in both
     /// directions are page frames or backgrounds and are ignored.
     pub background_path_extent_ratio: f32,
+    /// A filled, unstroked path behind at least this many lines of running
+    /// text (of [`body_min_chars`](Self::body_min_chars) characters) is the
+    /// shading of a text box (an example, a note), not a drawing: it is
+    /// ignored, and the pictures inside the box stay figures of their own.
+    pub shaded_box_min_lines_count: usize,
+    /// ... or behind the captions of this many floats.
+    pub shaded_box_min_captions_count: usize,
+    /// A vertical rule with at least this many lines of running text
+    /// beside it ...
+    pub side_rule_min_lines_count: usize,
+    /// ... starting at most this many font sizes to its right is the bar
+    /// that marks a box of text (an example), not a drawing: it is ignored.
+    pub side_rule_max_gap_em: f32,
     /// Paths with an alpha value below this are invisible and ignored.
     pub min_path_alpha: u8,
     /// A component needs at least this many paths to be a ruled table.
@@ -282,6 +300,14 @@ pub struct FloatsConfig {
     /// ... or a piece of the formula is within this many font sizes of
     /// the bar's end.
     pub inline_rule_max_gap_em: f32,
+    /// A horizontal rule at most this far (in em of the line's font size)
+    /// below the baseline of a text line ...
+    pub underline_max_drop_em: f32,
+    /// ... and within that line's extent, give or take this (in em), is an
+    /// underline of the text: not a table rule or a drawing. Table rules are
+    /// at least a strut's depth below the baseline of the row above them and
+    /// span several cells.
+    pub underline_overhang_em: f32,
 
     // --- tables without graphics ---
     /// A line with at least this many characters ...
@@ -338,6 +364,11 @@ pub struct FloatsConfig {
     pub label_centred_overlap_ratio: f32,
     /// A label beside the drawing has fewer than this many characters.
     pub side_label_max_chars: usize,
+    /// A tick label (a number at the end of an axis, which may stick out
+    /// over the drawing's edge) has at most this many characters.
+    pub tick_label_max_chars: usize,
+    /// ... and sits at most this far (points) from the drawing.
+    pub tick_label_max_gap_pt: f32,
     /// A bold line is the drawing's title, not a heading, when its centre
     /// is within this fraction of the drawing's width of the drawing's
     /// centre...
@@ -424,7 +455,12 @@ impl Default for FloatsConfig {
             grid_cell_pt: 4.0,
             cluster_dilate_pt: 3.0,
             background_image_area_ratio: 0.92,
+            cover_max_lines_count: 12,
             background_path_extent_ratio: 0.95,
+            shaded_box_min_lines_count: 3,
+            shaded_box_min_captions_count: 2,
+            side_rule_min_lines_count: 3,
+            side_rule_max_gap_em: 3.0,
             min_path_alpha: 8,
             ruled_min_paths_count: 3,
             ruled_rule_tenths: 9,
@@ -470,6 +506,8 @@ impl Default for FloatsConfig {
             graphic_merge_pt: 8.0,
             inline_rule_band_ratio: 0.2,
             inline_rule_max_gap_em: 0.6,
+            underline_max_drop_em: 0.3,
+            underline_overhang_em: 0.5,
             fallback_prose_min_chars: 50,
             fallback_prose_width_ratio: 0.8,
             fallback_prose_min_width_pt: 150.0,
@@ -490,6 +528,8 @@ impl Default for FloatsConfig {
             label_overlap_ratio: 0.8,
             label_centred_overlap_ratio: 0.7,
             side_label_max_chars: 30,
+            tick_label_max_chars: 8,
+            tick_label_max_gap_pt: 4.0,
             title_center_tol_ratio: 0.1,
             title_min_width_pt: 40.0,
             title_min_indent_pt: 15.0,
@@ -949,22 +989,21 @@ fn caption_at(
 }
 
 /// Whether the label (the first `label_len` non-space characters of the
-/// line) is set in bold while the caption text after it is not.
+/// line) is set in bold. The caption text after it may be bold too (OpenStax
+/// sets whole captions in bold): a reference to a figure in the running
+/// text is set like the text around it.
 fn label_is_bold(line: &Line, label_len: usize, fonts: &[FontInfo], cfg: &FloatsConfig) -> bool {
     let mut seen = 0;
-    let (mut bold_label, mut bold_rest, mut n_label, mut n_rest) = (0, 0, 0, 0);
+    let (mut bold_label, mut n_label) = (0, 0);
     for glyph in &line.glyphs {
-        let bold = fonts[glyph.font as usize].bold;
-        if seen < label_len {
-            n_label += 1;
-            bold_label += bold as usize;
-        } else {
-            n_rest += 1;
-            bold_rest += bold as usize;
+        if seen >= label_len {
+            break;
         }
+        n_label += 1;
+        bold_label += fonts[glyph.font as usize].bold as usize;
         seen += glyph.text.chars().count();
     }
-    n_label > 0 && bold_label * 10 >= n_label * cfg.caption_label_bold_tenths && (n_rest == 0 || bold_rest * 2 < n_rest)
+    n_label > 0 && bold_label * 10 >= n_label * cfg.caption_label_bold_tenths
 }
 
 /// Whether line `idx` continues a paragraph: a line of the same size right
@@ -1176,14 +1215,15 @@ fn cluster_graphics(page: &PageData, cfg: &FloatsConfig) -> Vec<Component> {
 }
 
 /// The graphic elements of the page that can be part of a float: images
-/// that are not page backgrounds, rotated text (axis labels belong to the
+/// that are not page backgrounds (a book cover is not a background), rotated text (axis labels belong to the
 /// drawing they are part of, arXiv stamps do not), and visible paths that
 /// are not page frames or white fills.
 fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> {
     let page_area = page.width * page.height;
     let mut elements: Vec<GraphicElement> = Vec::new();
+    let cover = (page.index == 0 || page.last) && page.lines.len() <= cfg.cover_max_lines_count;
     for image in &page.images {
-        if image.bbox.area() > cfg.background_image_area_ratio * page_area {
+        if image.bbox.area() > cfg.background_image_area_ratio * page_area && !cover {
             continue;
         }
         elements.push(GraphicElement {
@@ -1203,21 +1243,12 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
             rule: false,
         });
     }
-    for path in &page.paths {
-        if path.bbox.width() > cfg.background_path_extent_ratio * page.width
-            && path.bbox.height() > cfg.background_path_extent_ratio * page.height
-        {
-            continue;
-        }
-        if path.filled && !path.stroked && path.is_white() {
-            continue;
-        }
-        if path.color[3] < cfg.min_path_alpha {
-            continue;
-        }
-        if path.is_hrule() && inline_rule(page, &path.bbox, cfg) {
-            continue;
-        }
+    let captioned = page.lines.iter().any(|line| CAPTION.is_match(&line.text()));
+    for path in page
+        .paths
+        .iter()
+        .filter(|path| path_is_drawing(page, path, captioned, cfg))
+    {
         elements.push(GraphicElement {
             bbox: path.bbox,
             image: false,
@@ -1225,6 +1256,104 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     elements
+}
+
+/// Whether `path` is part of a drawing: not a page frame, not the shading
+/// or (on a page without captions, `captioned`) the frame of a box of text
+/// (a framed figure of text is still a figure), not a white fill or an
+/// invisible path, and not a rule that belongs to the text (a fraction bar,
+/// an underline, the bar beside a box of text).
+fn path_is_drawing(page: &PageData, path: &PathBox, captioned: bool, cfg: &FloatsConfig) -> bool {
+    if path.bbox.width() > cfg.background_path_extent_ratio * page.width
+        && path.bbox.height() > cfg.background_path_extent_ratio * page.height
+    {
+        return false;
+    }
+    let shading = path.filled && !path.stroked;
+    let frame =
+        path.stroked && !path.is_hrule() && !path.is_vrule() && !captioned && !holds_unreadable(page, &path.bbox);
+    if (shading && path.is_white()) || ((shading || frame) && shades_text(page, &path.bbox, cfg)) {
+        return false;
+    }
+    if path.color[3] < cfg.min_path_alpha {
+        return false;
+    }
+    if path.is_hrule() && (inline_rule(page, &path.bbox, cfg) || underline(page, &path.bbox, cfg)) {
+        return false;
+    }
+    !(path.is_vrule() && marks_text(page, &path.bbox, cfg))
+}
+
+/// Whether the area `bbox` holds lines of running text, or the captions of
+/// several floats: the shading of a box (see
+/// [`FloatsConfig::shaded_box_min_lines_count`]).
+fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
+    let inside = || page.lines.iter().filter(|line| bbox.contains(&line.bbox));
+    let text_lines = inside()
+        .filter(|line| text_width(line) >= cfg.body_min_chars)
+        .take(cfg.shaded_box_min_lines_count)
+        .count();
+    let captions = inside()
+        .filter(|line| CAPTION.is_match(&line.text()))
+        .take(cfg.shaded_box_min_captions_count)
+        .count();
+    text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
+}
+
+/// Whether text inside `bbox` has characters with no Unicode mapping: the
+/// box stays a picture, which shows them.
+fn holds_unreadable(page: &PageData, bbox: &Rect) -> bool {
+    page.lines
+        .iter()
+        .any(|line| bbox.contains(&line.bbox) && line.glyphs.iter().any(|glyph| glyph.text.contains('\u{FFFD}')))
+}
+
+/// The length of `line` in Latin characters: its characters other than
+/// spaces, a wide (CJK) character counting as two.
+fn text_width(line: &Line) -> usize {
+    line.text()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .map(|ch| if is_wide(ch) { 2 } else { 1 })
+        .sum()
+}
+
+/// A character set twice as wide as a Latin letter: CJK ideographs, kana,
+/// hangul and fullwidth forms.
+fn is_wide(ch: char) -> bool {
+    matches!(ch, '\u{1100}'..='\u{115F}' | '\u{2E80}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FF60}')
+}
+
+/// Whether a vertical rule runs along lines of running text that start
+/// just right of it: the bar beside a box of text (see
+/// [`FloatsConfig::side_rule_min_lines_count`]).
+fn marks_text(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
+    page.lines
+        .iter()
+        .filter(|line| {
+            line.char_count() >= cfg.body_min_chars
+                && line.bbox.y0 >= rule.y0
+                && line.bbox.y1 <= rule.y1
+                && line.bbox.x0 >= rule.x1
+                && line.bbox.x0 - rule.x1 <= cfg.side_rule_max_gap_em * line.size
+        })
+        .take(cfg.side_rule_min_lines_count)
+        .count()
+        >= cfg.side_rule_min_lines_count
+}
+
+/// Whether a horizontal rule underlines text: it lies just below the
+/// baseline of a line and within that line's extent (see
+/// [`FloatsConfig::underline_max_drop_em`]).
+fn underline(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
+    let cy = rule.cy();
+    page.lines.iter().any(|line| {
+        let overhang = cfg.underline_overhang_em * line.size;
+        cy > line.baseline
+            && cy - line.baseline <= cfg.underline_max_drop_em * line.size
+            && rule.x0 >= line.bbox.x0 - overhang
+            && rule.x1 <= line.bbox.x1 + overhang
+    })
 }
 
 /// Whether a horizontal rule is a fraction bar in an equation
@@ -1250,7 +1379,9 @@ fn inline_rule(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
                 Some(true) => b.x1 <= rule.x0 + line.size && rule.x0 - b.x1 <= close,
                 Some(false) => b.x0 >= rule.x1 - line.size && b.x0 - rule.x1 <= close,
             };
-            cy > b.y0 + band && cy < b.y1 - band && beside && placed
+            // A line beside the bar ("; ", "+") may be short; one through it
+            // must reach past it.
+            cy > b.y0 + band && cy < b.y1 - band && placed && (side.is_some() || beside)
         })
     };
     let through = reaching(None) || reaching(Some(true)) || reaching(Some(false));
@@ -1902,6 +2033,7 @@ fn settle_region(
     if !float.table_like || float.kind == FloatKind::Figure {
         region = absorb_side_labels(ctx, absorbed, float_idx, region, text_left);
         region = absorb_rotated_labels(ctx, region);
+        region = absorb_edge_ticks(ctx, absorbed, float_idx, region);
     }
     if let Some(cap_idx) = float.cap {
         let caption = &ctx.captions[cap_idx];
@@ -2058,6 +2190,53 @@ fn stacked_label(region: &Rect, line: &Line, cfg: &FloatsConfig) -> bool {
             || (line.bbox.cx() > region.x0
                 && line.bbox.cx() < region.x1
                 && line.bbox.x_overlap(region) >= cfg.label_centred_overlap_ratio * line.bbox.width()))
+}
+
+/// Absorbs the tick labels at the ends of the drawing's axes, which stick
+/// out over its edge ("200" at the top of the y axis, "130" at the end of
+/// the x axis): the labels above, below or beside the drawing are only
+/// taken when they lie mostly against it. One pass against the settled
+/// region, so that they do not draw in more text.
+fn absorb_edge_ticks(ctx: &PageContext, absorbed: &mut [Option<usize>], float_idx: usize, region: Rect) -> Rect {
+    let cfg = ctx.cfg;
+    let crosses = |lo: f32, hi: f32, edge: f32| lo < edge && edge < hi;
+    let near = |gap: f32| (cfg.label_min_gap_pt..=cfg.tick_label_max_gap_pt).contains(&gap);
+    let mut grown = region;
+    for (i, line) in ctx.page.lines.iter().enumerate() {
+        if ctx.is_caption_line[i] || absorbed[i].is_some() || !is_tick_label(line, cfg) {
+            continue;
+        }
+        let bbox = &line.bbox;
+        let hgap = (region.x0 - bbox.x1).max(bbox.x0 - region.x1);
+        let vgap = (region.y0 - bbox.y1).max(bbox.y0 - region.y1);
+        let beside = near(hgap)
+            && bbox.cy() > region.y0
+            && bbox.cy() < region.y1
+            && (crosses(bbox.y0, bbox.y1, region.y0) || crosses(bbox.y0, bbox.y1, region.y1));
+        let stacked = near(vgap)
+            && bbox.cx() > region.x0
+            && bbox.cx() < region.x1
+            && (crosses(bbox.x0, bbox.x1, region.x0) || crosses(bbox.x0, bbox.x1, region.x1));
+        // Half inside: over the corner of the plot area.
+        let straddles = bbox.intersects(&region) && !region.contains(bbox);
+        if beside || stacked || straddles {
+            absorbed[i] = Some(float_idx);
+            grown = grown.union(bbox);
+        }
+    }
+    grown
+}
+
+/// Whether `line` is a tick label of an axis: a short number ("130",
+/// "0.025", "-2", "40%").
+fn is_tick_label(line: &Line, cfg: &FloatsConfig) -> bool {
+    let text = line.text();
+    let text = text.trim();
+    text.chars().count() <= cfg.tick_label_max_chars
+        && text.chars().any(|ch| ch.is_ascii_digit())
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ".,-+%$\u{2212}".contains(ch))
 }
 
 /// Whether `line` is a short label right left or right of `region`, mostly
@@ -2272,4 +2451,32 @@ fn remove_float_lines(lines: &mut Vec<Line>, is_caption_line: &[bool], absorbed:
         i += 1;
         keep
     });
+}
+
+#[cfg(test)]
+mod caption_label_tests {
+    use super::CAPTION;
+
+    fn label(text: &str) -> Option<(String, bool)> {
+        CAPTION.captures(text).map(|captures| {
+            let punct = captures.name("punct").is_some_and(|punct| !punct.as_str().is_empty());
+            (captures["num"].to_string(), punct)
+        })
+    }
+
+    #[test]
+    fn chapter_numbers_are_part_of_the_label() {
+        // A reference in the running text has no punctuation after its number...
+        assert_eq!(
+            label("Table 1.12 lists the different data values"),
+            Some(("1.12".into(), false))
+        );
+        // ... a caption has.
+        assert_eq!(
+            label("Figure 5.24. Four rolling die mazes"),
+            Some(("5.24".into(), true))
+        );
+        assert_eq!(label("Figure 3: Results"), Some(("3".into(), true)));
+        assert_eq!(label("Figure 3. The model"), Some(("3".into(), true)));
+    }
 }

@@ -5,9 +5,10 @@
 
 use crate::backend::{Dir, FontInfo, Glyph, RawPage};
 use crate::common::geom::{Rect, median, weighted_mode};
-use crate::model::style::{BOLD, ITALIC, MATH, MONO, SANS, SUB, SUP};
-use crate::model::{Line, LineGlyph, RotatedText};
-use std::collections::{HashMap, HashSet};
+use crate::model::style::{BOLD, ITALIC, MATH, MONO, SANS, SMALL_CAPS, SUB, SUP};
+use crate::model::{FRACTION_TERM, Line, LineGlyph, RotatedText};
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use unicode_normalization::UnicodeNormalization;
 
 /// A line of at most this many glyphs, all brackets or separators (")",
@@ -16,6 +17,20 @@ const FIXED_PITCH_BRACKETS_MAX: usize = 3;
 /// Equal open gaps in a row that make a short spread word ("err"), enough
 /// for a line next to a code listing to belong to it.
 const FIXED_PITCH_SHORT_RUN: usize = 2;
+/// Side (in points) of the square cells in which the glyphs of a page are
+/// kept to find their copies: a copy is looked for in the cells within its
+/// tolerance, so the size only affects speed, not what is found.
+const DUPLICATE_CELL_PT: f32 = 8.0;
+/// Longest run of tight gaps in a row that can be word spaces: the two
+/// around a one-letter word. Longer runs are letter-spaced text.
+const TIGHT_SPACE_MAX_RUN: usize = 2;
+/// The combining long solidus overlay, which TeX fonts give the slash that
+/// negates a relation (`\neq`, `\notin`).
+const NEGATION: char = '\u{0338}';
+/// Glyphs without a Unicode value all have the text U+FFFD, so two
+/// different ones can sit close together: such a glyph is a copy of another
+/// only when their origins are within this distance (in points).
+const UNKNOWN_DUPLICATE_MAX_OFFSET_PT: f32 = 0.25;
 
 /// The default thresholds, as a constant so that [`merge_row`] and
 /// [`split_at_gaps`] (called from later stages that do not hold a
@@ -24,7 +39,7 @@ const FIXED_PITCH_SHORT_RUN: usize = 2;
 const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     page_margin_pt: 5.0,
     near_black_max_value: 48,
-    duplicate_grid_per_pt: 4.0,
+    duplicate_max_offset_em: 0.1,
     rotated_max_angle_diff_deg: 2.0,
     rotated_max_offset_em: 0.25,
     rotated_max_backstep_em: 0.3,
@@ -82,6 +97,26 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     line_box_descent_em: 0.25,
     accent_min_width_pt: 0.5,
     accent_min_overlap_ratio: 0.4,
+    squeezed_punctuation_overlap_ratio: 0.5,
+    ruby_max_size_ratio: 0.65,
+    ruby_max_gap_em: 0.6,
+    ruby_over_kanji_min_ratio: 0.8,
+    fraction_bar_slack_em: 0.3,
+    fraction_bar_max_axis_em: 0.6,
+    fraction_host_max_gap_em: 1.5,
+    fraction_numerator_max_rise_em: 1.0,
+    fraction_denominator_max_drop_em: 1.4,
+    fraction_term_max_size_ratio: 0.85,
+    fraction_term_max_glyphs_count: 8,
+    fraction_lines_max_distance_em: 3.0,
+    blank_max_thickness_pt: 1.5,
+    blank_max_drop_em: 0.4,
+    blank_max_rise_em: 0.1,
+    blank_max_gap_em: 1.0,
+    blank_stacked_max_distance_em: 0.9,
+    underline_piece_max_gap_pt: 6.0,
+    blank_underscore_em: 0.5,
+    blank_max_underscores_count: 8,
 };
 
 /// Tuning parameters of line building. Part of [`LayoutConfig`](crate::config::LayoutConfig).
@@ -93,10 +128,12 @@ pub struct LinesConfig {
     /// Colours whose three channels are all below this value are treated as
     /// black, so that text set in a very dark grey is not marked as coloured.
     pub near_black_max_value: u8,
-    /// Resolution (cells per point) of the grid on which glyph origins are
-    /// compared to find duplicates: the same text drawn twice within a
-    /// quarter point (fake bold, shadows) is kept once.
-    pub duplicate_grid_per_pt: f32,
+    /// The same text drawn again with its origin at most this far (in em of
+    /// its font size, horizontally and vertically) from an earlier copy is
+    /// one glyph drawn several times (fake bold, shadows, the white halo
+    /// that clears an underline around descenders) and is kept once. Two
+    /// real glyphs of the same text are at least a narrow advance apart.
+    pub duplicate_max_offset_em: f32,
     /// Largest difference (in degrees) between the angles of two rotated
     /// glyphs of the same run.
     pub rotated_max_angle_diff_deg: f32,
@@ -275,6 +312,67 @@ pub struct LinesConfig {
     /// Smallest horizontal overlap (as a fraction of the narrower glyph) of
     /// an accent with a letter for the two to be composed.
     pub accent_min_overlap_ratio: f32,
+    /// Two neighbouring CJK punctuation marks whose advance boxes overlap by
+    /// more than this fraction of the narrower one are a squeezed pair
+    /// ("。「", each mark taking half its width in Japanese typesetting):
+    /// they are ordered by the middle of their ink, not by their left edge.
+    pub squeezed_punctuation_overlap_ratio: f32,
+    /// A line of kana at most this fraction of the size of the line right
+    /// below it ...
+    pub ruby_max_size_ratio: f32,
+    /// ... whose bottom is at most this many font sizes (of the line below)
+    /// above that line's top ...
+    pub ruby_max_gap_em: f32,
+    /// ... with at least this share of its glyphs over a kanji of that line
+    /// is furigana (ruby): the reading of the kanji, not text of its own.
+    pub ruby_over_kanji_min_ratio: f32,
+    /// The bar of an inline fraction reaches its terms to within this many
+    /// font sizes, and overhangs them by at most as much.
+    pub fraction_bar_slack_em: f32,
+    /// The bar of an inline fraction is at most this many font sizes above
+    /// the baseline of its line (on the math axis) ...
+    pub fraction_bar_max_axis_em: f32,
+    /// ... and within this many font sizes of the line's ends (the line may
+    /// stop on either side of the fraction) ...
+    pub fraction_host_max_gap_em: f32,
+    /// ... its numerator's baseline at most this far above the bar and its
+    /// denominator's ...
+    pub fraction_numerator_max_rise_em: f32,
+    /// ... at most this far below it (font sizes of the line) ...
+    pub fraction_denominator_max_drop_em: f32,
+    /// ... and their glyphs at most this fraction of the line's size (a
+    /// display fraction, in full size, is left to the formula).
+    pub fraction_term_max_size_ratio: f32,
+    /// Most glyphs of each term of a fraction gathered from rows of its own.
+    pub fraction_term_max_glyphs_count: usize,
+    /// Lines whose baseline is farther than this (font sizes of the line of
+    /// the fraction) from its bar are not searched for its terms.
+    pub fraction_lines_max_distance_em: f32,
+    /// A thin horizontal rule (at most this thick, points) ...
+    pub blank_max_thickness_pt: f32,
+    /// ... on or just below the baseline of a word (at most this many font
+    /// sizes below it ...
+    pub blank_max_drop_em: f32,
+    /// ... or this many above it; a fraction bar is higher, on the math
+    /// axis) ...
+    pub blank_max_rise_em: f32,
+    /// ... that starts or ends within this many font sizes of the word, with
+    /// no glyph over it, is typed text: an underscore ("file_name", drawn as
+    /// a rule by some producers) or a blank to fill in ("日本語教室に
+    /// ______。").
+    pub blank_max_gap_em: f32,
+    /// Rules on the same height at most this far apart (points) are pieces
+    /// of one underline, not underscores.
+    pub underline_piece_max_gap_pt: f32,
+    /// A glyph whose baseline is at most this many font sizes above or
+    /// below the rule, over its width, makes it part of that text (an
+    /// underline, a fraction bar, the bar of a radical).
+    pub blank_stacked_max_distance_em: f32,
+    /// The rule reads as one underscore per this many font sizes of its
+    /// width ...
+    pub blank_underscore_em: f32,
+    /// ... and at most this many.
+    pub blank_max_underscores_count: usize,
 }
 
 impl Default for LinesConfig {
@@ -336,6 +434,9 @@ impl Line {
         }
         if font.sans {
             style |= SANS;
+        }
+        if font.small_caps {
+            style |= SMALL_CAPS;
         }
         match glyph.script {
             1 => style |= SUP,
@@ -606,7 +707,224 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
         .collect();
     lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
     mark_fixed_pitch(&mut lines, cfg);
+    gather_fractions(&mut lines, raw, cfg);
+    for line in &mut lines {
+        mark_fractions(line, raw, cfg);
+    }
     (lines, rotated)
+}
+
+/// Moves the terms of inline fractions that were read as lines of their
+/// own into the line they belong to. Several fractions in a row ("= ¹⁄₆ +
+/// ¹⁄₆ = ²⁄₆") leave their numerators in one row of small text above the
+/// line and their denominators in one below. For each short bar on the
+/// math axis of a line, the smaller glyphs right above and right below it,
+/// within its width, become that line's fraction terms ([`FRACTION_TERM`]).
+fn gather_fractions(lines: &mut Vec<Line>, raw: &RawPage, cfg: &LinesConfig) {
+    let bars: Vec<Rect> = raw
+        .paths
+        .iter()
+        .chain(&raw.pixel_rules)
+        .filter(|path| path.is_hrule())
+        .map(|path| path.bbox)
+        .collect();
+    let mut moved = false;
+    for bar in bars {
+        let Some((host, mut taken)) = fraction_on_bar(lines, &bar, cfg) else {
+            continue;
+        };
+        // Remove from the back so that the indexes stay valid.
+        taken.sort_by_key(|&(idx, k, _)| std::cmp::Reverse((idx, k)));
+        for (idx, k, sign) in taken {
+            let mut glyph = lines[idx].glyphs.remove(k);
+            glyph.script = sign * FRACTION_TERM;
+            glyph.space_before = false;
+            lines[host].glyphs.push(glyph);
+        }
+        moved = true;
+    }
+    if !moved {
+        return;
+    }
+    lines.retain(|line| !line.glyphs.is_empty());
+    for line in lines.iter_mut() {
+        line.glyphs
+            .sort_by(|a, b| a.x0.total_cmp(&b.x0).then(b.script.cmp(&a.script)));
+        let first = line.glyphs.first().map_or(line.bbox.x0, |glyph| glyph.x0);
+        let last = line
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.x1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        line.bbox = Rect::new(first, line.bbox.y0, last, line.bbox.y1);
+        line.ink = line.glyphs.iter().fold(Rect::EMPTY, |acc, glyph| acc.union(&glyph.ink));
+    }
+}
+
+/// The inline fraction drawn on `bar`, if there is one: the index of the
+/// line it belongs to, and the glyphs of its terms (line index, glyph
+/// index, 1 for the numerator or -1 for the denominator).
+fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usize, Vec<TermGlyph>)> {
+    let cy = bar.cy();
+    // The line may be cut at the fraction: its piece on either side,
+    // within reach of the bar, is the host.
+    let host = lines.iter().position(|line| {
+        let rise = line.baseline - cy;
+        let reach = cfg.fraction_host_max_gap_em * line.size;
+        rise >= 0.0
+            && rise <= cfg.fraction_bar_max_axis_em * line.size
+            && bar.x0 >= line.bbox.x0 - reach
+            && bar.x1 <= line.bbox.x1 + reach
+            && !line.glyphs.iter().any(|glyph| glyph.x1 > bar.x0 && glyph.x0 < bar.x1)
+    })?;
+    let size = lines[host].size;
+    let slack = cfg.fraction_bar_slack_em * size;
+    // The terms are smaller than every glyph of the line (a big operator
+    // makes a line's size larger than its text).
+    let smallest = lines[host]
+        .glyphs
+        .iter()
+        .filter(|glyph| glyph.script == 0 && !glyph.text.chars().any(|ch| BIG_OPERATORS.contains(ch)))
+        .map(|glyph| glyph.size)
+        .reduce(f32::min)?;
+    let term = |glyph: &LineGlyph, sign: i8| {
+        let centre = (glyph.x0 + glyph.x1) / 2.0;
+        let reach = if sign > 0 {
+            cy - glyph.y >= 0.0 && cy - glyph.y <= cfg.fraction_numerator_max_rise_em * size
+        } else {
+            glyph.y - cy > 0.0 && glyph.y - cy <= cfg.fraction_denominator_max_drop_em * size
+        };
+        reach && centre >= bar.x0 - slack && centre <= bar.x1 + slack
+    };
+    // Lines far from the bar hold no term (a line's scripts stay within an
+    // em of its baseline).
+    let near = |line: &Line| (line.baseline - cy).abs() <= cfg.fraction_lines_max_distance_em * size;
+    let found = |sign: i8| {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|&(idx, line)| idx != host && near(line))
+            .flat_map(|(idx, line)| (0..line.glyphs.len()).map(move |k| (idx, k)))
+            .filter(|&(idx, k)| term(&lines[idx].glyphs[k], sign))
+            .map(|(idx, k)| (idx, k, sign))
+            .collect::<Vec<_>>()
+    };
+    // Each term is one short run of text on a baseline of its own, smaller
+    // than the line (a term in full size is a display fraction, left whole
+    // to the formula).
+    let simple = |term: &[TermGlyph]| {
+        let glyph = |&(idx, k, _): &TermGlyph| &lines[idx].glyphs[k];
+        term.first().is_some_and(|first| {
+            term.len() <= cfg.fraction_term_max_glyphs_count
+                && term.iter().all(|part| {
+                    (glyph(part).y - glyph(first).y).abs() <= slack
+                        && glyph(part).size <= cfg.fraction_term_max_size_ratio * smallest
+                })
+        })
+    };
+    let (mut numerator, denominator) = (found(1), found(-1));
+    if !simple(&numerator) || !simple(&denominator) {
+        return None;
+    }
+    numerator.extend(denominator);
+    Some((host, numerator))
+}
+
+/// A glyph of a fraction's term: line index, glyph index, and 1 for the
+/// numerator or -1 for the denominator.
+type TermGlyph = (usize, usize, i8);
+
+/// Big operators, set larger than the text of their line.
+const BIG_OPERATORS: &str = "\u{2211}\u{220F}\u{222B}\u{22C3}\u{22C2}";
+
+/// Marks the inline fractions of `line`: a superscript and a subscript set
+/// one above the other with a rule between them, as wide as they are
+/// ("(¹⁄₂, ¹⁄₃)" set as \tfrac). Their glyphs get the script level
+/// [`FRACTION_TERM`] (numerator) and its negative (denominator). Stacked
+/// scripts without a bar (a binomial coefficient, "‖x‖²₂") stay scripts.
+fn mark_fractions(line: &mut Line, raw: &RawPage, cfg: &LinesConfig) {
+    let glyphs = &line.glyphs;
+    let mut terms: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < glyphs.len() {
+        if glyphs[i].script == 0 {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < glyphs.len() && glyphs[i].script != 0 {
+            i += 1;
+        }
+        let extent = |sign: i8| {
+            (start..i)
+                .filter(|&k| glyphs[k].script == sign)
+                .fold(None, |acc: Option<(f32, f32, f32)>, k| {
+                    let glyph = &glyphs[k];
+                    let (x0, x1, y) = acc.unwrap_or((glyph.x0, glyph.x1, glyph.y));
+                    Some((x0.min(glyph.x0), x1.max(glyph.x1), y))
+                })
+        };
+        let (Some(up), Some(down)) = (extent(1), extent(-1)) else {
+            continue;
+        };
+        let (left, right) = (up.0.min(down.0), up.1.max(down.1));
+        let slack = cfg.fraction_bar_slack_em * line.size;
+        let barred = raw.paths.iter().chain(&raw.pixel_rules).any(|path| {
+            let bar = path.bbox;
+            path.is_hrule()
+                && bar.cy() > up.2
+                && bar.cy() < down.2
+                && bar.x0 <= left + slack
+                && bar.x1 >= right - slack
+                && bar.width() <= right - left + 2.0 * slack
+        });
+        // Each term sits on one baseline, without a relation in it (a
+        // formula set in small type is not one fraction).
+        let one_term = |sign: i8| {
+            let term: Vec<&LineGlyph> = (start..i)
+                .map(|k| &glyphs[k])
+                .filter(|glyph| glyph.script == sign)
+                .collect();
+            term.iter().all(|glyph| {
+                (glyph.y - term[0].y).abs() <= slack
+                    && !glyph.text.chars().any(|ch| "=<>\u{2264}\u{2265}\u{2248}".contains(ch))
+            })
+        };
+        if up.0 < down.1 && down.0 < up.1 && barred && one_term(1) && one_term(-1) {
+            terms.extend(start..i);
+        }
+    }
+    for k in terms {
+        let glyph = &mut line.glyphs[k];
+        glyph.script = glyph.script.signum() * FRACTION_TERM;
+    }
+}
+
+/// Removes the word spaces found after a letter of a math font that are
+/// only its italic correction: TeX math sets a product of letters ("Var",
+/// "xy") or a function and its argument ("f(x)") without space, but after
+/// a slanted letter it adds the part of the letter's ink that overhangs its
+/// advance, a gap as wide as a thin word space. The gap is measured again
+/// from the ink of the letter; the space stays when it is still wider than
+/// [`LinesConfig::space_gap_em`], and before a word of a text font.
+pub fn join_math_letters(lines: &mut [Line], fonts: &[FontInfo], cfg: &LinesConfig) {
+    let math = |glyph: &LineGlyph| fonts.get(glyph.font as usize).is_some_and(|font| font.math);
+    let letter = |glyph: &LineGlyph| {
+        let mut chars = glyph.text.chars();
+        matches!((chars.next(), chars.next()), (Some(ch), None) if ch.is_alphabetic())
+    };
+    for line in lines {
+        for i in 1..line.glyphs.len() {
+            let (prev, cur) = (&line.glyphs[i - 1], &line.glyphs[i]);
+            if !cur.space_before || !math(prev) || !letter(prev) || (letter(cur) && !math(cur)) {
+                continue;
+            }
+            let gap = cur.x0 - prev.x1.max(prev.ink.x1);
+            if gap <= cfg.space_gap_em * line.size {
+                line.glyphs[i].space_before = false;
+            }
+        }
+    }
 }
 
 /// Reads the glyphs of a page: drops hidden, blank, off-page and duplicate
@@ -614,7 +932,7 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
 /// into line glyphs (in drawing order).
 fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<RotatedText>) {
     let has_visible = raw.glyphs.iter().any(|glyph| !glyph.invisible);
-    let mut seen: HashSet<(i32, i32, u64)> = HashSet::new();
+    let mut copies = GlyphCopies::default();
     let mut glyphs: Vec<LineGlyph> = Vec::new();
     let mut rotated = RotatedRuns::default();
 
@@ -632,26 +950,165 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
             rotated.push(glyph, cfg);
             continue;
         }
-        if !seen.insert(duplicate_key(glyph, cfg)) {
+        let hash = GlyphCopies::hash(glyph);
+        if let Some(kept) = copies.find(glyph, hash, cfg) {
+            // The copy drawn last is the one on top, the one that is seen.
+            if glyphs[kept].color == display_color(glyph.color, cfg) {
+                glyphs[kept].extra.push((glyph.x, glyph.y));
+            } else {
+                let under = std::mem::replace(&mut glyphs[kept], line_glyph(glyph, cfg));
+                glyphs[kept].extra = under.extra;
+                glyphs[kept].extra.push((under.ox, under.oy));
+            }
             continue;
         }
-        glyphs.push(LineGlyph {
-            text: glyph.text.clone(),
-            x0: glyph.x,
-            x1: glyph.x + glyph.adv.max(0.0),
-            y: glyph.y,
-            size: glyph.size,
-            font: glyph.font,
-            script: 0,
-            space_before: false,
-            ink: glyph.ink,
-            ox: glyph.x,
-            oy: glyph.y,
-            extra: None,
-            color: display_color(glyph.color, cfg),
-        });
+        copies.insert(glyph, hash, glyphs.len());
+        glyphs.push(line_glyph(glyph, cfg));
     }
+    let blanks = blank_glyphs(raw, &glyphs, cfg);
+    glyphs.extend(blanks);
     (glyphs, rotated.runs)
+}
+
+/// A piece of a horizontal brace or bracket drawn over or under a formula.
+fn is_brace_piece(ch: char) -> bool {
+    matches!(ch, '\u{23B4}'..='\u{23B6}' | '\u{23DC}'..='\u{23E1}' | '\u{FE35}'..='\u{FE44}')
+}
+
+/// Punctuation that may stand right before a blank or an underscore.
+const BLANK_NEIGHBOUR_MARKS: &str = "_-.,:;'\"()[]/、。，：「」『』（）";
+
+/// Underscores for the thin rules drawn just below the baseline next to a
+/// word, with no glyph above them: underscores drawn as rules, and blanks
+/// to fill in. Each gets the font, size and baseline of the word.
+fn blank_glyphs(raw: &RawPage, glyphs: &[LineGlyph], cfg: &LinesConfig) -> Vec<LineGlyph> {
+    let rules: Vec<Rect> = raw
+        .paths
+        .iter()
+        .chain(&raw.pixel_rules)
+        .filter(|rule| rule.is_hrule() && rule.bbox.height() <= cfg.blank_max_thickness_pt && !rule.is_white())
+        .map(|rule| rule.bbox)
+        .collect();
+    let mut blanks = Vec::new();
+    if rules.is_empty() {
+        return blanks;
+    }
+    // The glyphs by height: each rule is compared only with those that can
+    // stand beside, over or under it (a page of a plot has many rules).
+    let mut by_y: Vec<&LineGlyph> = glyphs.iter().collect();
+    by_y.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let max_size = glyphs.iter().map(|glyph| glyph.size).fold(0.0, f32::max);
+    let band = 2.0 * cfg.blank_stacked_max_distance_em * max_size;
+    for (idx, &bbox) in rules.iter().enumerate() {
+        let cy = bbox.cy();
+        let from = by_y.partition_point(|glyph| glyph.y < cy - band);
+        let to = by_y.partition_point(|glyph| glyph.y <= cy + band);
+        let near = &by_y[from..to];
+        let on_baseline = |glyph: &&LineGlyph| {
+            cy - glyph.y >= -cfg.blank_max_rise_em * glyph.size && cy - glyph.y <= cfg.blank_max_drop_em * glyph.size
+        };
+        let neighbour = near.iter().copied().filter(on_baseline).find(|glyph| {
+            let reach = cfg.blank_max_gap_em * glyph.size;
+            (glyph.x1 <= bbox.x0 + reach / 4.0 && bbox.x0 - glyph.x1 <= reach)
+                || (glyph.x0 >= bbox.x1 - reach / 4.0 && glyph.x0 - bbox.x1 <= reach)
+        });
+        // After an operator ("f(x) = ―"), the rule is a fraction bar whose
+        // terms are not text.
+        let after_operator = near
+            .iter()
+            .copied()
+            .filter(on_baseline)
+            .filter(|glyph| glyph.x1 <= bbox.x0 + glyph.size * cfg.blank_max_gap_em / 4.0)
+            .max_by(|a, b| a.x1.total_cmp(&b.x1))
+            .is_some_and(|left| {
+                bbox.x0 - left.x1 <= cfg.blank_max_gap_em * left.size
+                    && !left
+                        .text
+                        .chars()
+                        .all(|ch| ch.is_alphanumeric() || BLANK_NEIGHBOUR_MARKS.contains(ch))
+            });
+        let Some(word) = neighbour.filter(|_| !after_operator) else {
+            continue;
+        };
+        if part_of_formula(near, &bbox, cfg) || part_of_drawing(raw, &rules, idx, cfg) {
+            continue;
+        }
+        let count = ((bbox.width() / (cfg.blank_underscore_em * word.size)).round() as usize)
+            .clamp(1, cfg.blank_max_underscores_count);
+        let mut blank = word.clone();
+        blank.text = "_".repeat(count);
+        blank.x0 = bbox.x0;
+        blank.x1 = bbox.x1;
+        blank.ox = bbox.x0;
+        blank.ink = Rect::new(bbox.x0, word.y, bbox.x1, bbox.y1);
+        blank.extra = Vec::new();
+        blanks.push(blank);
+    }
+    blanks
+}
+
+/// Whether the rule `rules[idx]` is part of a drawing: a piece of an
+/// underline drawn word by word (a link), which has the underlines of the
+/// words beside it, or a tick mark or wire, which touches the rest of its
+/// drawing (a box around a blank holds it whole).
+fn part_of_drawing(raw: &RawPage, rules: &[Rect], idx: usize, cfg: &LinesConfig) -> bool {
+    let bbox = rules[idx];
+    let underline_piece = rules.iter().enumerate().any(|(other_idx, other)| {
+        other_idx != idx
+            && (other.cy() - bbox.cy()).abs() <= cfg.blank_max_thickness_pt
+            && (other.x0 - bbox.x1).max(bbox.x0 - other.x1) <= cfg.underline_piece_max_gap_pt
+    });
+    let grow = cfg.blank_max_thickness_pt;
+    let near = Rect::new(bbox.x0 - grow, bbox.y0 - grow, bbox.x1 + grow, bbox.y1 + grow);
+    let touches_drawing = raw
+        .paths
+        .iter()
+        .map(|path| path.bbox)
+        .chain(raw.images.iter().map(|image| image.bbox))
+        .any(|other| other != bbox && near.intersects(&other) && !other.contains(&bbox));
+    underline_piece || touches_drawing
+}
+
+/// Whether the rule `bbox` belongs to text or a formula around it: text
+/// over it (underlined words, a numerator) or right under it (a
+/// denominator, a radicand), a radical sign at its start, or the curl
+/// pieces of a horizontal brace beside it.
+fn part_of_formula(glyphs: &[&LineGlyph], bbox: &Rect, cfg: &LinesConfig) -> bool {
+    let cy = bbox.cy();
+    let stacked = |glyph: &LineGlyph, factor: f32| {
+        (glyph.y - cy).abs() <= factor * cfg.blank_stacked_max_distance_em * glyph.size
+    };
+    glyphs.iter().any(|glyph| {
+        let inset = glyph.size * cfg.blank_underscore_em / 2.0;
+        let reach = cfg.blank_max_gap_em * glyph.size;
+        let covered = glyph.x1 > bbox.x0 + inset && glyph.x0 < bbox.x1 - inset && stacked(glyph, 1.0);
+        let radical = glyph.text.contains('\u{221A}') && (glyph.x1 - bbox.x0).abs() <= reach && stacked(glyph, 2.0);
+        let brace = glyph.text.chars().any(is_brace_piece)
+            && glyph.x1 >= bbox.x0 - reach
+            && glyph.x0 <= bbox.x1 + reach
+            && stacked(glyph, 1.0);
+        covered || radical || brace
+    })
+}
+
+/// A glyph of the page as a glyph of a line (not yet raised, lowered or
+/// spaced).
+fn line_glyph(glyph: &Glyph, cfg: &LinesConfig) -> LineGlyph {
+    LineGlyph {
+        text: glyph.text.clone(),
+        x0: glyph.x,
+        x1: glyph.x + glyph.adv.max(0.0),
+        y: glyph.y,
+        size: glyph.size,
+        font: glyph.font,
+        script: 0,
+        space_before: false,
+        ink: glyph.ink,
+        ox: glyph.x,
+        oy: glyph.y,
+        extra: Vec::new(),
+        color: display_color(glyph.color, cfg),
+    }
 }
 
 /// Whether the glyph's origin lies clearly outside the page.
@@ -662,18 +1119,110 @@ fn is_off_page(glyph: &Glyph, raw: &RawPage, cfg: &LinesConfig) -> bool {
         || glyph.y > raw.height + cfg.page_margin_pt
 }
 
-/// Key identifying a glyph drawn twice at (nearly) the same place: its
-/// origin on a fine grid and a hash of its text.
-fn duplicate_key(glyph: &Glyph, cfg: &LinesConfig) -> (i32, i32, u64) {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    glyph.text.hash(&mut hasher);
-    (
-        (glyph.x * cfg.duplicate_grid_per_pt).round() as i32,
-        (glyph.y * cfg.duplicate_grid_per_pt).round() as i32,
-        hasher.finish(),
-    )
+/// A kept glyph: its index among the line glyphs, its origin, and the next
+/// kept glyph of its cell (see [`GlyphCopies`]).
+struct KeptGlyph {
+    /// Index among the line glyphs.
+    idx: usize,
+    /// Origin, x.
+    x: f32,
+    /// Origin, y (baseline).
+    y: f32,
+    /// The kept glyph of the same cell recorded before this one, in
+    /// [`GlyphCopies::kept`].
+    next: Option<usize>,
 }
+
+/// The glyphs kept so far on a page, by text and cell of their origin, to
+/// find a glyph drawn again at (nearly) the same place.
+#[derive(Default)]
+struct GlyphCopies {
+    /// (hash of the text, cell row, cell column) -> the last kept glyph of
+    /// that cell, in `kept`.
+    cells: HashMap<(u64, i32, i32), usize, BuildHasherDefault<FnvHasher>>,
+    /// The kept glyphs, each cell's chained through [`KeptGlyph::next`]:
+    /// one list for all cells, so that a new cell costs no allocation.
+    kept: Vec<KeptGlyph>,
+}
+
+impl GlyphCopies {
+    /// Index of a kept glyph of which `glyph` (of text hash `hash`, see
+    /// [`Self::hash`]) is a copy (see
+    /// [`LinesConfig::duplicate_max_offset_em`]), if any. Only the cells
+    /// that the tolerance square around the glyph's origin touches are
+    /// searched: usually one.
+    fn find(&self, glyph: &Glyph, hash: u64, cfg: &LinesConfig) -> Option<usize> {
+        let tol = if glyph.text.contains('\u{FFFD}') {
+            UNKNOWN_DUPLICATE_MAX_OFFSET_PT
+        } else {
+            cfg.duplicate_max_offset_em * glyph.size
+        };
+        for row in cell(glyph.y - tol)..=cell(glyph.y + tol) {
+            for column in cell(glyph.x - tol)..=cell(glyph.x + tol) {
+                let mut at = self.cells.get(&(hash, row, column)).copied();
+                while let Some(i) = at {
+                    let kept = &self.kept[i];
+                    if (glyph.x - kept.x).abs() <= tol && (glyph.y - kept.y).abs() <= tol {
+                        return Some(kept.idx);
+                    }
+                    at = kept.next;
+                }
+            }
+        }
+        None
+    }
+
+    /// Records `glyph` (of text hash `hash`), kept at index `idx`.
+    fn insert(&mut self, glyph: &Glyph, hash: u64, idx: usize) {
+        let at = self.kept.len();
+        let next = self.cells.insert((hash, cell(glyph.y), cell(glyph.x)), at);
+        self.kept.push(KeptGlyph {
+            idx,
+            x: glyph.x,
+            y: glyph.y,
+            next,
+        });
+    }
+
+    /// Hash of the text of a glyph.
+    fn hash(glyph: &Glyph) -> u64 {
+        let mut hasher = FnvHasher::default();
+        hasher.write(glyph.text.as_bytes());
+        hasher.finish()
+    }
+}
+
+/// The cell (see [`DUPLICATE_CELL_PT`]) of a coordinate.
+fn cell(coord: f32) -> i32 {
+    (coord / DUPLICATE_CELL_PT).floor() as i32
+}
+
+/// The FNV-1a hash: much faster than the default hasher on the short keys
+/// of [`GlyphCopies`], looked up once per glyph of the document.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(FNV_OFFSET_BASIS)
+    }
+}
+
+impl Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
+        }
+    }
+}
+
+/// The offset basis of the 64-bit FNV hash.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+/// The prime of the 64-bit FNV hash.
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 /// The colour a glyph is shown in: near-black becomes black.
 fn display_color(color: [u8; 3], cfg: &LinesConfig) -> [u8; 3] {
@@ -737,7 +1286,12 @@ fn compose_accents(glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig) {
             i += 1;
             continue;
         };
-        let Some(target) = accent_target(glyphs, i, cfg) else {
+        let target = if mark == NEGATION {
+            negation_target(glyphs, i, cfg)
+        } else {
+            accent_target(glyphs, i, cfg)
+        };
+        let Some(target) = target else {
             i += 1;
             continue;
         };
@@ -750,8 +1304,10 @@ fn compose_accents(glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig) {
         let (accent_x0, accent_x1) = (glyphs[i].x0, glyphs[i].x1);
         let ink = glyphs[i].ink;
         let accent_origin = (glyphs[i].ox, glyphs[i].oy);
+        let accent_copies = std::mem::take(&mut glyphs[i].extra);
         let letter = &mut glyphs[target];
-        letter.extra = Some(accent_origin);
+        letter.extra.push(accent_origin);
+        letter.extra.extend(accent_copies);
         letter.text = composed;
         letter.x0 = letter.x0.min(accent_x0);
         letter.x1 = letter.x1.max(accent_x1);
@@ -761,6 +1317,35 @@ fn compose_accents(glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig) {
             // Removed an element after the target; stay at the same index.
             continue;
         }
+    }
+}
+
+/// Index of the symbol the negation slash at `slash_idx` crosses out (TeX
+/// draws `\neq` as a slash over `=`): the next or previous glyph, if it is
+/// one character that has a precomposed negated form (`=` → `≠`, `∈` → `∉`)
+/// and the inks of the two overlap enough. `None` when neither qualifies.
+fn negation_target(glyphs: &[LineGlyph], slash_idx: usize, cfg: &LinesConfig) -> Option<usize> {
+    let slash = &glyphs[slash_idx].ink;
+    let overlap = |other: &LineGlyph| -> f32 {
+        let mut chars = other.text.chars();
+        let (Some(ch), None) = (chars.next(), chars.next()) else {
+            return 0.0;
+        };
+        let composed: String = [ch, NEGATION].iter().collect::<String>().nfc().collect();
+        if composed.chars().count() != 1 {
+            return 0.0;
+        }
+        let ink = &other.ink;
+        (slash.x1.min(ink.x1) - slash.x0.max(ink.x0)) / slash.width().min(ink.width()).max(cfg.accent_min_width_pt)
+    };
+    let next = glyphs.get(slash_idx + 1).map_or(0.0, overlap);
+    let prev = slash_idx.checked_sub(1).map_or(0.0, |idx| overlap(&glyphs[idx]));
+    if next >= cfg.accent_min_overlap_ratio && next >= prev {
+        Some(slash_idx + 1)
+    } else if prev >= cfg.accent_min_overlap_ratio {
+        Some(slash_idx - 1)
+    } else {
+        None
     }
 }
 
@@ -798,6 +1383,94 @@ fn accent_target(glyphs: &[LineGlyph], accent_idx: usize, cfg: &LinesConfig) -> 
     }
 }
 
+/// Puts squeezed pairs of CJK punctuation back in reading order (see
+/// [`LinesConfig::squeezed_punctuation_overlap_ratio`]). In "です。「いろ"
+/// typeset with half-width punctuation, the "「" starts a little left of the
+/// "。" before it; their inks are in the left and the right half of their
+/// boxes. `glyphs` must be sorted left to right.
+fn order_squeezed_punctuation(glyphs: &mut [LineGlyph], cfg: &LinesConfig) {
+    let punctuation = |glyph: &LineGlyph| {
+        let mut chars = glyph.text.chars();
+        matches!((chars.next(), chars.next()), (Some(ch), None) if is_cjk_punctuation(ch))
+    };
+    for i in 1..glyphs.len() {
+        let (prev, cur) = (&glyphs[i - 1], &glyphs[i]);
+        if !punctuation(prev) || !punctuation(cur) || prev.ink.is_unset() || cur.ink.is_unset() {
+            continue;
+        }
+        let overlap = prev.x1.min(cur.x1) - prev.x0.max(cur.x0);
+        let narrower = (prev.x1 - prev.x0).min(cur.x1 - cur.x0);
+        if overlap > cfg.squeezed_punctuation_overlap_ratio * narrower && cur.ink.cx() < prev.ink.cx() {
+            glyphs.swap(i - 1, i);
+        }
+    }
+}
+
+/// Takes the furigana out of the lines of a page and returns them: lines of
+/// small kana set right above kanji, which give their reading (see
+/// [`LinesConfig::ruby_max_size_ratio`]). Left in, each would be a line of
+/// text of its own between the lines of the text it annotates.
+pub fn take_ruby(lines: &mut Vec<Line>, cfg: &LinesConfig) -> Vec<Line> {
+    let is_ruby: Vec<bool> = lines.iter().map(|line| is_ruby_line(line, lines, cfg)).collect();
+    let mut ruby = Vec::new();
+    let mut kept = Vec::with_capacity(lines.len());
+    for (line, flag) in std::mem::take(lines).into_iter().zip(is_ruby) {
+        if flag {
+            ruby.push(line);
+        } else {
+            kept.push(line);
+        }
+    }
+    *lines = kept;
+    ruby
+}
+
+/// Whether `line` is furigana over one of `lines`.
+fn is_ruby_line(line: &Line, lines: &[Line], cfg: &LinesConfig) -> bool {
+    let kana = |ch: char| matches!(ch, '\u{3041}'..='\u{30FF}');
+    let kanji = |text: &str| {
+        text.chars()
+            .any(|ch| matches!(ch, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}' | '\u{3005}'))
+    };
+    let glyphs: Vec<&LineGlyph> = line
+        .glyphs
+        .iter()
+        .filter(|glyph| !glyph.text.trim().is_empty())
+        .collect();
+    if glyphs.is_empty() || !glyphs.iter().all(|glyph| glyph.text.chars().all(kana)) {
+        return false;
+    }
+    lines.iter().any(|base| {
+        let gap = base.bbox.y0 - line.bbox.y1;
+        line.size <= cfg.ruby_max_size_ratio * base.size
+            && base.baseline > line.baseline
+            && gap <= cfg.ruby_max_gap_em * base.size
+            && gap >= -cfg.ruby_max_gap_em * base.size
+            && {
+                let over = glyphs
+                    .iter()
+                    .filter(|glyph| {
+                        let cx = (glyph.x0 + glyph.x1) / 2.0;
+                        base.glyphs.iter().any(|kanji_glyph| {
+                            kanji(&kanji_glyph.text)
+                                && cx >= kanji_glyph.x0 - line.size
+                                && cx <= kanji_glyph.x1 + line.size
+                        })
+                    })
+                    .count();
+                over as f32 >= cfg.ruby_over_kanji_min_ratio * glyphs.len() as f32
+            }
+    })
+}
+
+/// Whether `ch` is a punctuation mark of CJK text: the CJK symbols and
+/// punctuation block, and the full-width forms that are not letters or
+/// digits.
+fn is_cjk_punctuation(ch: char) -> bool {
+    matches!(ch, '\u{3000}'..='\u{303F}' | '\u{30FB}')
+        || (matches!(ch, '\u{FF01}'..='\u{FF65}') && !ch.is_alphanumeric())
+}
+
 /// Turns a finished segment into a line: sorts its glyphs, composes
 /// accents, marks word spaces, and picks the line's font (the most common
 /// font of the glyphs on the baseline, lowest index on ties).
@@ -805,6 +1478,7 @@ fn accent_target(glyphs: &[LineGlyph], accent_idx: usize, cfg: &LinesConfig) -> 
 /// Panics if the segment has no glyphs.
 fn finalize(page: usize, mut segment: Segment, cfg: &LinesConfig) -> Line {
     segment.glyphs.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    order_squeezed_punctuation(&mut segment.glyphs, cfg);
     compose_accents(&mut segment.glyphs, cfg);
     segment.refresh(cfg);
     let size = segment.size;
@@ -1025,16 +1699,25 @@ fn mark_spaces(glyphs: &mut [LineGlyph], size: f32, fixed_pitch: bool, cfg: &Lin
             && gap > cfg.tight_space_ratio * usual_gap
     };
     // A tight word space lies between two letters of the same script, and
-    // its neighbours are no gaps: runs of gaps are letter-spaced text or
-    // monospaced code.
+    // is not part of a run of three or more such gaps in a row: those are
+    // letter-spaced text or monospaced code. Two in a row are the spaces
+    // around a one-letter word ("with a different").
+    let gap_is_tight: Vec<bool> = (0..n).map(|i| i > 0 && is_tight(&gaps[i])).collect();
+    let mut run_len = vec![0usize; n];
+    let mut start = 0;
+    while start < n {
+        let mut end = start;
+        while end < n && gap_is_tight[end] {
+            end += 1;
+        }
+        for len in &mut run_len[start..end] {
+            *len = end - start;
+        }
+        start = end + 1;
+    }
     let tight: Vec<bool> = (0..n)
         .map(|i| {
-            i > 0
-                && is_tight(&gaps[i])
-                && glyphs[i].script == 0
-                && glyphs[i - 1].script == 0
-                && !(i > 1 && is_tight(&gaps[i - 1]))
-                && !(i + 1 < n && is_tight(&gaps[i + 1]))
+            gap_is_tight[i] && glyphs[i].script == 0 && glyphs[i - 1].script == 0 && run_len[i] <= TIGHT_SPACE_MAX_RUN
         })
         .collect();
     let tight_spaces = tight.iter().filter(|&&is_space| is_space).count() >= cfg.tight_space_min_count;
@@ -1579,4 +2262,175 @@ fn find_host(slots: &[Option<Segment>], script_idx: usize, cfg: &LinesConfig) ->
         }
     }
     best.map(|(host_idx, _)| host_idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A horizontal glyph of 10 pt type at (`x`, 100) in `color`.
+    fn glyph(text: &str, x: f32, color: [u8; 3]) -> Glyph {
+        Glyph {
+            text: text.to_string(),
+            x,
+            y: 100.0,
+            adv: 5.0,
+            size: 10.0,
+            font: 0,
+            dir: Dir::Horizontal,
+            angle: 0.0,
+            invisible: false,
+            color,
+            ink: Rect::new(x, 93.0, x + 5.0, 100.0),
+        }
+    }
+
+    /// A page of 200 × 200 pt with these glyphs.
+    fn page(glyphs: Vec<Glyph>) -> RawPage {
+        RawPage {
+            width: 200.0,
+            height: 200.0,
+            glyphs,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn white_halo_copies_give_way_to_the_text_on_top() {
+        // An underlined "g": white copies shifted by half a point clear the
+        // rule around the descender, then the black letter is drawn on top.
+        let white = [255; 3];
+        let raw = page(vec![
+            glyph("g", 49.5, white),
+            glyph("g", 50.5, white),
+            glyph("g", 50.0, [0; 3]),
+        ]);
+        let (glyphs, _) = collect_glyphs(&raw, &LinesConfig::default());
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(glyphs[0].color, [0; 3]);
+        assert_eq!(glyphs[0].ox, 50.0);
+        let mut copies = glyphs[0].extra.clone();
+        copies.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(copies, vec![(49.5, 100.0), (50.5, 100.0)]);
+    }
+
+    /// A line glyph of 10 pt type with its advance from `x0` to `x1` and its
+    /// ink from `ink_x0` to `ink_x1`.
+    fn line_glyph_at(text: &str, (x0, x1): (f32, f32), (ink_x0, ink_x1): (f32, f32)) -> LineGlyph {
+        LineGlyph {
+            text: text.to_string(),
+            x0,
+            x1,
+            y: 100.0,
+            size: 10.0,
+            font: 0,
+            script: 0,
+            space_before: false,
+            ink: Rect::new(ink_x0, 93.0, ink_x1, 101.0),
+            ox: x0,
+            oy: 100.0,
+            extra: Vec::new(),
+            color: [0; 3],
+        }
+    }
+
+    #[test]
+    fn squeezed_japanese_punctuation_keeps_its_order() {
+        // "。「" set with half-width punctuation: the bracket starts 0.8 pt
+        // left of the full stop, whose ink is in the left of its box.
+        let mut glyphs = vec![
+            line_glyph_at("\u{300C}", (364.75, 375.02), (370.0, 374.0)),
+            line_glyph_at("\u{3002}", (365.57, 375.84), (366.0, 369.0)),
+        ];
+        order_squeezed_punctuation(&mut glyphs, &LinesConfig::default());
+        assert_eq!(glyphs[0].text, "\u{3002}");
+        assert_eq!(glyphs[1].text, "\u{300C}");
+    }
+
+    #[test]
+    fn negation_slash_over_equals_is_not_equal() {
+        // TeX's \neq: a slash of no advance whose ink crosses the "=" after it.
+        let mut glyphs = vec![
+            line_glyph_at("\u{0338}", (50.0, 50.0), (51.0, 56.0)),
+            line_glyph_at("=", (50.0, 57.8), (50.6, 57.2)),
+        ];
+        compose_accents(&mut glyphs, &LinesConfig::default());
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(glyphs[0].text, "\u{2260}");
+    }
+
+    #[test]
+    fn neighbouring_equal_letters_are_not_copies() {
+        let raw = page(vec![glyph("l", 50.0, [0; 3]), glyph("l", 52.8, [0; 3])]);
+        let (glyphs, _) = collect_glyphs(&raw, &LinesConfig::default());
+        assert_eq!(glyphs.len(), 2);
+    }
+
+    #[test]
+    fn close_glyphs_without_unicode_are_kept() {
+        let raw = page(vec![glyph("\u{FFFD}", 50.0, [0; 3]), glyph("\u{FFFD}", 50.6, [0; 3])]);
+        let (glyphs, _) = collect_glyphs(&raw, &LinesConfig::default());
+        assert_eq!(glyphs.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod ruby_tests {
+    use super::*;
+
+    /// A line of single-character glyphs of `size`, one em apart from `x`.
+    fn line_at(text: &str, x: f32, baseline: f32, size: f32) -> Line {
+        let glyphs: Vec<LineGlyph> = text
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| {
+                let x0 = x + i as f32 * size;
+                LineGlyph {
+                    text: ch.to_string(),
+                    x0,
+                    x1: x0 + size,
+                    y: baseline,
+                    size,
+                    font: 0,
+                    script: 0,
+                    space_before: false,
+                    ink: Rect::new(x0, baseline - 0.8 * size, x0 + size, baseline),
+                    ox: x0,
+                    oy: baseline,
+                    extra: Vec::new(),
+                    color: [0, 0, 0],
+                }
+            })
+            .collect();
+        let x1 = glyphs.last().map_or(x, |glyph| glyph.x1);
+        Line {
+            page: 0,
+            bbox: Rect::new(x, baseline - 0.8 * size, x1, baseline + 0.2 * size),
+            ink: Rect::new(x, baseline - 0.8 * size, x1, baseline),
+            baseline,
+            size,
+            font: 0,
+            glyphs,
+            fixed_pitch: false,
+        }
+    }
+
+    #[test]
+    fn furigana_over_kanji_leave_the_text() {
+        let cfg = LinesConfig::default();
+        // きょう over 今日, right above the line.
+        let mut lines = vec![
+            line_at("きょう", 100.0, 100.0, 5.0),
+            line_at("今日はいい天気", 100.0, 110.0, 10.0),
+        ];
+        let ruby = take_ruby(&mut lines, &cfg);
+        assert_eq!(ruby.len(), 1);
+        assert_eq!(lines.len(), 1);
+        // A line of kana of the body size stays.
+        let mut lines = vec![
+            line_at("そうですね", 100.0, 100.0, 10.0),
+            line_at("今日", 100.0, 112.0, 10.0),
+        ];
+        assert!(take_ruby(&mut lines, &cfg).is_empty());
+    }
 }

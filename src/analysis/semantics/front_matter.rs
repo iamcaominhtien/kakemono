@@ -60,6 +60,10 @@ pub struct FrontMatterConfig {
     pub prose_min_lines_count: usize,
     /// Fewest full (justified) lines of a block of running prose.
     pub prose_min_full_lines_count: usize,
+    /// A block of at least this many words with a sentence inside ("...
+    /// license. That means:") is prose too: author cards hold names,
+    /// affiliations and addresses, not sentences.
+    pub sentence_min_words_count: usize,
     /// An abstract without a heading must end at most this many pages after
     /// the first page.
     pub abstract_max_page_offset_count: usize,
@@ -109,6 +113,7 @@ impl Default for FrontMatterConfig {
             prose_left_tolerance_em: 2.0,
             prose_min_lines_count: 4,
             prose_min_full_lines_count: 3,
+            sentence_min_words_count: 12,
             abstract_max_page_offset_count: 1,
             abstract_heading_max_chars_count: 80,
             abstract_max_blocks_count: 3,
@@ -197,7 +202,7 @@ pub(crate) fn classify_front_matter(
 /// The range of node indices (inclusive) of the title: the consecutive
 /// nodes on the first page, in its upper part, whose size is close to the
 /// largest size found there. Returns `None` when the largest text is not
-/// clearly larger than the body text.
+/// clearly larger than the body text, or is a known heading ("Contents").
 fn find_title(
     nodes: &[Node],
     first_page: usize,
@@ -233,7 +238,15 @@ fn find_title(
             }
         }
     }
-    title_range
+    // A heading such as "Contents" is not a title: the first page with text
+    // is then not a title page (the title is on a cover that is a picture).
+    title_range.filter(|&(start, end)| {
+        let text: Vec<String> = nodes[start..=end]
+            .iter()
+            .filter_map(|node| node.text_block().map(|block| block_text(&block.lines)))
+            .collect();
+        !KNOWN_HEADINGS.is_match(text.join(" ").trim())
+    })
 }
 
 /// Finds where the author block after the title ends: at the first text
@@ -294,8 +307,25 @@ fn is_section_start(
         && trimmed.chars().count() < front.section_max_chars_count
 }
 
-/// Running prose: several justified lines.
+/// Running prose: several justified lines, or a long block that holds a
+/// sentence.
 fn is_running_prose(block: &TextBlock, cfg: &FrontMatterConfig) -> bool {
+    is_justified_prose(block, cfg) || holds_sentence(&block_text(&block.lines), cfg)
+}
+
+/// A block of many words with a full stop inside it, not an address.
+fn holds_sentence(text: &str, cfg: &FrontMatterConfig) -> bool {
+    let words = text.split_whitespace().count();
+    let inner_stop = text
+        .split_whitespace()
+        .rev()
+        .skip(1)
+        .any(|word| word.ends_with('.') && word.chars().filter(|ch| ch.is_alphabetic()).count() > 3);
+    words >= cfg.sentence_min_words_count && inner_stop && !text.contains('@')
+}
+
+/// Several justified lines.
+fn is_justified_prose(block: &TextBlock, cfg: &FrontMatterConfig) -> bool {
     let full = block
         .lines
         .iter()
@@ -368,6 +398,7 @@ fn author_indices(
                 && node.class == Class::Unknown
                 && (idx < end
                     || (stop_y.is_finite()
+                        && !is_running_prose(block, cfg)
                         && block.bbox.y1 <= stop_y - cfg.author_stop_margin_pt
                         && block.bbox.y0 >= title_bottom - cfg.author_title_margin_pt))
         })

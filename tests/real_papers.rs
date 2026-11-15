@@ -23,7 +23,7 @@
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
 use paper2html::model::{BlockKind, FloatKind, MathNode, Span};
-use paper2html::{AnalyzeOptions, Equations, HtmlOptions, Mode, Paper};
+use paper2html::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -81,6 +81,21 @@ fn figure_text_chars(html: &str) -> usize {
         .map(|rest| {
             let body = &rest[rest.find('>').map_or(0, |i| i + 1)..];
             let body = &body[..body.find("</div>").unwrap_or(body.len())];
+            tag.replace_all(body, "").chars().filter(|c| !c.is_whitespace()).count()
+        })
+        .sum()
+}
+
+/// Characters of the glyphs that hard-95 leaves in the page picture on
+/// purpose (radicals, big delimiters and operators): each is written as an
+/// unseen copy in a `ph` element.
+fn picture_glyph_chars(html: &str) -> usize {
+    let tag = Regex::new(r"<[^>]*>").unwrap();
+    let open = Regex::new(r#"<span class="(?:sg )?ph"[^>]*>"#).unwrap();
+    open.find_iter(html)
+        .map(|m| {
+            let rest = &html[m.end()..];
+            let body = &rest[..rest.find("</span>").unwrap_or(rest.len())];
             tag.replace_all(body, "").chars().filter(|c| !c.is_whitespace()).count()
         })
         .sum()
@@ -259,13 +274,23 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
         if mode == Mode::Hard95 {
             // Text inside figures stays in the page pictures on purpose (it
             // is drawn in the figure's own order); the rest should be HTML.
+            // Glyphs are counted in SVG pictures, so every page is one.
+            let out = paper.to_html(
+                &analysis,
+                &HtmlOptions {
+                    mode,
+                    inline_images: false,
+                    page_image: PageImage::SvgOnly,
+                    ..Default::default()
+                },
+            );
             let in_pictures: usize = out
                 .files
                 .iter()
                 .filter(|(n, _)| n.ends_with(".svg"))
                 .map(|(_, d)| d.windows(5).filter(|w| w == b"<use ").count())
                 .sum();
-            glyphs_left = in_pictures.saturating_sub(figure_text_chars(&out.html));
+            glyphs_left = in_pictures.saturating_sub(figure_text_chars(&out.html) + picture_glyph_chars(&out.html));
         }
     }
     // Friendly mode with every formula as a picture.
@@ -419,7 +444,7 @@ paper_test!(
     "1810.04805v2",
     "BERT",
     tables >= 8,
-    broken <= 3,
+    broken <= 2,
     split <= 0,
     glyphs <= 0,
     hyphenated <= 228,
@@ -470,7 +495,8 @@ paper_test!(
     "2303.08774v6",
     "GPT-4 Technical Report",
     tables >= 8,
-    broken <= 46,
+    // The lines of its code listings are no longer paragraphs (45 before).
+    broken <= 20,
     split <= 0,
     glyphs <= 498,
     hyphenated <= 302,
@@ -1199,7 +1225,7 @@ fn attention_formulas_are_rebuilt() {
     assert_eq!(
         all[1].as_deref(),
         Some(
-            r"MultiHead(Q,K,V)&=Concat(head_{1},…,head_{h})W^{O}\\\text{where} head_{i}&=Attention(QW_{i}^{Q},KW_{i}^{K},V W_{i}^{V})"
+            r"MultiHead(Q,K,V)&=Concat(head_{1},…,head_{h})W^{O}\\\text{where} head_{i}&=Attention(QW_{i}^{Q},KW_{i}^{K},VW_{i}^{V})"
         )
     );
 }

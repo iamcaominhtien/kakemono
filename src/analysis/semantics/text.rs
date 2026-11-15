@@ -8,7 +8,8 @@ use crate::analysis::tables::Grid;
 use crate::backend::FontInfo;
 use crate::model::Line;
 use crate::model::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 /// Most characters of an anchor slug; longer headings are cut, which keeps
 /// the URL fragments readable.
@@ -55,12 +56,16 @@ pub struct TextConfig {
     /// A glyph starting less than this (multiple of its font size) after
     /// the end of the current run joins it.
     pub run_max_gap_em: f32,
+    /// Inside and around an inline fraction, a gap wider than this many
+    /// font sizes is a word space.
+    pub fraction_space_min_em: f32,
 }
 
 impl Default for TextConfig {
     fn default() -> Self {
         Self {
             compound_part_min_chars_count: 4,
+            fraction_space_min_em: 0.2,
             cell_wrap_min_dy_em: 0.5,
             math_axis_height_em: 0.25,
             tall_glyph_min_height_em: 1.3,
@@ -104,9 +109,12 @@ struct OpenRun {
 
 /// The reading order of a line's glyphs: left to right, except that a
 /// superscript and a subscript set one above the other ("410^{+160}_{-180}")
-/// are read one after the other, not interleaved digit by digit.
-fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
+/// are read one after the other, not interleaved digit by digit. The second
+/// element holds the glyph ranges of the stacked pairs that are inline
+/// fractions, read "1/2".
+fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>) {
     let mut order: Vec<usize> = Vec::with_capacity(glyphs.len());
+    let mut fractions: Vec<Range<usize>> = Vec::new();
     let mut i = 0;
     while i < glyphs.len() {
         if glyphs[i].script == 0 {
@@ -122,7 +130,7 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
         let run = start..i;
         let span = |sign: i8| {
             run.clone()
-                .filter(|&k| glyphs[k].script == sign)
+                .filter(|&k| glyphs[k].script.signum() == sign)
                 .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| {
                     (lo.min(glyphs[k].x0), hi.max(glyphs[k].x1))
                 })
@@ -131,22 +139,157 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> Vec<usize> {
         let stacked = up.0 < down.1 && down.0 < up.1;
         if stacked {
             order.extend(run.clone().filter(|&k| glyphs[k].script > 0));
+            // Terms stacked on a fraction bar (see `mark_fractions`).
+            if run.clone().any(|k| glyphs[k].script.abs() == FRACTION_TERM) {
+                fractions.push(run.clone());
+            }
             order.extend(run.filter(|&k| glyphs[k].script < 0));
         } else {
             order.extend(run);
         }
     }
-    order
+    (order, fractions)
+}
+
+/// The text set before glyphs of an inline fraction, by position in the
+/// reading `order`: an opening parenthesis before a term of several parts,
+/// the slash (closing the numerator's parenthesis) before the denominator,
+/// and the closing parenthesis of the denominator before what follows it
+/// (at `order.len()` when the line ends with it).
+fn fraction_marks(
+    glyphs: &[LineGlyph],
+    order: &[usize],
+    fractions: &[Range<usize>],
+    cfg: &TextConfig,
+) -> HashMap<usize, String> {
+    let mut marks: HashMap<usize, String> = HashMap::new();
+    for run in fractions {
+        let positions: Vec<usize> = (0..order.len()).filter(|&pos| run.contains(&order[pos])).collect();
+        let term = |sign: i8| -> Vec<usize> {
+            positions
+                .iter()
+                .copied()
+                .filter(|&pos| glyphs[order[pos]].script.signum() == sign)
+                .collect()
+        };
+        let (numerator, denominator) = (term(1), term(-1));
+        let (Some(&num_start), Some(&den_start), Some(&den_end)) =
+            (numerator.first(), denominator.first(), denominator.last())
+        else {
+            continue;
+        };
+        let compound = |term: &[usize]| {
+            term.windows(2).any(|pair| {
+                let (left, right) = (&glyphs[order[pair[0]]], &glyphs[order[pair[1]]]);
+                right.x0 - left.x1 > cfg.fraction_space_min_em * right.size
+            }) || term.iter().any(|&pos| {
+                glyphs[order[pos]]
+                    .text
+                    .chars()
+                    .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
+            })
+        };
+        let (num_parens, den_parens) = (compound(&numerator), compound(&denominator));
+        if num_parens {
+            marks.entry(num_start).or_default().push('(');
+        }
+        let slash = marks.entry(den_start).or_default();
+        if num_parens {
+            slash.push(')');
+        }
+        slash.push('/');
+        if den_parens {
+            slash.push('(');
+            marks.entry(den_end + 1).or_default().insert(0, ')');
+        }
+    }
+    marks
+}
+
+/// Whether a space goes before the glyph at position `pos` of the reading
+/// `order`, when it is in an inline fraction or right after one: the space
+/// marks of the glyphs were set in left-to-right order, which mixes the two
+/// terms, so the gaps are measured again, within each term and around the
+/// fraction. `None` for the other glyphs.
+fn fraction_space(
+    glyphs: &[LineGlyph],
+    order: &[usize],
+    pos: usize,
+    fractions: &[Range<usize>],
+    cfg: &TextConfig,
+) -> Option<bool> {
+    let glyph = &glyphs[order[pos]];
+    let prev = &glyphs[order[pos.checked_sub(1)?]];
+    let run_of = |index: usize| fractions.iter().find(|run| run.contains(&index));
+    let wide = |gap: f32| gap > cfg.fraction_space_min_em * glyph.size;
+    let extent = |run: &Range<usize>| {
+        run.clone()
+            .map(|k| (glyphs[k].x0, glyphs[k].x1))
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (x0, x1)| {
+                (lo.min(x0), hi.max(x1))
+            })
+    };
+    match (run_of(order[pos]), run_of(order[pos - 1])) {
+        // Inside one fraction: a gap within a term; none between the terms.
+        (Some(run), Some(prev_run)) if run == prev_run => {
+            Some(prev.script.signum() == glyph.script.signum() && wide(glyph.x0 - prev.x1))
+        }
+        // The fraction starts: the gap from the text before it.
+        (Some(run), _) => Some(wide(extent(run).0 - prev.x1)),
+        // The text after a fraction: the gap from its right edge.
+        (None, Some(prev_run)) => Some(wide(glyph.x0 - extent(prev_run).1)),
+        (None, None) => None,
+    }
+}
+
+/// Appends `text` in `style` and `color` to `spans`.
+fn push_text(spans: &mut Vec<Span>, text: &str, style: u8, color: [u8; 3]) {
+    match spans.last_mut() {
+        Some(span) if span.style == style && span.color == color => span.text.push_str(text),
+        _ => spans.push(Span {
+            text: text.to_string(),
+            style,
+            href: None,
+            color,
+        }),
+    }
 }
 
 impl TextBuilder<'_> {
-    /// Styled text of a single line, exactly as it appears.
+    /// Styled text of a single line as placed on the page: the terms of an
+    /// inline fraction stay a superscript and a subscript.
+    fn placed_line_spans(&self, line: &Line) -> Vec<Span> {
+        if !line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+            return self.line_spans(line);
+        }
+        let mut placed = line.clone();
+        for glyph in &mut placed.glyphs {
+            if glyph.script.abs() == FRACTION_TERM {
+                glyph.script = glyph.script.signum();
+            }
+        }
+        self.line_spans(&placed)
+    }
+
+    /// Styled text of a single line, as read: inline fractions read "1/2".
     pub(crate) fn line_spans(&self, line: &Line) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
-        for (glyph_idx, &index) in stacked_script_order(&line.glyphs).iter().enumerate() {
+        let (order, fractions) = stacked_script_order(&line.glyphs);
+        // The terms of an inline fraction read as "1/2", "(n−1)/n".
+        let marks = fraction_marks(&line.glyphs, &order, &fractions, self.cfg);
+        for (glyph_idx, &index) in order.iter().enumerate() {
             let glyph = &line.glyphs[index];
             let style = line.style_of(glyph, self.fonts);
-            let space = glyph.space_before && glyph_idx > 0;
+            let mut space = fraction_space(&line.glyphs, &order, glyph_idx, &fractions, self.cfg)
+                .unwrap_or(glyph.space_before)
+                && glyph_idx > 0;
+            if let Some(before) = marks.get(&glyph_idx) {
+                if space {
+                    push_text(&mut spans, " ", style, glyph.color);
+                }
+                push_text(&mut spans, before, style, glyph.color);
+                space = false;
+            }
             if let Some(span) = spans.last_mut() {
                 if space {
                     span.text.push(' ');
@@ -163,6 +306,9 @@ impl TextBuilder<'_> {
                 color: glyph.color,
             });
         }
+        if let (Some(close), Some(last)) = (marks.get(&order.len()), spans.last_mut()) {
+            last.text.push_str(close);
+        }
         spans
     }
 
@@ -172,21 +318,32 @@ impl TextBuilder<'_> {
     /// per-line output keeps everything.
     pub(crate) fn build(&self, lines: &[Line], skip: usize, mask: u8) -> Built {
         let texts: Vec<String> = lines.iter().map(|line| line.text()).collect();
+        // The running text reads inline fractions as "1/2"; the per-line
+        // spans keep them stacked, as placed on the page.
+        let mut read: Vec<HLine> = Vec::with_capacity(lines.len());
         let mut hlines: Vec<HLine> = Vec::with_capacity(lines.len());
         let mut line_texts: Vec<String> = Vec::with_capacity(lines.len());
         for (line_idx, line) in lines.iter().enumerate() {
             let mut line_spans = self.line_spans(line);
+            let mut placed_spans = self.placed_line_spans(line);
             let soft_hyphen = match texts.get(line_idx + 1) {
-                Some(next) => self.join_line_end(&mut line_spans, &texts[line_idx], next),
+                Some(next) => {
+                    self.join_line_end(&mut placed_spans, &texts[line_idx], next);
+                    self.join_line_end(&mut line_spans, &texts[line_idx], next)
+                }
                 None => false,
             };
             line_texts.push(line_spans.iter().map(|span| span.text.as_str()).collect());
-            hlines.push(HLine {
+            read.push(HLine {
                 spans: line_spans,
                 soft_hyphen,
             });
+            hlines.push(HLine {
+                spans: placed_spans,
+                soft_hyphen,
+            });
         }
-        let mut spans = running_spans(&hlines, mask);
+        let mut spans = running_spans(&read, mask);
         if skip > 0 && !lines.is_empty() {
             let n: usize = lines[0]
                 .glyphs
@@ -205,8 +362,9 @@ impl TextBuilder<'_> {
 
     /// Prepares the spans of a line (text `text`) to be followed by the next
     /// line (text `next`): removes a soft hyphen, or adds the space between
-    /// the lines (none after a slash, as in URLs). Returns whether a soft
-    /// hyphen was removed.
+    /// the lines (none after a slash, as in URLs, nor in Chinese or Japanese
+    /// text, see [`joins_without_space`]). Returns whether a soft hyphen was
+    /// removed.
     fn join_line_end(&self, spans: &mut Vec<Span>, text: &str, next: &str) -> bool {
         // A URL broken across lines goes on without a space. A hyphen at
         // the break is part of it ("py-faster-" / "rcnn"), unless TeX
@@ -236,6 +394,7 @@ impl TextBuilder<'_> {
             }
         } else if !text.ends_with('/')
             && !text.is_empty()
+            && !joins_without_space(text, next)
             && let Some(last) = spans.last_mut()
         {
             last.text.push(' ');
@@ -616,10 +775,45 @@ fn close_run(current: &mut Option<OpenRun>, runs: &mut Vec<EqRun>) {
     }
 }
 
+/// Whether two lines of a paragraph join without a space: Chinese and
+/// Japanese are written without spaces between words, so a line that ends
+/// with a CJK character and a next line that starts with one join directly
+/// ("年々" / "増えています"), and so does a line that ends with a CJK
+/// punctuation mark ("、" "。").
+fn joins_without_space(text: &str, next: &str) -> bool {
+    let (Some(last), Some(first)) = (text.trim_end().chars().last(), next.trim_start().chars().next()) else {
+        return false;
+    };
+    is_cjk_punctuation_mark(last) || (is_cjk_char(last) && is_cjk_char(first))
+}
+
+/// Whether `ch` is a character of Chinese or Japanese text: a Han
+/// ideograph, kana, a CJK punctuation mark or a full-width form.
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3000}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
+/// Whether `ch` is a CJK punctuation mark (the ideographic comma and full
+/// stop, brackets and quotes, and their full-width forms).
+fn is_cjk_punctuation_mark(ch: char) -> bool {
+    matches!(ch, '\u{3001}'..='\u{303F}') || (matches!(ch, '\u{FF01}'..='\u{FF65}') && !ch.is_alphanumeric())
+}
+
 #[cfg(test)]
 #[allow(clippy::min_ident_chars, clippy::missing_docs_in_private_items)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_and_japanese_lines_join_without_space() {
+        assert!(joins_without_space("外国人の数が年々", "増えています。"));
+        assert!(joins_without_space("身につけるための教材です。", "Irodori"));
+        assert!(!joins_without_space("such as 日本語", "while N2"));
+        assert!(!joins_without_space("the people", "communicating"));
+    }
 
     use std::collections::HashSet;
 

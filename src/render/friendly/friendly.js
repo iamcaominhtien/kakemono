@@ -158,13 +158,23 @@
   // Equations and tables wider than their column scroll sideways: data-more
   // says on which side there is more (the CSS fades that edge), and is-clipped
   // that the box scrolls at all. Shared with the book view (book.js).
-  function cue(box){
+  // Measured first, marked after: a long book lays out once, not once per box.
+  function cueOf(box){
     var wide=box.scrollWidth>box.clientWidth+1&&getComputedStyle(box).overflowX!=='visible';
-    var l=wide&&box.scrollLeft>1,r=wide&&box.scrollLeft+box.clientWidth<box.scrollWidth-1,v=l&&r?'both':l?'l':r?'r':'';
-    if(v)box.setAttribute('data-more',v);else box.removeAttribute('data-more');
-    box.classList.toggle('is-clipped',wide);
+    var l=wide&&box.scrollLeft>1,r=wide&&box.scrollLeft+box.clientWidth<box.scrollWidth-1;
+    var more='';
+    if(l&&r)more='both';else if(l)more='l';else if(r)more='r';
+    return [wide,more];
   }
-  function cues(scope){[].forEach.call((scope||doc).querySelectorAll('.eq-body,.tbl-wrap'),cue);}
+  function mark(box,c){
+    if(c[1])box.dataset.more=c[1];else delete box.dataset.more;
+    box.classList.toggle('is-clipped',c[0]);
+  }
+  function cue(box){mark(box,cueOf(box));}
+  function cues(scope){
+    var boxes=Array.from((scope||doc).querySelectorAll('.eq-body,.tbl-wrap')),cs=boxes.map(cueOf);
+    boxes.forEach(function(b,i){mark(b,cs[i]);});
+  }
   doc.addEventListener('scroll',function(e){var t=e.target;if(t&&t.matches&&t.matches('.eq-body,.tbl-wrap'))cue(t);},true);
   doc.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IMG'&&e.target.closest('.eq-body,.tbl-wrap'))cue(e.target.closest('.eq-body,.tbl-wrap'));},true);
   addEventListener('resize',function(){cues();});addEventListener('load',function(){cues();});
@@ -227,16 +237,17 @@
   // A table wider than its column gets a smaller font, down to `min` of
   // its size; what is still too wide scrolls inside its frame. The size is
   // set relative to the surrounding text, so it follows zoom and themes.
+  // All tables take each step together, so that a long book is laid out
+  // once per step rather than once per table.
   function fitTables(scope,min){
-    [].forEach.call((scope||article).querySelectorAll('.tbl-wrap>table'),function(t){
-      t.style.fontSize='';
-      var w=t.parentNode;if(!w.clientWidth)return;
-      var rel=Number.parseFloat(getComputedStyle(t).fontSize)/Number.parseFloat(getComputedStyle(w).fontSize),k=1;
-      for(var i=0;i<4&&t.scrollWidth>w.clientWidth+1;i++){
-        var next=Math.max(min,k*w.clientWidth/t.scrollWidth);
-        if(next>=k-0.005)break;k=next;t.style.fontSize=(rel*k*100).toFixed(2)+'%';
-      }
-    });
+    var ts=Array.from((scope||article).querySelectorAll('.tbl-wrap>table'));
+    ts.forEach(function(t){t.style.fontSize='';});
+    var st=ts.map(function(t){var w=t.parentNode;return w.clientWidth?{t:t,w:w,k:1,rel:Number.parseFloat(getComputedStyle(t).fontSize)/Number.parseFloat(getComputedStyle(w).fontSize)}:null;}).filter(Boolean);
+    for(var i=0;i<4&&st.length;i++){
+      var next=st.map(function(s){return s.t.scrollWidth>s.w.clientWidth+1?Math.max(min,s.k*s.w.clientWidth/s.t.scrollWidth):s.k;});
+      st=st.filter(function(s,j){if(next[j]>=s.k-0.005){return false;}s.k=next[j];return true;});
+      st.forEach(function(s){s.t.style.fontSize=(s.rel*s.k*100).toFixed(2)+'%';});
+    }
     cues(scope||article);
   }
   function fitScroll(){if(root.getAttribute('data-view')!=='book')fitTables(article,0.8);}

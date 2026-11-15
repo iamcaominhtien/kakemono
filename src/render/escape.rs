@@ -13,9 +13,10 @@ const ESCAPE_SLACK_BYTES: usize = 8;
 const FIGURE_ALT_MAX_CHARS: usize = 240;
 
 /// The label at the start of a caption ("Figure 3:", "Table 2.",
-/// "Extended Data Fig. 1 |"), emphasised in the HTML.
+/// "Extended Data Fig. 1 |", "Figure 3.18:", "Table 1.12" without
+/// punctuation), emphasised in the HTML.
 pub(crate) static CAP_LABEL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:Supplementary\s+|Extended\s+Data\s+)?(?:Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*\S+?\s*[:.|—–-]").unwrap()
+    Regex::new(r"^(?:Supplementary\s+|Extended\s+Data\s+)?(?:Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?:\d+(?:\.\d+)*[a-z]?|S\d+|[A-Z]\.?\d*(?:\.\d+)*|[IVXLC]+)(?:\s*[:.|—–-]|\s|$)").unwrap()
 });
 
 /// Escapes `text` for use in HTML text and in double-quoted attribute
@@ -61,7 +62,21 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
         if span.style & SUB != 0 {
             tag("sub");
         }
-        let body = format!("{open}{}{close}", esc(&span.text));
+        // Spaces at the ends of inline code go outside its tags: they would
+        // otherwise show inside its shaded box.
+        let text = span.text.as_str();
+        let body = if span.style & MONO == 0 {
+            format!("{open}{}{close}", esc(text))
+        } else {
+            let inner = text.trim_matches(' ');
+            let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
+            let trail = &text[text.trim_end_matches(' ').len()..];
+            if inner.is_empty() {
+                esc(text)
+            } else {
+                format!("{lead}{open}{}{close}{trail}", esc(inner))
+            }
+        };
         match &span.href {
             Some(href) if href.starts_with('#') => {
                 out.push_str(&format!("<a class=\"xref\" href=\"{}\">{body}</a>", esc(href)))
@@ -92,8 +107,8 @@ pub(crate) fn caption_html(spans: &[Span]) -> String {
         && let Some(label_match) = CAP_LABEL.find(&first.text)
     {
         let mut rest = spans.to_vec();
-        let label = first.text[..label_match.end()].to_string();
-        rest[0].text = first.text[label_match.end()..].to_string();
+        let label = first.text[..label_match.end()].trim_end().to_string();
+        rest[0].text = first.text[label.len()..].to_string();
         return format!("<span class=\"cap-label\">{}</span>{}", esc(&label), spans_html(&rest));
     }
     spans_html(spans)
@@ -166,10 +181,12 @@ pub(crate) fn kind_name(kind: &BlockKind) -> &'static str {
         BlockKind::Heading { .. } => "heading",
         BlockKind::Paragraph { .. } => "paragraph",
         BlockKind::ListItem { .. } => "list-item",
+        BlockKind::ListContinuation => "list-continuation",
         BlockKind::Equation { .. } => "equation",
         BlockKind::Figure { .. } => "caption",
         BlockKind::Footnote { .. } => "footnote",
         BlockKind::Reference { .. } => "reference",
+        BlockKind::Code => "code",
     }
 }
 
