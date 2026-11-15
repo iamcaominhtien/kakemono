@@ -371,7 +371,7 @@ fn recompress_png(engine: &base64::engine::GeneralPurpose, payload: &str) -> Opt
 /// ignored). Stops counting as soon as they do.
 fn many_colours(rgba: &[u8], min: usize) -> bool {
     let mut seen: HashSet<[u8; 3]> = HashSet::with_capacity(min);
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         seen.insert([pixel[0], pixel[1], pixel[2]]);
         if seen.len() >= min {
             return true;
@@ -383,7 +383,9 @@ fn many_colours(rgba: &[u8], min: usize) -> bool {
 /// The opaque RGBA pixels as a JPEG of quality [`JPEG_QUALITY`].
 fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     let rgb: Vec<u8> = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
         .collect();
     let mut jpeg = Vec::new();
