@@ -60,6 +60,27 @@ fn convert_writes_html_signed_by_kakemono() {
 }
 
 #[test]
+fn convert_writes_a_word_document_when_asked() {
+    let dir = scratch("cli-docx");
+    // `-o x.docx` is enough to choose the format.
+    let docx = dir.join("ligo.docx");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", docx.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let data = std::fs::read(&docx).unwrap();
+    assert!(data.starts_with(b"PK\x03\x04"), "a ZIP archive");
+    assert!(String::from_utf8_lossy(&data).contains("word/document.xml"));
+
+    // `--format docx` with a directory gives `<stem>.docx`.
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-f", "docx", "-o", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("1602.03837v1.docx").is_file());
+
+    let all = kakemono(&["convert", LIGO, "--all", "-f", "docx", "-o", dir.to_str().unwrap()]);
+    assert!(!all.status.success());
+    assert!(String::from_utf8_lossy(&all.stderr).contains("--all"));
+}
+
+#[test]
 fn formula_reports_a_picture_it_cannot_read() {
     let dir = scratch("cli-formula");
     let (one, two) = (dir.join("one.png"), dir.join("two.png"));

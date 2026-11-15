@@ -23,7 +23,7 @@
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
-use kakemono::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -141,6 +141,91 @@ fn fingerprint(html: &str, files: &[(String, Vec<u8>)]) -> String {
         }
     }
     hex(h.finalize())
+}
+
+/// The files of a `.docx` package (a ZIP archive): (name, contents),
+/// inflated. Reads the local headers one after another, which is enough
+/// for the archives kakemono writes (no data descriptors).
+fn docx_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let le16 = |at: usize| usize::from(u16::from_le_bytes([docx[at], docx[at + 1]]));
+    let le32 = |at: usize| u32::from_le_bytes(docx[at..at + 4].try_into().unwrap()) as usize;
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while docx[at..].starts_with(b"PK\x03\x04") {
+        let (method, size, name_len, extra_len) = (le16(at + 8), le32(at + 18), le16(at + 26), le16(at + 28));
+        let name = String::from_utf8(docx[at + 30..at + 30 + name_len].to_vec()).unwrap();
+        let start = at + 30 + name_len + extra_len;
+        let raw = &docx[start..start + size];
+        let data = match method {
+            0 => raw.to_vec(),
+            8 => {
+                let mut out = Vec::new();
+                flate2::read::DeflateDecoder::new(raw).read_to_end(&mut out).unwrap();
+                out
+            }
+            other => panic!("{name}: unexpected compression method {other}"),
+        };
+        parts.push((name, data));
+        at = start + size;
+    }
+    parts
+}
+
+/// Fingerprint of a Word document: its XML parts and the sizes of its
+/// pictures (as for the HTML, not their pixels).
+fn docx_fingerprint(parts: &[(String, Vec<u8>)]) -> String {
+    let mut h = Sha256::new();
+    for (name, data) in parts {
+        h.update(name.as_bytes());
+        if name.ends_with(".xml") || name.ends_with(".rels") {
+            h.update(data);
+        } else if data.starts_with(b"\x89PNG") && data.len() >= 24 {
+            h.update(&data[16..24]); // width and height
+        }
+    }
+    hex(h.finalize())
+}
+
+/// Checks a Word document of a paper with `math` rebuilt formulas: every
+/// picture is a file of the package, every rebuilt formula is an equation.
+fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
+    let part = |name: &str| {
+        let data = &parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .1;
+        String::from_utf8(data.clone()).unwrap()
+    };
+    let document = part("word/document.xml");
+    let rels = part("word/_rels/document.xml.rels");
+    assert!(
+        document.ends_with("</w:sectPr></w:body></w:document>"),
+        "docx: incomplete document"
+    );
+    assert!(
+        !document.contains('\u{1}'),
+        "docx: picture placeholder left in the document"
+    );
+    assert_eq!(
+        document.matches("<m:oMath>").count(),
+        math,
+        "docx: every rebuilt formula is an equation"
+    );
+    let pictures = document.matches("<a:blip r:embed=").count();
+    let media: Vec<&str> = parts
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .filter(|n| n.starts_with("word/media/"))
+        .collect();
+    assert_eq!(pictures, media.len(), "docx: one file per picture");
+    for name in media {
+        assert!(
+            rels.contains(&format!("Target=\"{}\"", &name["word/".len()..])),
+            "docx: {name} has no relationship"
+        );
+    }
 }
 
 /// Compares the outputs of a paper with its stored snapshot, or stores them
@@ -306,6 +391,11 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     assert!(!out.html.contains("<math "), "formulas as pictures only");
     fingerprints.push(("friendly-image", fingerprint(&out.html, &out.files)));
     fingerprints.push(("json", hex(Sha256::digest(json.as_bytes()))));
+    // The Word document.
+    let docx = paper.to_docx(&analysis, &DocxOptions::default());
+    let parts = docx_parts(&docx);
+    check_docx(&parts, math);
+    fingerprints.push(("docx", docx_fingerprint(&parts)));
     let metrics = Metrics {
         title,
         tables,

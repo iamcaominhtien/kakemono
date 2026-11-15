@@ -1,9 +1,9 @@
-//! The native part of the `kakemono` Python package: PDF bytes in, HTML or
-//! the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
+//! The native part of the `kakemono` Python package: PDF bytes in, HTML, a
+//! Word document or the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
 
 use kakemono::source::arxiv;
-use kakemono::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -102,6 +102,38 @@ fn convert(
     })
 }
 
+/// Converts a PDF to a Word document; returns the bytes of the `.docx` file.
+#[pyfunction]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0))]
+fn to_docx<'py>(
+    py: Python<'py>,
+    pdf: Vec<u8>,
+    source: Option<String>,
+    tables: bool,
+    equations: &str,
+    scale: f32,
+    jobs: usize,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let equations = parse_equations(equations)?;
+    if !(scale > 0.2 && scale <= 8.0) {
+        return Err(value_error("scale must be between 0.2 and 8"));
+    }
+    let data = py.detach(move || {
+        let mut paper = Paper::from_bytes(pdf).map_err(value_error)?;
+        if let Some(source) = source {
+            paper = paper.with_source(source);
+        }
+        let analysis = paper.analyze_with(AnalyzeOptions {
+            tables,
+            jobs,
+            ..Default::default()
+        });
+        let opts = DocxOptions { scale, jobs, equations };
+        Ok::<_, PyErr>(paper.to_docx(&analysis, &opts))
+    })?;
+    Ok(PyBytes::new(py, &data))
+}
+
 /// Analyses a PDF and returns its structure (blocks in reading order) as a
 /// JSON string, the same document as `kakemono convert --json`.
 #[pyfunction]
@@ -136,6 +168,7 @@ fn fetch_arxiv<'py>(py: Python<'py>, id: &str) -> PyResult<Bound<'py, PyBytes>> 
 #[pymodule]
 fn _kakemono(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(convert, module)?)?;
+    module.add_function(wrap_pyfunction!(to_docx, module)?)?;
     module.add_function(wrap_pyfunction!(analyze, module)?)?;
     module.add_function(wrap_pyfunction!(parse_arxiv_id, module)?)?;
     module.add_function(wrap_pyfunction!(fetch_arxiv, module)?)?;

@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF into HTML or Word (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
-use kakemono::{AnalyzeOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -38,7 +38,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML"
+    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML or Word documents"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -50,7 +50,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML or Word.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -102,6 +102,15 @@ impl From<ModeArg> for Mode {
             ModeArg::Friendly => Mode::Friendly,
         }
     }
+}
+
+/// Values of `--format`; the doc comments are the help texts.
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum FormatArg {
+    /// HTML page(s) in the chosen mode(s)
+    Html,
+    /// A Word document (.docx): styles, Word tables and Office Math equations
+    Docx,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -167,13 +176,16 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output HTML file, or a directory (required to be a directory with --all)
+    /// Output format (default: docx when --output ends in .docx, html otherwise); --mode applies to html only
+    #[arg(short, long, value_enum)]
+    format: Option<FormatArg>,
+    /// Output HTML or .docx file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// How images are stored
     #[arg(long, value_enum, default_value = "inline")]
     images: ImagesArg,
-    /// Resolution of figure/equation images in pixels per PDF point
+    /// Resolution of figure/equation images in pixels per PDF point (HTML and Word)
     #[arg(long, default_value_t = 3.0)]
     scale: f32,
     /// Page background used by hard and hard-95 modes
@@ -185,7 +197,7 @@ struct ConvertArgs {
     /// Fonts of friendly mode, and of the formulas of medium and friendly modes
     #[arg(long, value_enum, default_value = "embed")]
     fonts: FontsArg,
-    /// How medium and friendly modes show displayed formulas
+    /// How medium and friendly modes (and Word documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
     /// Also write the structured document as JSON (for translation tools)
@@ -227,6 +239,15 @@ impl OutputPaths {
         match &self.file {
             Some(file) => file.clone(),
             None => self.dir.join(format!("{stem}.{}.html", mode.name())),
+        }
+    }
+
+    /// The Word file: the file named by `--output`, or `<stem>.docx` in
+    /// the output directory.
+    fn docx_file(&self, stem: &str) -> PathBuf {
+        match &self.file {
+            Some(file) => file.clone(),
+            None => self.dir.join(format!("{stem}.docx")),
         }
     }
 }
@@ -301,14 +322,19 @@ fn write_file(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 /// The `convert` subcommand: analyses the paper once, then writes the HTML
-/// of each requested mode and, with `--json`, the document as JSON.
+/// of each requested mode or the Word document and, with `--json`, the
+/// document as JSON.
 ///
 /// # Errors
-/// When `--scale` is out of range, the input cannot be loaded or an output
+/// When `--scale` is out of range, `--all` is given for a Word document, the input cannot be loaded or an output
 /// file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     if !(args.scale > MIN_SCALE && args.scale <= MAX_SCALE) {
         bail!("--scale must be between 0.2 and 8");
+    }
+    let format = output_format(&args);
+    if format == FormatArg::Docx && args.all {
+        bail!("--all produces the HTML modes; it cannot be used with --format docx");
     }
     let (paper, stem) = load(&args.input)?;
     let started = Instant::now();
@@ -326,17 +352,11 @@ fn convert(args: ConvertArgs) -> Result<()> {
         started.elapsed().as_secs_f32()
     );
 
-    let modes: Vec<Mode> = if args.all {
-        vec![Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly]
-    } else {
-        vec![args.mode.into()]
-    };
-
-    // Resolve where each mode goes.
     let paths = OutputPaths::new(args.output.as_ref(), args.all);
-    for mode in modes {
-        let file = paths.html_file(&stem, mode);
-        write_mode(&paper, &analysis, &args, jobs, mode, &file)?;
+    if format == FormatArg::Docx {
+        write_docx(&paper, &analysis, &args, jobs, &paths.docx_file(&stem))?;
+    } else {
+        write_html(&paper, &analysis, &args, jobs, &paths, &stem)?;
     }
 
     if args.json {
@@ -346,6 +366,77 @@ fn convert(args: ConvertArgs) -> Result<()> {
         eprintln!("json     -> {}", file.display());
     }
     Ok(())
+}
+
+/// The output format: `--format`, or Word when `--output` names a `.docx`
+/// file, HTML otherwise.
+fn output_format(args: &ConvertArgs) -> FormatArg {
+    args.format.unwrap_or_else(|| {
+        let docx = args
+            .output
+            .as_ref()
+            .and_then(|path| path.extension())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("docx"));
+        if docx { FormatArg::Docx } else { FormatArg::Html }
+    })
+}
+
+/// Writes the HTML of each requested mode (`--mode`, or all four with
+/// `--all`).
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_html(
+    paper: &Paper,
+    analysis: &Analysis,
+    args: &ConvertArgs,
+    jobs: usize,
+    paths: &OutputPaths,
+    stem: &str,
+) -> Result<()> {
+    let modes: Vec<Mode> = if args.all {
+        vec![Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly]
+    } else {
+        vec![args.mode.into()]
+    };
+
+    for mode in modes {
+        let file = paths.html_file(stem, mode);
+        write_mode(paper, analysis, args, jobs, mode, &file)?;
+    }
+    Ok(())
+}
+
+/// Writes `analysis` as a Word document to `file` and reports the result
+/// on stderr.
+///
+/// # Errors
+/// When the file cannot be written.
+fn write_docx(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = DocxOptions {
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+    };
+    let started = Instant::now();
+    let data = paper.to_docx(analysis, &opts);
+    write_file(file, &data)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB, {:.2}s)",
+        "docx",
+        file.display(),
+        data.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// The library value of `--equations`.
+fn equations(arg: EquationsArg) -> Equations {
+    match arg {
+        EquationsArg::Image => Equations::Image,
+        EquationsArg::Mathml => Equations::MathMl,
+    }
 }
 
 /// Renders `analysis` in `mode` and writes the HTML to `file`, with the
@@ -379,10 +470,7 @@ fn write_mode(
         },
         jobs,
         embed_fonts: args.fonts == FontsArg::Embed,
-        equations: match args.equations {
-            EquationsArg::Image => Equations::Image,
-            EquationsArg::Mathml => Equations::MathMl,
-        },
+        equations: equations(args.equations),
     };
     let started = Instant::now();
     let out = paper.to_html(analysis, &opts);

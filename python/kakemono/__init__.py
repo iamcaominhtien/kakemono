@@ -1,8 +1,9 @@
-"""Convert PDF papers and books into clean, readable HTML.
+"""Convert PDF papers and books into clean, readable HTML or Word documents.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
 >>> pages = kakemono.convert("1706.03762", mode="hard")   # an arXiv id works too
+>>> data = kakemono.to_docx("paper.pdf")                  # a Word document (bytes)
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 
 The work is done by the kakemono Rust library; the GIL is released while it
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Literal, Sequence, Union
 
 from . import _kakemono
 
-__all__ = ["MODES", "Source", "analyze", "convert", "convert_all", "fetch_arxiv", "__version__"]
+__all__ = ["MODES", "Source", "analyze", "convert", "convert_all", "fetch_arxiv", "to_docx", "__version__"]
 
 __version__: str = _kakemono.__version__
 
@@ -92,6 +93,31 @@ def convert(source: Source, mode: Mode = "friendly", **options: Any) -> str:
     of :data:`MODES`; the other options are those of :func:`convert_all`.
     """
     return convert_all(source, [mode], **options)[mode]
+
+
+def to_docx(
+    source: Source,
+    path: Union[str, "os.PathLike[str]", None] = None,
+    *,
+    tables: bool = True,
+    equations: Literal["mathml", "image"] = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+) -> bytes:
+    """Convert a PDF to a Word document (``.docx``) and return its bytes.
+
+    When `path` is given, the document is also written there. Headings,
+    lists, captions and references get Word styles, rebuilt tables become
+    Word tables, and formulas whose structure is clear become Word equations
+    (with ``equations="image"``, every formula is a picture). The other
+    options are those of :func:`convert_all`.
+    """
+    data, name = _load(source)
+    docx = _kakemono.to_docx(data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs)
+    if path is not None:
+        with open(os.fspath(path), "wb") as file:
+            file.write(docx)
+    return docx
 
 
 def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:

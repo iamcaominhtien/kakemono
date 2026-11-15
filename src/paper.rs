@@ -1,10 +1,11 @@
-//! High-level entry points: PDF bytes in, structured document and HTML out.
+//! High-level entry points: PDF bytes in, structured document and HTML (or
+//! Word) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
-use crate::render::{HtmlOptions, HtmlOutput, render};
+use crate::render::{DocxOptions, HtmlOptions, HtmlOutput, render, render_docx};
 use anyhow::Result;
 
 /// A loaded PDF, ready to be analysed and rendered.
@@ -77,6 +78,13 @@ impl Paper {
     /// come from this paper, since images are drawn from its PDF.
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         render(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as a Word document (`.docx`) and returns the
+    /// bytes of the file. `analysis` must come from this paper, since the
+    /// pictures are drawn from its PDF.
+    pub fn to_docx(&self, analysis: &Analysis, opts: &DocxOptions) -> Vec<u8> {
+        render_docx(analysis, &self.pdf, opts)
     }
 }
 
