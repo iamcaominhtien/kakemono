@@ -24,7 +24,7 @@ cargo test --release                                  # unit tests + 8 real pape
 KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
-node tests/browser/check-friendly.js out/*.friendly.html             # browser checks
+node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
 node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
@@ -84,9 +84,11 @@ committing.
 - `src/render/friendly/{friendly.js,book.js,friendly.css}` and `src/render/hard95/` are written
   compactly on purpose. Do not run prettier or reformat whole files: the diff would be huge and
   every snapshot would change.
-- The book view (`book.js`) measures layout with CSS columns. Any change to page breaking must be
-  followed by `check-friendly.js`, which checks for near-empty pages, captions apart from their
-  figures, and orphaned headings.
+- The book view (`book.js`) measures layout with CSS columns. `check-friendly.js` checks it for
+  near-empty pages, captions apart from their figures, and orphaned headings.
+- **Test the book view only when the user asks for it.** Do not run `check-friendly.js` or other
+  book-view checks (screenshots, pagination timing) on your own, even after a change to
+  `book.js` or to page breaking; mention instead that the book view was not tested.
 
 ## Constraints
 
