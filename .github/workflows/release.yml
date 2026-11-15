@@ -58,6 +58,14 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A version set by hand in Cargo.toml (not tagged yet) is released as it is.
+          # `release-plz update` could not handle it anyway when the package was renamed:
+          # it looks for the package, by its new name, in the last release tag.
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is not tagged yet: releasing it as it is"
+            exit 0
+          fi
           release-plz update
           # `git status`, not `git diff`: the first release creates CHANGELOG.md.
           if [ -z "$(git status --porcelain)" ]; then
