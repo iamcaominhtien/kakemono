@@ -1,6 +1,8 @@
 """Tests of the Python package on the LIGO paper (CC BY 4.0), the one test
 paper committed to the repository."""
 
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,19 @@ def test_convert_all_analyses_once_for_every_mode():
     assert list(pages) == list(kakemono.MODES)
     for mode, html in pages.items():
         assert f'content="kakemono ({mode})"' in html
+
+
+def test_to_docx_gives_a_word_document(tmp_path):
+    out = tmp_path / "ligo.docx"
+    data = kakemono.to_docx(LIGO, out, scale=1.0)
+    assert out.read_bytes() == data
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        assert package.testzip() is None
+        document = package.read("word/document.xml").decode()
+    assert "Observation of Gravitational Waves" in document
+    assert '<w:pStyle w:val="Heading1"/>' in document
+    with pytest.raises(ValueError, match="unknown equations"):
+        kakemono.to_docx(LIGO, equations="latex")
 
 
 def test_analyze_gives_blocks_in_reading_order():

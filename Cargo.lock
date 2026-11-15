@@ -765,6 +765,8 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "crc32fast",
+ "flate2",
  "hayro",
  "hayro-font",
  "hayro-interpret",
