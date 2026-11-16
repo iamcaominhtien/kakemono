@@ -36,6 +36,18 @@ use crate::common::geom::Rect;
 use crate::model::{BlockKind, Document, Line, LineGlyph, MathNode};
 use unicode_normalization::UnicodeNormalization;
 
+/// The symbol made by joining two pieces that stand for `upper` and
+/// `lower`: the same symbol, or a brace and the extension piece of a brace;
+/// `None` when they do not join.
+fn joined_piece(upper: &'static str, lower: &'static str) -> Option<&'static str> {
+    let brace = |symbol: &str| matches!(symbol, "{" | "}");
+    match (upper, lower) {
+        _ if upper == lower => Some(upper),
+        (BRACE_EXTENSION, other) | (other, BRACE_EXTENSION) if brace(other) => Some(other),
+        _ => None,
+    }
+}
+
 /// Big operators whose limits TeX sets above and below them in displays.
 const BIG_OPERATORS: &[&str] = &["∑", "∏", "∐", "⋃", "⋂", "⨁", "⨂", "⨀", "⋁", "⋀", "⨄", "⨆"];
 /// Relations a multi-line display is aligned on.
@@ -72,7 +84,12 @@ const PIECES: &[(&str, &str)] = &[
     ("⎫", "}"),
     ("⎬", "}"),
     ("⎭", "}"),
+    // The extension of a brace, shared by both: it joins either.
+    ("⎪", BRACE_EXTENSION),
 ];
+/// What the extension piece of a brace (`⎪`) stands for until it is joined
+/// to the other pieces of an opening or a closing brace.
+const BRACE_EXTENSION: &str = "⎪";
 /// Accents drawn as glyphs of their own above their base, and the
 /// character MathML draws for each.
 const ACCENT_GLYPHS: &[(&str, &str)] = &[
@@ -173,6 +190,15 @@ pub struct MathConfig {
     /// of the largest row is a stray limit or script that belongs to
     /// another equation: the formula stays a picture.
     pub row_min_size_ratio: f32,
+    /// Three periods one above the other (or along a diagonal), each this
+    /// far (em) at least from the next ...
+    pub dots_min_step_em: f32,
+    /// ... and at most this far, are vertical (or diagonal) dots, `⋮`
+    /// (`⋱`, `⋰`), which some fonts draw as periods.
+    pub dots_max_step_em: f32,
+    /// The steps between the three dots differ by at most this (em), and
+    /// vertical dots are at most this far apart sideways.
+    pub dots_step_tolerance_em: f32,
 }
 
 impl Default for MathConfig {
@@ -195,6 +221,9 @@ impl Default for MathConfig {
             column_min_gap_em: 0.8,
             align_tolerance_pt: 2.0,
             row_min_size_ratio: 0.8,
+            dots_min_step_em: 0.15,
+            dots_max_step_em: 0.7,
+            dots_step_tolerance_em: 0.1,
         }
     }
 }
@@ -588,6 +617,7 @@ impl Parser<'_> {
         if items.is_empty() {
             return Some(MathNode::Row(Vec::new()));
         }
+        let items = self.dots(items);
         let items = self.pieces(items);
         let items = self.accents(items)?;
         let items = self.radicals(items)?;
@@ -602,9 +632,76 @@ impl Parser<'_> {
         }
     }
 
+    /// Joins three periods set one above the other into vertical dots (`⋮`),
+    /// and three set along a diagonal into diagonal dots (`⋱` going down to
+    /// the right, `⋰` going up): fonts that have no such glyph (or a
+    /// layout that builds them) draw them as periods, which would otherwise
+    /// be glyphs stacked without a bar.
+    fn dots(&self, mut items: Vec<Item>) -> Vec<Item> {
+        let is_dot = |item: &Item| item.glyph().is_some_and(|glyph| glyph.text == "." || glyph.text == "·");
+        let (min, max, tol) = (
+            self.em(self.cfg.dots_min_step_em),
+            self.em(self.cfg.dots_max_step_em),
+            self.em(self.cfg.dots_step_tolerance_em),
+        );
+        loop {
+            let dots: Vec<usize> = (0..items.len()).filter(|&idx| is_dot(&items[idx])).collect();
+            let step = |a: usize, b: usize| {
+                (
+                    items[b].ink.cx() - items[a].ink.cx(),
+                    items[b].ink.cy() - items[a].ink.cy(),
+                )
+            };
+            // Three dots, top to bottom, at even steps.
+            let found = dots.iter().find_map(|&top| {
+                dots.iter().find_map(|&mid| {
+                    let (dx, dy) = step(top, mid);
+                    if !(min..=max).contains(&dy) || dx.abs() > max {
+                        return None;
+                    }
+                    let symbol = if dx.abs() <= tol {
+                        "⋮"
+                    } else if dx.abs() >= min && dx > 0.0 {
+                        "⋱"
+                    } else if dx.abs() >= min {
+                        "⋰"
+                    } else {
+                        return None;
+                    };
+                    dots.iter()
+                        .find(|&&low| {
+                            let (dx2, dy2) = step(mid, low);
+                            low != top && (dx2 - dx).abs() <= tol && (dy2 - dy).abs() <= tol
+                        })
+                        .map(|&low| (top, mid, low, symbol))
+                })
+            });
+            let Some((top, mid, low, symbol)) = found else {
+                return items;
+            };
+            let ink = items[top].ink.union(&items[mid].ink).union(&items[low].ink);
+            let mut joined = items[mid].clone();
+            joined.ink = ink;
+            joined.left = ink.x0;
+            joined.right = ink.x1;
+            if let Content::Glyph(glyph) = &mut joined.content {
+                glyph.text = symbol.to_string();
+                glyph.height_em = ink.height() / glyph.size.max(1.0);
+            }
+            let mut gone = [top, mid, low];
+            gone.sort_unstable();
+            for idx in gone.into_iter().rev() {
+                items.swap_remove(idx);
+            }
+            items.push(joined);
+        }
+    }
+
     /// Joins the pieces of tall symbols (stacked glyphs that make one
-    /// bracket, bar or radical sign) into one glyph.
-    fn pieces(&self, mut items: Vec<Item>) -> Vec<Item> {
+    /// bracket, bar or radical sign) into one glyph. Pieces that touch, one
+    /// above the other, form a column (a brace of five pieces: top,
+    /// extension, middle, extension, bottom), which becomes one glyph.
+    fn pieces(&self, items: Vec<Item>) -> Vec<Item> {
         let symbol = |item: &Item| {
             let glyph = item.glyph()?;
             PIECES
@@ -613,33 +710,66 @@ impl Parser<'_> {
                 .map(|(_, symbol)| *symbol)
         };
         let gap = self.em(self.cfg.piece_max_gap_em);
-        loop {
-            let pair = (0..items.len()).find_map(|a| {
-                let first = symbol(&items[a])?;
-                (0..items.len())
-                    .find(|&b| {
-                        let (top, bottom) = (&items[a].ink, &items[b].ink);
-                        b != a
-                            && symbol(&items[b]) == Some(first)
-                            && top.cy() < bottom.cy()
-                            && bottom.y0 - top.y1 <= gap
-                            && top.x_overlap(bottom) > 0.0
-                    })
-                    .map(|b| (a, b, first))
-            });
-            let Some((a, b, symbol)) = pair else {
-                return items;
-            };
-            let lower = items.swap_remove(a.max(b));
-            let upper = &mut items[a.min(b)];
-            upper.ink = upper.ink.union(&lower.ink);
-            upper.left = upper.left.min(lower.left);
-            upper.right = upper.right.max(lower.right);
-            if let Content::Glyph(glyph) = &mut upper.content {
-                glyph.text = symbol.to_string();
-                glyph.height_em = upper.ink.height() / glyph.size.max(1.0);
+        let pieces: Vec<(usize, &'static str)> = (0..items.len())
+            .filter_map(|idx| Some((idx, symbol(&items[idx])?)))
+            .collect();
+        // Columns of touching pieces, as groups of a union-find.
+        let mut group: Vec<usize> = (0..items.len()).collect();
+        fn root(group: &mut [usize], mut idx: usize) -> usize {
+            while group[idx] != idx {
+                group[idx] = group[group[idx]];
+                idx = group[idx];
+            }
+            idx
+        }
+        for (pos, &(a, first)) in pieces.iter().enumerate() {
+            for &(b, second) in &pieces[pos + 1..] {
+                let (top, bottom) = if items[a].ink.cy() <= items[b].ink.cy() {
+                    (&items[a].ink, &items[b].ink)
+                } else {
+                    (&items[b].ink, &items[a].ink)
+                };
+                let touch = bottom.y0 - top.y1 <= gap && top.x_overlap(bottom) > 0.0;
+                if touch && joined_piece(first, second).is_some() {
+                    let (root_a, root_b) = (root(&mut group, a), root(&mut group, b));
+                    group[root_a] = root_b;
+                }
             }
         }
+        let mut columns: std::collections::BTreeMap<usize, Vec<(usize, &'static str)>> = Default::default();
+        for &(idx, piece) in &pieces {
+            let key = root(&mut group, idx);
+            columns.entry(key).or_default().push((idx, piece));
+        }
+        let mut joined: Vec<Item> = Vec::new();
+        let mut used = vec![false; items.len()];
+        for column in columns.values().filter(|column| column.len() >= 2) {
+            let symbol = column
+                .iter()
+                .map(|&(_, piece)| piece)
+                .find(|&piece| piece != BRACE_EXTENSION)
+                .unwrap_or("|");
+            let mut item = items[column[0].0].clone();
+            for &(idx, _) in column {
+                used[idx] = true;
+                item.ink = item.ink.union(&items[idx].ink);
+                item.left = item.left.min(items[idx].left);
+                item.right = item.right.max(items[idx].right);
+            }
+            if let Content::Glyph(glyph) = &mut item.content {
+                glyph.text = symbol.to_string();
+                glyph.height_em = item.ink.height() / glyph.size.max(1.0);
+            }
+            joined.push(item);
+        }
+        let mut out: Vec<Item> = items
+            .into_iter()
+            .zip(used)
+            .filter(|(_, used)| !used)
+            .map(|(item, _)| item)
+            .collect();
+        out.extend(joined);
+        out
     }
 
     /// Replaces every accent glyph that sits right above something (`Ê`,
@@ -1561,12 +1691,19 @@ fn ellipsis(glyphs: &[&Glyph], start: usize) -> Option<(String, usize)> {
         .then(|| (symbol.to_string(), start + 3))
 }
 
-/// Two operator glyphs that make one operator (`:=`, `=:`), with the
-/// index after them.
+/// Two operator glyphs that make one operator (`:=`, `=:`, the long
+/// double arrow `⇐⇒` some fonts draw in two halves), with the index after
+/// them.
 fn compound(glyphs: &[&Glyph], start: usize) -> Option<(String, usize)> {
     let pair = glyphs.get(start..start + 2)?;
-    let text = format!("{}{}", pair[0].text, pair[1].text);
-    (matches!(text.as_str(), ":=" | "=:") && !pair[1].space_before).then_some((text, start + 2))
+    let text = match format!("{}{}", pair[0].text, pair[1].text).as_str() {
+        ":=" => ":=".to_string(),
+        "=:" => "=:".to_string(),
+        "⇐⇒" => "⟺".to_string(),
+        "←→" => "⟷".to_string(),
+        _ => return None,
+    };
+    (!pair[1].space_before).then_some((text, start + 2))
 }
 
 /// The accent node of a glyph whose text carries a combining accent
@@ -1986,6 +2123,48 @@ mod tests {
             align: vec!["left", "left"],
         };
         assert_eq!(stack[1], expected);
+    }
+
+    #[test]
+    fn a_brace_of_five_pieces_is_one_brace() {
+        // Top, extension, middle, extension, bottom, each touching the next.
+        let piece =
+            |text: &str, y0: f32| glyph(text, 3, 20.0, y0 + 6.0, 10.0, Some(Rect::new(20.0, y0, 25.0, y0 + 6.0)));
+        let math = rebuild(
+            vec![
+                glyph("f", 0, 10.0, 100.0, 10.0, None),
+                piece("⎧", 80.0),
+                piece("⎪", 86.0),
+                piece("⎨", 92.0),
+                piece("⎪", 98.0),
+                piece("⎩", 104.0),
+                glyph("a", 0, 27.0, 92.0, 10.0, None),
+                glyph("b", 0, 27.0, 106.0, 10.0, None),
+            ],
+            &[],
+        );
+        let Some(MathNode::Row(nodes)) = math else {
+            panic!("not a row: {math:?}");
+        };
+        let MathNode::Row(stack) = &nodes[1] else {
+            panic!("no stack: {:?}", nodes[1]);
+        };
+        assert!(matches!(&stack[0], MathNode::Operator { text, height_em: Some(_) } if text == "{"));
+        let expected = MathNode::Table {
+            rows: vec![vec![ident("a")], vec![ident("b")]],
+            align: vec!["left"],
+        };
+        assert_eq!(stack[1], expected);
+    }
+
+    #[test]
+    fn periods_one_above_the_other_are_vertical_dots() {
+        let dot = |y: f32| glyph(".", 1, 30.0, y + 1.0, 10.0, Some(Rect::new(30.0, y, 31.0, y + 1.0)));
+        let math = rebuild(
+            vec![glyph("x", 0, 10.0, 100.0, 10.0, None), dot(96.0), dot(99.5), dot(103.0)],
+            &[],
+        );
+        assert_eq!(math, Some(MathNode::Row(vec![ident("x"), operator("⋮")])));
     }
 
     #[test]

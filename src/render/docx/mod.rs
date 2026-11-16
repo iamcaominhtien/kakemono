@@ -57,6 +57,18 @@ pub(crate) struct PendingImage {
     height_emu: u64,
     /// Alternative text.
     alt: String,
+    /// What the picture shows (`fig`, `tab`, `eq`, ...), for the name of
+    /// its file in [`DocxOutput::files`].
+    hint: &'static str,
+}
+
+/// A Word document and its pictures as files of their own (see
+/// [`render_docx_with_images`]).
+pub struct DocxOutput {
+    /// The bytes of the `.docx` file, with the pictures embedded.
+    pub docx: Vec<u8>,
+    /// Each picture of the document: (relative path, contents).
+    pub files: Vec<(String, Vec<u8>)>,
 }
 
 /// The parts of the package made from the drawn pictures.
@@ -66,6 +78,8 @@ struct Media {
     files: Vec<(String, Vec<u8>)>,
     /// Their relationships: (id, target relative to `word/`).
     rels: Vec<(String, String)>,
+    /// What each picture shows (see [`PendingImage::hint`]).
+    hints: Vec<&'static str>,
 }
 
 /// Writes an analysed document as a `.docx` file and returns its bytes.
@@ -74,6 +88,30 @@ struct Media {
 /// cannot be drawn is left out. The same document always gives the same
 /// bytes.
 pub fn render_docx(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> Vec<u8> {
+    write_package(analysis, pdf, opts).0
+}
+
+/// Writes an analysed document as a `.docx` file, like [`render_docx`], and
+/// returns each of its pictures as a file in `image_dir` as well
+/// (`image_dir/001-fig.png`, ...): the pictures stay embedded in the
+/// document.
+pub fn render_docx_with_images(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
+    let (docx, media) = write_package(analysis, pdf, opts);
+    let files = media
+        .files
+        .into_iter()
+        .zip(media.hints)
+        .enumerate()
+        .map(|(i, ((name, data), hint))| {
+            let ext = if name.ends_with(".jpeg") { "jpg" } else { "png" };
+            (format!("{image_dir}/{:03}-{hint}.{ext}", i + 1), data)
+        })
+        .collect();
+    DocxOutput { docx, files }
+}
+
+/// Writes the `.docx` package and returns its bytes with the pictures in it.
+fn write_package(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> (Vec<u8>, Media) {
     let doc = &analysis.doc;
     let mut body = body::Body::new(doc, opts);
     body.write(doc);
@@ -109,7 +147,7 @@ pub fn render_docx(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> Ve
     for (name, data) in &media.files {
         zip.add(name, data, Compression::Stored);
     }
-    zip.finish()
+    (zip.finish(), media)
 }
 
 /// Replaces the picture placeholders of `xml` with the drawn pictures
@@ -136,6 +174,7 @@ fn fill_images(xml: &str, images: &[PendingImage], drawn: Vec<Option<(Vec<u8>, b
             out.push_str(&drawing_xml(number, &id, &images[index]));
             media.rels.push((id, format!("media/image{number}.{ext}")));
             media.files.push((format!("word/media/image{number}.{ext}"), data));
+            media.hints.push(images[index].hint);
         }
         rest = &after[end + MARK.len_utf8()..];
     }

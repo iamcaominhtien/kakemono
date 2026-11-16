@@ -1,15 +1,17 @@
 //! The body of the Word document (`word/document.xml`): the blocks in
 //! reading order as paragraphs, tables, equations and pictures.
 
-use super::omml::display_math;
+use super::omml::{display_math, inline_math};
 use super::parts::{TEXT_WIDTH_TWIPS, TWIPS_PER_PT, section_props};
 use super::table::table_xml;
 use super::xml::{bookmark_name, run_props, text_runs};
 use super::{DocxOptions, PendingImage};
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style};
 use crate::render::assets::MARK;
+use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::{
-    CAP_LABEL, Equations, code, code_run, figure_alt, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, code, code_run, figure_alt, float_class, is_abstract_text, is_scene_break, plain,
+    stray_equation_number,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -229,10 +231,27 @@ impl<'a> Body<'a> {
         }
     }
 
+    /// Styled spans as runs, with the formulas inside them as Office Math
+    /// (see [`inline_math`](crate::render::inline_math)) when equations are
+    /// wanted.
+    fn runs(&mut self, spans: &[Span]) -> String {
+        if self.opts.equations != Equations::MathMl || !has_math(spans) {
+            return self.styled_runs(spans);
+        }
+        let mut out = String::new();
+        for piece in split(spans) {
+            match piece {
+                Piece::Text(spans) => out.push_str(&self.styled_runs(&spans)),
+                Piece::Math(node, _) => out.push_str(&inline_math(&node)),
+            }
+        }
+        out
+    }
+
     /// Styled spans as runs, with their links: a link to an anchor of the
     /// document points to its bookmark, a web link to its URL; other
     /// targets are left out.
-    fn runs(&mut self, spans: &[Span]) -> String {
+    fn styled_runs(&mut self, spans: &[Span]) -> String {
         let mut out = String::new();
         for span in spans {
             match span.href.as_deref().and_then(|href| self.link_target(href)) {
@@ -365,7 +384,7 @@ impl<'a> Body<'a> {
                     TEXT_WIDTH_TWIPS
                 };
                 let scale = self.eq_scale;
-                self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale)
+                self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale, "eq")
             }
         };
         let Some(number) = number else {
@@ -435,6 +454,7 @@ impl<'a> Body<'a> {
                 &figure_alt(block, label),
                 TEXT_WIDTH_TWIPS as f32 / TWIPS_PER_PT,
                 1.0,
+                float_class(kind),
             );
             let keep = if caption.is_some() && !caption_first {
                 "<w:keepNext/>"
@@ -464,8 +484,9 @@ impl<'a> Body<'a> {
 
     /// A placeholder for the picture of `spec`, at `scale` times its size
     /// in the PDF, but at most `max_width_pt` wide and
-    /// [`MAX_IMAGE_HEIGHT_PT`] high. The picture is drawn later.
-    fn image_run(&mut self, spec: &ImageSpec, alt: &str, max_width_pt: f32, scale: f32) -> String {
+    /// [`MAX_IMAGE_HEIGHT_PT`] high; `hint` says what it shows (`eq`,
+    /// `fig`, ...). The picture is drawn later.
+    fn image_run(&mut self, spec: &ImageSpec, alt: &str, max_width_pt: f32, scale: f32, hint: &'static str) -> String {
         let width = spec.rect.width().max(1.0) * scale;
         let height = spec.rect.height().max(1.0) * scale;
         let fit = (max_width_pt / width).min(MAX_IMAGE_HEIGHT_PT / height).min(1.0);
@@ -474,6 +495,7 @@ impl<'a> Body<'a> {
             width_emu: (width * fit * EMU_PER_PT).round() as u64,
             height_emu: (height * fit * EMU_PER_PT).round() as u64,
             alt: alt.to_string(),
+            hint,
         });
         format!("{MARK}{}{MARK}", self.images.len() - 1)
     }

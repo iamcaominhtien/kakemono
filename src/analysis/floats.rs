@@ -82,6 +82,13 @@ pub struct FloatsConfig {
     /// ... and it has more than this many characters (a real text line, not
     /// a stray label).
     pub continuation_min_chars: usize,
+    /// A shorter line above (a narrow margin caption) still runs on into
+    /// the label when it has at least this many words, ends mid-sentence
+    /// (with a lowercase letter or a comma) and starts within
+    /// `continuation_left_tol_pt` of the label's left edge.
+    pub continuation_short_min_words_count: usize,
+    /// See `continuation_short_min_words_count`.
+    pub continuation_left_tol_pt: f32,
     /// The second line of a caption starts at most this many sizes below
     /// the first, or at the body's leading (times `caption_step_max_leading`,
     /// plus `caption_step_slack_pt`): small captions set at the body's
@@ -102,6 +109,20 @@ pub struct FloatsConfig {
     pub caption_left_overhang_em: f32,
     /// A caption line may end at most this far right of the caption so far.
     pub caption_right_overhang_pt: f32,
+    /// A caption at most this wide (in sizes of its text) is a narrow one,
+    /// set in a margin: its lines are ragged on the right, so a line flush
+    /// with its left edge continues it however far right it ends (within
+    /// that width).
+    pub narrow_caption_max_width_em: f32,
+    /// A narrow caption beside a component (left or right of it, its top
+    /// within the component's height) claims it when the gap between them
+    /// is at most this (points): a book that sets its captions in the
+    /// margin beside the figure.
+    pub beside_max_gap_pt: f32,
+    /// The same for a caption of two lines or more, which is surely in the
+    /// margin (a short caption of one line in a two-column paper is narrow
+    /// too): a figure in the text column may stand that far away.
+    pub beside_far_max_gap_pt: f32,
     /// A line that starts with its own punctuated label within this
     /// distance of the caption's left edge starts the next caption.
     pub caption_next_label_tol_pt: f32,
@@ -154,6 +175,19 @@ pub struct FloatsConfig {
     /// shading of a text box (an example, a note), not a drawing: it is
     /// ignored, and the pictures inside the box stay figures of their own.
     pub shaded_box_min_lines_count: usize,
+    /// A shaded box is also the shading of a text box when one line inside
+    /// it is prose across it: its glyphs inside the box span at least this
+    /// share of the box's width...
+    pub shaded_box_line_fill_ratio: f32,
+    /// ... with at least this many characters (no plot has such a line).
+    pub shaded_box_wide_line_min_chars: usize,
+    /// A light shading (every colour channel at least this) at least
+    /// `background_panel_min_width_ratio` of the page wide that holds other
+    /// drawings is the background of a box (a worked example holding a
+    /// figure), not a drawing: the drawings inside it are the figure.
+    pub background_panel_min_channel: u8,
+    /// See `background_panel_min_channel`.
+    pub background_panel_min_width_ratio: f32,
     /// ... or behind the captions of this many floats.
     pub shaded_box_min_captions_count: usize,
     /// A vertical rule with at least this many lines of running text
@@ -263,6 +297,9 @@ pub struct FloatsConfig {
     pub grow_horizontal_overlap_ratio: f32,
     /// ... or, for a one-line caption, the horizontal gap is at most this.
     pub grow_max_hgap_pt: f32,
+    /// The panels of a figure whose caption stands beside it (in the
+    /// margin) join its region across a gap of at most this many points.
+    pub beside_grow_max_hgap_pt: f32,
 
     // --- figures whose panels are partly text ---
     /// A figure caption that found no drawing next to it may claim a drawing
@@ -331,6 +368,17 @@ pub struct FloatsConfig {
     pub fallback_min_rows_count: usize,
     /// The rows must span more than this many body sizes.
     pub fallback_min_height_em: f32,
+    /// A narrow caption in the margin with no graphic takes the lines
+    /// beside it, level with it, that are not prose: lines with a gap
+    /// wider than this many font sizes between two glyphs (table cells)
+    /// are never prose.
+    pub beside_cell_gap_em: f32,
+    /// A figure region beside its caption takes those rows only when they
+    /// stay within its height, give or take this many body font sizes...
+    pub beside_rows_height_tol_em: f32,
+    /// ... and its graphics cover at most this share of the rows' area (a
+    /// diagram mostly made of text).
+    pub beside_rows_max_graphics_ratio: f32,
 
     // --- absorbing text into a region ---
     /// Lines touching the region are absorbed over at most this many
@@ -436,6 +484,8 @@ impl Default for FloatsConfig {
             continuation_size_tol_pt: 0.3,
             continuation_overlap_ratio: 0.6,
             continuation_min_chars: 20,
+            continuation_short_min_words_count: 2,
+            continuation_left_tol_pt: 2.0,
             caption_first_step_max_em: 1.38,
             caption_step_max_leading: 1.15,
             caption_step_slack_pt: 0.5,
@@ -443,6 +493,9 @@ impl Default for FloatsConfig {
             caption_size_tol_pt: 0.4,
             caption_left_overhang_em: 2.0,
             caption_right_overhang_pt: 2.0,
+            narrow_caption_max_width_em: 15.0,
+            beside_max_gap_pt: 150.0,
+            beside_far_max_gap_pt: 300.0,
             caption_next_label_tol_pt: 2.0,
             caption_word_space_em: 0.3,
             caption_short_line_slack_pt: 2.0,
@@ -458,6 +511,10 @@ impl Default for FloatsConfig {
             cover_max_lines_count: 12,
             background_path_extent_ratio: 0.95,
             shaded_box_min_lines_count: 3,
+            shaded_box_line_fill_ratio: 0.8,
+            shaded_box_wide_line_min_chars: 30,
+            background_panel_min_channel: 235,
+            background_panel_min_width_ratio: 0.5,
             shaded_box_min_captions_count: 2,
             side_rule_min_lines_count: 3,
             side_rule_max_gap_em: 3.0,
@@ -495,6 +552,7 @@ impl Default for FloatsConfig {
             grow_caption_margin_pt: 12.0,
             grow_horizontal_overlap_ratio: 0.3,
             grow_max_hgap_pt: 36.0,
+            beside_grow_max_hgap_pt: 72.0,
             panel_max_span_pt: 320.0,
             panel_max_caption_gap_pt: 30.0,
             panel_overlap_ratio: 0.5,
@@ -517,6 +575,9 @@ impl Default for FloatsConfig {
             fallback_max_row_gap_em: 2.4,
             fallback_min_rows_count: 3,
             fallback_min_height_em: 2.5,
+            beside_cell_gap_em: 1.5,
+            beside_rows_height_tol_em: 3.0,
+            beside_rows_max_graphics_ratio: 0.5,
             absorb_max_passes_count: 4,
             absorb_probe_pt: 5.0,
             absorb_inside_tol_pt: 1.0,
@@ -886,6 +947,7 @@ pub fn detect_floats(
         let mut pending = pending_floats(&captions, &comps, &cap_region, graphic_regions);
         for float in pending.iter_mut() {
             tabular_fallback(&ctx, float);
+            beside_fallback(&ctx, float);
         }
         for (float_idx, float) in pending.iter_mut().enumerate() {
             settle_region(&ctx, &mut absorbed, float_idx, float, text_left);
@@ -1017,8 +1079,20 @@ fn continues_paragraph(lines: &[Line], idx: usize, cfg: &FloatsConfig) -> bool {
             && (above.size - line.size).abs() < cfg.continuation_size_tol_pt
             && above.bbox.x_overlap(&line.bbox)
                 > cfg.continuation_overlap_ratio * line.bbox.width().min(above.bbox.width())
-            && above.char_count() > cfg.continuation_min_chars
+            && (above.char_count() > cfg.continuation_min_chars || runs_on_short(above, line, cfg))
     })
+}
+
+/// Whether the short line `above` runs on into `line` (see
+/// [`FloatsConfig::continuation_short_min_words_count`]): "from the
+/// rightmost two columns of" above "Table 8.2. We are" in a margin caption.
+fn runs_on_short(above: &Line, line: &Line, cfg: &FloatsConfig) -> bool {
+    let text = above.text();
+    let text = text.trim();
+    let mid_sentence = text.ends_with(',') || text.chars().last().is_some_and(char::is_lowercase);
+    mid_sentence
+        && text.split_whitespace().count() >= cfg.continuation_short_min_words_count
+        && (above.bbox.x0 - line.bbox.x0).abs() <= cfg.continuation_left_tol_pt
 }
 
 /// Baseline distances a caption's lines are measured against.
@@ -1064,13 +1138,17 @@ fn collect_caption_lines(
             break;
         };
         let next = &lines[j];
-        if starts_next_caption(next, &bbox, cfg) || rule_between(rules, prev_line, next, cfg) {
+        let next_caption = starts_next_caption(next, &bbox, cfg) && !runs_on_short(prev_line, next, cfg);
+        if next_caption || rule_between(rules, prev_line, next, cfg) {
             break;
         }
         // The previous line ended early although the next word would
-        // have fit: the caption is over.
+        // have fit: the caption is over. Not for a narrow caption in a
+        // margin, set ragged right, whose lines end early anyway.
+        let narrow = bbox.width() <= cfg.narrow_caption_max_width_em * head_size;
         if idxs.len() > 1
-            && prev_line.bbox.x1 + cfg.caption_word_space_em * head_size + next.first_word_width()
+            && !narrow
+            && prev_line.bbox.x1 + cfg.caption_word_space_em * head_size + unbreakable_start_width(next)
                 < bbox.x1 - cfg.caption_short_line_slack_pt
         {
             break;
@@ -1086,6 +1164,25 @@ fn collect_caption_lines(
         }
     }
     (idxs, bbox)
+}
+
+/// The width of what `line` starts with that cannot be broken across
+/// lines: its first word, or a label such as "Table 8.2" (TeX ties the
+/// number to its word).
+fn unbreakable_start_width(line: &Line) -> f32 {
+    let words = if CAPTION.is_match(&line.text()) { 2 } else { 1 };
+    let mut seen = 0;
+    let mut end = line.bbox.x0;
+    for (i, glyph) in line.glyphs.iter().enumerate() {
+        if i > 0 && glyph.space_before {
+            seen += 1;
+            if seen == words {
+                break;
+            }
+        }
+        end = end.max(glyph.x1);
+    }
+    end - line.bbox.x0
 }
 
 /// Whether a horizontal rule lies between the lines `upper` and `lower` and
@@ -1148,8 +1245,14 @@ fn next_caption_line(
         if line.bbox.x_overlap(bbox) <= 0.0 {
             continue;
         }
+        // A narrow caption (in a margin) is ragged on the right: a line
+        // flush with its left edge continues it, however long.
+        let narrow_max = cfg.narrow_caption_max_width_em * head_size;
+        let ragged = bbox.width() <= narrow_max
+            && (line.bbox.x0 - bbox.x0).abs() <= cfg.caption_right_overhang_pt
+            && line.bbox.x1 <= bbox.x0 + narrow_max;
         if line.bbox.x0 < bbox.x0 - cfg.caption_left_overhang_em * head_size
-            || line.bbox.x1 > bbox.x1 + cfg.caption_right_overhang_pt
+            || (line.bbox.x1 > bbox.x1 + cfg.caption_right_overhang_pt && !ragged)
         {
             continue;
         }
@@ -1244,11 +1347,15 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     let captioned = page.lines.iter().any(|line| CAPTION.is_match(&line.text()));
-    for path in page
+    let drawn: Vec<&PathBox> = page
         .paths
         .iter()
         .filter(|path| path_is_drawing(page, path, captioned, cfg))
-    {
+        .collect();
+    for path in &drawn {
+        if is_background_panel(page, path, &drawn, &elements, cfg) {
+            continue;
+        }
         elements.push(GraphicElement {
             bbox: path.bbox,
             image: false,
@@ -1256,6 +1363,30 @@ fn graphic_elements(page: &PageData, cfg: &FloatsConfig) -> Vec<GraphicElement> 
         });
     }
     elements
+}
+
+/// Whether `path` is the light background of a box that holds other
+/// drawings (`paths`, or the images and rotated text in `elements`), see
+/// [`FloatsConfig::background_panel_min_channel`].
+fn is_background_panel(
+    page: &PageData,
+    path: &PathBox,
+    paths: &[&PathBox],
+    elements: &[GraphicElement],
+    cfg: &FloatsConfig,
+) -> bool {
+    let light = path.color[..3]
+        .iter()
+        .all(|&channel| channel >= cfg.background_panel_min_channel);
+    if !(path.filled && !path.stroked && light) || path.bbox.width() < cfg.background_panel_min_width_ratio * page.width
+    {
+        return false;
+    }
+    let inside = |bbox: &Rect| bbox.area() < path.bbox.area() && path.bbox.contains(bbox);
+    paths
+        .iter()
+        .any(|other| !std::ptr::eq(*other, path) && inside(&other.bbox))
+        || elements.iter().any(|element| inside(&element.bbox))
 }
 
 /// Whether `path` is part of a drawing: not a page frame, not the shading
@@ -1289,15 +1420,26 @@ fn path_is_drawing(page: &PageData, path: &PathBox, captioned: bool, cfg: &Float
 /// [`FloatsConfig::shaded_box_min_lines_count`]).
 fn shades_text(page: &PageData, bbox: &Rect, cfg: &FloatsConfig) -> bool {
     let inside = || page.lines.iter().filter(|line| bbox.contains(&line.bbox));
-    let text_lines = inside()
-        .filter(|line| text_width(line) >= cfg.body_min_chars)
+    // A line of the box can still run on into a margin note on its row:
+    // only its glyphs inside the box count.
+    let rows = || {
+        page.lines
+            .iter()
+            .filter(|line| line.bbox.y0 >= bbox.y0 && line.bbox.y1 <= bbox.y1)
+    };
+    let text_lines = rows()
+        .filter(|line| glyphs_width_inside(line, bbox) >= cfg.body_min_chars)
         .take(cfg.shaded_box_min_lines_count)
         .count();
+    let prose_across = rows().any(|line| {
+        glyphs_width_inside(line, bbox) >= cfg.shaded_box_wide_line_min_chars
+            && glyphs_extent_inside(line, bbox) >= cfg.shaded_box_line_fill_ratio * bbox.width()
+    });
     let captions = inside()
         .filter(|line| CAPTION.is_match(&line.text()))
         .take(cfg.shaded_box_min_captions_count)
         .count();
-    text_lines >= cfg.shaded_box_min_lines_count || captions >= cfg.shaded_box_min_captions_count
+    text_lines >= cfg.shaded_box_min_lines_count || prose_across || captions >= cfg.shaded_box_min_captions_count
 }
 
 /// Whether text inside `bbox` has characters with no Unicode mapping: the
@@ -1310,12 +1452,31 @@ fn holds_unreadable(page: &PageData, bbox: &Rect) -> bool {
 
 /// The length of `line` in Latin characters: its characters other than
 /// spaces, a wide (CJK) character counting as two.
-fn text_width(line: &Line) -> usize {
-    line.text()
-        .chars()
+/// [`text_width`] of the glyphs of `line` whose middle is inside `bbox`.
+fn glyphs_width_inside(line: &Line, bbox: &Rect) -> usize {
+    line.glyphs
+        .iter()
+        .filter(|glyph| {
+            let mid = (glyph.x0 + glyph.x1) / 2.0;
+            mid >= bbox.x0 && mid <= bbox.x1
+        })
+        .flat_map(|glyph| glyph.text.chars())
         .filter(|ch| !ch.is_whitespace())
         .map(|ch| if is_wide(ch) { 2 } else { 1 })
         .sum()
+}
+
+/// The width spanned by the glyphs of `line` whose middle is inside `bbox`.
+fn glyphs_extent_inside(line: &Line, bbox: &Rect) -> f32 {
+    let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
+    for glyph in &line.glyphs {
+        let mid = (glyph.x0 + glyph.x1) / 2.0;
+        if mid >= bbox.x0 && mid <= bbox.x1 && !glyph.text.trim().is_empty() {
+            x0 = x0.min(glyph.x0);
+            x1 = x1.max(glyph.x1);
+        }
+    }
+    (x1 - x0).max(0.0)
 }
 
 /// A character set twice as wide as a Latin letter: CJK ideographs, kana,
@@ -1657,14 +1818,43 @@ fn pair_captions(
     }
     pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut cap_region: Vec<Option<(Rect, bool)>> = vec![None; ctx.captions.len()];
-    for (_, cap_idx, comp_idx, above) in pairs {
+    for &(_, cap_idx, comp_idx, above) in &pairs {
         if cap_region[cap_idx].is_some() || comps[comp_idx].owner.is_some() {
             continue;
         }
         comps[comp_idx].owner = Some(cap_idx);
         cap_region[cap_idx] = Some((comps[comp_idx].bbox, above));
     }
+    pair_left_captions(&pairs, comps, &mut cap_region);
     cap_region
+}
+
+/// Gives a component to the captions left without one: a caption takes
+/// the component of another caption that can move to a component nobody
+/// claimed (two margin figures with their captions above them: the second
+/// caption, right below the first figure, took it). `pairs` are the
+/// possible pairs, best first.
+fn pair_left_captions(
+    pairs: &[(f32, usize, usize, bool)],
+    comps: &mut [Component],
+    cap_region: &mut [Option<(Rect, bool)>],
+) {
+    for &(_, cap_idx, comp_idx, above) in pairs {
+        if cap_region[cap_idx].is_some() {
+            continue;
+        }
+        let Some(owner) = comps[comp_idx].owner else { continue };
+        let Some(&(_, _, free_idx, owner_above)) = pairs
+            .iter()
+            .find(|&&(_, other_cap, other_comp, _)| other_cap == owner && comps[other_comp].owner.is_none())
+        else {
+            continue;
+        };
+        comps[free_idx].owner = Some(owner);
+        cap_region[owner] = Some((comps[free_idx].bbox, owner_above));
+        comps[comp_idx].owner = Some(cap_idx);
+        cap_region[cap_idx] = Some((comps[comp_idx].bbox, above));
+    }
 }
 
 /// The score (lower is better) of `caption` claiming `comp`, and whether the
@@ -1680,6 +1870,11 @@ fn pair_score(
     let cfg = ctx.cfg;
     let (cap_box, comp_box) = (&caption.bbox, &comp.bbox);
     let overlap = cap_box.x_overlap(comp_box);
+    if overlap <= 0.0
+        && let Some(score) = beside_score(ctx, caption, comp)
+    {
+        return Some(score);
+    }
     if overlap < cfg.pair_overlap_ratio * cap_box.width().min(comp_box.width()) {
         return None;
     }
@@ -1705,6 +1900,30 @@ fn pair_score(
     let mismatch = kind_mismatch(caption.kind, comp.table_like, cfg);
     let misalign = misalignment(cap_box, comp_box, cfg);
     Some((dist + penalty + mismatch + misalign, above))
+}
+
+/// The score of a narrow caption set beside a component, in the margin
+/// (see [`FloatsConfig::beside_max_gap_pt`]): the gap between them, and
+/// whether the component is above the caption (its middle is higher).
+/// `None` when the caption is not narrow, not beside the component, or not
+/// level with it.
+fn beside_score(ctx: &PageContext, caption: &Caption, comp: &Component) -> Option<(f32, bool)> {
+    let cfg = ctx.cfg;
+    let (cap_box, comp_box) = (&caption.bbox, &comp.bbox);
+    let size = ctx.page.lines[*caption.lines.first()?].size.max(1.0);
+    if cap_box.width() > cfg.narrow_caption_max_width_em * size {
+        return None;
+    }
+    let gap = (cap_box.x0 - comp_box.x1).max(comp_box.x0 - cap_box.x1);
+    // Side by side: the caption's rows overlap the component's height (its
+    // top may stand a little above a plot frame, level with an axis label).
+    let level = cap_box.y1 >= comp_box.y0 - cfg.side_tol_pt && cap_box.y0 <= comp_box.y1;
+    let max_gap = if caption.lines.len() >= 2 {
+        cfg.beside_far_max_gap_pt
+    } else {
+        cfg.beside_max_gap_pt
+    };
+    (gap >= 0.0 && gap <= max_gap && level).then(|| (gap, comp_box.cy() < cap_box.cy()))
 }
 
 /// Score penalty for a float on an unusual side of its caption.
@@ -1833,6 +2052,36 @@ fn claim_paneled_figures(ctx: &PageContext, comps: &mut [Component], cap_region:
 /// is stacked on it with no prose in between, or sits beside it.
 fn joins_region(ctx: &PageContext, caption: &Caption, region: &Rect, above: bool, comp_box: &Rect) -> bool {
     let cfg = ctx.cfg;
+    // A caption beside its figure (in the margin): the panels of the figure
+    // stand side by side, away from the caption.
+    let beside = caption.bbox.x_overlap(region) <= 0.0;
+    if beside {
+        let caption_left = caption.bbox.cx() < region.cx();
+        let away = if caption_left {
+            comp_box.x0 >= caption.bbox.x1
+        } else {
+            comp_box.x1 <= caption.bbox.x0
+        };
+        let x_ov = comp_box.x_overlap(region);
+        let y_ov = comp_box.y_overlap(region);
+        let touching = comp_box.intersects(&region.inflate(cfg.grow_touch_pt, cfg.grow_touch_pt));
+        let side_by_side = y_ov > cfg.grow_horizontal_overlap_ratio * comp_box.height().min(region.height())
+            && -x_ov <= cfg.beside_grow_max_hgap_pt;
+        // Panels one above the other: figures only (a table does not grow
+        // over what follows it).
+        let stacked = caption.kind == FloatKind::Figure
+            && x_ov > cfg.grow_vertical_overlap_ratio * comp_box.width().min(region.width())
+            && -y_ov <= cfg.grow_max_vgap_pt
+            && {
+                let (top, bottom) = if comp_box.cy() < region.cy() {
+                    (comp_box.y1, region.y0)
+                } else {
+                    (region.y1, comp_box.y0)
+                };
+                !ctx.body_between(top, bottom, comp_box)
+            };
+        return away && (touching || side_by_side || stacked);
+    }
     let same_side = if above {
         comp_box.y1 <= caption.bbox.y0 + cfg.side_tol_pt
     } else {
@@ -1960,6 +2209,88 @@ fn tabular_fallback(ctx: &PageContext, float: &mut PendingFloat) {
 /// The region of the rows of text directly below (`down`) or above the
 /// caption, up to a large gap or a line of prose. `None` when there are too
 /// few rows, or they are too low to be a table.
+/// Gives a narrow caption set in the margin, still without a region, the
+/// rows of text beside it: a table without rules, or a diagram made of
+/// labels and thin arrows (see [`beside_rows`]).
+///
+/// A figure beside its caption whose graphics were found takes those rows
+/// too when they reach its region, stay within its height and are mostly
+/// text (see [`FloatsConfig::beside_rows_height_tol_em`]): the labels of a
+/// diagram drawn with thin arrows, of which only the arrow heads are
+/// graphics.
+fn beside_fallback(ctx: &PageContext, float: &mut PendingFloat) {
+    let Some(cap_idx) = float.cap else { return };
+    let caption = &ctx.captions[cap_idx];
+    let Some(&first) = caption.lines.first() else { return };
+    if caption.bbox.width() > ctx.cfg.narrow_caption_max_width_em * ctx.page.lines[first].size.max(1.0) {
+        return;
+    }
+    let Some(rows) = beside_rows(ctx, caption) else { return };
+    match float.region {
+        None => {
+            float.region = Some(rows);
+            float.above = false;
+            float.table_like = float.kind == FloatKind::Table;
+        }
+        Some(region)
+            if float.kind == FloatKind::Figure
+                && caption.bbox.x_overlap(&region) <= 0.0
+                && rows.intersects(&region)
+                && rows.y0 >= region.y0 - ctx.cfg.beside_rows_height_tol_em * ctx.stats.body_size
+                && rows.y1 <= region.y1 + ctx.cfg.beside_rows_height_tol_em * ctx.stats.body_size
+                && region.area() <= ctx.cfg.beside_rows_max_graphics_ratio * rows.area() =>
+        {
+            float.region = Some(region.union(&rows));
+        }
+        Some(_) => {}
+    }
+}
+
+/// The lines beside the narrow caption `caption`, on the side away from
+/// the margin, from level with its top down to the first prose line or
+/// wide gap. `None` when they are too few or too low.
+fn beside_rows(ctx: &PageContext, caption: &Caption) -> Option<Rect> {
+    let cfg = ctx.cfg;
+    let cap_box = caption.bbox;
+    let caption_left = cap_box.cx() < ctx.page.width / 2.0;
+    let prose = |line: &Line| {
+        let wide_gap = line
+            .glyphs
+            .windows(2)
+            .any(|pair| pair[1].x0 - pair[0].x1 > cfg.beside_cell_gap_em * line.size);
+        line.char_count() >= cfg.fallback_prose_min_chars && !wide_gap
+    };
+    let mut candidates: Vec<&Line> = ctx
+        .page
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(i, line)| {
+            let away = if caption_left {
+                line.bbox.x0 >= cap_box.x1
+            } else {
+                line.bbox.x1 <= cap_box.x0
+            };
+            !ctx.is_caption_line[*i] && away && line.bbox.y0 >= cap_box.y0 - cfg.fallback_max_row_gap_em * line.size
+        })
+        .map(|(_, line)| line)
+        .collect();
+    candidates.sort_by(|a, b| a.bbox.y0.total_cmp(&b.bbox.y0));
+    let mut region = Rect::EMPTY;
+    let mut edge = cap_box.y0;
+    let mut rows = 0;
+    for line in candidates {
+        if line.bbox.y0 - edge > cfg.fallback_max_row_gap_em * ctx.stats.body_size || prose(line) {
+            break;
+        }
+        region = region.union(&line.bbox);
+        edge = edge.max(line.bbox.y1);
+        rows += 1;
+    }
+    (rows >= cfg.fallback_min_rows_count && region.height() > cfg.fallback_min_height_em * ctx.stats.body_size)
+        .then_some(region)
+}
+
 fn tabular_rows(ctx: &PageContext, caption: &Caption, down: bool) -> Option<Rect> {
     let cfg = ctx.cfg;
     let cap_box = caption.bbox;
@@ -2035,7 +2366,12 @@ fn settle_region(
         region = absorb_rotated_labels(ctx, region);
         region = absorb_edge_ticks(ctx, absorbed, float_idx, region);
     }
-    if let Some(cap_idx) = float.cap {
+    // A caption beside its float (in the margin) neither bounds it above or
+    // below nor has lines between them to take.
+    let beside = float
+        .cap
+        .is_some_and(|cap_idx| ctx.captions[cap_idx].bbox.x_overlap(&region) <= 0.0);
+    if let Some(cap_idx) = float.cap.filter(|_| !beside) {
         let caption = &ctx.captions[cap_idx];
         region = absorb_between_caption(ctx, absorbed, float_idx, region, caption, float.above);
         // Never let the image overlap its own caption.

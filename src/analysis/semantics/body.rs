@@ -202,7 +202,7 @@ struct FlowState {
 /// Only nodes still [`Class::Unknown`] are classified; non-text nodes are
 /// left alone.
 pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[FontInfo], cfg: &SemanticsConfig) {
-    super::contents::mark_contents(nodes, cfg);
+    super::contents::mark_contents(nodes, fonts, cfg);
     super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
     let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
@@ -400,14 +400,18 @@ fn find_heading_candidates(
 }
 
 /// The body font size of each page: the size carrying most characters of
-/// the unclassified text blocks of the page, but never below the document's
+/// the unclassified text blocks of the page (and of its entries of
+/// contents, set in running text size), but never below the document's
 /// body size. A system card set in 11 pt inside a report set in 10 pt has
 /// body text of 11 pt, which must not count as "larger than the body".
 fn page_body_sizes(nodes: &[Node], stats: &DocStats) -> Vec<f32> {
     let pages = nodes.iter().map(|node| node.loc.page + 1).max().unwrap_or(0);
     // Characters per size, in tenths of a point, for each page.
     let mut chars: Vec<HashMap<i32, usize>> = vec![HashMap::new(); pages];
-    for node in nodes.iter().filter(|node| node.class == Class::Unknown) {
+    for node in nodes
+        .iter()
+        .filter(|node| matches!(node.class, Class::Unknown | Class::ContentsEntry { .. }))
+    {
         let Some(block) = node.text_block() else { continue };
         for line in &block.lines {
             *chars[node.loc.page]
@@ -781,7 +785,7 @@ impl FlowState {
 /// "5. H→ γγ channel" come from other fonts and say nothing about the style
 /// of the heading. A block without any such glyph counts all its letters and
 /// numerals instead.
-fn text_frac(lines: &[Line], fonts: &[FontInfo], pred: impl Fn(&FontInfo) -> bool) -> f32 {
+pub(super) fn text_frac(lines: &[Line], fonts: &[FontInfo], pred: impl Fn(&FontInfo) -> bool) -> f32 {
     let count = |ascii_only: bool| {
         let (mut matching, mut total) = (0usize, 0usize);
         for glyph in lines.iter().flat_map(|line| line.glyphs.iter()) {

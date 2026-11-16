@@ -30,8 +30,10 @@ const PRIME_DROP: &str = "-0.45em";
 
 /// Style of the formulas: the math font (the embedded one first, then
 /// those of the usual systems) and a size close to the one of the pictures.
-const MATH_STYLE: &str =
-    "math.eq-math{font-family:\"Latin Modern Math\",\"STIX Two Math\",\"Cambria Math\",math;font-size:1.05em}\n";
+/// A formula inside the text that is wider than the column (it cannot
+/// break) scrolls in its own box rather than widening the page.
+const MATH_STYLE: &str = "math.eq-math{font-family:\"Latin Modern Math\",\"STIX Two Math\",\"Cambria Math\",math;font-size:1.05em}\n\
+     math.eq-math.im{max-width:100%;overflow-x:auto;overflow-y:hidden}\n";
 
 /// The `@font-face` rule of the embedded math font, built once.
 pub(crate) static MATH_FACE: LazyLock<String> =
@@ -50,6 +52,14 @@ pub(crate) fn math_css(embed_font: bool) -> String {
 /// The `<math>` element of a displayed formula.
 pub fn math_html(node: &MathNode, alt: &str) -> String {
     let mut out = format!("<math display=\"block\" class=\"eq-math\" alttext=\"{}\">", esc(alt));
+    write_node(node, &mut out);
+    out.push_str("</math>");
+    out
+}
+
+/// The `<math>` element of a formula inside running text.
+pub(crate) fn inline_math_html(node: &MathNode, alt: &str) -> String {
+    let mut out = format!("<math class=\"eq-math im\" alttext=\"{}\">", esc(alt));
     write_node(node, &mut out);
     out.push_str("</math>");
     out

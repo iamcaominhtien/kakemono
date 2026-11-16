@@ -6,7 +6,7 @@
 //! [`semantics`](super::semantics) and the assembly of the [`Document`].
 
 use super::semantics::*;
-use crate::analysis::blocks::{RawBlock, build_blocks};
+use crate::analysis::blocks::{RawBlock, build_blocks, join_equation_parts, mark_margin_notes};
 use crate::analysis::floats::{Float, FloatsConfig, detect_floats, join_caption_labels, table_caption_votes};
 use crate::analysis::furniture::remove_furniture;
 use crate::analysis::lines::{join_math_letters, take_ruby};
@@ -128,7 +128,10 @@ fn layout_page(
 
     let leaves = order_page(&page.lines, &floats, stats, &layout.order);
     let leaf_bounds: Vec<(f32, f32)> = leaves.iter().map(|leaf| (leaf.bbox.x0, leaf.bbox.x1)).collect();
-    for raw_block in build_blocks(page, &leaves, stats, fonts, &layout.blocks, &layout.lines) {
+    let mut raw_blocks = build_blocks(page, &leaves, stats, fonts, &layout.blocks, &layout.lines);
+    mark_margin_notes(&mut raw_blocks, page.width, stats, fonts, &layout.blocks);
+    join_equation_parts(&mut raw_blocks, stats, &layout.blocks);
+    for raw_block in raw_blocks {
         nodes.push(new_node(raw_block, &floats, &leaf_bounds));
     }
 }

@@ -101,6 +101,10 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     line_box_descent_em: 0.25,
     accent_min_width_pt: 0.5,
     accent_min_overlap_ratio: 0.4,
+    raised_accent_max_rise_em: 0.5,
+    raised_accent_overlap_em: 0.1,
+    raised_accent_size_tolerance_ratio: 0.1,
+    raised_accent_lookaround_count: 4,
     squeezed_punctuation_overlap_ratio: 0.5,
     ruby_max_size_ratio: 0.65,
     ruby_max_gap_em: 0.6,
@@ -328,6 +332,20 @@ pub struct LinesConfig {
     /// Smallest horizontal overlap (as a fraction of the narrower glyph) of
     /// an accent with a letter for the two to be composed.
     pub accent_min_overlap_ratio: f32,
+    /// TeX raises an accent over a capital letter (`\tilde B`) by drawing
+    /// it on a higher baseline: an accent at most this many font sizes
+    /// above a letter it overlaps is moved down to the letter's baseline...
+    pub raised_accent_max_rise_em: f32,
+    /// ... when its ink ends at most this many font sizes below the top of
+    /// the letter's ink (it stands above the letter, not across it).
+    pub raised_accent_overlap_em: f32,
+    /// The letter is set in the accent's size, to within this share of it
+    /// (an accent beside a letter is not raised over the smaller subscript
+    /// that follows it).
+    pub raised_accent_size_tolerance_ratio: f32,
+    /// Glyphs drawn this many places before or after a raised accent are
+    /// looked at for its letter.
+    pub raised_accent_lookaround_count: usize,
     /// Two neighbouring CJK punctuation marks whose advance boxes overlap by
     /// more than this fraction of the narrower one are a squeezed pair
     /// ("。「", each mark taking half its width in Japanese typesetting):
@@ -992,6 +1010,7 @@ fn collect_glyphs(raw: &RawPage, cfg: &LinesConfig) -> (Vec<LineGlyph>, Vec<Rota
         kept.link = link_at(raw, glyph, cfg);
         glyphs.push(kept);
     }
+    lower_raised_accents(&mut glyphs, cfg);
     let blanks = blank_glyphs(raw, &glyphs, cfg);
     glyphs.extend(blanks);
     (glyphs, rotated.runs)
@@ -1311,6 +1330,46 @@ fn combining_for(ch: char) -> Option<char> {
         '\u{0300}'..='\u{036F}' => ch,
         _ => return None,
     })
+}
+
+/// Moves accents that TeX raised over a tall letter (see
+/// [`LinesConfig::raised_accent_max_rise_em`]) down to that letter's
+/// baseline, so that they join its line and are composed with it rather
+/// than read as superscripts or as a line of their own. `glyphs` are in
+/// drawing order.
+fn lower_raised_accents(glyphs: &mut [LineGlyph], cfg: &LinesConfig) {
+    for i in 0..glyphs.len() {
+        let mut chars = glyphs[i].text.chars();
+        let (Some(ch), None) = (chars.next(), chars.next()) else {
+            continue;
+        };
+        // ASCII "~" and "^" are usually themselves, not accents.
+        if ch.is_ascii() || combining_for(ch).is_none() {
+            continue;
+        }
+        let accent = &glyphs[i];
+        let width = |glyph: &LineGlyph| glyph.ink.width().max(cfg.accent_min_width_pt);
+        let from = i.saturating_sub(cfg.raised_accent_lookaround_count);
+        let to = (i + cfg.raised_accent_lookaround_count + 1).min(glyphs.len());
+        let letter = (from..to)
+            .filter(|&j| j != i)
+            .filter(|&j| {
+                let letter = &glyphs[j];
+                let single = letter.text.chars().count() == 1 && letter.text.chars().all(char::is_alphabetic);
+                let rise = letter.y - accent.y;
+                let overlap = accent.ink.x1.min(letter.ink.x1) - accent.ink.x0.max(letter.ink.x0);
+                single
+                    && (letter.size - accent.size).abs() <= cfg.raised_accent_size_tolerance_ratio * accent.size
+                    && rise > 0.0
+                    && rise <= cfg.raised_accent_max_rise_em * letter.size
+                    && overlap >= cfg.accent_min_overlap_ratio * width(accent).min(width(letter))
+                    && accent.ink.y1 <= letter.ink.y0 + cfg.raised_accent_overlap_em * letter.size
+            })
+            .min_by(|&a, &b| (glyphs[a].y - accent.y).total_cmp(&(glyphs[b].y - accent.y)));
+        if let Some(j) = letter {
+            glyphs[i].y = glyphs[j].y;
+        }
+    }
 }
 
 /// TeX's OT1 encoding draws accents as separate glyphs overlapping the base
@@ -2408,6 +2467,28 @@ mod tests {
         compose_accents(&mut glyphs, &LinesConfig::default());
         assert_eq!(glyphs.len(), 1);
         assert_eq!(glyphs[0].text, "\u{2260}");
+    }
+
+    #[test]
+    fn tilde_raised_over_a_capital_joins_it() {
+        // TeX's \tilde B: the tilde is drawn 2 pt higher, its ink just
+        // above the letter's (B's ink is 93..101 at baseline 100).
+        let letter = line_glyph_at("B", (50.0, 56.5), (50.5, 56.0));
+        let mut tilde = line_glyph_at("\u{02DC}", (51.0, 55.0), (51.5, 54.5));
+        tilde.y = 98.0;
+        tilde.ink = Rect::new(51.5, 91.0, 54.5, 92.0);
+        // A subscript after it, smaller, is not the accent's letter.
+        let mut sub = line_glyph_at("i", (56.5, 59.0), (56.8, 58.5));
+        sub.y = 102.0;
+        sub.size = 7.0;
+        let cfg = LinesConfig::default();
+        let mut glyphs = vec![tilde, letter, sub];
+        lower_raised_accents(&mut glyphs, &cfg);
+        assert_eq!(glyphs[0].y, 100.0);
+        glyphs.swap(0, 1);
+        compose_accents(&mut glyphs, &cfg);
+        assert_eq!(glyphs[0].text, "B\u{0303}");
+        assert_eq!(glyphs.len(), 2);
     }
 
     #[test]

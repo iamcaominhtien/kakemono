@@ -483,3 +483,249 @@ fn code_in_two_columns_is_indented_column_by_column() {
         ]
     );
 }
+
+/// A PDF with one page per item of `pages`, each drawing that content with
+/// the fonts of [`build_pdf`].
+fn build_pages_pdf(pages: &[String]) -> Vec<u8> {
+    let n = pages.len();
+    let fonts = 3 + 2 * n;
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 2 * i)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" ")),
+    ];
+    for (i, content) in pages.iter().enumerate() {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R \
+             /Resources << /Font << /F1 {fonts} 0 R /F2 {} 0 R >> >> >>",
+            4 + 2 * i,
+            fonts + 1
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content));
+    }
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string());
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>".to_string());
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", i + 1, body));
+    }
+    let xref = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+    for off in offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objects.len() + 1,
+        xref
+    ));
+    pdf.into_bytes()
+}
+
+/// A page of a book with wide margins: running text in a column on the
+/// right, two notes in the left margin, and a long running foot well above
+/// the foot band.
+fn book_page(number: usize) -> String {
+    let mut content = String::new();
+    for row in 0..30 {
+        let y = 680 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Page {number} line {row} of the running text that fills the wide column of the book page) Tj ET\n"
+        ));
+    }
+    for (row, text) in [
+        "Be careful to check",
+        "the margin notes.",
+        "",
+        "A second note set",
+        "in the margin.",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if !text.is_empty() {
+            // Halfway between two lines of the running text.
+            let y = 589 - 14 * row;
+            content.push_str(&format!("BT /F1 7 Tf 50 {y} Td ({text}) Tj ET\n"));
+        }
+    }
+    content.push_str("BT /F1 8 Tf 170 110 Td (Draft \\(2024-01-15\\) of a book for the tests. Feedback: https://example.org.) Tj ET\n");
+    content
+}
+
+#[test]
+fn book_margins_hold_notes_and_running_feet() {
+    let pages: Vec<String> = (1..=4).map(book_page).collect();
+    let paper = Paper::from_bytes(build_pages_pdf(&pages)).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let texts: Vec<String> = doc.blocks.iter().map(|block| block.text()).collect();
+    assert!(
+        texts.iter().all(|text| !text.contains("Draft (2024")),
+        "running foot left in the text: {texts:?}"
+    );
+    // Every piece of the margin notes is a note, and none is in the text.
+    let note_words = ["Be careful", "margin notes", "second note", "in the margin"];
+    for block in &doc.blocks {
+        let text = block.text();
+        if note_words.iter().any(|words| text.contains(words)) {
+            assert!(
+                matches!(block.kind, BlockKind::Footnote { .. }),
+                "margin note read as {:?}: {text}",
+                block.kind
+            );
+        }
+    }
+    let notes = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .count();
+    assert!(notes >= 8, "two margin notes per page, found {notes}");
+}
+
+/// A page of contents set in three columns, as in many books: the number,
+/// the title and, far to the right, the page number.
+fn contents_page() -> String {
+    let mut content = String::from("BT /F2 16 Tf 200 700 Td (Contents) Tj ET\n");
+    let entries = [
+        ("1", "Introduction and Motivation", 11),
+        ("1.1", "Finding Words for Intuitions", 12),
+        ("1.2", "Two Ways to Read This Book", 13),
+        ("1.3", "Exercises and Feedback", 16),
+        ("2", "Linear Algebra", 17),
+        ("2.1", "Systems of Linear Equations", 19),
+        ("2.2", "Matrices", 22),
+        ("2.3", "Solving Systems of Linear Equations", 27),
+        ("2.4", "Vector Spaces", 35),
+        ("2.5", "Linear Independence", 40),
+        ("2.6", "Basis and Rank", 44),
+        ("2.7", "Linear Mappings", 48),
+    ];
+    for (row, (number, title, page)) in entries.iter().enumerate() {
+        let y = 650 - 14 * row;
+        content.push_str(&format!("BT /F1 10 Tf 72 {y} Td ({number}) Tj ET\n"));
+        content.push_str(&format!("BT /F1 10 Tf 100 {y} Td ({title}) Tj ET\n"));
+        let x = if *page < 10 { 386 } else { 381 };
+        content.push_str(&format!("BT /F1 10 Tf {x} {y} Td ({page}) Tj ET\n"));
+    }
+    // A title long enough to come within one font size of its page number
+    // ("Analysis" is 37.2 pt wide in Helvetica 10), the page numbers right
+    // aligned.
+    content.push_str("BT /F1 10 Tf 72 468 Td (13) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 100 468 Td (Dimensionality Reduction with Principal Component) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 331.2 468 Td (Analysis) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 375.4 468 Td (317) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 72 454 Td (13.1) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 100 454 Td (Problem Setting) Tj ET\n");
+    content.push_str("BT /F1 10 Tf 375.4 454 Td (318) Tj ET\n");
+    content
+}
+
+#[test]
+fn contents_page_numbers_in_a_column_are_not_line_numbers() {
+    let paper = Paper::from_bytes(build_pages_pdf(&[contents_page()])).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let pages: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::ContentsEntry { page, .. } => Some(page.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pages,
+        [
+            "11", "12", "13", "16", "17", "19", "22", "27", "35", "40", "44", "48", "317", "318"
+        ],
+        "{:?}",
+        doc.blocks
+            .iter()
+            .map(|block| (&block.kind, block.text()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A caption in the margin at `y`: its bold label, then its lines of text
+/// (the first one after the label).
+fn margin_caption(y: i32, label: &str, lines: &[&str]) -> String {
+    let mut content = format!("BT /F2 7 Tf 50 {y} Td ({label}) Tj /F1 7 Tf ( {}) Tj ET\n", lines[0]);
+    for (row, text) in lines.iter().enumerate().skip(1) {
+        let y = y - 8 * row as i32;
+        content.push_str(&format!("BT /F1 7 Tf 50 {y} Td ({text}) Tj ET\n"));
+    }
+    content
+}
+
+/// A book page with figures and their captions in the margin: two small
+/// figures in the margin, each with its caption above it, and a plot in the
+/// text column with its caption beside it, its top level with the plot's
+/// axis label rather than with the plot's frame.
+fn margin_figures_page() -> String {
+    let mut content = String::new();
+    for row in 0..12 {
+        let y = 700 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Line {row} of the running text that fills the wide column of this page) Tj ET\n"
+        ));
+    }
+    content.push_str(&margin_caption(
+        705,
+        "Figure 1.1",
+        &["A margin", "figure set above it."],
+    ));
+    content.push_str("0.4 0.7 0.4 rg 60 630 60 55 re f 0 g\n");
+    content.push_str(&margin_caption(615, "Figure 1.2", &["Another", "margin figure."]));
+    content.push_str("1 0.4 0.4 rg 60 540 60 55 re f 0 g\n");
+    // The plot: its frame, a curve, and an axis label above the frame.
+    content.push_str("1 w 250 300 m 450 300 l S 250 300 m 250 420 l S 260 310 m 440 410 l S\n");
+    content.push_str("BT /F1 6 Tf 240 424 Td (2.5) Tj ET\n");
+    content.push_str(&margin_caption(
+        430,
+        "Figure 1.3",
+        &["A plot", "beside its caption", "in the margin."],
+    ));
+    for row in 0..8 {
+        let y = 270 - 14 * row;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 170 {y} Td (Line {row} of the text after the plot, which goes on in the wide column) Tj ET\n"
+        ));
+    }
+    content
+}
+
+#[test]
+fn margin_captions_find_their_figures() {
+    let paper = Paper::from_bytes(build_pages_pdf(&[margin_figures_page()])).expect("valid pdf");
+    let doc = paper.analyze().doc;
+    let figure = |label: &str| {
+        doc.blocks
+            .iter()
+            .find_map(|block| match &block.kind {
+                BlockKind::Figure {
+                    label: Some(found),
+                    image,
+                    ..
+                } if found == label => Some(*image),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {label}"))
+            .unwrap_or_else(|| panic!("{label} has no image"))
+            .rect
+    };
+    // Page coordinates run down from the top (792 pt).
+    let first = figure("Figure 1.1");
+    assert!(
+        first.y0 < 792.0 - 670.0 && first.y1 > 792.0 - 640.0,
+        "Figure 1.1 at {first:?}"
+    );
+    let second = figure("Figure 1.2");
+    assert!(
+        second.y0 < 792.0 - 580.0 && second.y1 > 792.0 - 550.0,
+        "Figure 1.2 at {second:?}"
+    );
+    let plot = figure("Figure 1.3");
+    assert!(plot.x0 <= 250.0 && plot.x1 >= 450.0, "Figure 1.3 at {plot:?}");
+}

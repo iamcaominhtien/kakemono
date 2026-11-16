@@ -1,9 +1,10 @@
 //! kakemono: convert scientific-paper PDFs (such as those on arXiv) into
-//! clean HTML, or into Word documents.
+//! clean HTML, Word documents or Markdown.
 //!
 //! The pipeline is: PDF access -> layout analysis and structuring ->
 //! structured document ([`model`]) -> HTML in one of four fidelity modes
-//! ([`Mode`]), or a Word document ([`Paper::to_docx`]). See
+//! ([`Mode`]), a Word document ([`Paper::to_docx`]) or Markdown
+//! ([`Paper::to_markdown`]). See
 //! `ARCHITECTURE.md` in the repository.
 //!
 //! The entry points are [`Paper`] (load, analyse and render step by step,
@@ -42,4 +43,6 @@ pub use analysis::pipeline::Analysis;
 pub use backend::PageRenderer;
 pub use config::{AnalyzeOptions, LayoutConfig};
 pub use paper::{Paper, convert};
-pub use render::{DocxOptions, Equations, HtmlOptions, HtmlOutput, Mode, PageImage};
+pub use render::{
+    DocxOptions, DocxOutput, Equations, HtmlOptions, HtmlOutput, MarkdownOptions, MarkdownOutput, Mode, PageImage,
+};

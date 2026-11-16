@@ -23,7 +23,7 @@
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, Mode, PageImage, Paper};
+use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -209,7 +209,7 @@ fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
         "docx: picture placeholder left in the document"
     );
     assert_eq!(
-        document.matches("<m:oMath>").count(),
+        document.matches("<m:oMathPara>").count(),
         math,
         "docx: every rebuilt formula is an equation"
     );
@@ -226,6 +226,30 @@ fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
             "docx: {name} has no relationship"
         );
     }
+}
+
+/// Checks a Markdown document: no placeholder left, every picture file
+/// referenced, and every rebuilt formula written as LaTeX.
+fn check_markdown(markdown: &str, files: &[(String, Vec<u8>)], math: usize) {
+    assert!(!markdown.contains('\u{1}'), "markdown: picture placeholder left");
+    assert!(
+        !markdown.contains("data:image"),
+        "markdown: pictures are files by default"
+    );
+    for (name, data) in files {
+        assert!(name.starts_with("images/"), "markdown: {name} is not in images/");
+        assert!(
+            markdown.contains(&format!("]({name})")),
+            "markdown: {name} is not referenced"
+        );
+        assert!(!data.is_empty(), "markdown: {name} is empty");
+    }
+    assert_eq!(
+        markdown.matches("$$\n").count(),
+        2 * math,
+        "markdown: every rebuilt formula is written as LaTeX"
+    );
+    assert!(!markdown.contains("\n\n\n"), "markdown: no runs of blank lines");
 }
 
 /// Compares the outputs of a paper with its stored snapshot, or stores them
@@ -350,7 +374,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
         }
         if matches!(mode, Mode::Medium | Mode::Friendly) {
             assert_eq!(
-                out.html.matches("<math ").count(),
+                out.html.matches("<math display=\"block\"").count(),
                 math,
                 "{mode:?}: every rebuilt formula is written as MathML"
             );
@@ -396,6 +420,10 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let parts = docx_parts(&docx);
     check_docx(&parts, math);
     fingerprints.push(("docx", docx_fingerprint(&parts)));
+    // The Markdown document, with its pictures as files.
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
+    check_markdown(&md.markdown, &md.files, math);
+    fingerprints.push(("markdown", fingerprint(&md.markdown, &md.files)));
     let metrics = Metrics {
         title,
         tables,
@@ -1221,6 +1249,32 @@ fn gpt4_response_labels_are_not_headings() {
     assert!(headings.iter().any(|heading| heading == "A Exam Benchmark Methodology"));
 }
 
+/// Formulas inside running text are written as math: LaTeX in Markdown,
+/// MathML in HTML, Office Math in Word.
+#[test]
+fn adam_inline_formulas_are_math() {
+    let Some(paper) = load("1412.6980v9") else { return };
+    let analysis = paper.analyze();
+    // "the online prediction fₜ(θₜ) and": one formula, brackets included.
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    for formula in [
+        "online prediction $f_{t}(\\theta_{t})$ and",
+        "$\\alpha=0.001$, $\\beta_{1}=0.9$, $\\beta_{2}=0.999$ and $\\varepsilon=10^{-8}$",
+        "$O(\\sqrt{T})$ regret bound",
+        "\\lambda\\in(0,1)$",
+    ] {
+        assert!(md.contains(formula), "markdown: {formula} not found");
+    }
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(html.contains(
+        "online prediction <math class=\"eq-math im\" alttext=\"ft(θt)\"><mrow><msub><mi>f</mi><mi>t</mi></msub>"
+    ));
+    let parts = docx_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
+    let document = String::from_utf8_lossy(document);
+    assert!(document.matches("<m:oMath>").count() > document.matches("<m:oMathPara>").count() + 100);
+}
+
 /// The APS radical font sets the radical sign on "p" and the pieces of its
 /// bar on "ffi": the formula reads with a square root, not "pffi2ffiffi".
 #[test]
@@ -1377,7 +1431,7 @@ fn ligo_formula_with_unmapped_brackets_stays_a_picture() {
     assert_eq!(equations.len(), 1);
     assert!(equations[0].math.is_none());
     let out = paper.to_html(&analysis, &HtmlOptions::default());
-    assert!(!out.html.contains("<math "));
+    assert!(!out.html.contains("<math display=\"block\""));
     assert!(out.html.contains("<div class=\"eq\""));
 }
 

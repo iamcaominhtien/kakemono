@@ -113,6 +113,8 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
         offprint: true,
         covers: cover_blocks(doc),
         sides: side_figures(doc, &doc.blocks.iter().collect::<Vec<_>>()),
+
+        math: images.opts.equations == Equations::MathMl,
     };
     let mut content = render_flow(&front_rest, images, &ctx);
     content.push_str(&render_flow(body, images, &ctx));

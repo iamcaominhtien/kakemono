@@ -4,7 +4,7 @@
 
 # kakemono
 
-**Turn PDF papers and books into clean, readable HTML or Word documents — in pure Rust, as a single executable.**
+**Turn PDF papers and books into clean, readable HTML, Word documents or Markdown — in pure Rust, as a single executable.**
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
-[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Install](#installation) · [Usage](#usage) ·
+[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [Install](#installation) · [Usage](#usage) ·
 [Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -26,11 +26,12 @@
 > glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
 
 Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
-to feed to translation tools, or a Word document to edit.
+to feed to translation tools, a Word document to edit, or Markdown for notes, wikis and LLMs.
 
 ```bash
 kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
 kakemono convert 1706.03762 -o attention.docx   # the same paper as a Word document
+kakemono convert 1706.03762 -o attention.md     # Markdown, pictures in attention_assets/
 ```
 
 ## Features
@@ -39,9 +40,10 @@ kakemono convert 1706.03762 -o attention.docx   # the same paper as a Word docum
 | --- | --- |
 | 🦀 **Pure Rust** | One executable: no `poppler`, `mupdf` or Python. PDF reading and rendering use [hayro](https://github.com/LaurenzV/hayro). |
 | 📖 **Continuous text** | Lines joined into paragraphs, end-of-line hyphens removed, paragraphs joined across columns and pages, running heads and page numbers removed, footnotes set apart. |
-| 🧱 **Real structure** | Tables rebuilt as `<table>`, display formulas as MathML, code listings kept line by line, lists, headings and cross-links. |
+| 🧱 **Real structure** | Tables rebuilt as `<table>`, formulas (displayed and inside the text) as MathML, code listings kept line by line, lists, headings and cross-links. |
 | 🖼️ **Sharp images** | Figures stay vector (SVG) or render at 216 dpi; photographs are stored as JPEG. |
 | 📝 **Word documents** | `.docx` with Word styles, Word tables and editable Word equations, from the same analysis. |
+| ✍️ **Markdown** | `.md` with pipe tables, LaTeX formulas (`$$`) and the pictures in a folder of their own. |
 | 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
 | ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
@@ -67,12 +69,31 @@ HTML. It is built from the same analysis as the HTML modes, as one flowing colum
   contents work), lists, footnotes, code and references get Word styles;
 - rebuilt tables become Word tables, with merged cells and the paper's rules;
 - formulas whose structure is clear become Word equations (Office Math, editable in Word), the
-  others pictures; numbered formulas keep their number at the right margin;
+  others pictures; numbered formulas keep their number at the right margin; formulas inside the
+  text (`fₜ(θₜ)`, `β₁ = 0.9`) are equations too;
 - figures are pictures of their area of the page, with their captions; citations and references to
   figures, tables and sections are links within the document.
 
-The page is US Letter with one-inch margins. `--scale` and `--equations` apply; `--mode`, `--all`,
-`--images`, `--page-image` and `--fonts` are for HTML only.
+The page is US Letter with one-inch margins. `--scale` and `--equations` apply. With
+`--images files` the pictures stay in the document and are also written to a folder
+(`<name>_assets/`, or `--image-dir`). `--mode`, `--all`, `--page-image` and `--fonts` are for HTML
+only.
+
+## Markdown
+
+`kakemono convert paper.pdf -o paper.md` (or `--format md`) writes Markdown, from the same
+analysis, readable on GitHub, in Obsidian, Jupyter, Pandoc, or by an LLM:
+
+- the title (`#`), headings (`##`–`#####`), lists, footnotes, references and code listings (fenced
+  blocks) get their Markdown syntax; bold, italic, code, links and `<sup>`/`<sub>` are kept;
+- rebuilt tables become pipe tables, or HTML tables when cells span rows or columns;
+- formulas whose structure is clear become LaTeX between `$$` (with `\tag{n}` for their number),
+  the others pictures; formulas inside the text become `$…$`;
+- figures are pictures, written to `<name>_assets/` next to the file (`--image-dir images` for
+  `images/`); `--images inline` embeds them as data URIs instead, for a single file;
+- citations and references to figures, tables and sections are links within the document.
+
+`--scale` and `--equations` apply.
 
 ## Installation
 
@@ -108,6 +129,10 @@ kakemono convert paper.pdf --all --json -o out/
 kakemono convert paper.pdf -o paper.docx
 ```
 
+```bash
+kakemono convert paper.pdf -o paper.md --image-dir images
+```
+
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
 arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
@@ -115,13 +140,14 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx>` | HTML (default) or a Word document; `docx` when `--output` ends in `.docx` |
-| `-o, --output <path>` | HTML or `.docx` file, or directory |
-| `--images <inline\|files>` | Embed images (default) or write them to `<name>_assets/` |
+| `-f, --format <html\|docx\|md>` | HTML (default), a Word document or Markdown; chosen from `--output` when it ends in `.docx` or `.md` |
+| `-o, --output <path>` | HTML, `.docx` or `.md` file, or directory |
+| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown; Word keeps them embedded too) |
+| `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
 | `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML and Word |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
-| `--equations <mathml\|image>` | Display formulas as MathML (Word equations in `.docx`) where the structure is clear (default), or pictures |
+| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
@@ -166,8 +192,10 @@ let out = paper.to_html(&analysis, &HtmlOptions { mode: Mode::Friendly, ..Defaul
 std::fs::write("paper.html", out.html)?;
 ```
 
-`paper.to_html` can be called once per mode with the same analysis, and
-`paper.to_docx(&analysis, &DocxOptions::default())` returns the bytes of a Word document. `analysis.doc` is the
+`paper.to_html` can be called once per mode with the same analysis,
+`paper.to_docx(&analysis, &DocxOptions::default())` returns the bytes of a Word document
+(`to_docx_with_images` also returns its pictures as files), and
+`paper.to_markdown(&analysis, &MarkdownOptions::default())` returns Markdown with its picture files. `analysis.doc` is the
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
 how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -184,6 +212,7 @@ html = kakemono.convert("paper.pdf")                   # friendly mode, one self
 html = kakemono.convert("1706.03762", mode="medium")   # an arXiv id or URL works too
 pages = kakemono.convert_all("paper.pdf")              # every mode, from one analysis
 kakemono.to_docx("paper.pdf", "paper.docx")           # a Word document (also returns its bytes)
+kakemono.to_markdown("paper.pdf", "paper.md")          # Markdown, pictures in paper_assets/
 doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
 ```
 
@@ -197,6 +226,8 @@ The options are those of the command line (`tables`, `equations`, `page_image`, 
   `friendly`) or text placed by position (`hard-95`).
 - Formulas with `\underbrace`, a drawing, or symbols the PDF gives no Unicode code for stay
   pictures; a character with no code at all shows as `�` in `medium`/`friendly`.
+- Formulas inside the text are found from their fonts and scripts: a fraction or a root set on
+  several levels inside a line (`β₂/√β₁` stacked) is not rebuilt, and its pieces read as scripts.
 - `hard-95` uses Latin Modern for TeX papers and the reader's fonts otherwise, so letter shapes may
   differ slightly; positions and line widths match.
 - Author–year citations are not linked yet; scanned and encrypted PDFs are not supported.

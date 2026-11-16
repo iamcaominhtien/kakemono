@@ -25,6 +25,15 @@ pub(crate) fn display_math(node: &MathNode) -> String {
     out
 }
 
+/// A formula inside running text: an `m:oMath` in line with the runs of
+/// its paragraph.
+pub(crate) fn inline_math(node: &MathNode) -> String {
+    let mut out = String::from("<m:oMath>");
+    write_node(node, &mut out);
+    out.push_str("</m:oMath>");
+    out
+}
+
 /// Writes `node` as a sequence of OMML elements (OMML has no row element:
 /// the children of a row follow one another).
 fn write_node(node: &MathNode, out: &mut String) {

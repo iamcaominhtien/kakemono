@@ -42,12 +42,13 @@ pub static LIST_LABEL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The equation rules for rows without an equation number, tried in order.
-const EQUATION_RULES: [EquationRule; 5] = [
+const EQUATION_RULES: [EquationRule; 6] = [
     displayed_formula,
     symbol_row,
     centred_relation,
     stacked_formula,
     centred_stacked_relation,
+    drawn_bracket,
 ];
 
 /// The paragraph break rules, tried in order (centred groups never break).
@@ -276,6 +277,36 @@ pub struct BlocksConfig {
     pub bold_run_in_max_words_count: usize,
     /// A row is bold when at least this fraction of its glyphs are bold.
     pub bold_dominant_ratio: f32,
+
+    // --- margin notes ---
+    /// A line at least this wide (a fraction of the page width) is a line
+    /// of the main text of its page ...
+    pub main_text_min_width_ratio: f32,
+    /// ... and a block of text beside all of them, at most this wide, ...
+    pub margin_note_max_width_ratio: f32,
+    /// ... and set at most this size (a fraction of the body size), is a
+    /// note in the margin (a book's sidenotes): it is set apart like a
+    /// footnote, and does not cut the paragraph it stands beside.
+    pub margin_note_max_size_ratio: f32,
+    /// A page has margin notes only beside at least this many lines of
+    /// main text.
+    pub main_text_min_lines_count: usize,
+
+    // --- parts of one equation ---
+    /// Two equation blocks side by side whose boxes share at least this
+    /// fraction of the height of the lower one ...
+    pub equation_join_min_overlap_ratio: f32,
+    /// ... and are at most this far apart (multiple of the body size) are
+    /// two parts of one display that the reading order cut apart (a matrix
+    /// wide enough to look like columns).
+    pub equation_join_max_gap_em: f32,
+    /// Equation blocks of different zones of the page whose boxes overlap
+    /// or are at most this far apart (multiple of the body size) are parts
+    /// of one display: the reading order cut a tall matrix into zones.
+    pub equation_touch_max_gap_em: f32,
+    /// A text block with at least this fraction of its area inside the box
+    /// of an equation is a part of it (rows of a matrix read as text).
+    pub equation_absorb_min_overlap_ratio: f32,
 }
 
 impl Default for BlocksConfig {
@@ -351,6 +382,14 @@ impl Default for BlocksConfig {
             bold_flip_gap_leading: 1.1,
             bold_run_in_max_words_count: 12,
             bold_dominant_ratio: 0.95,
+            main_text_min_width_ratio: 0.45,
+            margin_note_max_width_ratio: 0.22,
+            margin_note_max_size_ratio: 0.92,
+            main_text_min_lines_count: 5,
+            equation_join_min_overlap_ratio: 0.5,
+            equation_join_max_gap_em: 3.0,
+            equation_touch_max_gap_em: 0.5,
+            equation_absorb_min_overlap_ratio: 0.8,
         }
     }
 }
@@ -495,6 +534,9 @@ struct RowFeatures {
     /// The row starts with an operator or is a single function term
     /// ("P(A)"): a line of a display set in text letters.
     continues_display: bool,
+    /// The row holds a piece of a tall bracket or brace (`⎡`, `⎪`): only a
+    /// displayed matrix or `cases` draws one.
+    has_bracket_piece: bool,
 }
 
 /// A rule of the equation classification: whether a row is a display
@@ -585,6 +627,128 @@ pub fn build_blocks(
         emit_blocks(ctx, rows, fn_start, loc, &mut out);
     }
     out
+}
+
+/// Turns the text blocks of the margin notes of a page into footnote
+/// blocks: narrow blocks of small text (see
+/// [`BlocksConfig::margin_note_max_size_ratio`]) that lie wholly beside the
+/// lines of the main text, to the left or to the right, within their
+/// height, and that are not headings (all bold). Set apart as notes, they
+/// no longer read as paragraphs of the text, nor cut the paragraph they
+/// stand beside. A page with few long lines of main text (two columns of
+/// text) has no margin notes.
+pub fn mark_margin_notes(
+    blocks: &mut [RawBlock],
+    page_width: f32,
+    stats: &DocStats,
+    fonts: &[FontInfo],
+    cfg: &BlocksConfig,
+) {
+    let max_size = cfg.margin_note_max_size_ratio * stats.body_size;
+    let main_lines: Vec<&Line> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            RawBlock::Text(text) => Some(text.lines.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|line| line.size > max_size && line.bbox.width() >= cfg.main_text_min_width_ratio * page_width)
+        .collect();
+    if main_lines.len() < cfg.main_text_min_lines_count {
+        return;
+    }
+    let main = main_lines.iter().fold(Rect::EMPTY, |acc, line| acc.union(&line.bbox));
+    let bold = |line: &Line| fonts.get(usize::from(line.font)).is_some_and(|font| font.bold);
+    for block in blocks.iter_mut() {
+        let RawBlock::Text(text) = block else {
+            continue;
+        };
+        let small = text.lines.iter().all(|line| line.size <= max_size);
+        let narrow = text.bbox.width() <= cfg.margin_note_max_width_ratio * page_width;
+        let beside =
+            (text.bbox.x1 <= main.x0 || text.bbox.x0 >= main.x1) && text.bbox.y0 >= main.y0 && text.bbox.y1 <= main.y1;
+        let heading = text.lines.iter().all(bold);
+        if small && narrow && beside && !heading {
+            *block = RawBlock::Footnote(text.clone());
+        }
+    }
+}
+
+/// Joins the parts of one displayed equation that the reading order cut
+/// apart: equation blocks side by side (see
+/// [`BlocksConfig::equation_join_min_overlap_ratio`]), and text blocks that
+/// lie inside the box of an equation. The joined equation takes the place
+/// of its first part in the reading order.
+pub fn join_equation_parts(blocks: &mut Vec<RawBlock>, stats: &DocStats, cfg: &BlocksConfig) {
+    let mut i = 0;
+    while i < blocks.len() {
+        let RawBlock::Equation(equation) = &blocks[i] else {
+            i += 1;
+            continue;
+        };
+        let (target, loc) = (equation.bbox, equation.loc);
+        let part = (0..blocks.len()).find(|&j| j != i && is_equation_part(&target, loc, &blocks[j], stats, cfg));
+        let Some(j) = part else {
+            i += 1;
+            continue;
+        };
+        let other = blocks.remove(j);
+        let i_now = if j < i { i - 1 } else { i };
+        if let RawBlock::Equation(equation) = &mut blocks[i_now] {
+            match other {
+                RawBlock::Equation(part) => {
+                    equation.bbox = equation.bbox.union(&part.bbox);
+                    equation.lines.extend(part.lines);
+                    if equation.number.is_none() {
+                        equation.number = part.number;
+                        equation.number_line = part.number_line;
+                    }
+                }
+                RawBlock::Text(part) => {
+                    equation.bbox = equation.bbox.union(&part.bbox);
+                    equation.lines.extend(part.lines);
+                }
+                _ => {}
+            }
+            equation
+                .lines
+                .sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
+        }
+        // Look again from the joined equation: it may have grown.
+        i = i_now;
+    }
+}
+
+/// Whether `block` is a part of the equation whose box is `target` (at
+/// `loc`): an equation beside it, level with it, in the same column; an
+/// equation of another zone that touches it; or a text block inside it.
+fn is_equation_part(target: &Rect, loc: Loc, block: &RawBlock, stats: &DocStats, cfg: &BlocksConfig) -> bool {
+    match block {
+        RawBlock::Equation(other) if other.loc.zone != loc.zone => {
+            let bbox = other.bbox;
+            let gap_x = (bbox.x0 - target.x1).max(target.x0 - bbox.x1);
+            let gap_y = (bbox.y0 - target.y1).max(target.y0 - bbox.y1);
+            let max_gap = cfg.equation_touch_max_gap_em * stats.body_size;
+            gap_x <= max_gap && gap_y <= max_gap
+        }
+        RawBlock::Equation(other) if (other.loc.zone, other.loc.col) == (loc.zone, loc.col) => {
+            let bbox = other.bbox;
+            let overlap = (target.y1.min(bbox.y1) - target.y0.max(bbox.y0)).max(0.0);
+            let lower = target.height().min(bbox.height()).max(1.0);
+            let gap = (bbox.x0 - target.x1).max(target.x0 - bbox.x1);
+            overlap >= cfg.equation_join_min_overlap_ratio * lower
+                && gap >= 0.0
+                && gap <= cfg.equation_join_max_gap_em * stats.body_size
+        }
+        RawBlock::Text(text) => {
+            let bbox = text.bbox;
+            let width = (target.x1.min(bbox.x1) - target.x0.max(bbox.x0)).max(0.0);
+            let height = (target.y1.min(bbox.y1) - target.y0.max(bbox.y0)).max(0.0);
+            let area = (bbox.width() * bbox.height()).max(1.0);
+            width * height >= cfg.equation_absorb_min_overlap_ratio * area
+        }
+        _ => false,
+    }
 }
 
 impl LeafExtent {
@@ -1015,6 +1179,7 @@ impl RowFeatures {
             '+', '\u{2212}', '=', '\u{D7}', '\u{B7}', '\u{2248}', '\u{2264}', '\u{2265}',
         ]);
         let call_only = FUNCTION_TERM.is_match(text);
+        let has_bracket_piece = text.chars().any(is_bracket_piece);
         Self {
             numbered,
             n_chars: stats.n_chars,
@@ -1028,6 +1193,7 @@ impl RowFeatures {
             multi,
             has_relation,
             continues_display: operator_start || call_only,
+            has_bracket_piece,
         }
     }
 }
@@ -1046,6 +1212,19 @@ fn displayed_formula(row: &RowFeatures, cfg: &BlocksConfig) -> bool {
     row.math_frac >= cfg.display_min_math_ratio
         && row.prose_frac <= cfg.display_max_prose_ratio
         && (row.centered || row.left_indent >= cfg.display_min_indent_em * row.em)
+}
+
+/// Rule: a row with a piece of a tall bracket or brace and little prose: a
+/// line of a displayed matrix or `cases`, however it sits.
+fn drawn_bracket(row: &RowFeatures, cfg: &BlocksConfig) -> bool {
+    row.has_bracket_piece && row.prose_frac <= cfg.stacked_max_prose_ratio
+}
+
+/// Whether `ch` is a piece of a tall bracket, brace or parenthesis
+/// (U+239B to U+23AD), which fonts use to draw delimiters taller than any
+/// glyph.
+fn is_bracket_piece(ch: char) -> bool {
+    ('\u{239B}'..='\u{23AD}').contains(&ch)
 }
 
 /// Rule: almost nothing but symbols, indented or isolated.

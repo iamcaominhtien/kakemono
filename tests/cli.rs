@@ -81,6 +81,71 @@ fn convert_writes_a_word_document_when_asked() {
 }
 
 #[test]
+fn convert_writes_markdown_with_an_image_folder() {
+    let dir = scratch("cli-markdown");
+    // `-o x.md` is enough to choose the format; pictures go to a folder.
+    let md = dir.join("ligo.md");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--image-dir",
+        "images",
+        "-o",
+        md.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&md).unwrap();
+    assert!(text.starts_with("Selected for a Viewpoint"), "{}", &text[..200]);
+    assert!(text.contains("\n# Observation of Gravitational Waves from a Binary Black Hole Merger\n"));
+    assert!(text.contains("](images/001-fig.png)"));
+    assert!(dir.join("images/001-fig.png").is_file());
+
+    // `--images inline` embeds them instead.
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "-f",
+        "md",
+        "--images",
+        "inline",
+        "-o",
+        dir.join("inline").to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(dir.join("inline/1602.03837v1.md")).unwrap();
+    assert!(text.contains("](data:image/png;base64,"));
+    assert!(!dir.join("inline/1602.03837v1_assets").exists());
+
+    let outside = kakemono(&["convert", LIGO, "--image-dir", "../x", "-o", md.to_str().unwrap()]);
+    assert!(!outside.status.success());
+}
+
+#[test]
+fn word_document_can_also_write_its_pictures() {
+    let dir = scratch("cli-docx-images");
+    let docx = dir.join("ligo.docx");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--images",
+        "files",
+        "-o",
+        docx.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let pictures: Vec<_> = std::fs::read_dir(dir.join("ligo_assets")).unwrap().collect();
+    assert_eq!(pictures.len(), 5, "4 figures and 1 formula");
+    // The pictures stay in the document too.
+    assert!(String::from_utf8_lossy(&std::fs::read(&docx).unwrap()).contains("word/media/image5.png"));
+}
+
+#[test]
 fn formula_reports_a_picture_it_cannot_read() {
     let dir = scratch("cli-formula");
     let (one, two) = (dir.join("one.png"), dir.join("two.png"));
