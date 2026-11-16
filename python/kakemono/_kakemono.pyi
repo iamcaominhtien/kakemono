@@ -35,6 +35,16 @@ def to_markdown(
     image_dir: str = "images",
     inline_images: bool = False,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+def to_latex(
+    pdf: bytes,
+    *,
+    source: Optional[str] = None,
+    tables: bool = True,
+    equations: str = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    image_dir: str = "images",
+) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0) -> str: ...
 def parse_arxiv_id(text: str) -> Optional[str]: ...
 def fetch_arxiv(id: str) -> bytes: ...

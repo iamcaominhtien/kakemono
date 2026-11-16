@@ -1,0 +1,41 @@
+% Converted from a PDF by kakemono. Compiles with pdfLaTeX, XeLaTeX or
+% LuaLaTeX; the pictures are files in a folder next to this one.
+\documentclass[11pt]{article}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage{lmodern}
+\else
+  \usepackage{fontspec}
+\fi
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage[colorlinks,allcolors=blue]{hyperref}
+% Relations written as MathJax names them.
+\providecommand{\lt}{<}
+\providecommand{\gt}{>}
+% A character that the fonts of pdfLaTeX do not have (XeLaTeX and LuaLaTeX
+% write it).
+\newcommand{\kakemonomissing}{\textbf{?}}
+% A picture of an area of the PDF page: #1 is its width in the PDF, #2 the
+% file. It is at most as wide as the text and 80% as high.
+\newlength{\kakemonowidth}
+\newcommand{\kakemonopicture}[2]{%
+  \if\relax\detokenize{#2}\relax\else
+    \setlength{\kakemonowidth}{#1}%
+    \ifdim\kakemonowidth>\linewidth\setlength{\kakemonowidth}{\linewidth}\fi
+    \includegraphics[width=\kakemonowidth,height=0.8\textheight,keepaspectratio]{#2}%
+  \fi}
+% A table, shrunk to the width of the text when it is wider.
+\newsavebox{\kakemonobox}
+\newenvironment{kakemonotable}
+  {\begin{lrbox}{\kakemonobox}}
+  {\end{lrbox}%
+   \ifdim\wd\kakemonobox>\linewidth
+     \resizebox{\linewidth}{!}{\usebox{\kakemonobox}}%
+   \else
+     \usebox{\kakemonobox}%
+   \fi}

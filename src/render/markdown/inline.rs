@@ -2,10 +2,10 @@
 //! `<sup>`/`<sub>` for raised and lowered text (Markdown has no syntax of
 //! its own for them), and the formulas inside the text as LaTeX (`$…$`).
 
-use super::latex::latex;
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::esc;
 use crate::render::inline_math::{Piece, has_math, split};
+use crate::render::latex::math::latex;
 use std::collections::HashSet;
 
 /// Characters escaped with a backslash anywhere in running text: those that
@@ -97,7 +97,7 @@ impl Inline<'_> {
 
 /// Neighbouring spans with the same Markdown style and link, joined:
 /// (text, style, link).
-fn merge(spans: &[Span]) -> Vec<(String, u8, Option<String>)> {
+pub(crate) fn merge(spans: &[Span]) -> Vec<(String, u8, Option<String>)> {
     let mut runs: Vec<(String, u8, Option<String>)> = Vec::new();
     for span in spans {
         let style = span.style & MARKDOWN_STYLE;

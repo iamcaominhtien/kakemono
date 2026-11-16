@@ -1,5 +1,6 @@
 //! HTML output in four fidelity modes (see [`Mode`]), Word output
-//! ([`render_docx`]) and Markdown output ([`render_markdown`]).
+//! ([`render_docx`]), Markdown output ([`render_markdown`]) and LaTeX output
+//! ([`render_latex`]).
 
 mod assets;
 mod code;
@@ -10,6 +11,7 @@ mod friendly;
 mod hard;
 mod hard95;
 mod inline_math;
+mod latex;
 mod markdown;
 mod mathml;
 mod medium;
@@ -20,6 +22,7 @@ pub(crate) use assets::ImageStore;
 pub use docx::{DocxOptions, DocxOutput, render_docx, render_docx_with_images};
 pub(crate) use escape::*;
 pub(crate) use flow::*;
+pub use latex::{LatexOptions, LatexOutput, render_latex};
 pub use markdown::{MarkdownOptions, MarkdownOutput, render_markdown};
 pub(crate) use mathml::math_css;
 pub use mathml::math_html;

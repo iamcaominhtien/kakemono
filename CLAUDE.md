@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes, to a
-Word document (`.docx`, `src/render/docx/`) or to Markdown (`.md`, `src/render/markdown/`):
+Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`) or to
+LaTeX (`.tex`, `src/render/latex/`):
 
 - `hard`: a copy of every page, with a selectable text layer.
 - `hard-95`: like `hard`, but all text is real HTML text placed as in the PDF.
@@ -21,6 +22,7 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf | arXiv id> -m friendly -o out/x.friendly.html   # or --all -o out/dir
 ./target/release/kakemono convert <file.pdf> -o out/x.docx                    # Word document (or -f docx)
 ./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md)
+./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
@@ -61,8 +63,11 @@ committing.
   1. Run the tests again and see which snapshots changed.
   2. Compare the output text before and after on as many papers as you can (the 8 test papers,
      plus other varied papers if you have them).
-- Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML, of the Word document and of the
-  Markdown.
+- Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML, of the Word document, of the
+  Markdown and of the LaTeX.
+- The LaTeX output must compile: after a change to `src/render/latex/`, compile a few papers with
+  `pdflatex` (and `xelatex` or `lualatex`) when TeX is installed; `tests/cli.rs` compiles the LIGO
+  paper when `pdflatex` is on the `PATH`.
   - Changing the renderer's CSS, JS or assets also changes the snapshots, because they are
     embedded with `include_str!`.
   - Update the snapshots only when the output change is intended, and commit them with the code.

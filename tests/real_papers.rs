@@ -14,8 +14,9 @@
 //! `KAKEMONO_PRINT_METRICS=1` to print the measured values.
 //!
 //! On top of these bounds, every output is compared with a snapshot in
-//! `tests/data/snapshots`: a fingerprint (sha256) of the HTML of each mode and
-//! of the JSON, so that any change in the output, however small, is noticed.
+//! `tests/data/snapshots`: a fingerprint (sha256) of the HTML of each mode, of
+//! the Word, Markdown and LaTeX documents and of the JSON, so that any change
+//! in the output, however small, is noticed.
 //! A restructuring of the code must leave them unchanged. When a change of
 //! output is intended, regenerate them with
 //! `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit them; the
@@ -23,7 +24,9 @@
 //! allows it the full JSON is kept too, so `git diff` shows what changed.
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
+use kakemono::{
+    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -252,6 +255,74 @@ fn check_markdown(markdown: &str, files: &[(String, Vec<u8>)], math: usize) {
     assert!(!markdown.contains("\n\n\n"), "markdown: no runs of blank lines");
 }
 
+/// Checks a LaTeX document: no placeholder left, every picture file
+/// referenced, every rebuilt formula written as LaTeX math, and the braces
+/// and environments balanced outside the code listings.
+fn check_latex(latex: &str, files: &[(String, Vec<u8>)], math: usize) {
+    assert!(!latex.contains('\u{1}'), "latex: picture placeholder left");
+    assert!(latex.ends_with("\\end{document}\n"), "latex: incomplete document");
+    for (name, data) in files {
+        assert!(name.starts_with("images/"), "latex: {name} is not in images/");
+        assert!(
+            latex.contains(&format!("{{{name}}}")),
+            "latex: {name} is not referenced"
+        );
+        assert!(!data.is_empty(), "latex: {name} is empty");
+    }
+    let displays = latex.matches("\\[\n").count() + latex.matches("\\begin{equation*}\n").count();
+    assert_eq!(
+        displays - latex.matches("\\vcenter{\\hbox{").count(),
+        math,
+        "latex: every rebuilt formula is written as LaTeX"
+    );
+    assert!(!latex.contains("\n\n\n"), "latex: no runs of blank lines");
+    // Outside the listings, which are verbatim, and the comments.
+    let mut code = String::new();
+    let mut in_verbatim = false;
+    for line in latex.lines() {
+        match line {
+            "\\begin{verbatim}" => in_verbatim = true,
+            "\\end{verbatim}" => in_verbatim = false,
+            _ if in_verbatim || line.trim_start().starts_with('%') => {}
+            _ => {
+                code.push_str(line);
+                code.push('\n');
+            }
+        }
+    }
+    let mut depth = 0i32;
+    let mut chars = code.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                assert!(depth >= 0, "latex: unbalanced closing brace");
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(depth, 0, "latex: unbalanced braces");
+    let environment = Regex::new(r"\\(begin|end)\{([a-zA-Z*]+)\}").unwrap();
+    let mut open: Vec<String> = Vec::new();
+    for found in environment.captures_iter(&code) {
+        if &found[1] == "begin" {
+            open.push(found[2].to_string());
+        } else {
+            assert_eq!(
+                open.pop().as_deref(),
+                Some(&found[2]),
+                "latex: \\end{{{}}} closes nothing",
+                &found[2]
+            );
+        }
+    }
+    assert!(open.is_empty(), "latex: environments left open: {open:?}");
+}
+
 /// Compares the outputs of a paper with its stored snapshot, or stores them
 /// when `KAKEMONO_UPDATE_SNAPSHOTS=1`.
 fn check_snapshot(id: &str, snap: &Snapshot) {
@@ -424,6 +495,10 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
     check_markdown(&md.markdown, &md.files, math);
     fingerprints.push(("markdown", fingerprint(&md.markdown, &md.files)));
+    // The LaTeX document, with its pictures.
+    let tex = paper.to_latex(&analysis, &LatexOptions::default());
+    check_latex(&tex.latex, &tex.files, math);
+    fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
     let metrics = Metrics {
         title,
         tables,

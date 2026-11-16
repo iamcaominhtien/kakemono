@@ -1,13 +1,13 @@
 //! High-level entry points: PDF bytes in, structured document and HTML (or
-//! Word, or Markdown) out.
+//! Word, Markdown or LaTeX) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
-    DocxOptions, DocxOutput, HtmlOptions, HtmlOutput, MarkdownOptions, MarkdownOutput, render, render_docx,
-    render_docx_with_images, render_markdown,
+    DocxOptions, DocxOutput, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput,
+    render, render_docx, render_docx_with_images, render_latex, render_markdown,
 };
 use anyhow::Result;
 
@@ -102,6 +102,13 @@ impl Paper {
     /// since the pictures are drawn from its PDF.
     pub fn to_markdown(&self, analysis: &Analysis, opts: &MarkdownOptions) -> MarkdownOutput {
         render_markdown(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as a LaTeX document (`.tex`) with its picture
+    /// files. `analysis` must come from this paper, since the pictures are
+    /// drawn from its PDF.
+    pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
+        render_latex(analysis, &self.pdf, opts)
     }
 }
 

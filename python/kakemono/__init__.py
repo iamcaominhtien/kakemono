@@ -1,10 +1,11 @@
-"""Convert PDF papers and books into clean, readable HTML, Word documents or Markdown.
+"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown or LaTeX.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
 >>> pages = kakemono.convert("1706.03762", mode="hard")   # an arXiv id works too
 >>> data = kakemono.to_docx("paper.pdf")                  # a Word document (bytes)
 >>> text = kakemono.to_markdown("paper.pdf", "out/paper.md")  # Markdown + out/paper_assets/
+>>> tex = kakemono.to_latex("paper.pdf", "out/paper.tex")     # LaTeX + out/paper_assets/
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 
 The work is done by the kakemono Rust library; the GIL is released while it
@@ -27,6 +28,7 @@ __all__ = [
     "convert_all",
     "fetch_arxiv",
     "to_docx",
+    "to_latex",
     "to_markdown",
     "__version__",
 ]
@@ -203,6 +205,39 @@ def to_markdown(
         jobs=jobs,
         image_dir=folder,
         inline_images=inline,
+    )
+    if path is not None:
+        _write(path, text, files)
+    return text
+
+
+def to_latex(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    tables: bool = True,
+    equations: Literal["mathml", "image"] = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    image_dir: Optional[str] = None,
+) -> str:
+    """Convert a PDF to a LaTeX document (``.tex``) and return its source.
+
+    The document compiles with pdfLaTeX, XeLaTeX or LuaLaTeX. Headings
+    become sections, the abstract and lists their environments, rebuilt
+    tables ``tabular``s, and formulas whose structure is clear LaTeX math
+    (with ``equations="image"``, every displayed formula is a picture).
+
+    LaTeX cannot embed pictures: when `path` is given, the document is
+    written there and its pictures to `image_dir` (default
+    ``<name>_assets``, relative to the file); without `path`, only the
+    source is returned, and it refers to pictures in ``images/``. The other
+    options are those of :func:`convert_all`.
+    """
+    folder = _image_dir(path, image_dir) if path is not None else "images"
+    data, name = _load(source)
+    text, files = _kakemono.to_latex(
+        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder
     )
     if path is not None:
         _write(path, text, files)

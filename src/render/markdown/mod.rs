@@ -6,9 +6,9 @@
 //! formulas) are pictures of their area of the page, written to an image
 //! folder next to the file (or embedded as data URIs).
 
-mod inline;
-pub(super) mod latex;
+pub(crate) mod inline;
 
+use super::latex::math::latex;
 use super::{
     CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, code, code_run, doc_title, figure_alt, float_class,
     heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number, table_walk,
@@ -109,7 +109,7 @@ pub fn render_markdown(analysis: &Analysis, pdf: &PdfFile, opts: &MarkdownOption
 
 /// The anchors of the blocks that some text links to: only those get an
 /// `<a id>`, so that the Markdown is not cluttered with unused ones.
-fn linked_anchors(doc: &Document) -> HashSet<String> {
+pub(crate) fn linked_anchors(doc: &Document) -> HashSet<String> {
     let targets: HashSet<&str> = doc
         .blocks
         .iter()
@@ -393,7 +393,7 @@ impl Writer<'_, '_> {
         match &block.math {
             Some(math) if self.opts.equations == Equations::MathMl => {
                 let tag = tag.map(|tag| format!(" \\tag{{{tag}}}")).unwrap_or_default();
-                self.paragraph(&format!("$$\n{}{tag}\n$$", latex::latex(math)));
+                self.paragraph(&format!("$$\n{}{tag}\n$$", latex(math)));
             }
             _ => {
                 let picture = self.picture(image, &plain(&block.spans), "eq");
@@ -549,7 +549,7 @@ fn heading_marks(level: u8) -> &'static str {
 
 /// The spans after the label `label` at the start of their text (and the
 /// spaces after it), or `None` when the text does not start with it.
-fn strip_label(spans: &[Span], label: &str) -> Option<Vec<Span>> {
+pub(crate) fn strip_label(spans: &[Span], label: &str) -> Option<Vec<Span>> {
     let first = spans.first()?;
     let rest = first.text.strip_prefix(label).filter(|_| !label.is_empty())?;
     let mut spans = spans.to_vec();

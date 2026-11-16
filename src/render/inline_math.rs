@@ -768,7 +768,7 @@ mod tests {
         let Piece::Math(node, _) = &pieces[1] else {
             panic!("a formula")
         };
-        assert_eq!(crate::render::markdown::latex::latex(node), "f_{t}(\\theta_{t})");
+        assert_eq!(crate::render::latex::math::latex(node), "f_{t}(\\theta_{t})");
     }
 
     #[test]
@@ -877,6 +877,6 @@ mod tests {
         let Piece::Math(node, _) = &pieces[0] else {
             panic!("a formula")
         };
-        assert_eq!(crate::render::markdown::latex::latex(node), "\\beta_{1,t}");
+        assert_eq!(crate::render::latex::math::latex(node), "\\beta_{1,t}");
     }
 }
