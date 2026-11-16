@@ -387,7 +387,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             .output
             .as_ref()
             .and_then(|path| path.extension())
-            .and_then(|ext| ext.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or_default()
             .to_ascii_lowercase();
         match ext.as_str() {
@@ -406,7 +406,7 @@ fn image_dir(args: &ConvertArgs, file: &Path, mode: Option<Mode>) -> String {
         (Some(dir), Some(mode)) if args.all => format!("{}/{}", dir.trim_end_matches(['/', '\\']), mode.name()),
         (Some(dir), _) => dir.trim_end_matches(['/', '\\']).to_string(),
         (None, _) => {
-            let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("paper");
+            let stem = file.file_stem().and_then(std::ffi::OsStr::to_str).unwrap_or("paper");
             format!("{stem}_assets")
         }
     }
