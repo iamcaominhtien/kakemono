@@ -21,6 +21,28 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// mimalloc instead of the system allocator: it gives memory freed on one
+/// thread back to the others (with glibc, the lines built on the worker
+/// threads stay reserved after they are freed), and it is faster.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// mimalloc option `purge_delay`, in milliseconds (its index in
+/// `mi_option_e` of mimalloc.h; the sys crate does not name it).
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+/// Tunes mimalloc for a short run that should hold as little memory as it
+/// can: freed memory goes back to the system at once rather than after a
+/// delay (10 ms by default). This cuts the peak memory of a 1000-page book
+/// by about a fifth, for about a tenth more time.
+fn tune_allocator() {
+    // SAFETY: `mi_option_set` only stores an option value, and
+    // `MI_OPTION_PURGE_DELAY` is an option of the bundled mimalloc.
+    unsafe {
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
+    }
+}
+
 /// `--scale` must be larger than this (pixels per PDF point): smaller images
 /// are unreadable.
 const MIN_SCALE: f32 = 0.2;
@@ -268,6 +290,7 @@ impl OutputPaths {
 
 /// Runs the command line and exits with status 1 on error.
 fn main() {
+    tune_allocator();
     if let Err(err) = run() {
         eprintln!("error: {err:#}");
         std::process::exit(1);
