@@ -16,7 +16,7 @@
 //! figures), and is what the tests check.
 
 use crate::common::geom::Rect;
-use crate::model::{Block, BlockKind, Document, Line, PLine, Span};
+use crate::model::{Block, BlockKind, Document, Line, LineGlyph, PLine, Span};
 
 /// Overlap, in points, below which a glyph only touches a region.
 const TOUCH_PT: f32 = 0.6;
@@ -65,29 +65,60 @@ fn inks(lines: &[Line]) -> impl Iterator<Item = Rect> + '_ {
         .map(|glyph| glyph.ink)
 }
 
-/// The glyph inks of a page, each with the index of the block it belongs
-/// to (`None` for loose lines: running heads, page numbers; and for the
-/// captions of figures, which are not part of their pictures).
-fn page_glyphs(doc: &Document, loose: &[Vec<PLine>], page: usize) -> Vec<(Rect, Option<usize>)> {
-    page_glyph_texts(doc, loose, page)
-        .into_iter()
-        .map(|(ink, owner, _)| (ink, owner))
-        .collect()
+/// The blocks of each page of a document, in block order, so that the work
+/// on one page does not go through every block of the document.
+struct PageBlocks {
+    /// Blocks whose own lines or inner lines have a line on the page (a
+    /// paragraph that runs on to the next page is listed on both).
+    touching: Vec<Vec<usize>>,
+    /// Blocks whose page is the page.
+    on: Vec<Vec<usize>>,
 }
 
-/// [`page_glyphs`] with the text of each glyph.
-fn page_glyph_texts(doc: &Document, loose: &[Vec<PLine>], page: usize) -> Vec<(Rect, Option<usize>, String)> {
-    let visible = |line: &Line| {
-        line.glyphs
-            .iter()
-            .filter(|glyph| !glyph.text.trim().is_empty() && !glyph.ink.is_unset())
-            .map(|glyph| (glyph.ink, glyph.text.clone()))
-            .collect::<Vec<_>>()
-    };
+impl PageBlocks {
+    fn new(doc: &Document) -> Self {
+        let mut touching: Vec<Vec<usize>> = vec![Vec::new(); doc.pages.len()];
+        let mut on: Vec<Vec<usize>> = vec![Vec::new(); doc.pages.len()];
+        for (idx, block) in doc.blocks.iter().enumerate() {
+            if let Some(list) = on.get_mut(block.page) {
+                list.push(idx);
+            }
+            for line in block.lines.iter().chain(&block.inner_lines) {
+                if let Some(list) = touching.get_mut(line.page)
+                    && list.last() != Some(&idx)
+                {
+                    list.push(idx);
+                }
+            }
+        }
+        Self { touching, on }
+    }
+}
+
+/// The glyph inks of a page, each with the index of the block it belongs
+/// to (`None` for loose lines: running heads, page numbers; and for the
+/// captions of figures, which are not part of their pictures), and with
+/// what `extra` takes from the glyph.
+fn page_glyphs_with<T>(
+    doc: &Document,
+    loose: &[Vec<PLine>],
+    blocks: &PageBlocks,
+    page: usize,
+    extra: impl Fn(&LineGlyph) -> T,
+) -> Vec<(Rect, Option<usize>, T)> {
     let mut out = Vec::new();
+    let mut push = |line: &Line, owner: Option<usize>| {
+        out.extend(
+            line.glyphs
+                .iter()
+                .filter(|glyph| !glyph.text.trim().is_empty() && !glyph.ink.is_unset())
+                .map(|glyph| (glyph.ink, owner, extra(glyph))),
+        );
+    };
     // A paragraph that runs on to the next page has lines on both: each
     // line knows its page.
-    for (idx, block) in doc.blocks.iter().enumerate() {
+    for &idx in &blocks.touching[page] {
+        let block = &doc.blocks[idx];
         // The caption of a figure is set apart from its picture, so to the
         // picture it is text like any other: its descenders must not show at
         // the picture's edge.
@@ -99,15 +130,23 @@ fn page_glyph_texts(doc: &Document, loose: &[Vec<PLine>], page: usize) -> Vec<(R
         let own = block.lines.iter().map(|line| (line, caption_owner));
         let inner = block.inner_lines.iter().map(|line| (line, Some(idx)));
         for (line, owner) in own.chain(inner).filter(|(line, _)| line.page == page) {
-            out.extend(visible(line).into_iter().map(|(ink, text)| (ink, owner, text)));
+            push(line, owner);
         }
     }
     if let Some(lines) = loose.get(page) {
         for pline in lines.iter().filter(|pline| pline.kind != "eqno") {
-            out.extend(visible(&pline.line).into_iter().map(|(ink, text)| (ink, None, text)));
+            push(&pline.line, None);
         }
     }
     out
+}
+
+/// [`page_glyphs_with`] with nothing more than the ink and the owner.
+fn page_glyphs(doc: &Document, loose: &[Vec<PLine>], blocks: &PageBlocks, page: usize) -> Vec<(Rect, Option<usize>)> {
+    page_glyphs_with(doc, loose, blocks, page, |_| ())
+        .into_iter()
+        .map(|(ink, owner, ())| (ink, owner))
+        .collect()
 }
 
 /// A short name for the kind of a block (in reports).
@@ -136,9 +175,11 @@ fn picture(block: &Block) -> Option<(Rect, &'static str)> {
 /// counted: they are drawn in the picture. Its caption is counted.
 pub fn cut_glyphs(doc: &Document, loose: &[Vec<PLine>]) -> Vec<Cut> {
     let mut out = Vec::new();
+    let blocks = PageBlocks::new(doc);
     for page in 0..doc.pages.len() {
-        let glyphs = page_glyph_texts(doc, loose, page);
-        for (idx, block) in doc.blocks.iter().enumerate().filter(|(_, block)| block.page == page) {
+        let glyphs = page_glyphs_with(doc, loose, &blocks, page, |glyph| glyph.text.clone());
+        for &idx in &blocks.on[page] {
+            let block = &doc.blocks[idx];
             let Some((rect, kind)) = picture(block) else { continue };
             let cut: Vec<&(Rect, Option<usize>, String)> = glyphs
                 .iter()
@@ -186,12 +227,15 @@ fn set_region(block: &mut Block, rect: Rect) {
 /// again afterwards.
 pub(crate) fn fit_equation_crops(doc: &mut Document, loose: &[Vec<PLine>]) {
     let mut merged = false;
+    let mut blocks = PageBlocks::new(doc);
     for page in 0..doc.pages.len() {
-        while let Some((keep, absorb)) = overlapping_equations(doc, loose, page) {
+        while let Some((keep, absorb)) = overlapping_equations(doc, loose, &blocks, page) {
             merge_equations(doc, keep, absorb);
             merged = true;
+            // Block indices after `absorb` moved down by one.
+            blocks = PageBlocks::new(doc);
         }
-        trim_regions(doc, loose, page);
+        trim_regions(doc, loose, &blocks, page);
     }
     if merged {
         for (id, block) in doc.blocks.iter_mut().enumerate() {
@@ -220,10 +264,16 @@ fn single_column_zones(doc: &mut Document) {
 
 /// Two equations of the page where the region of one cuts or holds glyphs
 /// of the other: (the earlier, the later) in reading order.
-fn overlapping_equations(doc: &Document, loose: &[Vec<PLine>], page: usize) -> Option<(usize, usize)> {
-    let glyphs = page_glyphs(doc, loose, page);
+fn overlapping_equations(
+    doc: &Document,
+    loose: &[Vec<PLine>],
+    blocks: &PageBlocks,
+    page: usize,
+) -> Option<(usize, usize)> {
+    let glyphs = page_glyphs(doc, loose, blocks, page);
     let is_eq = |idx: usize| matches!(doc.blocks[idx].kind, BlockKind::Equation { .. });
-    for (idx, block) in doc.blocks.iter().enumerate().filter(|(_, block)| block.page == page) {
+    for &idx in &blocks.on[page] {
+        let block = &doc.blocks[idx];
         let BlockKind::Equation { image, .. } = &block.kind else {
             continue;
         };
@@ -278,13 +328,10 @@ fn merge_equations(doc: &mut Document, keep: usize, absorb: usize) {
 
 /// Trims the equation regions of a page away from glyphs of other blocks
 /// that only reach into their margin.
-fn trim_regions(doc: &mut Document, loose: &[Vec<PLine>], page: usize) {
-    let glyphs = page_glyphs(doc, loose, page);
-    for idx in 0..doc.blocks.len() {
+fn trim_regions(doc: &mut Document, loose: &[Vec<PLine>], blocks: &PageBlocks, page: usize) {
+    let glyphs = page_glyphs(doc, loose, blocks, page);
+    for &idx in &blocks.on[page] {
         let block = &doc.blocks[idx];
-        if block.page != page {
-            continue;
-        }
         if matches!(block.kind, BlockKind::Figure { .. }) {
             trim_figure(&mut doc.blocks[idx], idx, &glyphs);
             continue;
