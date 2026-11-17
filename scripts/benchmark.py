@@ -51,10 +51,19 @@ FORMATS = {
 }
 
 
+def pdf_path(arg: str) -> Path:
+    """An input PDF as an absolute path to an existing file, so that it can
+    never be read as an option by the commands it is passed to."""
+    path = Path(arg).resolve()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"{arg}: no such file")
+    return path
+
+
 def pages(pdf: Path) -> int:
     """Number of pages, from pdfinfo (0 when it is not installed)."""
     try:
-        out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True).stdout
+        out = subprocess.run(["pdfinfo", str(pdf_path(str(pdf)))], capture_output=True, text=True).stdout
     except FileNotFoundError:
         return 0
     found = re.search(r"^Pages:\s+(\d+)", out, re.M)
@@ -74,9 +83,11 @@ def convert(pdf: Path, fmt: str, out_dir: Path, jobs: int | None = None) -> dict
     """Runs one conversion under GNU time and returns its measures."""
     args, ext = FORMATS[fmt]
     out = out_dir / f"{pdf.stem}.{fmt}.{ext}"
-    cmd = [GNU_TIME, "-v", str(BIN), "convert", str(pdf), *args, "-o", str(out)]
+    cmd = [GNU_TIME, "-v", str(BIN), "convert", *args, "-o", str(out)]
     if jobs is not None:
         cmd += ["-j", str(jobs)]
+    # After `--`, the PDF is always the input, never an option.
+    cmd += ["--", str(pdf_path(str(pdf)))]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     err = proc.stderr
     if proc.returncode != 0:
@@ -109,12 +120,21 @@ def table(rows: list[dict], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
-def save(rows: list[dict], name: str, csv_dir: str | None) -> None:
+def csv_folder(arg: str) -> Path:
+    """The CSV folder, which must be inside the current directory."""
+    here = Path.cwd().resolve()
+    path = (here / arg).resolve()
+    if not path.is_relative_to(here):
+        raise argparse.ArgumentTypeError(f"{arg}: the CSV folder must be inside {here}")
+    return path
+
+
+def save(rows: list[dict], name: str, csv_dir: Path | None) -> None:
     """Writes `rows` to `csv_dir/name.csv` when a CSV folder was given."""
-    if not csv_dir or not rows:
+    if csv_dir is None or not rows:
         return
-    Path(csv_dir).mkdir(parents=True, exist_ok=True)
-    with open(Path(csv_dir) / f"{name}.csv", "w", newline="") as f:
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    with open(csv_dir / f"{name}.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
@@ -157,15 +177,21 @@ class MemorySampler(threading.Thread):
 
     @staticmethod
     def used_mb() -> float:
-        info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
-        kb = lambda key: int(info[key].split()[0])
-        return (kb("MemTotal") - kb("MemAvailable")) / 1024
+        with open("/proc/meminfo") as f:
+            kb = {key: int(value.split()[0]) for key, value in (line.split(":", 1) for line in f)}
+        return (kb["MemTotal"] - kb["MemAvailable"]) / 1024
 
     def run(self) -> None:
         base = self.used_mb()
         while not self.stop.is_set():
             self.peak_mb = max(self.peak_mb, self.used_mb() - base)
             time.sleep(0.05)
+
+
+def convert_into(results: list[dict], i: int, pdf: Path, out_dir: Path, jobs: int | None) -> None:
+    """One of several concurrent conversions: its measures go to `results[i]`."""
+    out_dir.mkdir(exist_ok=True)
+    results[i] = convert(pdf, "friendly", out_dir, jobs)
 
 
 def bench_concurrent(pdf: Path, max_n: int, jobs: int | None, out_dir: Path) -> list[dict]:
@@ -176,14 +202,10 @@ def bench_concurrent(pdf: Path, max_n: int, jobs: int | None, out_dir: Path) -> 
         sampler = MemorySampler()
         sampler.start()
         start = time.monotonic()
-        results: list[dict] = [{}] * n
-
-        def work(i: int) -> None:
-            sub = out_dir / f"c{i}"
-            sub.mkdir(exist_ok=True)
-            results[i] = convert(pdf, "friendly", sub, jobs)
-
-        threads = [threading.Thread(target=work, args=(i,)) for i in range(n)]
+        results: list[dict] = [{} for _ in range(n)]
+        threads = [
+            threading.Thread(target=convert_into, args=(results, i, pdf, out_dir / f"c{i}", jobs)) for i in range(n)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -212,11 +234,11 @@ def bench_concurrent(pdf: Path, max_n: int, jobs: int | None, out_dir: Path) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiment", choices=["formats", "threads", "concurrent"])
-    parser.add_argument("pdfs", nargs="+", type=Path)
+    parser.add_argument("pdfs", nargs="+", type=pdf_path)
     parser.add_argument("--formats", default="friendly,epub,docx,md,tex")
     parser.add_argument("--max", type=int, default=16, help="largest number of concurrent conversions")
     parser.add_argument("--jobs", type=int, default=None, help="-j of each concurrent conversion")
-    parser.add_argument("--csv", default=None, help="folder to write the results as CSV")
+    parser.add_argument("--csv", default=None, type=csv_folder, help="folder (inside the current one) to write the results as CSV")
     args = parser.parse_args()
     if not BIN.exists():
         sys.exit(f"{BIN} not found: run cargo build --release first")

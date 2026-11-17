@@ -38,7 +38,7 @@ aside.footnote{font-size:.85em;margin:.5em 0;padding-top:.3em;border-top:1px sol
 div.eq{display:flex;align-items:center;margin:.8em 0;text-indent:0}
 .eq-body{display:block;flex:1 1 auto;min-width:0;text-align:center;overflow-x:auto}
 .eqno{flex:none;margin-left:.6em;white-space:nowrap}
-div.eq img,.tbl-wrap img{max-width:100% !important;height:auto;vertical-align:middle}
+div.eq img,.tbl-wrap img{height:auto;vertical-align:middle}
 math[display="block"]{margin:0 auto}
 figure{margin:1em 0;text-align:center;page-break-inside:avoid;break-inside:avoid}
 figure img{max-width:100%;height:auto}

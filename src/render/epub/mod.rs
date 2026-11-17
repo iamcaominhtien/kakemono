@@ -119,7 +119,7 @@ pub fn render_epub(analysis: &Analysis, pdf: &PdfFile, opts: &EpubOptions) -> Ve
     let chapters = split_chapters(&blocks);
     let all: Vec<&Block> = blocks.iter().collect();
     let ctx = FlowCtx {
-        unit: WidthUnit::Em {
+        unit: WidthUnit::EmFit {
             pt_per_em: doc.body_size.max(1.0),
         },
         offprint: true,

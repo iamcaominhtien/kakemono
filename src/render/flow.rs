@@ -25,6 +25,12 @@ pub(crate) enum WidthUnit {
         /// Points per em: the body font size of the document.
         pt_per_em: f32,
     },
+    /// Like [`WidthUnit::Em`], but every image shrinks to fit its container,
+    /// legible or not: an e-reader page cannot scroll sideways.
+    EmFit {
+        /// Points per em: the body font size of the document.
+        pt_per_em: f32,
+    },
     /// Relative to the page container width (`page_width` points wide).
     Cqw {
         /// Width of the page in points.
@@ -46,7 +52,9 @@ impl WidthUnit {
                     width * LEGIBLE_MIN_SCALE
                 )
             }
-            WidthUnit::Em { pt_per_em } => format!("width:{:.2}em;max-width:100%", width_pt / pt_per_em),
+            WidthUnit::Em { pt_per_em } | WidthUnit::EmFit { pt_per_em } => {
+                format!("width:{:.2}em;max-width:100%", width_pt / pt_per_em)
+            }
             WidthUnit::Cqw { page_width } => format!("width:{:.2}cqw;max-width:100%", width_pt / page_width * 100.0),
         }
     }
