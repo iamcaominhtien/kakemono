@@ -585,8 +585,20 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     check_latex(&tex.latex, &tex.files, math);
     fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
     // The EPUB book.
-    let epub = zip_parts(&paper.to_epub(&analysis, &EpubOptions::default()));
-    check_epub(&epub, math);
+    // Formulas wider than a phone screen are pictures in the book.
+    let epub_opts = EpubOptions::default();
+    let narrow_math = doc
+        .blocks
+        .iter()
+        .filter(|b| match &b.kind {
+            BlockKind::Equation { image, .. } => {
+                b.math.is_some() && image.rect.width() <= epub_opts.max_math_width_em * doc.body_size
+            }
+            _ => b.math.is_some(),
+        })
+        .count();
+    let epub = zip_parts(&paper.to_epub(&analysis, &epub_opts));
+    check_epub(&epub, narrow_math);
     fingerprints.push(("epub", package_fingerprint(&epub)));
     let metrics = Metrics {
         title,

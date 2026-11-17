@@ -138,8 +138,11 @@ calibre and other e-readers (and for Kindle through Send to Kindle):
 
 The title, the authors, the arXiv page and the date of conversion are recorded in the book.
 `--scale` and `--equations` apply; `--images files` does not (the book holds its pictures).
-Readers that do not show MathML show the text of each formula instead: `--equations image` makes
-every displayed formula a picture.
+A displayed formula wider than a phone screen (20 times the text size) is a picture rather than
+MathML: a MathML formula cannot break over lines, and most readers do not scroll sideways, so
+it would be cut at the edge of the screen; a picture shrinks to the page. Readers that do not
+show MathML show the text of each formula instead: `--equations image` makes every displayed
+formula a picture.
 
 ## Installation
 

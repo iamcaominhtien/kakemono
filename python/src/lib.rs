@@ -227,7 +227,7 @@ fn to_latex<'py>(
 /// Converts a PDF to an EPUB book; returns the bytes of the `.epub` file.
 /// `modified` is its date (`CCYY-MM-DDThh:mm:ssZ`), fixed when `None`.
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, cover=true, modified=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, max_math_width_em=20.0, cover=true, modified=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_epub<'py>(
     py: Python<'py>,
@@ -237,6 +237,7 @@ fn to_epub<'py>(
     equations: &str,
     scale: f32,
     jobs: usize,
+    max_math_width_em: f32,
     cover: bool,
     modified: Option<String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
@@ -248,6 +249,7 @@ fn to_epub<'py>(
             scale,
             jobs,
             equations,
+            max_math_width_em,
             cover,
             modified,
         };

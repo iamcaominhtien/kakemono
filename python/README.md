@@ -46,8 +46,9 @@ document that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` t
 math. LaTeX cannot embed pictures, so they are written to `image_dir` next to the file; without a
 path, only the source is returned.
 
-`to_epub` takes `tables`, `equations`, `scale` and `jobs`, plus `cover` (the first page as the
-cover, on by default) and `modified` (the date recorded in the book, `YYYY-MM-DDThh:mm:ssZ`;
+`to_epub` takes `tables`, `equations`, `scale` and `jobs`, plus `max_math_width_em` (displayed
+formulas wider than this, in multiples of the text size, become pictures; default 20), `cover`
+(the first page as the cover, on by default) and `modified` (the date recorded in the book, `YYYY-MM-DDThh:mm:ssZ`;
 by default, now). It returns an EPUB 3 book with one chapter per top-level section, a table of
 contents, MathML formulas and the pictures inside.
 

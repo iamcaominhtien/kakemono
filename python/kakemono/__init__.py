@@ -256,6 +256,7 @@ def to_epub(
     equations: Literal["mathml", "image"] = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,
 ) -> bytes:
@@ -265,7 +266,10 @@ def to_epub(
     chapter per top-level section and a table of contents; formulas whose
     structure is clear become MathML (with ``equations="image"``, every
     displayed formula is a picture), rebuilt tables become tables, and the
-    pictures are stored in the book. With ``cover=True`` the first page is
+    pictures are stored in the book. A displayed formula wider than
+    `max_math_width_em` (in multiples of the font size of the text) is a
+    picture, which shrinks to the page, instead of MathML, which would be
+    cut at the edge of a narrow screen. With ``cover=True`` the first page is
     its cover. `modified` is the date recorded in the book, as
     ``YYYY-MM-DDThh:mm:ssZ`` (UTC); by default, now. The other options are
     those of :func:`convert_all`.
@@ -276,7 +280,15 @@ def to_epub(
         raise ValueError(f"modified must look like 2026-01-31T12:00:00Z, not {modified!r}")
     data, name = _load(source)
     book = _kakemono.to_epub(
-        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, cover=cover, modified=modified
+        data,
+        source=name,
+        tables=tables,
+        equations=equations,
+        scale=scale,
+        jobs=jobs,
+        max_math_width_em=max_math_width_em,
+        cover=cover,
+        modified=modified,
     )
     if path is not None:
         _write(path, book)

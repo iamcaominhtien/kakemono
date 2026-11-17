@@ -50,6 +50,13 @@ pub struct EpubOptions {
     /// MathML where the structure of the formula is clear (and inside the
     /// text), pictures elsewhere.
     pub equations: Equations,
+    /// Widest displayed formula written as MathML, in multiples of the font
+    /// size of the text (em). A MathML formula cannot break over lines, and
+    /// many readers lay out pages that do not scroll sideways, so a wider
+    /// formula would be cut at the edge of the screen: it is a picture
+    /// instead, which shrinks to the width of the page. The default, 20 em,
+    /// is about the width of a phone screen.
+    pub max_math_width_em: f32,
     /// Draw the first page as the cover picture, which readers show in
     /// their library.
     pub cover: bool,
@@ -61,13 +68,14 @@ pub struct EpubOptions {
 
 impl Default for EpubOptions {
     /// Pictures at 3 pixels per point, formulas as MathML where their
-    /// structure is clear, the first page as the cover, a fixed date and
+    /// structure is clear and they are at most 20 em wide, the first page as the cover, a fixed date and
     /// one worker thread per CPU.
     fn default() -> Self {
         Self {
             scale: 3.0,
             jobs: 0,
             equations: Equations::MathMl,
+            max_math_width_em: 20.0,
             cover: true,
             modified: None,
         }
@@ -96,7 +104,7 @@ pub fn render_epub(analysis: &Analysis, pdf: &PdfFile, opts: &EpubOptions) -> Ve
         opts: &html_opts,
         jobs: Vec::new(),
     };
-    let blocks = with_heading_anchors(doc);
+    let blocks = book_blocks(doc, opts.max_math_width_em);
     let chapters = split_chapters(&blocks);
     let all: Vec<&Block> = blocks.iter().collect();
     let ctx = FlowCtx {
@@ -278,15 +286,22 @@ fn content_xhtml(title: &str, body: &str) -> String {
     )
 }
 
-/// The blocks of the document, with an anchor on every heading that has
-/// none, so that the table of contents can point to each heading.
-fn with_heading_anchors(doc: &Document) -> Vec<Block> {
+/// The blocks of the document as the book shows them: an anchor on every
+/// heading that has none, so that the table of contents can point to each
+/// heading, and no MathML for the displayed formulas wider than
+/// `max_math_width_em`, which are pictures instead.
+fn book_blocks(doc: &Document, max_math_width_em: f32) -> Vec<Block> {
     doc.blocks
         .iter()
         .map(|block| {
             let mut block = block.clone();
             if matches!(block.kind, BlockKind::Heading { .. }) && block.anchor.is_none() {
                 block.anchor = Some(format!("{HEADING_ANCHOR_PREFIX}{}", block.id));
+            }
+            if let BlockKind::Equation { image, .. } = &block.kind
+                && image.rect.width() > max_math_width_em * doc.body_size
+            {
+                block.math = None;
             }
             block
         })

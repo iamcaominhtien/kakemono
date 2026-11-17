@@ -53,6 +53,7 @@ def to_epub(
     equations: str = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,
 ) -> bytes: ...

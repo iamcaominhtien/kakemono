@@ -35,10 +35,10 @@ ol.refs li{margin:.35em 0;padding-left:2.2em;text-indent:-2.2em}
 .rn{display:inline-block;min-width:2.2em;text-indent:0}
 aside.footnote{font-size:.85em;margin:.5em 0;padding-top:.3em;border-top:1px solid rgba(128,128,128,.4);text-align:left}
 .fn-mark{margin-right:.4em;font-weight:bold}
-div.eq{display:table;width:100%;margin:.8em 0;text-indent:0}
-.eq-body{display:table-cell;text-align:center;vertical-align:middle;overflow-x:auto}
-.eqno{display:table-cell;width:3em;text-align:right;vertical-align:middle;white-space:nowrap}
-.eq-body img{max-width:100%;height:auto;vertical-align:middle}
+div.eq{display:flex;align-items:center;margin:.8em 0;text-indent:0}
+.eq-body{display:block;flex:1 1 auto;min-width:0;text-align:center;overflow-x:auto}
+.eqno{flex:none;margin-left:.6em;white-space:nowrap}
+div.eq img,.tbl-wrap img{max-width:100% !important;height:auto;vertical-align:middle}
 math[display="block"]{margin:0 auto}
 figure{margin:1em 0;text-align:center;page-break-inside:avoid;break-inside:avoid}
 figure img{max-width:100%;height:auto}
