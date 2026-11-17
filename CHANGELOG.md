@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.9.0](https://github.com/iamcaominhtien/kakemono/compare/v0.8.0...v0.9.0) - 2026-11-17
+
+### Added
+
+- EPUB output, inline fractions, books, and a benchmark ([#11](https://github.com/iamcaominhtien/kakemono/pull/11))
+
+##### EPUB output (`-f epub`, `.epub`)
+- New EPUB 3 output for e-readers, made from the same analysis as the other formats (renderer in `src/render/epub/`). The book has:
+  - XHTML chapters and a table of contents (`nav.xhtml` + NCX);
+  - a cover;
+  - formulas as MathML.
+- Formulas wider than `max_math_width_em` (20 em) are shown as pictures, so readers no longer cut them off on the right.
+- Links stay valid in EPUB readers: web addresses are percent-encoded, and broken ones become plain text.
+- Available from the CLI, from Rust (`Paper::to_epub`) and from Python (`kakemono.to_epub`).
+- Every test paper and book passes `epubcheck`.
+
+##### Inline fractions (every format)
+- Fractions stacked on a bar inside a line, such as `β₂/√β₁` or `1/√d_k`, are now read whole. This includes terms with scripts and fractions set in a superscript.
+
+##### Books and novels
+- Drop caps are joined back to their word.
+- Short running feet and page numbers at the bottom of the page are removed.
+- Lines of ragged-right prose no longer split paragraphs.
+- Chapter titles become level-1 headings.
+- Results:
+  - Pride and Prejudice: broken paragraphs go from 335 to 2;
+  - The Great Gatsby: from 107 to 1;
+  - the 8 test papers: unchanged.
+
+##### Benchmark
+- `scripts/benchmark.py` measures time, memory and CPU with GNU time, in three experiments:
+  - every format on every file;
+  - a thread sweep (`-j`);
+  - N conversions at once.
+- On 4 cores:
+  - a 1151-page book: 10 s and 1.2 GB;
+  - a 2302-page book: 24 s and 2.4 GB;
+  - about 300 papers a minute, with one process per core and `-j 1`.
+- Results are in the README ("Performance") and, in full, in `docs/IMPROVEMENTS.md` §10, with leads for later work.
+
+##### Release notes
+- The changelog and the GitHub release of a merged PR now show the PR description, not just its title.
+- The parts written only for reviewers are left out (Summary heading, testing sections, footers), and lines GitHub wrapped are joined again.
+- Past entries of `CHANGELOG.md` were filled in the same way. CONTRIBUTING.md explains how to write a description that reads well as a release note.
+
 ## [0.8.0](https://github.com/iamcaominhtien/kakemono/compare/v0.7.0...v0.8.0) - 2026-11-17
 
 ### Added
