@@ -4,7 +4,7 @@
 
 # kakemono
 
-**Turn PDF papers and books into clean, readable HTML, Word documents, Markdown or LaTeX — in pure Rust, as a single executable.**
+**Turn PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books — in pure Rust, as a single executable.**
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
-[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [Install](#installation) · [Usage](#usage) ·
+[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [EPUB](#epub) · [Install](#installation) · [Usage](#usage) ·
 [Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -26,14 +26,15 @@
 > glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
 
 Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
-to feed to translation tools, a Word document to edit, Markdown for notes, wikis and LLMs, or a
-LaTeX source to edit and typeset again.
+to feed to translation tools, a Word document to edit, Markdown for notes, wikis and LLMs, a
+LaTeX source to edit and typeset again, or an EPUB book for an e-reader.
 
 ```bash
 kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
 kakemono convert 1706.03762 -o attention.docx   # the same paper as a Word document
 kakemono convert 1706.03762 -o attention.md     # Markdown, pictures in attention_assets/
 kakemono convert 1706.03762 -o attention.tex    # LaTeX, pictures in attention_assets/
+kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
 ```
 
 ## Features
@@ -47,6 +48,7 @@ kakemono convert 1706.03762 -o attention.tex    # LaTeX, pictures in attention_a
 | 📝 **Word documents** | `.docx` with Word styles, Word tables and editable Word equations, from the same analysis. |
 | ✍️ **Markdown** | `.md` with pipe tables, LaTeX formulas (`$$`) and the pictures in a folder of their own. |
 | 📐 **LaTeX** | `.tex` that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX math. |
+| 📚 **EPUB** | `.epub` (EPUB 3) for e-readers: reflowing text, a table of contents, MathML formulas, tables and the first page as the cover. |
 | 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
 | ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
@@ -119,6 +121,26 @@ distribution: `amsmath`, `amssymb`, `mathtools`, `graphicx`, `booktabs`, `multir
 A character that the fonts of pdfLaTeX lack (Chinese, say) is printed as **?** by pdfLaTeX;
 XeLaTeX and LuaLaTeX print it when their font has it. `--scale` and `--equations` apply.
 
+## EPUB
+
+`kakemono convert paper.pdf -o paper.epub` (or `--format epub`) writes an EPUB 3 book, from the
+same analysis and with the same markup as the friendly mode, for Apple Books, Kobo, Thorium,
+calibre and other e-readers (and for Kindle through Send to Kindle):
+
+- one chapter per top-level section, after a title page with the title, authors and abstract; a
+  table of contents with every heading (and an NCX for EPUB 2 readers);
+- formulas whose structure is clear become MathML (the others pictures), rebuilt tables become
+  tables, code listings stay line by line; footnotes stay after their paragraph;
+- figures are pictures stored in the book; the first page, drawn as a picture, is the cover that
+  readers show in their library;
+- the style sheet sizes everything relative to the text, so the reader's font, size and theme
+  apply; citations and references to figures, tables and sections are links across chapters.
+
+The title, the authors, the arXiv page and the date of conversion are recorded in the book.
+`--scale` and `--equations` apply; `--images files` does not (the book holds its pictures).
+Readers that do not show MathML show the text of each formula instead: `--equations image` makes
+every displayed formula a picture.
+
 ## Installation
 
 **Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
@@ -161,6 +183,10 @@ kakemono convert paper.pdf -o paper.md --image-dir images
 kakemono convert paper.pdf -o paper.tex
 ```
 
+```bash
+kakemono convert paper.pdf -o paper.epub
+```
+
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
 arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
@@ -168,14 +194,14 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex>` | HTML (default), a Word document, Markdown or LaTeX; chosen from `--output` when it ends in `.docx`, `.md` or `.tex` |
-| `-o, --output <path>` | HTML, `.docx`, `.md` or `.tex` file, or directory |
-| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown, always for LaTeX; Word keeps them embedded too) |
+| `-f, --format <html\|docx\|md\|tex\|epub>` | HTML (default), a Word document, Markdown, LaTeX or an EPUB book; chosen from `--output` when it ends in `.docx`, `.md`, `.tex` or `.epub` |
+| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex` or `.epub` file, or directory |
+| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown, always for LaTeX; Word keeps them embedded too; never for EPUB) |
 | `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
-| `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML and Word |
+| `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML, Word and EPUB |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
-| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
+| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
@@ -224,7 +250,8 @@ std::fs::write("paper.html", out.html)?;
 `paper.to_docx(&analysis, &DocxOptions::default())` returns the bytes of a Word document
 (`to_docx_with_images` also returns its pictures as files), and
 `paper.to_markdown(&analysis, &MarkdownOptions::default())` returns Markdown with its picture files,
-and `paper.to_latex(&analysis, &LatexOptions::default())` a LaTeX document with its picture files. `analysis.doc` is the
+`paper.to_latex(&analysis, &LatexOptions::default())` a LaTeX document with its picture files,
+and `paper.to_epub(&analysis, &EpubOptions::default())` the bytes of an EPUB book. `analysis.doc` is the
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
 how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -243,6 +270,7 @@ pages = kakemono.convert_all("paper.pdf")              # every mode, from one an
 kakemono.to_docx("paper.pdf", "paper.docx")           # a Word document (also returns its bytes)
 kakemono.to_markdown("paper.pdf", "paper.md")          # Markdown, pictures in paper_assets/
 kakemono.to_latex("paper.pdf", "paper.tex")            # LaTeX, pictures in paper_assets/
+kakemono.to_epub("paper.pdf", "paper.epub")            # an EPUB book (also returns its bytes)
 doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
 ```
 

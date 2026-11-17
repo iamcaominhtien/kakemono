@@ -25,7 +25,8 @@
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
 use kakemono::{
-    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
+    Paper,
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -146,10 +147,10 @@ fn fingerprint(html: &str, files: &[(String, Vec<u8>)]) -> String {
     hex(h.finalize())
 }
 
-/// The files of a `.docx` package (a ZIP archive): (name, contents),
+/// The files of a `.docx` or `.epub` package (a ZIP archive): (name, contents),
 /// inflated. Reads the local headers one after another, which is enough
 /// for the archives kakemono writes (no data descriptors).
-fn docx_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
+fn zip_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
     use std::io::Read;
     let le16 = |at: usize| usize::from(u16::from_le_bytes([docx[at], docx[at + 1]]));
     let le32 = |at: usize| u32::from_le_bytes(docx[at..at + 4].try_into().unwrap()) as usize;
@@ -175,13 +176,15 @@ fn docx_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
     parts
 }
 
-/// Fingerprint of a Word document: its XML parts and the sizes of its
-/// pictures (as for the HTML, not their pixels).
-fn docx_fingerprint(parts: &[(String, Vec<u8>)]) -> String {
+/// Fingerprint of a Word document or an EPUB book: its text parts (XML,
+/// XHTML, CSS) and the sizes of its pictures (as for the HTML, not their
+/// pixels).
+fn package_fingerprint(parts: &[(String, Vec<u8>)]) -> String {
     let mut h = Sha256::new();
     for (name, data) in parts {
         h.update(name.as_bytes());
-        if name.ends_with(".xml") || name.ends_with(".rels") {
+        let text = [".xml", ".rels", ".xhtml", ".opf", ".ncx", ".css"];
+        if text.iter().any(|ext| name.ends_with(ext)) {
             h.update(data);
         } else if data.starts_with(b"\x89PNG") && data.len() >= 24 {
             h.update(&data[16..24]); // width and height
@@ -229,6 +232,88 @@ fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
             "docx: {name} has no relationship"
         );
     }
+}
+
+/// Checks an EPUB book of a paper with `math` rebuilt formulas: the
+/// `mimetype` entry first, every content document complete and well nested,
+/// every picture in the manifest, every link between documents pointing to
+/// an id, and every rebuilt formula written as MathML.
+fn check_epub(parts: &[(String, Vec<u8>)], math: usize) {
+    assert_eq!(parts[0], ("mimetype".to_string(), b"application/epub+zip".to_vec()));
+    let text = |name: &str| {
+        let data = &parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("epub: no {name}"))
+            .1;
+        String::from_utf8(data.clone()).unwrap()
+    };
+    let opf = text("EPUB/package.opf");
+    let docs: Vec<(&str, String)> = parts
+        .iter()
+        .filter(|(name, _)| name.ends_with(".xhtml"))
+        .map(|(name, data)| (name.as_str(), String::from_utf8(data.clone()).unwrap()))
+        .collect();
+    let ids: Vec<String> = docs
+        .iter()
+        .flat_map(|(name, xhtml)| {
+            let file = name.trim_start_matches("EPUB/");
+            Regex::new(r#" id="([^"]*)""#)
+                .unwrap()
+                .captures_iter(xhtml)
+                .map(|caps| format!("{file}#{}", &caps[1]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let link = Regex::new(r#"href="(c\d{3}\.xhtml#[^"]*)""#).unwrap();
+    let mut blocks = 0;
+    for (name, xhtml) in &docs {
+        assert!(!xhtml.contains('\u{1}'), "epub: {name}: picture placeholder left");
+        assert!(xhtml.ends_with("</html>\n"), "epub: {name}: incomplete document");
+        check_nesting(name, xhtml);
+        for caps in link.captures_iter(xhtml) {
+            assert!(
+                ids.contains(&caps[1].to_string()),
+                "epub: {name}: {} points nowhere",
+                &caps[1]
+            );
+        }
+        blocks += xhtml
+            .matches("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"")
+            .count();
+    }
+    assert_eq!(blocks, math, "epub: every rebuilt formula is written as MathML");
+    for (name, data) in parts.iter().filter(|(name, _)| name.starts_with("EPUB/images/")) {
+        let href = name.trim_start_matches("EPUB/");
+        assert!(
+            opf.contains(&format!("href=\"{href}\"")),
+            "epub: {name} not in the manifest"
+        );
+        assert!(!data.is_empty(), "epub: {name} is empty");
+    }
+}
+
+/// Checks that the elements of an XHTML document are closed in order.
+fn check_nesting(name: &str, xhtml: &str) {
+    let tag = Regex::new(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(/?)>").unwrap();
+    let mut open: Vec<String> = Vec::new();
+    for caps in tag.captures_iter(xhtml) {
+        let element = caps[2].to_string();
+        if &caps[3] == "/" {
+            continue;
+        }
+        if &caps[1] == "/" {
+            let last = open.pop();
+            assert_eq!(
+                last.as_deref(),
+                Some(element.as_str()),
+                "epub: {name}: </{element}> closes nothing"
+            );
+        } else {
+            open.push(element);
+        }
+    }
+    assert!(open.is_empty(), "epub: {name}: elements left open: {open:?}");
 }
 
 /// Checks a Markdown document: no placeholder left, every picture file
@@ -488,9 +573,9 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     fingerprints.push(("json", hex(Sha256::digest(json.as_bytes()))));
     // The Word document.
     let docx = paper.to_docx(&analysis, &DocxOptions::default());
-    let parts = docx_parts(&docx);
+    let parts = zip_parts(&docx);
     check_docx(&parts, math);
-    fingerprints.push(("docx", docx_fingerprint(&parts)));
+    fingerprints.push(("docx", package_fingerprint(&parts)));
     // The Markdown document, with its pictures as files.
     let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
     check_markdown(&md.markdown, &md.files, math);
@@ -499,6 +584,10 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let tex = paper.to_latex(&analysis, &LatexOptions::default());
     check_latex(&tex.latex, &tex.files, math);
     fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
+    // The EPUB book.
+    let epub = zip_parts(&paper.to_epub(&analysis, &EpubOptions::default()));
+    check_epub(&epub, math);
+    fingerprints.push(("epub", package_fingerprint(&epub)));
     let metrics = Metrics {
         title,
         tables,
@@ -1344,7 +1433,7 @@ fn adam_inline_formulas_are_math() {
     assert!(html.contains(
         "online prediction <math class=\"eq-math im\" alttext=\"ft(θt)\"><mrow><msub><mi>f</mi><mi>t</mi></msub>"
     ));
-    let parts = docx_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
     let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
     let document = String::from_utf8_lossy(document);
     assert!(document.matches("<m:oMath>").count() > document.matches("<m:oMathPara>").count() + 100);

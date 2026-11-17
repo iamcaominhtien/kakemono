@@ -1,0 +1,81 @@
+/* kakemono EPUB style sheet. Sizes are relative (em) so that the reader's
+   own font size and margins apply; colours are left to the reader's theme
+   except for faint rules and shades. */
+body{margin:0;line-height:1.45;text-align:justify;hyphens:auto;-webkit-hyphens:auto;widows:2;orphans:2}
+h1,h2,h3,h4,h5{text-align:left;hyphens:none;-webkit-hyphens:none;line-height:1.25;page-break-after:avoid;break-after:avoid}
+h1.title{font-size:1.6em;margin:1.5em 0 .8em;text-align:center}
+h2{font-size:1.3em;margin:1.6em 0 .6em}
+h3{font-size:1.12em;margin:1.4em 0 .5em}
+h4{font-size:1em;margin:1.2em 0 .4em}
+h5{font-size:1em;font-style:italic;font-weight:normal;margin:1em 0 .3em}
+.secno,.chapno{margin-right:.5em}
+h2.chapter .chapno{display:block;font-size:.75em;font-weight:normal;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3em}
+p{margin:0;text-indent:1.2em}
+h1+p,h2+p,h3+p,h4+p,h5+p,figure+p,div.eq+p,aside+p,ul+p,ol+p,pre+p,section+p,div.beside+p,p.note+p{text-indent:0}
+p.note{text-indent:0;font-size:.9em;margin:.4em 0}
+p.scene-break{text-align:center;text-indent:0;margin:1em 0}
+p.source{text-align:center;text-indent:0;font-size:.85em;margin:0 0 1.5em}
+a{text-decoration:none}
+a.url{word-break:break-all}
+code{font-family:monospace;font-size:.9em}
+sup,sub{line-height:0;font-size:.75em}
+.authors{text-align:center;margin:0 0 1.2em}
+.author{display:inline-block;vertical-align:top;margin:0 1em .8em;text-align:center}
+.au-name{font-weight:bold}
+.au-line{font-size:.85em}
+section.abstract{margin:1.2em 1.5em 1.5em;font-size:.95em}
+.abstract-label,h2.abstract-heading,h3.abstract-heading{text-align:center;font-weight:bold;font-size:1em;margin:0 0 .4em}
+ul.list{margin:.5em 0;padding-left:1.5em}
+ul.list li{margin:.2em 0}
+ul.list li.labeled{list-style:none}
+ul.list li.more{list-style:none}
+.lbl{margin-right:.4em}
+ol.refs{margin:.5em 0;padding:0;list-style:none;font-size:.9em;text-align:left}
+ol.refs li{margin:.35em 0;padding-left:2.2em;text-indent:-2.2em}
+.rn{display:inline-block;min-width:2.2em;text-indent:0}
+aside.footnote{font-size:.85em;margin:.5em 0;padding-top:.3em;border-top:1px solid rgba(128,128,128,.4);text-align:left}
+.fn-mark{margin-right:.4em;font-weight:bold}
+div.eq{display:table;width:100%;margin:.8em 0;text-indent:0}
+.eq-body{display:table-cell;text-align:center;vertical-align:middle;overflow-x:auto}
+.eqno{display:table-cell;width:3em;text-align:right;vertical-align:middle;white-space:nowrap}
+.eq-body img{max-width:100%;height:auto;vertical-align:middle}
+math[display="block"]{margin:0 auto}
+figure{margin:1em 0;text-align:center;page-break-inside:avoid;break-inside:avoid}
+figure img{max-width:100%;height:auto}
+figcaption{font-size:.9em;text-align:left;margin:.5em 0;hyphens:auto}
+.cap-label{font-weight:bold;margin-right:.4em}
+figure.side-l{float:left;width:30%;margin:.2em 1em .5em 0}
+figure.side-r{float:right;width:30%;margin:.2em 0 .5em 1em}
+div.beside{overflow:hidden}
+.tbl-wrap{overflow-x:auto}
+table.tbl{border-collapse:collapse;margin:.5em auto;font-size:.85em;text-indent:0}
+table.tbl th,table.tbl td{padding:.15em .45em;vertical-align:top}
+table.tbl .l{text-align:left}
+table.tbl .c{text-align:center}
+table.tbl .r{text-align:right}
+table.tbl .nw{white-space:nowrap}
+table.tbl .mid{vertical-align:middle}
+table.tbl .ra1{border-top:1px solid}
+table.tbl .ra2{border-top:2px solid}
+table.tbl .rb1{border-bottom:1px solid}
+table.tbl .rb2{border-bottom:2px solid}
+table.tbl .rl{border-left:1px solid}
+table.tbl .rr{border-right:1px solid}
+figure.code{text-align:left}
+.code-box{overflow-x:auto}
+pre{font-family:monospace;font-size:.8em;line-height:1.35;white-space:pre-wrap;text-align:left;margin:.5em 0;padding:.5em;background:rgba(128,128,128,.1)}
+pre.listing .l{display:block}
+.tok-kw{font-weight:bold}
+.tok-com{font-style:italic;opacity:.75}
+.algo{text-align:left;font-size:.9em;margin:.5em 0;border-top:1px solid;border-bottom:1px solid;padding:.3em 0}
+.algo .ln{display:table;width:100%}
+.algo .ln i{display:table-cell;width:2em;font-style:normal;opacity:.6;text-align:right;padding-right:.6em}
+.algo .ln.req i{width:0;padding:0}
+.algo .st{display:table-cell}
+.algo .cmt{float:right;font-style:italic;margin-left:1em}
+.algo .in1{padding-left:1.2em}.algo .in2{padding-left:2.4em}.algo .in3{padding-left:3.6em}.algo .in4{padding-left:4.8em}.algo .in5{padding-left:6em}.algo .in6{padding-left:7.2em}
+p.toc{text-indent:0;display:table;width:100%}
+.toc-t{display:table-cell}
+.toc-p{display:table-cell;text-align:right;width:3em}
+p.toc2{padding-left:1.5em}p.toc3{padding-left:3em}p.toc4{padding-left:4.5em}
+nav ol{list-style:none;padding-left:1.2em}

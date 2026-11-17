@@ -81,6 +81,32 @@ fn convert_writes_a_word_document_when_asked() {
 }
 
 #[test]
+fn convert_writes_an_epub_book() {
+    let dir = scratch("cli-epub");
+    // `-o x.epub` is enough to choose the format.
+    let epub = dir.join("ligo.epub");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", epub.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let data = std::fs::read(&epub).unwrap();
+    // The `mimetype` entry comes first, stored, as the format requires.
+    assert!(data.starts_with(b"PK\x03\x04"), "a ZIP archive");
+    assert_eq!(&data[30..38], b"mimetype");
+    assert_eq!(&data[38..58], b"application/epub+zip");
+    let text = String::from_utf8_lossy(&data);
+    assert!(text.contains("EPUB/package.opf") && text.contains("EPUB/nav.xhtml"));
+
+    // `--format epub` with a directory gives `<stem>.epub`.
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-f", "epub", "-o", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("1602.03837v1.epub").is_file());
+
+    // The book holds its pictures.
+    let files = kakemono(&["convert", LIGO, "--images", "files", "-o", epub.to_str().unwrap()]);
+    assert!(!files.status.success());
+    assert!(String::from_utf8_lossy(&files.stderr).contains("--images files"));
+}
+
+#[test]
 fn convert_writes_markdown_with_an_image_folder() {
     let dir = scratch("cli-markdown");
     // `-o x.md` is enough to choose the format; pictures go to a folder.
