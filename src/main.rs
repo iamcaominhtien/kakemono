@@ -678,17 +678,73 @@ fn write_mode(
         equations: equations(args.equations),
     };
     let started = Instant::now();
-    let out = paper.to_html(analysis, &opts);
-    write_file(file, out.html.as_bytes())?;
-    let report = write_images(file, &out.files)?;
+    let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    if !base.as_os_str().is_empty() {
+        std::fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
+    }
+    // The page is written as its pictures are drawn, to a temporary file
+    // that takes the place of `file` once it is complete.
+    let mut partial = file.as_os_str().to_owned();
+    partial.push(".part");
+    let partial = PathBuf::from(partial);
+    let created = std::fs::File::create(&partial).with_context(|| format!("writing {}", partial.display()))?;
+    let mut out = CountingWriter {
+        inner: std::io::BufWriter::new(created),
+        bytes: 0,
+    };
+    let mut images: Vec<String> = Vec::new();
+    let written = paper
+        .write_html(analysis, &opts, &mut out, &mut |rel, data| {
+            let path = base.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, data)?;
+            images.push(rel.to_string());
+            Ok(())
+        })
+        .and_then(|()| out.inner.flush());
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(err).with_context(|| format!("writing {}", file.display()));
+    }
+    std::fs::rename(&partial, file).with_context(|| format!("writing {}", file.display()))?;
+    let report = match images.first() {
+        Some(first) => format!(
+            " + {} image files in {}",
+            images.len(),
+            base.join(Path::new(first).parent().unwrap_or(Path::new(""))).display()
+        ),
+        None => String::new(),
+    };
     eprintln!(
         "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
         mode.name(),
         file.display(),
-        out.html.len() as f64 / BYTES_PER_MB,
+        out.bytes as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// A writer that counts the bytes written through it.
+struct CountingWriter<W> {
+    /// Where the bytes go.
+    inner: W,
+    /// Bytes written so far.
+    bytes: usize,
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes += written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// The `formula` subcommand: prints the MathML of the formulas pictured in `images`.

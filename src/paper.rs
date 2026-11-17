@@ -8,6 +8,7 @@ use crate::model::Meta;
 use crate::render::{
     DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions,
     MarkdownOutput, render, render_docx, render_docx_with_images, render_epub, render_latex, render_markdown,
+    render_to,
 };
 use anyhow::Result;
 
@@ -81,6 +82,26 @@ impl Paper {
     /// come from this paper, since images are drawn from its PDF.
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         render(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as HTML to `out`, like [`Paper::to_html`], but
+    /// without holding the whole page in memory: the pictures are drawn a
+    /// few at a time and written as soon as they are ready, which matters
+    /// for long documents (all the page pictures of `hard` mode). When
+    /// pictures are not inlined, each picture file is given to `file` as
+    /// (path relative to the HTML file, contents) instead of being
+    /// returned. The bytes written are those of [`HtmlOutput::html`].
+    ///
+    /// # Errors
+    /// The first error of `out` or `file`.
+    pub fn write_html(
+        &self,
+        analysis: &Analysis,
+        opts: &HtmlOptions,
+        out: &mut dyn std::io::Write,
+        file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        render_to(analysis, &self.pdf, opts, out, &mut |name, data| file(&name, &data))
     }
 
     /// Writes an analysis as a Word document (`.docx`) and returns the

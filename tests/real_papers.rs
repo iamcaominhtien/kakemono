@@ -1763,3 +1763,39 @@ fn html_text(html: &str) -> String {
         .replace("&#39;", "'")
         .replace("&amp;", "&")
 }
+
+/// The HTML written as the pictures are drawn (`Paper::write_html`) is the
+/// same, byte for byte, as `Paper::to_html`, in every mode, with pictures
+/// inlined or as files, and on one thread or several.
+#[test]
+fn written_html_matches_to_html() {
+    let Some(paper) = load("1602.03837v1") else { return };
+    let analysis = paper.analyze();
+    for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
+        for inline_images in [true, false] {
+            for jobs in [1, 3] {
+                let opts = HtmlOptions {
+                    mode,
+                    inline_images,
+                    jobs,
+                    ..Default::default()
+                };
+                let expected = paper.to_html(&analysis, &opts);
+                let mut html = Vec::new();
+                let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+                paper
+                    .write_html(&analysis, &opts, &mut html, &mut |name, data| {
+                        files.push((name.to_string(), data.to_vec()));
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(
+                    html == expected.html.as_bytes(),
+                    "{mode:?}, inline {inline_images}, -j {jobs}"
+                );
+                assert!(files == expected.files, "{mode:?}, inline {inline_images}, -j {jobs}");
+                assert_eq!(files.is_empty(), inline_images);
+            }
+        }
+    }
+}
