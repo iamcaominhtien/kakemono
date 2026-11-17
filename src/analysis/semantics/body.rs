@@ -344,6 +344,10 @@ fn is_cjk(ch: char) -> bool {
 /// Pass 1: the unclassified text blocks that look like headings, in
 /// document order. Once the bibliography heading has been seen, appendix
 /// labels without the word "Appendix" ("A Proofs") are accepted too.
+/// Closing quotes and brackets that may follow the punctuation ending a
+/// sentence ("… the wrong way to go?”").
+const CLOSING_QUOTES: &[char] = &['\u{201D}', '\u{2019}', '"', '\'', ')', ']'];
+
 fn find_heading_candidates(
     nodes: &[Node],
     stats: &DocStats,
@@ -366,12 +370,7 @@ fn find_heading_candidates(
         if THEOREM_LABEL.is_match(features.text) || is_translated_sentence(nodes, idx, features.text, &cfg.body) {
             continue;
         }
-        // A numbered sentence not set in bold ("4. Use the modified version
-        // of do_twice to call print_twice twice.") is an item of a list, not
-        // a section.
-        let sentence = !features.bold
-            && features.text.ends_with('.')
-            && features.words > cfg.body.sentence_max_heading_words_count;
+        let sentence = is_list_sentence(&features, &cfg.body);
         let number = heading_number(&features, seen_refs, &cfg.body).filter(|_| !sentence);
         let is_heading = number.is_some()
             || is_known_heading(&features, &cfg.body)
@@ -397,6 +396,29 @@ fn find_heading_candidates(
         });
     }
     drop_repeated_labels(candidates, &cfg.body)
+}
+
+/// Whether a block that reads as numbered is an item of a list rather than
+/// a numbered heading: a sentence not set in bold ("4. Use the modified
+/// version of do_twice to call print_twice twice.", "1. In a print
+/// statement, what happens if you leave out one of the parentheses?"); a
+/// short one set only in italics ("2. Turn left 60 degrees."); and one so
+/// set that is long or stops on a lowercase word, cut by a formula or code
+/// after it ("3. Add methods to"). Headings in capitals ("4.2 COMPARISON
+/// TO STATE OF THE ART") and in bold ("1.1 What is a program?") stay.
+fn is_list_sentence(features: &HeadingFeatures<'_>, cfg: &BodyConfig) -> bool {
+    let long = features.words > cfg.sentence_max_heading_words_count;
+    let ends_sentence = features
+        .text
+        .trim_end_matches(CLOSING_QUOTES)
+        .ends_with(['.', '?', '!', ':']);
+    let unfinished = features
+        .text
+        .split_whitespace()
+        .last()
+        .is_some_and(|word| word.starts_with(|ch: char| ch.is_lowercase()));
+    let only_italic = !features.strong && !features.caps;
+    !features.bold && ((ends_sentence && (long || only_italic)) || (only_italic && (long || unfinished)))
 }
 
 /// The body font size of each page: the size carrying most characters of
@@ -838,6 +860,47 @@ mod tests {
             size: 12.0,
             known,
             text: text.to_string(),
+        }
+    }
+
+    /// The features of a heading candidate `text`, set in italics (or in
+    /// bold, or in capitals).
+    fn features(text: &str, bold: bool, caps: bool) -> HeadingFeatures<'_> {
+        HeadingFeatures {
+            text,
+            nchars: text.chars().count(),
+            words: text.split_whitespace().count(),
+            size: 10.0,
+            bold,
+            strong: bold,
+            italic: !bold && !caps,
+            caps,
+            weak: !bold,
+            known: false,
+        }
+    }
+
+    #[test]
+    fn numbered_sentences_are_list_items() {
+        let cfg = BodyConfig::default();
+        for item in [
+            "1. In a print statement, what happens if you leave out one of the parentheses, or both?",
+            "2. Turn left 60 degrees.",
+            "3. Add methods to",
+            "2. What is the order of growth of bubble sort, and why is it \u{201C}the wrong way to go?\u{201D}",
+        ] {
+            assert!(is_list_sentence(&features(item, false, false), &cfg), "{item}");
+        }
+        for heading in [
+            ("1.1 What is a program?", true, false),
+            ("4.2 COMPARISON TO STATE OF THE ART", false, true),
+            ("3.2 Attention", false, false),
+        ] {
+            assert!(
+                !is_list_sentence(&features(heading.0, heading.1, heading.2), &cfg),
+                "{}",
+                heading.0
+            );
         }
     }
 

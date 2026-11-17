@@ -136,6 +136,10 @@ calibre and other e-readers (and for Kindle through Send to Kindle):
 - the style sheet sizes everything relative to the text, so the reader's font, size and theme
   apply; citations and references to figures, tables and sections are links across chapters.
 
+Books convert too, novels included: a drop cap is read as the first letter of its line, running
+heads and feet are removed even when set far from the page edge, and each chapter is a content
+document of its own.
+
 The title, the authors, the arXiv page and the date of conversion are recorded in the book.
 `--scale` and `--equations` apply; `--images files` does not (the book holds its pictures).
 A displayed formula wider than a phone screen (20 times the text size) is a picture rather than

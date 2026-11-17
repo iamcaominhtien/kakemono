@@ -110,6 +110,10 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_max_gap_em: 0.6,
     ruby_over_kanji_min_ratio: 0.8,
     fraction_bar_slack_em: 0.3,
+    drop_cap_min_size_ratio: 2.0,
+    drop_cap_min_lines_count: 2,
+    drop_cap_max_gap_em: 0.5,
+    drop_cap_baseline_slack_em: 0.2,
     fraction_raised_min_rise_em: 0.4,
     fraction_bar_max_axis_em: 0.6,
     fraction_host_max_gap_em: 1.5,
@@ -365,6 +369,17 @@ pub struct LinesConfig {
     /// The bar of an inline fraction reaches its terms to within this many
     /// font sizes, and overhangs them by at most as much.
     pub fraction_bar_slack_em: f32,
+    /// A drop cap is at least this many times as large as the text beside
+    /// it ...
+    pub drop_cap_min_size_ratio: f32,
+    /// ... with at least this many lines of that text beside it ...
+    pub drop_cap_min_lines_count: usize,
+    /// ... starting at most this many of its font sizes right of it.
+    pub drop_cap_max_gap_em: f32,
+    /// Baselines (and sizes, and the place of a quote before the letter)
+    /// within this many font sizes of each other are the same, around a
+    /// drop cap.
+    pub drop_cap_baseline_slack_em: f32,
     /// An inline fraction whose bar is more than this many font sizes above
     /// the baseline of its line (above the math axis, where a fraction of
     /// the text sits) is in a superscript: t^(−1/2).
@@ -730,7 +745,10 @@ pub fn split_at_positions(line: &Line, cuts: &[f32], cfg: &LinesConfig) -> Vec<L
 /// runs of rotated text (which are not part of any line). Invisible glyphs
 /// (OCR layers) are ignored when the page also has visible text.
 pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedText>) {
-    let (glyphs, rotated) = collect_glyphs(raw, cfg);
+    let (mut glyphs, rotated) = collect_glyphs(raw, cfg);
+    // Drop caps would make their line tall enough to take the lines
+    // beside them as its superscripts: they join the lines at the end.
+    let drop_caps = take_drop_caps(raw, &mut glyphs, cfg);
 
     // 1. Baseline groups, split at large gaps.
     let segments: Vec<Segment> = glyphs
@@ -753,12 +771,113 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
         .map(|segment| finalize(raw.index, segment, cfg))
         .collect();
     lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
+    for (drop_cap, baseline, spaced) in drop_caps {
+        put_drop_cap(&mut lines, drop_cap, baseline, spaced, cfg);
+    }
     mark_fixed_pitch(&mut lines, cfg);
     gather_fractions(&mut lines, raw, cfg);
     for line in &mut lines {
         mark_fractions(line, raw, cfg);
     }
     (lines, rotated)
+}
+
+/// Takes the drop caps out of `glyphs`: a letter (or a few glyphs, such as
+/// an opening quote and a letter) at least
+/// [`LinesConfig::drop_cap_min_size_ratio`] times as large as the text set
+/// beside it, with at least [`LinesConfig::drop_cap_min_lines_count`] lines
+/// of that text starting right of it within its height ("I" over two lines
+/// of "t is a truth universally acknowledged"). Returns each with the
+/// baseline of the top line it stands beside, where it is read, and
+/// whether the PDF draws a space right after it (a word of one letter: "I
+/// couldn't").
+fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig) -> Vec<(LineGlyph, f32, bool)> {
+    let mut found: Vec<(usize, f32)> = Vec::new();
+    for (idx, cap) in glyphs.iter().enumerate() {
+        if !cap.text.chars().all(char::is_alphabetic) || cap.text.is_empty() {
+            continue;
+        }
+        // The text beside it: smaller glyphs starting just right of it, on
+        // baselines from its top to its own.
+        let reach = cfg.drop_cap_max_gap_em * cap.size;
+        let mut beside: Vec<(f32, f32)> = glyphs
+            .iter()
+            .filter(|glyph| {
+                glyph.size * cfg.drop_cap_min_size_ratio <= cap.size
+                    && glyph.y > cap.ink.y0
+                    && glyph.y <= cap.y + cfg.drop_cap_baseline_slack_em * glyph.size
+                    && glyph.x0 >= cap.x0
+                    && glyph.x0 <= cap.ink.x1.max(cap.x1) + reach
+            })
+            .map(|glyph| (glyph.y, glyph.size))
+            .collect();
+        beside.sort_by(|a, b| a.0.total_cmp(&b.0));
+        beside.dedup_by(|a, b| (a.0 - b.0).abs() <= cfg.drop_cap_baseline_slack_em * b.1);
+        if beside.len() >= cfg.drop_cap_min_lines_count {
+            found.push((idx, beside[0].0));
+        }
+    }
+    // An opening quote of the same size right before the letter goes with it.
+    let mut taken: Vec<(usize, f32)> = Vec::new();
+    for &(idx, baseline) in &found {
+        let cap = &glyphs[idx];
+        let quote = glyphs.iter().position(|glyph| {
+            (glyph.size - cap.size).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (cap.x0 - glyph.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && glyph.text.chars().all(|ch| "\"'\u{2018}\u{201C}\u{AB}".contains(ch))
+        });
+        if let Some(quote) = quote {
+            taken.push((quote, baseline));
+        }
+        taken.push((idx, baseline));
+    }
+    // Remove from the back so that the indexes stay valid.
+    taken.sort_by_key(|&(idx, _)| std::cmp::Reverse(idx));
+    taken.dedup_by_key(|&mut (idx, _)| idx);
+    let spaced = |cap: &LineGlyph| {
+        raw.glyphs.iter().any(|glyph| {
+            glyph.text == " "
+                && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (glyph.x - cap.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+        })
+    };
+    let mut caps: Vec<(LineGlyph, f32, bool)> = taken
+        .into_iter()
+        .map(|(idx, baseline)| {
+            let cap = glyphs.remove(idx);
+            let space = spaced(&cap);
+            (cap, baseline, space)
+        })
+        .collect();
+    caps.sort_by(|a, b| b.0.x0.total_cmp(&a.0.x0));
+    caps
+}
+
+/// Puts a drop cap taken out by [`take_drop_caps`] at the start of the line
+/// on `baseline` that begins right of it: it is read as the first letter of
+/// the line, followed by a word space when `spaced`. The glyph keeps its place and size; the line's box only grows
+/// to its left edge. Caps are put right to left, so that a quote before a
+/// letter ends up first.
+fn put_drop_cap(lines: &mut [Line], cap: LineGlyph, baseline: f32, spaced: bool, cfg: &LinesConfig) {
+    let line = lines
+        .iter_mut()
+        .filter(|line| {
+            (line.baseline - baseline).abs() <= cfg.drop_cap_baseline_slack_em * line.size && line.bbox.x0 >= cap.x0
+        })
+        .min_by(|a, b| a.bbox.x0.total_cmp(&b.bbox.x0));
+    let Some(line) = line else {
+        return;
+    };
+    if let Some(first) = line.glyphs.first_mut() {
+        first.space_before = spaced || first.x0 - cap.x1.max(cap.ink.x1) > cfg.space_gap_em * line.size;
+    }
+    line.bbox.x0 = line.bbox.x0.min(cap.x0);
+    line.ink.x0 = line.ink.x0.min(cap.ink.x0);
+    let mut cap = cap;
+    cap.script = 0;
+    cap.space_before = false;
+    line.glyphs.insert(0, cap);
 }
 
 /// Moves the terms of inline fractions that were read as lines of their
@@ -2495,6 +2614,83 @@ mod tests {
             glyphs,
             ..Default::default()
         }
+    }
+
+    /// A black horizontal glyph of `size` pt type at (`x`, `y`), half an em
+    /// wide.
+    pub(crate) fn sized(text: &str, x: f32, y: f32, size: f32) -> Glyph {
+        let adv = 0.5 * size;
+        Glyph {
+            text: text.to_string(),
+            x,
+            y,
+            adv,
+            size,
+            font: 0,
+            dir: Dir::Horizontal,
+            angle: 0.0,
+            invisible: false,
+            color: [0; 3],
+            ink: Rect::new(x, y - 0.7 * size, x + adv, y),
+        }
+    }
+
+    /// The glyphs of `text` set from `x` on baseline `y` in `size` pt type,
+    /// with a space glyph between words.
+    pub(crate) fn words(text: &str, x: f32, y: f32, size: f32) -> Vec<Glyph> {
+        let mut x = x;
+        text.chars()
+            .map(|ch| {
+                let glyph = sized(&ch.to_string(), x, y, size);
+                x += glyph.adv;
+                glyph
+            })
+            .collect()
+    }
+
+    /// A page with a drop cap "I" of 30 pt over three lines of 10 pt text,
+    /// on the baseline of the second line, and a space glyph after it when
+    /// `spaced`.
+    fn drop_cap_page(first_line: &str, spaced: bool) -> RawPage {
+        let mut cap = sized("I", 10.0, 112.0, 30.0);
+        cap.ink = Rect::new(10.0, 92.0, 22.0, 112.0);
+        let mut glyphs = vec![cap];
+        if spaced {
+            glyphs.push(sized(" ", 25.0, 112.0, 30.0));
+        }
+        // The text starts right where the cap's advance ends, as set by
+        // lettrine (a word space when `spaced` is drawn on the cap's own
+        // baseline instead).
+        let start = if spaced { 31.0 } else { 25.2 };
+        glyphs.extend(words(first_line, start, 100.0, 10.0));
+        glyphs.extend(words("universally acknowledged that", start, 112.0, 10.0));
+        glyphs.extend(words("a single man in possession", 10.0, 124.0, 10.0));
+        page(glyphs)
+    }
+
+    #[test]
+    fn drop_cap_starts_the_line_beside_its_top() {
+        let (lines, _) = build_lines(&drop_cap_page("t is a truth", false), &LinesConfig::default());
+        let texts: Vec<String> = lines.iter().map(Line::text).collect();
+        assert_eq!(
+            texts,
+            [
+                "It is a truth",
+                "universally acknowledged that",
+                "a single man in possession"
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.glyphs.iter().all(|glyph| glyph.script == 0))
+        );
+    }
+
+    #[test]
+    fn drop_cap_followed_by_a_drawn_space_is_a_word() {
+        let (lines, _) = build_lines(&drop_cap_page("couldn't sleep", true), &LinesConfig::default());
+        assert_eq!(lines[0].text(), "I couldn't sleep");
     }
 
     #[test]

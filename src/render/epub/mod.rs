@@ -34,6 +34,17 @@ const IMAGE_DIR: &str = "images";
 /// `dcterms:modified` when [`EpubOptions::modified`] is not set: a fixed
 /// date, so that the same paper always gives the same bytes.
 const FIXED_MODIFIED: &str = "2000-01-01T00:00:00Z";
+/// The word before the author's name on the title page of a book ("By Jane
+/// Austen"), left out of the author recorded in the book.
+const BYLINE: &str = "by ";
+/// Most words in a line of author names (a line may name several people:
+/// "Kaiming He Xiangyu Zhang Shaoqing Ren Jian Sun").
+const NAME_MAX_WORDS_COUNT: usize = 12;
+/// Lowercase words inside names ("van", "de la", "bin").
+const NAME_PARTICLES: &[&str] = &[
+    "van", "von", "der", "den", "de", "del", "della", "di", "da", "du", "la", "le", "bin", "binti", "y", "and", "&",
+    "et", "al.",
+];
 /// Prefix of the anchors given to the headings that have none, so that the
 /// table of contents can point to them.
 const HEADING_ANCHOR_PREFIX: &str = "toc-";
@@ -376,7 +387,7 @@ fn cover_spec(doc: &Document) -> ImageSpec {
 }
 
 /// The authors of the paper: the first line of each author group, without
-/// its footnote marks.
+/// its footnote marks and without a leading "By".
 fn authors(doc: &Document) -> Vec<String> {
     doc.blocks
         .iter()
@@ -384,10 +395,31 @@ fn authors(doc: &Document) -> Vec<String> {
         .filter_map(|block| block.rows.first())
         .map(|row| {
             let spans: Vec<_> = row.iter().filter(|span| span.style & SUP == 0).cloned().collect();
-            plain(&spans).trim_end_matches([',', '*', '†', '‡']).trim().to_string()
+            let name = plain(&spans);
+            let name = name.trim_end_matches([',', '*', '†', '‡']).trim();
+            // "By Jane Austen" on a title page.
+            match name.get(..BYLINE.len()) {
+                Some(head) if head.eq_ignore_ascii_case(BYLINE) => name[BYLINE.len()..].trim().to_string(),
+                _ => name.to_string(),
+            }
         })
-        .filter(|name| !name.is_empty())
+        .filter(|name| looks_like_name(name))
         .collect()
+}
+
+/// Whether `text` reads as the names of people or of a group: a few words
+/// with capitals, no digits and no address ("Jane Austen", "Aidan N.
+/// Gomez", "Ludwig van Beethoven"). The lines under the title of a book's
+/// cover ("How to Think Like a Computer Scientist", "2nd Edition") are
+/// read as author groups by the analysis but are none.
+fn looks_like_name(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    !words.is_empty()
+        && words.len() <= NAME_MAX_WORDS_COUNT
+        && !text.contains(|ch: char| ch.is_ascii_digit() || ch == '@' || ch == '/')
+        && words.iter().all(|word| {
+            word.starts_with(|ch: char| !ch.is_lowercase()) || NAME_PARTICLES.contains(&word.trim_end_matches(','))
+        })
 }
 
 /// The unique identifier of the book: a UUID made from the title, the
@@ -422,6 +454,73 @@ fn identifier(doc: &Document) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byline_is_not_part_of_the_author() {
+        let block = |text: &str| Block {
+            kind: BlockKind::Authors,
+            rows: vec![vec![crate::model::Span::plain(text)]],
+            ..empty_block()
+        };
+        let doc = Document {
+            blocks: vec![block("By Jane Austen"), block("Bysshe Shelley"), block("Ada Lovelace*")],
+            ..empty_doc()
+        };
+        assert_eq!(authors(&doc), ["Jane Austen", "Bysshe Shelley", "Ada Lovelace"]);
+        for not_a_name in [
+            "How to Think Like a Computer Scientist",
+            "2nd Edition, Version 2.4.1",
+            "The third edition of Think Python is available at thinkpython.com",
+        ] {
+            assert!(!looks_like_name(not_a_name), "{not_a_name}");
+        }
+        for name in [
+            "Ludwig van Beethoven",
+            "Aidan N. Gomez",
+            "Łukasz Kaiser",
+            "LIGO Scientific Collaboration",
+            "B. P. Abbott et al.",
+            "Shaoqing Ren, Kaiming He, Ross Girshick, and Jian Sun",
+            "Kaiming He Xiangyu Zhang Shaoqing Ren Jian Sun",
+        ] {
+            assert!(looks_like_name(name), "{name}");
+        }
+    }
+
+    /// A document without pages or blocks.
+    fn empty_doc() -> Document {
+        Document {
+            meta: Default::default(),
+            pages: Vec::new(),
+            body_size: 10.0,
+            leading: 12.0,
+            body_font: String::new(),
+            math_font: String::new(),
+            blocks: Vec::new(),
+        }
+    }
+
+    /// A paragraph block with no text.
+    fn empty_block() -> Block {
+        Block {
+            id: 0,
+            kind: BlockKind::Paragraph { in_abstract: false },
+            page: 0,
+            bbox: Rect::default(),
+            spans: Vec::new(),
+            rows: Vec::new(),
+            anchor: None,
+            loc: Default::default(),
+            lines: Vec::new(),
+            line_texts: Vec::new(),
+            hlines: Vec::new(),
+            table: None,
+            inner_lines: Vec::new(),
+            inner_spans: Vec::new(),
+            eq_runs: Vec::new(),
+            math: None,
+        }
+    }
 
     #[test]
     fn identifier_is_a_uuid() {

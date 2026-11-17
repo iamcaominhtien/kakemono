@@ -12,7 +12,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
     │
     ▼  analysis/pipeline.rs   one function; read it top to bottom to see the whole flow
     │   page        PageData, document-wide font size / line spacing statistics
-    │   lines       characters → lines (superscript/subscript, accents, rotated text)
+    │   lines       characters → lines (superscript/subscript, inline fractions, drop caps, accents, rotated text)
     │   furniture   remove repeated headers/footers/page numbers (by band, or at the same place)
     │   floats      figures, tables, algorithms + captions
     │   tables      row/column grid of tables
