@@ -59,6 +59,12 @@ pub struct TextConfig {
     /// Inside and around an inline fraction, a gap wider than this many
     /// font sizes is a word space.
     pub fraction_space_min_em: f32,
+    /// A glyph in a term of an inline fraction at most this fraction of the
+    /// size of the glyph before it ...
+    pub term_script_max_size_ratio: f32,
+    /// ... and set more than this many of that glyph's font sizes above or
+    /// below it is its superscript or subscript.
+    pub term_script_min_offset_em: f32,
 }
 
 impl Default for TextConfig {
@@ -66,6 +72,8 @@ impl Default for TextConfig {
         Self {
             compound_part_min_chars_count: 4,
             fraction_space_min_em: 0.2,
+            term_script_max_size_ratio: 0.85,
+            term_script_min_offset_em: 0.05,
             cell_wrap_min_dy_em: 0.5,
             math_axis_height_em: 0.25,
             tall_glyph_min_height_em: 1.3,
@@ -112,7 +120,7 @@ struct OpenRun {
 /// are read one after the other, not interleaved digit by digit. The second
 /// element holds the glyph ranges of the stacked pairs that are inline
 /// fractions, read "1/2".
-fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>) {
+fn stacked_script_order(glyphs: &[LineGlyph], cfg: &TextConfig) -> (Vec<usize>, Vec<Range<usize>>) {
     let mut order: Vec<usize> = Vec::with_capacity(glyphs.len());
     let mut fractions: Vec<Range<usize>> = Vec::new();
     let mut i = 0;
@@ -137,12 +145,31 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>)
         };
         let (up, down) = (span(1), span(-1));
         let stacked = up.0 < down.1 && down.0 < up.1;
-        if stacked {
-            order.extend(run.clone().filter(|&k| glyphs[k].script > 0));
-            // Terms stacked on a fraction bar (see `mark_fractions`).
-            if run.clone().any(|k| glyphs[k].script.abs() == FRACTION_TERM) {
-                fractions.push(run.clone());
+        // Terms stacked on a fraction bar (see `mark_fractions`): the other
+        // scripts of the run left of the fraction are read before it (the
+        // T→∞ under "lim" before R(T)/T), the rest after it.
+        let (left, right) = run
+            .clone()
+            .filter(|&k| glyphs[k].is_fraction_term())
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| {
+                (lo.min(glyphs[k].x0), hi.max(glyphs[k].x1))
+            });
+        if left <= right {
+            let before = |k: &usize| (glyphs[*k].x0 + glyphs[*k].x1) / 2.0 < left;
+            let others: Vec<usize> = run.clone().filter(|&k| !glyphs[k].is_fraction_term()).collect();
+            let (ahead, behind): (Vec<usize>, Vec<usize>) = others.into_iter().partition(before);
+            push_stacked(glyphs, &ahead, &mut order);
+            for sign in [1, -1] {
+                let term: Vec<usize> = run
+                    .clone()
+                    .filter(|&k| glyphs[k].is_fraction_term() && glyphs[k].script.signum() == sign)
+                    .collect();
+                term_order(glyphs, &term, cfg, &mut order);
             }
+            push_stacked(glyphs, &behind, &mut order);
+            fractions.push(run);
+        } else if stacked {
+            order.extend(run.clone().filter(|&k| glyphs[k].script > 0));
             order.extend(run.filter(|&k| glyphs[k].script < 0));
         } else {
             order.extend(run);
@@ -151,59 +178,177 @@ fn stacked_script_order(glyphs: &[LineGlyph]) -> (Vec<usize>, Vec<Range<usize>>)
     (order, fractions)
 }
 
-/// The text set before glyphs of an inline fraction, by position in the
-/// reading `order`: an opening parenthesis before a term of several parts,
-/// the slash (closing the numerator's parenthesis) before the denominator,
-/// and the closing parenthesis of the denominator before what follows it
-/// (at `order.len()` when the line ends with it).
+/// Appends the glyphs of a fraction's `term` (indexes, left to right) to
+/// `order`: each glyph on the term's baseline, then its scripts in the term
+/// (smaller glyphs set off that baseline, see [`term_scripts`]), the
+/// superscripts first when they stand over the subscripts (g⁴ over T,i).
+fn term_order(glyphs: &[LineGlyph], term: &[usize], cfg: &TextConfig, order: &mut Vec<usize>) {
+    let mut k = 0;
+    while k < term.len() {
+        let base = &glyphs[term[k]];
+        order.push(term[k]);
+        k += 1;
+        // A radical sign is drawn larger than what follows it, which is
+        // its radicand, not its scripts.
+        if base.text == "\u{221A}" {
+            continue;
+        }
+        let start = k;
+        while k < term.len() && glyphs[term[k]].size <= cfg.term_script_max_size_ratio * base.size {
+            k += 1;
+        }
+        let scripts = &term[start..k];
+        let offset = cfg.term_script_min_offset_em * base.size;
+        let (ups, downs): (Vec<usize>, Vec<usize>) = scripts.iter().partition(|&&i| glyphs[i].y < base.y - offset);
+        let extent = |part: &[usize]| {
+            part.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &i| {
+                (lo.min(glyphs[i].x0), hi.max(glyphs[i].x1))
+            })
+        };
+        let (up, down) = (extent(&ups), extent(&downs));
+        if up.0 < down.1 && down.0 < up.1 {
+            order.extend(ups);
+            order.extend(downs);
+        } else {
+            order.extend(scripts);
+        }
+    }
+}
+
+/// Appends the script glyphs `run` (indexes, left to right) to `order`:
+/// superscripts first when superscripts and subscripts overlap, as in
+/// [`stacked_script_order`].
+fn push_stacked(glyphs: &[LineGlyph], run: &[usize], order: &mut Vec<usize>) {
+    let span = |sign: i8| {
+        run.iter()
+            .filter(|&&k| glyphs[k].script.signum() == sign)
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &k| {
+                (lo.min(glyphs[k].x0), hi.max(glyphs[k].x1))
+            })
+    };
+    let (up, down) = (span(1), span(-1));
+    if up.0 < down.1 && down.0 < up.1 {
+        order.extend(run.iter().filter(|&&k| glyphs[k].script > 0));
+        order.extend(run.iter().filter(|&&k| glyphs[k].script < 0));
+    } else {
+        order.extend(run);
+    }
+}
+
+/// The text set around the glyphs of inline fractions, by position in the
+/// reading `order`: an opening parenthesis before a term of several parts
+/// and the closing one right after it, the slash before the denominator,
+/// and parentheses around the radicand of a radical that starts a term
+/// (√(1−β₂ᵗ)), which then needs none of its own.
+#[derive(Default)]
+struct FractionMarks {
+    /// Text written before the glyph at each position.
+    before: HashMap<usize, String>,
+    /// Text written right after the glyph at each position, in its style:
+    /// a closing parenthesis belongs to the term it closes.
+    after: HashMap<usize, String>,
+}
+
+/// The [`FractionMarks`] of the inline fractions of a line (the glyph
+/// ranges `fractions`, read in `order`).
 fn fraction_marks(
     glyphs: &[LineGlyph],
     order: &[usize],
     fractions: &[Range<usize>],
     cfg: &TextConfig,
-) -> HashMap<usize, String> {
-    let mut marks: HashMap<usize, String> = HashMap::new();
+) -> FractionMarks {
+    let mut marks = FractionMarks::default();
+    // A term of several parts: a gap in it, or an operator; its own
+    // scripts (smaller glyphs) do not count.
+    let compound = |term: &[usize]| {
+        let largest = term.iter().map(|&pos| glyphs[order[pos]].size).fold(0.0, f32::max);
+        let term: Vec<usize> = term
+            .iter()
+            .copied()
+            .filter(|&pos| glyphs[order[pos]].size > cfg.term_script_max_size_ratio * largest)
+            .collect();
+        term.windows(2).any(|pair| {
+            let (left, right) = (&glyphs[order[pair[0]]], &glyphs[order[pair[1]]]);
+            right.x0 - left.x1 > cfg.fraction_space_min_em * right.size
+        }) || term.iter().any(|&pos| {
+            glyphs[order[pos]]
+                .text
+                .chars()
+                .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
+        })
+    };
     for run in fractions {
         let positions: Vec<usize> = (0..order.len()).filter(|&pos| run.contains(&order[pos])).collect();
         let term = |sign: i8| -> Vec<usize> {
             positions
                 .iter()
                 .copied()
-                .filter(|&pos| glyphs[order[pos]].script.signum() == sign)
+                .filter(|&pos| {
+                    let glyph = &glyphs[order[pos]];
+                    glyph.is_fraction_term() && glyph.script.signum() == sign
+                })
                 .collect()
         };
         let (numerator, denominator) = (term(1), term(-1));
-        let (Some(&num_start), Some(&den_start), Some(&den_end)) =
-            (numerator.first(), denominator.first(), denominator.last())
-        else {
+        let (Some(&den_start), false) = (denominator.first(), numerator.is_empty()) else {
             continue;
         };
-        let compound = |term: &[usize]| {
-            term.windows(2).any(|pair| {
-                let (left, right) = (&glyphs[order[pair[0]]], &glyphs[order[pair[1]]]);
-                right.x0 - left.x1 > cfg.fraction_space_min_em * right.size
-            }) || term.iter().any(|&pos| {
-                glyphs[order[pos]]
-                    .text
-                    .chars()
-                    .any(|ch| "+-\u{2212}\u{B1}\u{B7}\u{D7}=,".contains(ch))
-            })
-        };
-        let (num_parens, den_parens) = (compound(&numerator), compound(&denominator));
-        if num_parens {
-            marks.entry(num_start).or_default().push('(');
-        }
-        let slash = marks.entry(den_start).or_default();
-        if num_parens {
-            slash.push(')');
-        }
-        slash.push('/');
-        if den_parens {
-            slash.push('(');
-            marks.entry(den_end + 1).or_default().insert(0, ')');
+        for (idx, term) in [numerator, denominator].iter().enumerate() {
+            let (first, last) = (term[0], term[term.len() - 1]);
+            if idx == 1 {
+                marks.before.entry(den_start).or_default().push('/');
+            }
+            let radical = glyphs[order[first]].text == "\u{221A}" && term.len() > 1;
+            if radical && compound(&term[1..]) {
+                marks.before.entry(term[1]).or_default().push('(');
+                marks.after.entry(last).or_default().push(')');
+            } else if !radical && compound(term) {
+                marks.before.entry(first).or_default().push('(');
+                marks.after.entry(last).or_default().push(')');
+            }
         }
     }
     marks
+}
+
+/// The scripts inside the terms of inline fractions, by glyph index: a
+/// glyph of a term smaller than the glyph before it in its term (at most
+/// [`TextConfig::term_script_max_size_ratio`] of it) and set higher or
+/// lower (by more than [`TextConfig::term_script_min_offset_em`]) is its
+/// superscript or subscript: the 1 and the 2 of β₁² over √β₂. A term of a
+/// fraction in a superscript is a superscript as a whole, so its own
+/// scripts are not marked.
+fn term_scripts(glyphs: &[LineGlyph], order: &[usize], cfg: &TextConfig) -> HashMap<usize, u8> {
+    let mut scripts = HashMap::new();
+    // The last full-size glyph of each term, by its sign.
+    let mut base: HashMap<i8, &LineGlyph> = HashMap::new();
+    for &index in order {
+        let glyph = &glyphs[index];
+        if glyph.script.abs() != FRACTION_TERM {
+            base.clear();
+            continue;
+        }
+        // A radical sign is larger than its radicand: no base for it.
+        if glyph.text == "\u{221A}" {
+            base.remove(&glyph.script);
+            continue;
+        }
+        let Some(&prev) = base.get(&glyph.script) else {
+            base.insert(glyph.script, glyph);
+            continue;
+        };
+        if glyph.size > cfg.term_script_max_size_ratio * prev.size {
+            base.insert(glyph.script, glyph);
+            continue;
+        }
+        let offset = cfg.term_script_min_offset_em * prev.size;
+        if glyph.y < prev.y - offset {
+            scripts.insert(index, SUP);
+        } else if glyph.y > prev.y + offset {
+            scripts.insert(index, SUB);
+        }
+    }
+    scripts
 }
 
 /// Whether a space goes before the glyph at position `pos` of the reading
@@ -220,10 +365,17 @@ fn fraction_space(
 ) -> Option<bool> {
     let glyph = &glyphs[order[pos]];
     let prev = &glyphs[order[pos.checked_sub(1)?]];
-    let run_of = |index: usize| fractions.iter().find(|run| run.contains(&index));
+    // Only the terms are the fraction: other scripts of its run (a limit
+    // under "lim") are spaced as usual.
+    let run_of = |index: usize| {
+        fractions
+            .iter()
+            .find(|run| run.contains(&index) && glyphs[index].is_fraction_term())
+    };
     let wide = |gap: f32| gap > cfg.fraction_space_min_em * glyph.size;
     let extent = |run: &Range<usize>| {
         run.clone()
+            .filter(|&k| glyphs[k].is_fraction_term())
             .map(|k| (glyphs[k].x0, glyphs[k].x1))
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (x0, x1)| {
                 (lo.min(x0), hi.max(x1))
@@ -259,13 +411,16 @@ impl TextBuilder<'_> {
     /// Styled text of a single line as placed on the page: the terms of an
     /// inline fraction stay a superscript and a subscript.
     fn placed_line_spans(&self, line: &Line) -> Vec<Span> {
-        if !line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+        if !line.glyphs.iter().any(LineGlyph::is_fraction_term) {
             return self.line_spans(line);
         }
         let mut placed = line.clone();
         for glyph in &mut placed.glyphs {
             if glyph.script.abs() == FRACTION_TERM {
                 glyph.script = glyph.script.signum();
+            } else if glyph.script.abs() == RAISED_FRACTION_TERM {
+                // Both terms of a fraction in a superscript are raised.
+                glyph.script = 1;
             }
         }
         self.line_spans(&placed)
@@ -274,20 +429,35 @@ impl TextBuilder<'_> {
     /// Styled text of a single line, as read: inline fractions read "1/2".
     pub(crate) fn line_spans(&self, line: &Line) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
-        let (order, fractions) = stacked_script_order(&line.glyphs);
+        let (order, fractions) = stacked_script_order(&line.glyphs, self.cfg);
         // The terms of an inline fraction read as "1/2", "(n−1)/n".
         let marks = fraction_marks(&line.glyphs, &order, &fractions, self.cfg);
+        let term_scripts = term_scripts(&line.glyphs, &order, self.cfg);
+        // The closing marks after the glyph at a position of the order, in
+        // the glyph's own style.
+        let close_after = |spans: &mut Vec<Span>, pos: usize| {
+            if let Some(close) = marks.after.get(&pos) {
+                let glyph = &line.glyphs[order[pos]];
+                push_text(spans, close, line.style_of(glyph, self.fonts), glyph.color);
+            }
+        };
         for (glyph_idx, &index) in order.iter().enumerate() {
+            if glyph_idx > 0 {
+                close_after(&mut spans, glyph_idx - 1);
+            }
             let glyph = &line.glyphs[index];
-            let style = line.style_of(glyph, self.fonts);
+            // Marks around fraction terms take the style of the term, not
+            // of a script inside it.
+            let base_style = line.style_of(glyph, self.fonts);
+            let style = base_style | term_scripts.get(&index).copied().unwrap_or(0);
             let mut space = fraction_space(&line.glyphs, &order, glyph_idx, &fractions, self.cfg)
                 .unwrap_or(glyph.space_before)
                 && glyph_idx > 0;
-            if let Some(before) = marks.get(&glyph_idx) {
+            if let Some(before) = marks.before.get(&glyph_idx) {
                 if space {
-                    push_text(&mut spans, " ", style, glyph.color);
+                    push_text(&mut spans, " ", base_style, glyph.color);
                 }
-                push_text(&mut spans, before, style, glyph.color);
+                push_text(&mut spans, before, base_style, glyph.color);
                 space = false;
             }
             // A space after a link stays out of it.
@@ -313,8 +483,8 @@ impl TextBuilder<'_> {
                 color: glyph.color,
             });
         }
-        if let (Some(close), Some(last)) = (marks.get(&order.len()), spans.last_mut()) {
-            last.text.push_str(close);
+        if let Some(last) = order.len().checked_sub(1) {
+            close_after(&mut spans, last);
         }
         spans
     }

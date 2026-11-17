@@ -1451,6 +1451,48 @@ fn adam_inline_formulas_are_math() {
     assert!(document.matches("<m:oMath>").count() > document.matches("<m:oMathPara>").count() + 100);
 }
 
+/// Small fractions inside the text are read whole, in every format: terms
+/// with scripts of their own (β₁² over √β₂), a fraction in a superscript
+/// (t^(−1/2)), a radical over a term, a bracket with a power closing the
+/// formula, a term with many scripts (g⁴_{T,i} over 4‖g₁:T,i‖²₂). They used to come out as loose scripts ("β2 √β12", "t−12").
+#[test]
+fn adam_inline_fractions_are_read_whole() {
+    let Some(paper) = load("1412.6980v9") else { return };
+    let analysis = paper.analyze();
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    for formula in [
+        "$\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}$",
+        "rate of $t^{-1/2}$ and",
+        "$\\sqrt{1-\\beta_{2}^{t}}/((1-\\beta_{1}^{t})^{2})\\le1/((1-\\beta_{1})^{2})$",
+        "$\\sum_{t}t\\gamma^{t}\\lt1/((1-\\gamma)^{2})$:",
+        "+g_{T,i}^{4}/(4\\|g_{1:T,i}\\|_{2}^{2})\\ge",
+    ] {
+        assert!(md.contains(formula), "markdown: {formula} not found");
+    }
+    let tex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(tex.contains("\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}"));
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(html.contains(
+        "<mo>≜</mo><msubsup><mi>β</mi><mn>1</mn><mn>2</mn></msubsup><mo stretchy=\"false\" lspace=\"0\" rspace=\"0\">/</mo><msqrt>"
+    ));
+    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
+    assert!(
+        !String::from_utf8_lossy(document).contains("<m:t>12</m:t>"),
+        "docx: β₁² read as β12"
+    );
+}
+
+/// "scaled by 1/√dₖ": the fraction is one formula, not "1" and "√dₖ".
+#[test]
+fn attention_scaling_factor_is_a_fraction() {
+    let Some(paper) = load("1706.03762v7") else { return };
+    let analysis = paper.analyze();
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(md.contains("scaling factor of $1/\\sqrt{d_{k}}$."));
+    assert!(md.contains("dot products by $1/\\sqrt{d_{k}}$."));
+}
+
 /// The APS radical font sets the radical sign on "p" and the pieces of its
 /// bar on "ffi": the formula reads with a square root, not "pffi2ffiffi".
 #[test]

@@ -10,8 +10,11 @@
 //! math-font spans and the symbols between them (never over a word of
 //! plain text). Brackets around it join it when they balance.
 //!
-//! Fractions and radicals set on several levels in the line are not
-//! rebuilt: their pieces become scripts, as the spans say.
+//! An inline fraction stacked on a bar comes from the analysis already
+//! read as "a/b", with brackets around compound terms (and around the
+//! radicand of a radical that starts a term); a radical sign takes the atom
+//! or the bracketed group after it. Stacked pieces without a bar stay
+//! scripts, as the spans say.
 
 use crate::model::{MATH, MONO, MathNode, SUB, SUP, Span};
 
@@ -265,8 +268,11 @@ fn formula_end(tokens: &[Token], start: usize) -> Option<usize> {
                         .count();
                 let goes_on = match tokens.get(after).map(|token| token.kind) {
                     Some(Kind::Core) => true,
-                    // "= 10⁻⁸": a power of ten after the glue.
-                    Some(Kind::Script) => signed_power(tokens, after - 1),
+                    // "= 10⁻⁸": a power of ten after the glue; "(1 − γ)²": the
+                    // power of a bracket.
+                    Some(Kind::Script) => {
+                        signed_power(tokens, after - 1) || tokens[after - 1].span.text.trim_end().ends_with(CLOSERS)
+                    }
                     _ => false,
                 };
                 let open = bracket_balance(tokens[start..end].iter().map(|token| token.span.text.as_str())) > 0;
@@ -533,31 +539,59 @@ fn build(run: &[Token]) -> MathNode {
 }
 
 /// A radical sign and the atom after it, as a square root of that atom
-/// (`√T`).
+/// (`√T`); or, when brackets follow the sign, the root of what they hold
+/// (`√(1 − β₂ᵗ)`, an inline fraction's term read with brackets around its
+/// radicand), the bar of the root standing for them.
 fn fold_radicals(nodes: Vec<MathNode>) -> Vec<MathNode> {
+    let is_op = |node: &MathNode, ch: &str| matches!(node, MathNode::Operator { text, .. } if text == ch);
+    // Only a letter or a number, with its scripts: a root over more than
+    // that cannot be told from the spans.
+    let simple = |node: &MathNode| match node {
+        MathNode::Ident { .. } | MathNode::Number(_) => true,
+        MathNode::Scripts { base, .. } | MathNode::UnderOver { base, .. } => matches!(
+            **base,
+            MathNode::Ident { .. } | MathNode::Number(_) | MathNode::UnderOver { .. }
+        ),
+        _ => false,
+    };
     let mut out = Vec::with_capacity(nodes.len());
-    let mut nodes = nodes.into_iter().peekable();
-    while let Some(node) = nodes.next() {
-        let radical = matches!(&node, MathNode::Operator { text, .. } if text == "√");
-        // Only a letter or a number, with its scripts: a root over more
-        // than that cannot be told from the spans.
-        let simple = |node: &MathNode| match node {
-            MathNode::Ident { .. } | MathNode::Number(_) => true,
-            MathNode::Scripts { base, .. } | MathNode::UnderOver { base, .. } => matches!(
-                **base,
-                MathNode::Ident { .. } | MathNode::Number(_) | MathNode::UnderOver { .. }
-            ),
-            _ => false,
-        };
-        match nodes.peek() {
-            Some(next) if radical && simple(next) => {
-                let base = nodes.next().expect("peeked");
-                out.push(MathNode::Sqrt(Box::new(base)));
-            }
-            _ => out.push(node),
+    let mut i = 0;
+    while i < nodes.len() {
+        let radical = is_op(&nodes[i], "\u{221A}");
+        if radical && let Some(close) = closing_bracket(&nodes, i + 1) {
+            out.push(MathNode::Sqrt(Box::new(MathNode::row(nodes[i + 2..close].to_vec()))));
+            i = close + 1;
+        } else if radical && nodes.get(i + 1).is_some_and(simple) {
+            out.push(MathNode::Sqrt(Box::new(nodes[i + 1].clone())));
+            i += 2;
+        } else {
+            out.push(nodes[i].clone());
+            i += 1;
         }
     }
     out
+}
+
+/// The index of the `)` that closes the `(` at `nodes[open]`, when the
+/// brackets hold something and the closing one has no script; `None`
+/// otherwise.
+fn closing_bracket(nodes: &[MathNode], open: usize) -> Option<usize> {
+    let is_op = |node: &MathNode, ch: &str| matches!(node, MathNode::Operator { text, .. } if text == ch);
+    if !nodes.get(open).is_some_and(|node| is_op(node, "(")) {
+        return None;
+    }
+    let mut depth = 0;
+    for (idx, node) in nodes.iter().enumerate().skip(open) {
+        if is_op(node, "(") {
+            depth += 1;
+        } else if is_op(node, ")") {
+            depth -= 1;
+            if depth == 0 {
+                return (idx > open + 1).then_some(idx);
+            }
+        }
+    }
+    None
 }
 
 /// Attaches `script` as the superscript (`which` is `SUP`) or subscript of
@@ -750,6 +784,48 @@ mod tests {
     }
 
     const MI: u8 = MATH | ITALIC;
+
+    #[test]
+    fn radical_before_brackets_covers_them() {
+        // "√(1−β₂ᵗ)/x", the radicand of an inline fraction's term in brackets.
+        let spans = [
+            span("\u{221A}", MATH),
+            span("(1", 0),
+            span("\u{2212}", MATH),
+            span("\u{3B2}", MI),
+            span("2", SUB),
+            span(")/", 0),
+            span("x", MI),
+        ];
+        let pieces = split(&spans);
+        let [Piece::Math(node, _)] = pieces.as_slice() else {
+            panic!("one formula: {pieces:?}")
+        };
+        assert_eq!(super::super::latex::math::latex(node), "\\sqrt{1-\\beta_{2}}/x");
+    }
+
+    #[test]
+    fn fraction_with_a_squared_denominator_keeps_its_bracket() {
+        // "∑ₜ tγᵗ < 1/((1−γ)²):", an inline fraction read with brackets.
+        let spans = [
+            span("series, ", 0),
+            span("\u{2211}", MATH),
+            span("t ", MI | SUB),
+            span("t\u{3B3}", MI),
+            span("t ", MI | SUP),
+            span("< ", MI),
+            span("1/((1", 0),
+            span("\u{2212}", MATH),
+            span("\u{3B3}", MI),
+            span(")", 0),
+            span("2", SUP),
+            span("):", 0),
+        ];
+        assert_eq!(
+            text_of(&split(&spans)),
+            "series, [\u{2211}t t\u{3B3}t < 1/((1\u{2212}\u{3B3})2)]:"
+        );
+    }
 
     #[test]
     fn function_with_subscripts_and_brackets() {

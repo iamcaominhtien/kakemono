@@ -397,7 +397,7 @@ impl Assembler<'_> {
         lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
         // As read, with inline fractions as "1/2".
         let read = |line: &Line| {
-            if line.glyphs.iter().any(|glyph| glyph.script.abs() == FRACTION_TERM) {
+            if line.glyphs.iter().any(LineGlyph::is_fraction_term) {
                 self.text
                     .line_spans(line)
                     .iter()
