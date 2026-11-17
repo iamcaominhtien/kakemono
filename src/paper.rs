@@ -54,8 +54,8 @@ impl Paper {
 
     /// Runs content extraction and layout analysis.
     ///
-    /// Pages are read on `opts.jobs` threads; the result does not depend on
-    /// the number of threads.
+    /// Pages are read, and their lines built, on `opts.jobs` threads; the
+    /// result does not depend on the number of threads.
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let (raw, fonts) = self.pdf.extract(opts.jobs);
         let meta = Meta {
