@@ -308,6 +308,9 @@ more memory, because it keeps a picture of every page):
 - Running more processes than cores only queues them: total throughput stays the same and the
   memory adds up. Four 1151-page books at once take 17 s and 4.4 GB.
 
+All the numbers, and leads for making it faster, are in
+[docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md#10-benchmark-november-2026-and-leads-for-speed-and-memory).
+
 ## Limitations
 
 - Tables whose cells hold matrices, long paragraphs or irregular rows stay pictures (`medium`,

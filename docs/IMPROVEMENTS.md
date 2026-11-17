@@ -170,3 +170,78 @@ compare the text of the `mi`/`mn`/`mo` elements with that of the MathML from the
 look-alikes as equal (`∆`/`Δ`, `φ`/`ϕ`, `‖`/`||`), and list the confusions of readings of the
 same length.
 
+
+## 10. Benchmark (November 2026) and leads for speed and memory
+
+Measured with `scripts/benchmark.py` (release build) on a 4-core Xeon at 2.1 GHz with 16 GB of RAM.
+Inputs: the 8 test papers, three books (Pride and Prejudice, The Great Gatsby, Think Python 2),
+"Mathematics for Machine Learning" (`mml`, 417 pages), "Dive into Deep Learning" (`d2l`, 1151
+pages) and `d2l` joined to itself with `pdfunite` (`d2l-x2`, 2302 pages, 93 MB) as a stress test.
+To run it again:
+
+```bash
+scripts/benchmark.py formats tests/data/*.pdf book.pdf --formats friendly,medium,hard,hard-95,epub,docx,md,tex --csv out/bench
+scripts/benchmark.py threads big.pdf
+scripts/benchmark.py concurrent paper.pdf --max 32 --jobs 1
+```
+
+### One file at a time (default `-j`, i.e. 4 threads)
+
+Wall time / peak resident memory. "Analysis" is the time the CLI reports for reading and analysis;
+the rest is rendering and writing.
+
+| PDF | Pages | Analysis | friendly | epub | docx | md / tex | hard | hard-95 |
+| --- | ---: | ---: | --- | --- | --- | --- | --- | --- |
+| Adam (1412.6980) | 15 | 0.14 s | 0.22 s / 54 MB | 0.38 s / 86 MB | 0.31 s / 57 MB | 0.2 s / 57 MB | 0.2 s / 48 MB | 0.22 s / 44 MB |
+| Faster R-CNN (1506.01497) | 14 | 0.25 s | 0.64 s / 101 MB | 0.6 s / 112 MB | 0.59 s / 103 MB | 0.6 s / 103 MB | 1.5 s / 159 MB | 1.68 s / 158 MB |
+| Attention (1706.03762) | 15 | 0.13 s | 0.39 s / 91 MB | 0.38 s / 119 MB | 0.41 s / 88 MB | 0.43 s / 89 MB | 0.21 s / 77 MB | 0.24 s / 79 MB |
+| GPT-4 (2303.08774) | 100 | 0.85 s | 1.32 s / 239 MB | 1.34 s / 250 MB | 1.3 s / 240 MB | 1.2 s / 240 MB | 1.3 s / 209 MB | 1.34 s / 163 MB |
+| Gatsby | 193 | 0.63 s | 0.69 s / 113 MB | 0.72 s / 124 MB | 0.71 s / 111 MB | 0.72 s / 111 MB | 0.87 s / 175 MB | 1.01 s / 113 MB |
+| Pride and Prejudice | 479 | 1.7 s | 1.91 s / 248 MB | 1.89 s / 260 MB | 1.84 s / 247 MB | 1.74 s / 247 MB | 2.71 s / 418 MB | 2.64 s / 254 MB |
+| Think Python 2 | 244 | 1.1 s | 1.22 s / 194 MB | 1.4 s / 225 MB | 1.13 s / 191 MB | 1.2 s / 189 MB | 1.71 s / 291 MB | 1.81 s / 196 MB |
+| mml | 417 | 2.9 s | 3.94 s / 509 MB | 5.02 s / 533 MB | 4.04 s / 515 MB | 4.05 s / 483 MB | 5.15 s / 794 MB | 6.05 s / 651 MB |
+| d2l | 1151 | 8.1 s | 10.18 s / 1.20 GB | 10.99 s / 1.24 GB | 10.7 s / 1.24 GB | 10.45 s / 1.14 GB | 12.73 s / 1.76 GB | 13.37 s / 1.36 GB |
+| d2l-x2 | 2302 | 20.3 s | 24.44 s / 2.36 GB | 26.12 s / 2.36 GB | 25.5 s / 2.40 GB | 25 s / 2.23 GB | 30.42 s / 3.45 GB | 33.34 s / 2.58 GB |
+
+The full table (every paper, CPU share, output size) is printed by the `formats` experiment.
+
+### Threads for one file (`-j`, `friendly`)
+
+| PDF | -j 1 | -j 2 | -j 4 |
+| --- | --- | --- | --- |
+| GPT-4, 100 pages | 2.33 s (analysis 0.99 s), 143 MB | 1.57 s (×1.48) | 1.30 s (×1.79, analysis 0.87 s), 257 MB |
+| d2l, 1151 pages | 17.2 s (analysis 9.4 s), 0.92 GB | 12.5 s (×1.38) | 10.3 s (×1.68, analysis 8.0 s), 1.21 GB |
+
+### Several files at once (`friendly`)
+
+| PDF | At once | `-j` each | Total | Throughput | Memory of the machine |
+| --- | ---: | --- | ---: | --- | ---: |
+| Attention, 15 pages | 1 / 4 / 8 / 16 / 32 | 1 | 0.75 / 0.86 / 1.69 / 3.19 / 6.5 s | 80 / 278 / 284 / 301 / 296 files/min | ~52 MB per process |
+| Attention, 15 pages | 1 / 4 / 16 | auto | 0.45 / 0.96 / 3.5 s | 134 / 249 / 274 files/min | ~95 MB per process |
+| d2l, 1151 pages | 1 / 2 / 4 / 8 | auto | 11.1 / 12.8 / 17.2 / 35.6 s | 103 / 179 / 268 / 259 pages/s | 1.2 / 2.1 / 4.4 / 8.9 GB |
+| d2l-x2, 2302 pages | 1 / 2 / 4 | auto | 24.7 / 29.3 / 38.9 s | 93 / 157 / 237 pages/s | 2.2 / 4.5 / 8.9 GB |
+
+- Throughput stops growing at the number of cores (4); more processes only queue and add memory.
+- For many small files, one process per core with `-j 1` is best (~300 papers a minute on 4 cores).
+- 16 GB holds about 12 conversions of a 1000-page book at once, but on 4 cores more than 4 bring
+  nothing.
+
+### Leads (not done yet)
+
+- **Analysis grows faster than the page count.** d2l: 8.1 s for 1151 pages (7.0 ms a page); d2l-x2:
+  20.3 s for 2302 pages (8.8 ms a page, 2.5× the time for 2× the pages). Some pass over the whole
+  document is worse than linear. Suspects: running heads and feet (`furniture.rs` compares lines
+  across pages, and d2l-x2 repeats every page), paragraph joining across pages, the numbering of
+  headings. Profile `d2l-x2` with `perf` or callgrind before changing anything.
+- **The analysis barely uses threads.** On d2l it goes from 9.4 s (1 thread) to 8.0 s (4 threads); on
+  text-only books the CPU share stays at 115–120% (Pride: 1.7 s of 1.9 s is analysis). Line and block
+  building per page could run in parallel (see section 2); only the document-wide passes need one
+  thread.
+- **Memory: about 1 GB per 1000 pages** of a book with pictures, 0.5 GB for plain text, all pages
+  held at once (see section 6). `hard` needs 1.5× more (pictures of every page).
+- **EPUB on mml is 1.1 s slower than `friendly`** (5.0 s vs 3.9 s): probably the pictures drawn for
+  formulas wider than `max_math_width_em`. Worth checking with a profile.
+- **`hard` / `hard-95` on photo-heavy papers** (Faster R-CNN: 1.5–1.7 s vs 0.6 s): the double image
+  compression of section 1.
+- **Batch command** (section 7): the numbers above give its default, one process per core with
+  `-j 1`.
