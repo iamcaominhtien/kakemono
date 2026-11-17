@@ -1,7 +1,7 @@
 # kakemono for Python
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
-documents or Markdown, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
+documents, Markdown or LaTeX, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
 ```bash
@@ -16,6 +16,7 @@ html = kakemono.convert("1706.03762", mode="medium")       # an arXiv id or URL 
 pages = kakemono.convert_all("paper.pdf")                  # {"hard": ..., "hard-95": ..., "medium": ..., "friendly": ...}
 kakemono.to_docx("paper.pdf", "paper.docx")               # a Word document (also returns its bytes)
 text = kakemono.to_markdown("paper.pdf", "paper.md")       # Markdown, pictures in paper_assets/
+tex = kakemono.to_latex("paper.pdf", "paper.tex")          # LaTeX, pictures in paper_assets/
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 ```
 
@@ -38,6 +39,11 @@ Word equations (editable in Word), the others pictures; rebuilt tables become Wo
 `to_markdown` takes the same options, plus `image_dir` (default `<name>_assets`, next to the
 file) and `inline_images`. Formulas whose structure is clear become LaTeX between `$$`, tables
 pipe tables. Without a path, or with `inline_images=True`, the pictures are embedded as data URIs.
+
+`to_latex` takes `tables`, `equations`, `scale`, `jobs` and `image_dir`, and returns a LaTeX
+document that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX
+math. LaTeX cannot embed pictures, so they are written to `image_dir` next to the file; without a
+path, only the source is returned.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 

@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML, Word or Markdown (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF into HTML, Word, Markdown or LaTeX (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -13,7 +13,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
+use kakemono::{
+    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -38,7 +40,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents or Markdown"
+    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents, Markdown or LaTeX"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -50,7 +52,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word or Markdown.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word, Markdown or LaTeX.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -114,6 +116,9 @@ enum FormatArg {
     /// Markdown (.md): pipe tables, LaTeX formulas ($$), pictures in an image folder
     #[value(name = "md", alias = "markdown")]
     Markdown,
+    /// LaTeX (.tex) for pdfLaTeX, XeLaTeX or LuaLaTeX: tables, LaTeX formulas, pictures in an image folder
+    #[value(name = "tex", alias = "latex")]
+    Latex,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -121,7 +126,7 @@ enum FormatArg {
 enum ImagesArg {
     /// Embed images in the output file (one self-contained file)
     Inline,
-    /// Write images to a folder next to the output file (Word documents keep them embedded too)
+    /// Write images to a folder next to the output file (Word documents keep them embedded too; always for LaTeX)
     Files,
 }
 
@@ -179,13 +184,13 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx or .md; html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx, .md or .tex; html otherwise); --mode applies to html only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx or .md file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md or .tex file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored [default: inline for HTML and Word, files for Markdown]
+    /// How images are stored [default: inline for HTML and Word, files for Markdown and LaTeX]
     #[arg(long, value_enum)]
     images: Option<ImagesArg>,
     /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
@@ -203,7 +208,7 @@ struct ConvertArgs {
     /// Fonts of friendly mode, and of the formulas of medium and friendly modes
     #[arg(long, value_enum, default_value = "embed")]
     fonts: FontsArg,
-    /// How medium and friendly modes (and Word documents) show displayed formulas
+    /// How medium and friendly modes (and Word, Markdown and LaTeX documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
     /// Also write the structured document as JSON (for translation tools)
@@ -248,7 +253,7 @@ impl OutputPaths {
         }
     }
 
-    /// The Word or Markdown file: the file named by `--output`, or
+    /// The Word, Markdown or LaTeX file: the file named by `--output`, or
     /// `<stem>.<ext>` in the output directory.
     fn single_file(&self, stem: &str, ext: &str) -> PathBuf {
         match &self.file {
@@ -332,15 +337,18 @@ fn write_file(path: &Path, data: &[u8]) -> Result<()> {
 /// document as JSON.
 ///
 /// # Errors
-/// When `--scale` is out of range, `--all` is given for a Word or Markdown document, the input cannot be loaded or
-/// an output file cannot be written.
+/// When `--scale` is out of range, `--all` is given for a Word, Markdown or LaTeX document, `--images inline` for
+/// LaTeX, the input cannot be loaded or an output file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     if !(args.scale > MIN_SCALE && args.scale <= MAX_SCALE) {
         bail!("--scale must be between 0.2 and 8");
     }
     let format = output_format(&args);
     if format != FormatArg::Html && args.all {
-        bail!("--all produces the HTML modes; it cannot be used with --format docx or md");
+        bail!("--all produces the HTML modes; it cannot be used with --format docx, md or tex");
+    }
+    if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
+        bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
     }
     if let Some(dir) = &args.image_dir
         && (dir.trim().is_empty() || Path::new(dir).is_absolute() || dir.split(['/', '\\']).any(|part| part == ".."))
@@ -367,6 +375,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
     match format {
         FormatArg::Docx => write_docx(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "docx"))?,
         FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
+        FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
     }
 
@@ -380,7 +389,8 @@ fn convert(args: ConvertArgs) -> Result<()> {
 }
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
-/// file, Markdown when it names a `.md` file, HTML otherwise.
+/// file, Markdown when it names a `.md` file, LaTeX when it names a `.tex`
+/// file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
         let ext = args
@@ -393,6 +403,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
         match ext.as_str() {
             "docx" => FormatArg::Docx,
             "md" | "markdown" => FormatArg::Markdown,
+            "tex" | "latex" => FormatArg::Latex,
             _ => FormatArg::Html,
         }
     })
@@ -511,6 +522,32 @@ fn write_markdown(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: 
         "markdown",
         file.display(),
         out.markdown.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Writes `analysis` as LaTeX to `file`, with the image files next to it,
+/// and reports the result on stderr.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_latex(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = LatexOptions {
+        asset_dir: image_dir(args, file, None),
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+    };
+    let started = Instant::now();
+    let out = paper.to_latex(analysis, &opts);
+    write_file(file, out.latex.as_bytes())?;
+    let report = write_images(file, &out.files)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
+        "latex",
+        file.display(),
+        out.latex.len() as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
     );
     Ok(())

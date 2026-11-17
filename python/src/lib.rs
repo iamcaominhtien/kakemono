@@ -1,9 +1,11 @@
 //! The native part of the `kakemono` Python package: PDF bytes in, HTML, a
-//! Word document, Markdown or the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
+//! Word document, Markdown, LaTeX or the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
 
 use kakemono::source::arxiv;
-use kakemono::{AnalyzeOptions, DocxOptions, Equations, HtmlOptions, MarkdownOptions, Mode, PageImage, Paper};
+use kakemono::{
+    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -191,6 +193,36 @@ fn to_markdown<'py>(
     Ok((out.markdown, py_files(py, out.files)))
 }
 
+/// Converts a PDF to LaTeX; returns the source of the `.tex` file and its
+/// picture files (in `image_dir`).
+#[pyfunction]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, image_dir="images".to_string()))]
+#[allow(clippy::too_many_arguments)]
+fn to_latex<'py>(
+    py: Python<'py>,
+    pdf: Vec<u8>,
+    source: Option<String>,
+    tables: bool,
+    equations: &str,
+    scale: f32,
+    jobs: usize,
+    image_dir: String,
+) -> PyResult<(String, PyFiles<'py>)> {
+    let equations = parse_equations(equations)?;
+    check_scale(scale)?;
+    let out = py.detach(move || {
+        let (paper, analysis) = load(pdf, source, tables, jobs)?;
+        let opts = LatexOptions {
+            asset_dir: image_dir,
+            scale,
+            jobs,
+            equations,
+        };
+        Ok::<_, PyErr>(paper.to_latex(&analysis, &opts))
+    })?;
+    Ok((out.latex, py_files(py, out.files)))
+}
+
 /// Picture files as Python values.
 fn py_files(py: Python<'_>, files: Vec<(String, Vec<u8>)>) -> PyFiles<'_> {
     files
@@ -235,6 +267,7 @@ fn _kakemono(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(convert, module)?)?;
     module.add_function(wrap_pyfunction!(to_docx, module)?)?;
     module.add_function(wrap_pyfunction!(to_markdown, module)?)?;
+    module.add_function(wrap_pyfunction!(to_latex, module)?)?;
     module.add_function(wrap_pyfunction!(analyze, module)?)?;
     module.add_function(wrap_pyfunction!(parse_arxiv_id, module)?)?;
     module.add_function(wrap_pyfunction!(fetch_arxiv, module)?)?;

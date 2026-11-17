@@ -1,7 +1,9 @@
-//! Displayed formulas written as LaTeX from their rebuilt structure
-//! ([`MathNode`]), for the Markdown output (`$$ … $$`, which GitHub, Obsidian,
-//! Jupyter, Pandoc and most other Markdown readers typeset with MathJax or
-//! KaTeX).
+//! Formulas written as LaTeX from their rebuilt structure ([`MathNode`]):
+//! for the LaTeX output, and for the Markdown output (`$$ … $$`, which
+//! GitHub, Obsidian, Jupyter, Pandoc and most other Markdown readers typeset
+//! with MathJax or KaTeX). Only commands of LaTeX and the `amsmath`,
+//! `amssymb` and `mathtools` packages are written, except `\lt` and `\gt`
+//! (MathJax), which the preamble of the LaTeX output defines.
 
 use crate::model::MathNode;
 use unicode_normalization::UnicodeNormalization;
@@ -319,6 +321,23 @@ pub(crate) fn latex(node: &MathNode) -> String {
     let mut out = String::new();
     write_node(node, &mut out);
     out.trim().to_string()
+}
+
+/// The math-mode LaTeX of a character that has a command of its own (a
+/// Greek letter, an operator, a letter of a math alphabet: `α` →
+/// `\alpha`), or `None` when the character is written as it is. The LaTeX
+/// output writes such characters of running text in math mode.
+pub(crate) fn math_char(ch: char) -> Option<String> {
+    if let Some((letter, command)) = math_alphanumeric(ch) {
+        return Some(match command {
+            "" => letter.to_string(),
+            command => format!("{command}{{{letter}}}"),
+        });
+    }
+    SYMBOLS
+        .iter()
+        .find(|(symbol, _)| *symbol == ch)
+        .map(|(_, command)| (*command).to_string())
 }
 
 /// Appends `piece` to `out`, with a space between a command name and a

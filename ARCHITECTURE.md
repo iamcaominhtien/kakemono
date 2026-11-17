@@ -2,7 +2,7 @@
 
 `kakemono` is a **pipeline**: a PDF passes through a chain of stages. Each stage takes one clearly
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
-(`Document` → HTML, Word or Markdown) meet at exactly one place: the `Document` model in `model`.
+(`Document` → HTML, Word, Markdown or LaTeX) meet at exactly one place: the `Document` model in `model`.
 
 ```
  PDF bytes
@@ -29,7 +29,8 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
  hard │ hard-95 │ medium │ friendly        shared: assets, escape, flow, mathml, table
     │
     ├► render/docx/      the same Document as a Word file (.docx): no Renderer, its own writer
-    └► render/markdown/  the same Document as Markdown (.md): pictures through the assets store
+    ├► render/markdown/  the same Document as Markdown (.md): pictures through the assets store
+    └► render/latex/     the same Document as LaTeX (.tex): pictures through the assets store
 ```
 
 ## Modules
@@ -38,7 +39,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
 | --- | --- |
 | `lib.rs` | Public API (the semver promise of the crate on crates.io): `Paper`, `convert`, `Analysis`, the Options types, `config`, `model`, `source`. The other modules are `#[doc(hidden)]` internals, public only for the CLI, examples and tests |
 | `main.rs` | CLI: only reads the arguments, then calls the API |
-| `paper.rs` | `Paper`: loads the PDF, runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`) or Markdown (`to_markdown`) |
+| `paper.rs` | `Paper`: loads the PDF, runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`) or LaTeX (`to_latex`) |
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `backend/` | Adapter around hayro: reads pages (`extract`), recognizes fonts (`fonts`), draws pages/regions (`render`; resvg turns a very large SVG page into a PNG; a photograph is cut out as a JPEG) |
@@ -47,8 +48,9 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
 | `render/` | HTML output: a `Renderer` for each mode, the `assets` image store, shared HTML parts |
 | `render/docx/` | Word output: `body` (blocks → `word/document.xml`), `omml` (`MathNode` → Office Math), `table` (Word tables), `parts` (styles, relationships, page), `zip` (a minimal ZIP writer). Pictures are placeholders drawn afterwards on several threads, as in `assets`; `to_docx_with_images` also returns them as files |
-| `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math) and Markdown (`$…$`) |
-| `render/markdown/` | Markdown output: `inline` (spans → emphasis, code, links; escaping), `latex` (`MathNode` → LaTeX for `$$`), tables as pipe or HTML tables. Pictures go through the `assets` store, as files or data URIs |
+| `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math), Markdown and LaTeX (`$…$`) |
+| `render/markdown/` | Markdown output: `inline` (spans → emphasis, code, links; escaping), tables as pipe or HTML tables. Pictures go through the `assets` store, as files or data URIs |
+| `render/latex/` | LaTeX output: `math` (`MathNode` → LaTeX, also used by Markdown for `$$`), `text` (spans → escaped text, `\textbf`, links, symbols in math mode), `preamble.tex` (packages and the commands for pictures and wide tables), tables as `tabular`. Pictures go through the `assets` store, always as files; characters pdfLaTeX has no glyph for are declared in the preamble |
 | `python/` | The Python package (separate crate, built with maturin): `src/lib.rs` binds `Paper` with PyO3 and releases the GIL; `kakemono/__init__.py` adds paths and arXiv ids |
 | `raster/` | Formulas from pictures (`kakemono formula`): pieces of ink recognised against the TeX fonts (`tex`, `templates`, `shape`, `recognize`), then rebuilt by `analysis::math` |
 
@@ -109,6 +111,6 @@ CI checks these conventions (`clippy.toml`, lints in `lib.rs`).
 ## Guarantee of unchanged behavior
 
 Every structural change must keep the output the same. `tests/real_papers.rs` compares the output
-hashes of 8 real papers, in all four modes, in Word, in Markdown and in JSON, with `tests/data/snapshots`; one character of
+hashes of 8 real papers, in all four modes, in Word, in Markdown, in LaTeX and in JSON, with `tests/data/snapshots`; one character of
 difference turns the test red. When you change the output on purpose, run
 `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit the snapshots with the change.

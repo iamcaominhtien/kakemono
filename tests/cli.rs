@@ -1,4 +1,4 @@
-//! Runs the `kakemono` executable itself: the version, a conversion and the
+//! Runs the `kakemono` executable itself: the version, conversions and the
 //! `formula` subcommand.
 
 use std::path::{Path, PathBuf};
@@ -122,6 +122,51 @@ fn convert_writes_markdown_with_an_image_folder() {
 
     let outside = kakemono(&["convert", LIGO, "--image-dir", "../x", "-o", md.to_str().unwrap()]);
     assert!(!outside.status.success());
+}
+
+#[test]
+fn convert_writes_latex_that_compiles() {
+    let dir = scratch("cli-latex");
+    // `-o x.tex` is enough to choose the format; pictures go to a folder.
+    let tex = dir.join("ligo.tex");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", tex.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&tex).unwrap();
+    assert!(text.contains("\\documentclass[11pt]{article}"));
+    assert!(
+        text.contains("{\\LARGE\\bfseries Observation of Gravitational Waves from a Binary Black Hole Merger\\par}")
+    );
+    assert!(text.contains("{ligo_assets/001-fig.png}"));
+    assert!(dir.join("ligo_assets/001-fig.png").is_file());
+    assert!(text.ends_with("\\end{document}\n"));
+
+    // LaTeX cannot embed pictures.
+    let inline = kakemono(&[
+        "convert",
+        LIGO,
+        "-f",
+        "tex",
+        "--images",
+        "inline",
+        "-o",
+        tex.to_str().unwrap(),
+    ]);
+    assert!(!inline.status.success());
+    assert!(String::from_utf8_lossy(&inline.stderr).contains("--images inline"));
+
+    // Compiled when pdfLaTeX is installed (it is not needed to build).
+    let compiled = Command::new("pdflatex")
+        .args(["-interaction=nonstopmode", "-halt-on-error", "ligo.tex"])
+        .current_dir(&dir)
+        .output();
+    match compiled {
+        Ok(out) => assert!(
+            out.status.success() && dir.join("ligo.pdf").is_file(),
+            "pdflatex failed:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        ),
+        Err(err) => eprintln!("pdflatex not run ({err}): the LaTeX output was not compiled"),
+    }
 }
 
 #[test]

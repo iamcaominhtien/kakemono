@@ -64,6 +64,18 @@ def test_to_markdown_writes_text_and_pictures(tmp_path):
         kakemono.to_markdown(LIGO, out, image_dir="../x")
 
 
+def test_to_latex_writes_source_and_pictures(tmp_path):
+    out = tmp_path / "tex" / "ligo.tex"
+    text = kakemono.to_latex(LIGO, out, scale=1.0)
+    assert out.read_text(encoding="utf-8") == text
+    assert text.startswith("% Converted from a PDF by kakemono.")
+    assert "{ligo_assets/001-fig.png}" in text
+    assert (tmp_path / "tex" / "ligo_assets" / "001-fig.png").is_file()
+    assert text.endswith("\\end{document}\n")
+    with pytest.raises(ValueError, match="relative folder"):
+        kakemono.to_latex(LIGO, out, image_dir="../x")
+
+
 def test_analyze_gives_blocks_in_reading_order():
     doc = kakemono.analyze(str(LIGO))
     kinds = {block["type"] for block in doc["blocks"]}
