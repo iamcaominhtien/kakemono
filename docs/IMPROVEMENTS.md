@@ -257,24 +257,32 @@ snapshots did not change).
   (`purge_delay` 0, set in `main.rs`) gives the memory back and is faster. mimalloc v3, or v2
   with its default delay, made small papers take up to three times the memory of glibc.
 
+- **The HTML is written as its pictures are drawn** (`Paper::write_html`, used by the command
+  line). Before, every picture was drawn into memory, then the whole page was built as one more
+  string: `hard` on d2l held 348 MB of page pictures and a 472 MB page at once. Now the workers
+  draw at most 4 pictures per thread ahead of the one the HTML is written up to
+  (`parallel::map_ordered`), and the page goes straight to the file. Peak memory of d2l with
+  4 threads: `hard` 1.31 GB → 640 MB, `hard-95` 877 → 680 MB, `friendly` 656 → 582 MB; the time
+  does not change. Markdown, LaTeX and EPUB draw their pictures the same way, but still build
+  their output in memory.
+
 Where the time of d2l goes now (4 threads, analysis 3.6 s of 6.3 s): reading the PDF 0.45 s,
 lines 0.85 s, furniture 0.5 s, floats/reading order/blocks 0.75 s (one thread), classification
 0.3 s, building the document 0.4 s, then 2.3 s of rendering.
 
 ### Leads (not done yet)
 
-- **Rendering on one thread.** With `-j 1`, d2l spends 7.3 s in analysis and 9.7 s in rendering
-  `friendly`: on a one-core machine the renderer is now the larger half. Profile it before
-  changing anything (pictures drawn, MathML, string building).
+- **Drawing the pictures is the rendering.** Writing the HTML of d2l takes 0.15 s; drawing its
+  651 pictures takes 9.4 s on one thread (2.4 s on four): 5.1 s to rasterize, 3.0 s to compress
+  the PNGs with the `png` crate's default (`Balanced`) level, the rest to try JPEG for photos.
+  The `Fast` level (fdeflate) compresses the same PNGs in 0.75 s, but they are 28% larger
+  (59 MB instead of 46 MB); `High` takes 26 s for 9% less. Not changed: it trades the reader's
+  download for the converter's time.
 - **The rest of the per-page analysis** (`layout_page`: floats, reading order, blocks; 0.75 s on
   d2l) could run on `-j` threads like the lines; only the document-wide passes need one thread.
-- **Memory of the rendering.** About 235 MB on d2l (`-j 1`) on top of the analysis: the whole
-  HTML is built as a string, then a second one with the pictures, and `ImageStore::finish`
-  draws every picture before writing any. Writing to an `impl Write` and drawing pictures in a
-  bounded window would remove most of it; `hard` (481 MB of output) gains the most.
-- **Memory of the analysis.** The `Document` still holds every `Line` with its glyphs
-  (`Block.lines`, `inner_lines`, `loose`), which only `hard`/`hard-95` read; each glyph is about
-  120 bytes plus a `String`. A compact glyph type, and a `Document` without glyphs for the
+- **Memory of the analysis** is now most of the peak. The `Document` of d2l holds 1.9 million
+  glyphs (`Block.lines`, `inner_lines`, `loose`), which only `hard`/`hard-95` read: about 250 of
+  its 463 MB (one thread), about 107 bytes a glyph with its `String`. A compact glyph type, and a `Document` without glyphs for the
   reflowed outputs, are the next steps; `model::Line` is public API, so this needs care.
 - **Machines with little memory** (for example 512 MB, one core) and documents of any size: a
   memory limit (`--memory-limit`, detected from cgroups and the free memory when not given) that

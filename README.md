@@ -288,18 +288,20 @@ The options are those of the command line (`tables`, `equations`, `page_image`, 
 ## Performance
 
 Measured with `scripts/benchmark.py` on a 4-vCPU cloud machine with 16 GB of RAM (release build,
-default `-j`, `friendly` mode; the other formats take up to a third longer, and `hard` up to twice
-the memory, because it keeps a picture of every page):
+default `-j`, `friendly` mode; the other formats take up to a third longer, and `hard` and
+`hard-95` up to 40% longer, because they draw a picture of every page):
 
 | PDF | Pages | Size | Time | Peak memory |
 | --- | ---: | ---: | ---: | ---: |
 | Paper (Attention, 2017) | 15 | 2.2 MB | 0.4 s | 78 MB |
 | Paper (GPT-4 report) | 100 | 5.2 MB | 0.9 s | 210 MB |
-| Textbook (Dive into Deep Learning) | 1185 | 39.5 MB | 6.3 s | 650 MB |
-| The same book twice | 2370 | 79 MB | 13.1 s | 1.24 GB |
+| Textbook (Dive into Deep Learning) | 1185 | 39.5 MB | 6.3 s | 580 MB |
+| The same book twice | 2370 | 79 MB | 13.1 s | 1.1 GB |
 
-- Time and memory grow linearly with the number of pages: count about 0.55 GB of memory per
-  1000 pages of a book with many pictures.
+- Time and memory grow linearly with the number of pages: count about 0.5 GB of memory per
+  1000 pages of a book with many pictures, in every mode. The HTML is written to the file as its
+  pictures are drawn, so neither the page nor its pictures are held whole in memory
+  (`Paper::write_html` in the library).
 - Four threads make a single long file about 2.5× faster than one; the renderers and the
   document-wide parts of the analysis still run on one thread. To convert many files, run one
   process per core with `-j 1`: on 4 cores, about 260 papers a minute, at about 53 MB each.
