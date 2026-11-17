@@ -52,8 +52,9 @@ excluded (browsers often show wrong colors).
 
 ## 2. Parallelism is incomplete
 
-`-j/--jobs` runs page reading and page/image drawing in parallel. Layout analysis and HTML building
-still run on one thread, so on 4 cores the speedup is only 1.7–2.7x. A paper with a few image-heavy
+`-j/--jobs` runs page reading, line building and page/image drawing in parallel. The rest of the
+layout analysis and HTML building still run on one thread, so on 4 cores the speedup is only
+about 2.5x (see section 10). A paper with a few image-heavy
 pages has uneven load (one thread takes the heaviest page).
 
 ## 3. Printing pages whose size differs from the paper
@@ -87,8 +88,8 @@ machine:
 | `hard-95` | 10.9 s | 25.1 s | 1.0–1.2 GB | 142 MB | 9.7 s |
 | `hard` | 10.3 s | – | 1.7 GB | 481 MB | 13.7 s |
 
-- **RAM:** reading and analysis alone need about 900 MB, because all characters of all pages are
-  kept in memory at once (each character is a struct with its own `String`). Possible fixes: a more
+- **RAM:** (since about halved, see section 10) reading and analysis alone need about 900 MB,
+  because all characters of all pages are kept in memory at once (each character is a struct with its own `String`). Possible fixes: a more
   compact character representation; drop the raw page data right after the lines are built; write the
   HTML to the file in pieces instead of holding the whole string.
 - **Opening the file:** an HTML file of 100–500 MB opens slowly (5–14 s). Possible fix: split a long
@@ -226,22 +227,65 @@ The full table (every paper, CPU share, output size) is printed by the `formats`
 - 16 GB holds about 12 conversions of a 1000-page book at once, but on 4 cores more than 4 bring
   nothing.
 
+### Done after this benchmark
+
+Measured on a 4-vCPU cloud machine (slower than the Xeon above, and noisy: each number is the best
+of two runs, old and new build alternating). `d2l` is the 1185-page version of the book (39.5 MB),
+`d2l-x2` the same joined to itself (2370 pages). Every output stays byte for byte the same (the
+snapshots did not change).
+
+| PDF, mode | Before | After |
+| --- | --- | --- |
+| d2l, `friendly` | 10.6 s / 1.20 GB | 6.3 s / 645 MB |
+| d2l-x2, `friendly` | 25.3 s / 2.32 GB | 13.1 s / 1.24 GB |
+| d2l, `hard` | 13.6 s / 1.73 GB | 8.9 s / 1.28 GB |
+| d2l, `friendly`, `-j 1` | 18.8 s / 919 MB | 16.6 s / 574 MB |
+| GPT-4, `friendly` | 1.33 s / 245 MB | 0.93 s / 208 MB |
+| Attention, `friendly` | 0.43 s / 95 MB | 0.39 s / 78 MB |
+
+- **The super-linear part was `fit_equation_crops`** (`analysis/crops.rs`), not the stages
+  suspected below: for each page it went through every line of every block of the document to
+  find the glyphs of that page (3.3 s on d2l, 9.9 s on d2l-x2). The blocks of each page are now
+  indexed once (0.08 s and 0.15 s). Time per page is now the same for d2l and d2l-x2.
+- **Lines are built on `-j` threads** (`build_lines`, `join_math_letters`, `take_ruby`: 3.1 s
+  on one thread, 0.9 s on four), each worker freeing the raw glyphs of its page.
+- **The lines of a page are dropped once it is laid out**: its blocks hold copies of the lines
+  they need, and the later stages only read the page's line count and its glyphs per math font.
+- **mimalloc in the command line.** With glibc, memory freed by another thread than the one that
+  allocated it stays reserved: dropping the lines built on the workers gave nothing back
+  (`MALLOC_ARENA_MAX=1` showed the gain, at twice the time). mimalloc v2 with an immediate purge
+  (`purge_delay` 0, set in `main.rs`) gives the memory back and is faster. mimalloc v3, or v2
+  with its default delay, made small papers take up to three times the memory of glibc.
+
+Where the time of d2l goes now (4 threads, analysis 3.6 s of 6.3 s): reading the PDF 0.45 s,
+lines 0.85 s, furniture 0.5 s, floats/reading order/blocks 0.75 s (one thread), classification
+0.3 s, building the document 0.4 s, then 2.3 s of rendering.
+
 ### Leads (not done yet)
 
-- **Analysis grows faster than the page count.** d2l: 8.1 s for 1151 pages (7.0 ms a page); d2l-x2:
-  20.3 s for 2302 pages (8.8 ms a page, 2.5× the time for 2× the pages). Some pass over the whole
-  document is worse than linear. Suspects: running heads and feet (`furniture.rs` compares lines
-  across pages, and d2l-x2 repeats every page), paragraph joining across pages, the numbering of
-  headings. Profile `d2l-x2` with `perf` or callgrind before changing anything.
-- **The analysis barely uses threads.** On d2l it goes from 9.4 s (1 thread) to 8.0 s (4 threads); on
-  text-only books the CPU share stays at 115–120% (Pride: 1.7 s of 1.9 s is analysis). Line and block
-  building per page could run in parallel (see section 2); only the document-wide passes need one
-  thread.
-- **Memory: about 1 GB per 1000 pages** of a book with pictures, 0.5 GB for plain text, all pages
-  held at once (see section 6). `hard` needs 1.5× more (pictures of every page).
+- **Rendering on one thread.** With `-j 1`, d2l spends 7.3 s in analysis and 9.7 s in rendering
+  `friendly`: on a one-core machine the renderer is now the larger half. Profile it before
+  changing anything (pictures drawn, MathML, string building).
+- **The rest of the per-page analysis** (`layout_page`: floats, reading order, blocks; 0.75 s on
+  d2l) could run on `-j` threads like the lines; only the document-wide passes need one thread.
+- **Memory of the rendering.** About 235 MB on d2l (`-j 1`) on top of the analysis: the whole
+  HTML is built as a string, then a second one with the pictures, and `ImageStore::finish`
+  draws every picture before writing any. Writing to an `impl Write` and drawing pictures in a
+  bounded window would remove most of it; `hard` (481 MB of output) gains the most.
+- **Memory of the analysis.** The `Document` still holds every `Line` with its glyphs
+  (`Block.lines`, `inner_lines`, `loose`), which only `hard`/`hard-95` read; each glyph is about
+  120 bytes plus a `String`. A compact glyph type, and a `Document` without glyphs for the
+  reflowed outputs, are the next steps; `model::Line` is public API, so this needs care.
+- **Machines with little memory** (for example 512 MB, one core) and documents of any size: a
+  memory limit (`--memory-limit`, detected from cgroups and the free memory when not given) that
+  picks fewer threads, streamed output and, as a last resort, glyphs of finished pages written
+  to a temporary file. Splitting the analysis into chunks of pages was considered and set aside:
+  several passes are document-wide (the vocabulary used to remove hyphens, heading levels from
+  the table of contents, paragraphs that run over several pages), so chunks could not give the
+  same output.
 - **EPUB on mml is 1.1 s slower than `friendly`** (5.0 s vs 3.9 s): probably the pictures drawn for
   formulas wider than `max_math_width_em`. Worth checking with a profile.
 - **`hard` / `hard-95` on photo-heavy papers** (Faster R-CNN: 1.5–1.7 s vs 0.6 s): the double image
   compression of section 1.
 - **Batch command** (section 7): the numbers above give its default, one process per core with
-  `-j 1`.
+  `-j 1`; with a memory limit it should also run no more processes than fit in memory.

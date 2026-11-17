@@ -287,26 +287,26 @@ The options are those of the command line (`tables`, `equations`, `page_image`, 
 
 ## Performance
 
-Measured with `scripts/benchmark.py` on a 4-core Xeon at 2.1 GHz with 16 GB of RAM (release build,
-default `-j`, `friendly` mode; the other formats take up to a third longer, and `hard` up to half
-more memory, because it keeps a picture of every page):
+Measured with `scripts/benchmark.py` on a 4-vCPU cloud machine with 16 GB of RAM (release build,
+default `-j`, `friendly` mode; the other formats take up to a third longer, and `hard` up to twice
+the memory, because it keeps a picture of every page):
 
 | PDF | Pages | Size | Time | Peak memory |
 | --- | ---: | ---: | ---: | ---: |
-| Paper (Attention, 2017) | 15 | 2.2 MB | 0.4 s | 91 MB |
-| Paper (GPT-4 report) | 100 | 5.2 MB | 1.3 s | 240 MB |
-| Novel (Pride and Prejudice) | 479 | 1.6 MB | 1.9 s | 250 MB |
-| Textbook (Mathematics for ML) | 417 | 17.6 MB | 3.9 s | 510 MB |
-| Textbook (Dive into Deep Learning) | 1151 | 44.7 MB | 10.2 s | 1.2 GB |
-| The same book twice | 2302 | 93 MB | 24.4 s | 2.4 GB |
+| Paper (Attention, 2017) | 15 | 2.2 MB | 0.4 s | 78 MB |
+| Paper (GPT-4 report) | 100 | 5.2 MB | 0.9 s | 210 MB |
+| Textbook (Dive into Deep Learning) | 1185 | 39.5 MB | 6.3 s | 650 MB |
+| The same book twice | 2370 | 79 MB | 13.1 s | 1.24 GB |
 
-- Time and memory grow linearly with the number of pages: count about 1 GB of memory per 1000
-  pages of a book with many pictures, 0.5 GB for plain text.
-- Several threads help a single file only up to about 1.7× (4 threads), because the renderers
-  and parts of the analysis run on one thread. To convert many files, run one process per core
-  with `-j 1`: on 4 cores, about 280 papers a minute.
+- Time and memory grow linearly with the number of pages: count about 0.55 GB of memory per
+  1000 pages of a book with many pictures.
+- Four threads make a single long file about 2.5× faster than one; the renderers and the
+  document-wide parts of the analysis still run on one thread. To convert many files, run one
+  process per core with `-j 1`: on 4 cores, about 260 papers a minute, at about 53 MB each.
 - Running more processes than cores only queues them: total throughput stays the same and the
-  memory adds up. Four 1151-page books at once take 17 s and 4.4 GB.
+  memory adds up. Four 1185-page books at once take 19 s and 3.2 GB.
+- The command line uses the mimalloc allocator; the library leaves the choice of allocator to
+  the program that uses it.
 
 All the numbers, and leads for making it faster, are in
 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md#10-benchmark-november-2026-and-leads-for-speed-and-memory).
