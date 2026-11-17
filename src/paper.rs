@@ -1,13 +1,13 @@
 //! High-level entry points: PDF bytes in, structured document and HTML (or
-//! Word, Markdown or LaTeX) out.
+//! Word, Markdown, LaTeX or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
-    DocxOptions, DocxOutput, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput,
-    render, render_docx, render_docx_with_images, render_latex, render_markdown,
+    DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions,
+    MarkdownOutput, render, render_docx, render_docx_with_images, render_epub, render_latex, render_markdown,
 };
 use anyhow::Result;
 
@@ -109,6 +109,13 @@ impl Paper {
     /// drawn from its PDF.
     pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
         render_latex(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as an EPUB book (`.epub`) and returns the bytes of
+    /// the file. `analysis` must come from this paper, since the pictures
+    /// are drawn from its PDF.
+    pub fn to_epub(&self, analysis: &Analysis, opts: &EpubOptions) -> Vec<u8> {
+        render_epub(analysis, &self.pdf, opts)
     }
 }
 

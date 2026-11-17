@@ -170,13 +170,14 @@ fn join_chapter_labels(nodes: &mut Vec<Node>) {
 }
 
 /// The class of the heading made of the chapter label `label` and the
-/// heading `title` after it, when they join.
+/// heading `title` after it, when they join: a heading of the outermost
+/// level, whatever the level read for the title alone ("Debugging" after
+/// "Appendix A" is also the name of a section in every chapter).
 fn chapter_title_class(label: &Node, title: &Node) -> Option<Class> {
     let (
-        Class::Heading { level, number },
+        Class::Heading { number, .. },
         Class::Heading {
-            level: title_level,
-            number: title_number,
+            number: title_number, ..
         },
     ) = (&label.class, &title.class)
     else {
@@ -190,7 +191,7 @@ fn chapter_title_class(label: &Node, title: &Node) -> Option<Class> {
         .is_some_and(|found| found.end() == label_text.len());
     (label.loc.page == title.loc.page && whole_label && !CHAPTER_LABEL.is_match(title_text.trim())).then(|| {
         Class::Heading {
-            level: (*level).min(*title_level),
+            level: 1,
             number: number.clone().or_else(|| title_number.clone()),
         }
     })
@@ -366,8 +367,19 @@ impl<'a> Junction<'a> {
         let em = first.size;
         let last_text = last.text();
         let first_text = first.text();
-        let right_edge = if prev_block.lines.len() >= 2 {
+        // The right edge of the text on the page of the last line: a
+        // paragraph already joined across pages spans pages whose margins
+        // differ (a book's odd and even pages).
+        let same_page: Vec<f32> = prev_block
+            .lines
+            .iter()
+            .filter(|line| line.page == last.page)
+            .map(|line| line.bbox.x1)
+            .collect();
+        let right_edge = if prev_block.lines.len() >= 2 && same_page.len() == prev_block.lines.len() {
             prev_block.right
+        } else if same_page.len() >= 2 {
+            same_page.iter().copied().fold(f32::NEG_INFINITY, f32::max)
         } else {
             prev.leaf_right
         };

@@ -51,6 +51,23 @@ def test_to_docx_can_save_its_pictures(tmp_path):
         kakemono.to_docx(LIGO, save_images=True)
 
 
+def test_to_epub_gives_a_book(tmp_path):
+    out = tmp_path / "ligo.epub"
+    data = kakemono.to_epub(LIGO, out, scale=1.0, modified="2026-01-31T12:00:00Z")
+    assert out.read_bytes() == data
+    with zipfile.ZipFile(io.BytesIO(data)) as book:
+        assert book.testzip() is None
+        assert book.namelist()[0] == "mimetype"
+        package = book.read("EPUB/package.opf").decode()
+        nav = book.read("EPUB/nav.xhtml").decode()
+    assert "<dc:title>Observation of Gravitational Waves" in package
+    assert '<meta property="dcterms:modified">2026-01-31T12:00:00Z</meta>' in package
+    assert 'properties="cover-image"' in package
+    assert 'epub:type="toc"' in nav
+    with pytest.raises(ValueError, match="modified"):
+        kakemono.to_epub(LIGO, modified="yesterday")
+
+
 def test_to_markdown_writes_text_and_pictures(tmp_path):
     out = tmp_path / "md" / "ligo.md"
     text = kakemono.to_markdown(LIGO, out, scale=1.0)

@@ -1,4 +1,4 @@
-"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown or LaTeX.
+"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -6,6 +6,7 @@
 >>> data = kakemono.to_docx("paper.pdf")                  # a Word document (bytes)
 >>> text = kakemono.to_markdown("paper.pdf", "out/paper.md")  # Markdown + out/paper_assets/
 >>> tex = kakemono.to_latex("paper.pdf", "out/paper.tex")     # LaTeX + out/paper_assets/
+>>> book = kakemono.to_epub("paper.pdf", "out/paper.epub")    # an EPUB book (also returns its bytes)
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 
 The work is done by the kakemono Rust library; the GIL is released while it
@@ -14,8 +15,10 @@ runs, so conversions can run in parallel threads.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import re
 from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
 from . import _kakemono
@@ -28,6 +31,7 @@ __all__ = [
     "convert_all",
     "fetch_arxiv",
     "to_docx",
+    "to_epub",
     "to_latex",
     "to_markdown",
     "__version__",
@@ -242,6 +246,53 @@ def to_latex(
     if path is not None:
         _write(path, text, files)
     return text
+
+
+def to_epub(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    tables: bool = True,
+    equations: Literal["mathml", "image"] = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    max_math_width_em: float = 20.0,
+    cover: bool = True,
+    modified: Optional[str] = None,
+) -> bytes:
+    """Convert a PDF to an EPUB 3 book (``.epub``) and return its bytes.
+
+    When `path` is given, the book is also written there. It has one
+    chapter per top-level section and a table of contents; formulas whose
+    structure is clear become MathML (with ``equations="image"``, every
+    displayed formula is a picture), rebuilt tables become tables, and the
+    pictures are stored in the book. A displayed formula wider than
+    `max_math_width_em` (in multiples of the font size of the text) is a
+    picture, which shrinks to the page, instead of MathML, which would be
+    cut at the edge of a narrow screen. With ``cover=True`` the first page is
+    its cover. `modified` is the date recorded in the book, as
+    ``YYYY-MM-DDThh:mm:ssZ`` (UTC); by default, now. The other options are
+    those of :func:`convert_all`.
+    """
+    if modified is None:
+        modified = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    elif not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", modified):
+        raise ValueError(f"modified must look like 2026-01-31T12:00:00Z, not {modified!r}")
+    data, name = _load(source)
+    book = _kakemono.to_epub(
+        data,
+        source=name,
+        tables=tables,
+        equations=equations,
+        scale=scale,
+        jobs=jobs,
+        max_math_width_em=max_math_width_em,
+        cover=cover,
+        modified=modified,
+    )
+    if path is not None:
+        _write(path, book)
+    return book
 
 
 def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:

@@ -45,6 +45,18 @@ def to_latex(
     jobs: int = 0,
     image_dir: str = "images",
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+def to_epub(
+    pdf: bytes,
+    *,
+    source: Optional[str] = None,
+    tables: bool = True,
+    equations: str = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    max_math_width_em: float = 20.0,
+    cover: bool = True,
+    modified: Optional[str] = None,
+) -> bytes: ...
 def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0) -> str: ...
 def parse_arxiv_id(text: str) -> Optional[str]: ...
 def fetch_arxiv(id: str) -> bytes: ...

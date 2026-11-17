@@ -6,7 +6,7 @@
 use crate::backend::{Dir, FontInfo, Glyph, RawPage};
 use crate::common::geom::{Rect, median, weighted_mode};
 use crate::model::style::{BOLD, ITALIC, MATH, MONO, SANS, SMALL_CAPS, SUB, SUP};
-use crate::model::{FRACTION_TERM, Line, LineGlyph, RotatedText};
+use crate::model::{FRACTION_TERM, Line, LineGlyph, RAISED_FRACTION_TERM, RotatedText};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use unicode_normalization::UnicodeNormalization;
@@ -110,12 +110,18 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_max_gap_em: 0.6,
     ruby_over_kanji_min_ratio: 0.8,
     fraction_bar_slack_em: 0.3,
+    drop_cap_min_size_ratio: 2.0,
+    drop_cap_min_lines_count: 2,
+    drop_cap_max_gap_em: 0.5,
+    drop_cap_baseline_slack_em: 0.2,
+    fraction_raised_min_rise_em: 0.4,
     fraction_bar_max_axis_em: 0.6,
     fraction_host_max_gap_em: 1.5,
     fraction_numerator_max_rise_em: 1.0,
     fraction_denominator_max_drop_em: 1.4,
     fraction_term_max_size_ratio: 0.85,
     fraction_term_max_glyphs_count: 8,
+    fraction_term_script_max_size_ratio: 0.85,
     fraction_lines_max_distance_em: 3.0,
     blank_max_thickness_pt: 1.5,
     blank_max_drop_em: 0.4,
@@ -363,13 +369,28 @@ pub struct LinesConfig {
     /// The bar of an inline fraction reaches its terms to within this many
     /// font sizes, and overhangs them by at most as much.
     pub fraction_bar_slack_em: f32,
+    /// A drop cap is at least this many times as large as the text beside
+    /// it ...
+    pub drop_cap_min_size_ratio: f32,
+    /// ... with at least this many lines of that text beside it ...
+    pub drop_cap_min_lines_count: usize,
+    /// ... starting at most this many of its font sizes right of it.
+    pub drop_cap_max_gap_em: f32,
+    /// Baselines (and sizes, and the place of a quote before the letter)
+    /// within this many font sizes of each other are the same, around a
+    /// drop cap.
+    pub drop_cap_baseline_slack_em: f32,
+    /// An inline fraction whose bar is more than this many font sizes above
+    /// the baseline of its line (above the math axis, where a fraction of
+    /// the text sits) is in a superscript: t^(−1/2).
+    pub fraction_raised_min_rise_em: f32,
     /// The bar of an inline fraction is at most this many font sizes above
     /// the baseline of its line (on the math axis) ...
     pub fraction_bar_max_axis_em: f32,
     /// ... and within this many font sizes of the line's ends (the line may
     /// stop on either side of the fraction) ...
     pub fraction_host_max_gap_em: f32,
-    /// ... its numerator's baseline at most this far above the bar and its
+    /// ... the ink of its numerator at most this far above the bar and its
     /// denominator's ...
     pub fraction_numerator_max_rise_em: f32,
     /// ... at most this far below it (font sizes of the line) ...
@@ -377,8 +398,13 @@ pub struct LinesConfig {
     /// ... and their glyphs at most this fraction of the line's size (a
     /// display fraction, in full size, is left to the formula).
     pub fraction_term_max_size_ratio: f32,
-    /// Most glyphs of each term of a fraction gathered from rows of its own.
+    /// Most glyphs on the baseline of each term of a fraction gathered from
+    /// rows of its own (its scripts not counted).
     pub fraction_term_max_glyphs_count: usize,
+    /// A glyph of a fraction's term at most this fraction of the size of
+    /// the term's largest glyph is a script in the term (the 1 and the 2 of
+    /// β₁²), set off its baseline.
+    pub fraction_term_script_max_size_ratio: f32,
     /// Lines whose baseline is farther than this (font sizes of the line of
     /// the fraction) from its bar are not searched for its terms.
     pub fraction_lines_max_distance_em: f32,
@@ -473,8 +499,10 @@ impl Line {
             style |= SMALL_CAPS;
         }
         match glyph.script {
-            1 => style |= SUP,
+            // A fraction in a superscript is part of it.
+            1 | RAISED_FRACTION_TERM => style |= SUP,
             -1 => style |= SUB,
+            script if script == -RAISED_FRACTION_TERM => style |= SUP,
             _ => {}
         }
         style
@@ -717,7 +745,10 @@ pub fn split_at_positions(line: &Line, cuts: &[f32], cfg: &LinesConfig) -> Vec<L
 /// runs of rotated text (which are not part of any line). Invisible glyphs
 /// (OCR layers) are ignored when the page also has visible text.
 pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedText>) {
-    let (glyphs, rotated) = collect_glyphs(raw, cfg);
+    let (mut glyphs, rotated) = collect_glyphs(raw, cfg);
+    // Drop caps would make their line tall enough to take the lines
+    // beside them as its superscripts: they join the lines at the end.
+    let drop_caps = take_drop_caps(raw, &mut glyphs, cfg);
 
     // 1. Baseline groups, split at large gaps.
     let segments: Vec<Segment> = glyphs
@@ -740,6 +771,9 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
         .map(|segment| finalize(raw.index, segment, cfg))
         .collect();
     lines.sort_by(|a, b| a.baseline.total_cmp(&b.baseline).then(a.bbox.x0.total_cmp(&b.bbox.x0)));
+    for (drop_cap, baseline, spaced) in drop_caps {
+        put_drop_cap(&mut lines, drop_cap, baseline, spaced, cfg);
+    }
     mark_fixed_pitch(&mut lines, cfg);
     gather_fractions(&mut lines, raw, cfg);
     for line in &mut lines {
@@ -748,30 +782,147 @@ pub fn build_lines(raw: &RawPage, cfg: &LinesConfig) -> (Vec<Line>, Vec<RotatedT
     (lines, rotated)
 }
 
+/// Takes the drop caps out of `glyphs`: a letter (or a few glyphs, such as
+/// an opening quote and a letter) at least
+/// [`LinesConfig::drop_cap_min_size_ratio`] times as large as the text set
+/// beside it, with at least [`LinesConfig::drop_cap_min_lines_count`] lines
+/// of that text starting right of it within its height ("I" over two lines
+/// of "t is a truth universally acknowledged"). Returns each with the
+/// baseline of the top line it stands beside, where it is read, and
+/// whether the PDF draws a space right after it (a word of one letter: "I
+/// couldn't").
+fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig) -> Vec<(LineGlyph, f32, bool)> {
+    let mut found: Vec<(usize, f32)> = Vec::new();
+    for (idx, cap) in glyphs.iter().enumerate() {
+        if !cap.text.chars().all(char::is_alphabetic) || cap.text.is_empty() {
+            continue;
+        }
+        // The text beside it: smaller glyphs starting just right of it, on
+        // baselines from its top to its own.
+        let reach = cfg.drop_cap_max_gap_em * cap.size;
+        let mut beside: Vec<(f32, f32)> = glyphs
+            .iter()
+            .filter(|glyph| {
+                glyph.size * cfg.drop_cap_min_size_ratio <= cap.size
+                    && glyph.y > cap.ink.y0
+                    && glyph.y <= cap.y + cfg.drop_cap_baseline_slack_em * glyph.size
+                    && glyph.x0 >= cap.x0
+                    && glyph.x0 <= cap.ink.x1.max(cap.x1) + reach
+            })
+            .map(|glyph| (glyph.y, glyph.size))
+            .collect();
+        beside.sort_by(|a, b| a.0.total_cmp(&b.0));
+        beside.dedup_by(|a, b| (a.0 - b.0).abs() <= cfg.drop_cap_baseline_slack_em * b.1);
+        if beside.len() >= cfg.drop_cap_min_lines_count {
+            found.push((idx, beside[0].0));
+        }
+    }
+    // An opening quote of the same size right before the letter goes with it.
+    let mut taken: Vec<(usize, f32)> = Vec::new();
+    for &(idx, baseline) in &found {
+        let cap = &glyphs[idx];
+        let quote = glyphs.iter().position(|glyph| {
+            (glyph.size - cap.size).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (cap.x0 - glyph.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && glyph.text.chars().all(|ch| "\"'\u{2018}\u{201C}\u{AB}".contains(ch))
+        });
+        if let Some(quote) = quote {
+            taken.push((quote, baseline));
+        }
+        taken.push((idx, baseline));
+    }
+    // Remove from the back so that the indexes stay valid.
+    taken.sort_by_key(|&(idx, _)| std::cmp::Reverse(idx));
+    taken.dedup_by_key(|&mut (idx, _)| idx);
+    let spaced = |cap: &LineGlyph| {
+        raw.glyphs.iter().any(|glyph| {
+            glyph.text == " "
+                && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+                && (glyph.x - cap.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+        })
+    };
+    let mut caps: Vec<(LineGlyph, f32, bool)> = taken
+        .into_iter()
+        .map(|(idx, baseline)| {
+            let cap = glyphs.remove(idx);
+            let space = spaced(&cap);
+            (cap, baseline, space)
+        })
+        .collect();
+    caps.sort_by(|a, b| b.0.x0.total_cmp(&a.0.x0));
+    caps
+}
+
+/// Puts a drop cap taken out by [`take_drop_caps`] at the start of the line
+/// on `baseline` that begins right of it: it is read as the first letter of
+/// the line, followed by a word space when `spaced`. The glyph keeps its place and size; the line's box only grows
+/// to its left edge. Caps are put right to left, so that a quote before a
+/// letter ends up first.
+fn put_drop_cap(lines: &mut [Line], cap: LineGlyph, baseline: f32, spaced: bool, cfg: &LinesConfig) {
+    let line = lines
+        .iter_mut()
+        .filter(|line| {
+            (line.baseline - baseline).abs() <= cfg.drop_cap_baseline_slack_em * line.size && line.bbox.x0 >= cap.x0
+        })
+        .min_by(|a, b| a.bbox.x0.total_cmp(&b.bbox.x0));
+    let Some(line) = line else {
+        return;
+    };
+    if let Some(first) = line.glyphs.first_mut() {
+        first.space_before = spaced || first.x0 - cap.x1.max(cap.ink.x1) > cfg.space_gap_em * line.size;
+    }
+    line.bbox.x0 = line.bbox.x0.min(cap.x0);
+    line.ink.x0 = line.ink.x0.min(cap.ink.x0);
+    let mut cap = cap;
+    cap.script = 0;
+    cap.space_before = false;
+    line.glyphs.insert(0, cap);
+}
+
 /// Moves the terms of inline fractions that were read as lines of their
 /// own into the line they belong to. Several fractions in a row ("= ¹⁄₆ +
 /// ¹⁄₆ = ²⁄₆") leave their numerators in one row of small text above the
-/// line and their denominators in one below. For each short bar on the
-/// math axis of a line, the smaller glyphs right above and right below it,
-/// within its width, become that line's fraction terms ([`FRACTION_TERM`]).
+/// line and their denominators in one below; a term with scripts of its
+/// own (β₁² over √β₂) spreads over several rows, some of them already read
+/// as scripts of the line. For each short bar on the math axis of a line,
+/// the smaller glyphs right above and right below it, within its width,
+/// become that line's fraction terms ([`FRACTION_TERM`]).
 fn gather_fractions(lines: &mut Vec<Line>, raw: &RawPage, cfg: &LinesConfig) {
-    let bars: Vec<Rect> = raw
+    let mut bars: Vec<Rect> = raw
         .paths
         .iter()
         .chain(&raw.pixel_rules)
         .filter(|path| path.is_hrule())
         .map(|path| path.bbox)
         .collect();
+    // Wider bars first: a radical in a term has a bar of its own, shorter
+    // than the fraction's.
+    bars.sort_by(|a, b| b.width().total_cmp(&a.width()));
     let mut moved = false;
     for bar in bars {
+        let slack = cfg.fraction_bar_slack_em * lines.first().map_or(0.0, |line| line.size);
+        if lines.iter().any(|line| radical_bar(&line.glyphs, &bar, slack)) {
+            continue;
+        }
         let Some((host, mut taken)) = fraction_on_bar(lines, &bar, cfg) else {
             continue;
+        };
+        let line = &lines[host];
+        let level = if line.baseline - bar.cy() > cfg.fraction_raised_min_rise_em * line.size {
+            RAISED_FRACTION_TERM
+        } else {
+            FRACTION_TERM
         };
         // Remove from the back so that the indexes stay valid.
         taken.sort_by_key(|&(idx, k, _)| std::cmp::Reverse((idx, k)));
         for (idx, k, sign) in taken {
+            if idx == host {
+                lines[host].glyphs[k].script = sign * level;
+                continue;
+            }
             let mut glyph = lines[idx].glyphs.remove(k);
-            glyph.script = sign * FRACTION_TERM;
+            glyph.script = sign * level;
             glyph.space_before = false;
             lines[host].glyphs.push(glyph);
         }
@@ -807,9 +958,12 @@ fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usi
         let reach = cfg.fraction_host_max_gap_em * line.size;
         rise >= 0.0
             && rise <= cfg.fraction_bar_max_axis_em * line.size
-            && bar.x0 >= line.bbox.x0 - reach
-            && bar.x1 <= line.bbox.x1 + reach
-            && !line.glyphs.iter().any(|glyph| glyph.x1 > bar.x0 && glyph.x0 < bar.x1)
+            && bar.x0 <= line.bbox.x1 + reach
+            && bar.x1 >= line.bbox.x0 - reach
+            && !line
+                .glyphs
+                .iter()
+                .any(|glyph| glyph.script == 0 && glyph.x1 > bar.x0 && glyph.x0 < bar.x1)
     })?;
     let size = lines[host].size;
     let slack = cfg.fraction_bar_slack_em * size;
@@ -821,12 +975,20 @@ fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usi
         .filter(|glyph| glyph.script == 0 && !glyph.text.chars().any(|ch| BIG_OPERATORS.contains(ch)))
         .map(|glyph| glyph.size)
         .reduce(f32::min)?;
+    // A glyph is in the numerator when its ink is centred above the bar
+    // (a subscript in the numerator may reach below the bar's baseline
+    // side), in the denominator when centred below it.
     let term = |glyph: &LineGlyph, sign: i8| {
         let centre = (glyph.x0 + glyph.x1) / 2.0;
-        let reach = if sign > 0 {
-            cy - glyph.y >= 0.0 && cy - glyph.y <= cfg.fraction_numerator_max_rise_em * size
+        let middle = glyph.ink.cy();
+        let reach = if sign > 0 && glyph.text == "\u{221A}" {
+            // A radical sign is taller than the glyphs under it: its
+            // baseline is measured (see `radicand_follows` for the rest).
+            cy - middle >= 0.0 && cy - glyph.y <= cfg.fraction_numerator_max_rise_em * size
+        } else if sign > 0 {
+            cy - middle >= 0.0 && cy - glyph.ink.y0 <= cfg.fraction_numerator_max_rise_em * size
         } else {
-            glyph.y - cy > 0.0 && glyph.y - cy <= cfg.fraction_denominator_max_drop_em * size
+            middle - cy > 0.0 && glyph.ink.y1 - cy <= cfg.fraction_denominator_max_drop_em * size
         };
         reach && centre >= bar.x0 - slack && centre <= bar.x1 + slack
     };
@@ -837,31 +999,65 @@ fn fraction_on_bar(lines: &[Line], bar: &Rect, cfg: &LinesConfig) -> Option<(usi
         lines
             .iter()
             .enumerate()
-            .filter(|&(idx, line)| idx != host && near(line))
+            .filter(|&(_, line)| near(line))
             .flat_map(|(idx, line)| (0..line.glyphs.len()).map(move |k| (idx, k)))
+            // On the line itself (the host or another piece of it), only
+            // glyphs read as its scripts can be terms.
+            .filter(|&(idx, k)| {
+                (lines[idx].baseline - lines[host].baseline).abs() > slack || lines[idx].glyphs[k].script != 0
+            })
             .filter(|&(idx, k)| term(&lines[idx].glyphs[k], sign))
             .map(|(idx, k)| (idx, k, sign))
             .collect::<Vec<_>>()
     };
-    // Each term is one short run of text on a baseline of its own, smaller
-    // than the line (a term in full size is a display fraction, left whole
-    // to the formula).
+    // Each term is one short run of text smaller than the line (a term in
+    // full size is a display fraction, left whole to the formula): its
+    // largest glyphs share a baseline, the smaller ones are their scripts.
+    // A radical sign is drawn larger than the term under it, and off its
+    // baseline: it is left out of these measures.
     let simple = |term: &[TermGlyph]| {
         let glyph = |&(idx, k, _): &TermGlyph| &lines[idx].glyphs[k];
-        term.first().is_some_and(|first| {
-            term.len() <= cfg.fraction_term_max_glyphs_count
-                && term.iter().all(|part| {
-                    (glyph(part).y - glyph(first).y).abs() <= slack
+        let measured: Vec<&TermGlyph> = term.iter().filter(|part| glyph(part).text != "\u{221A}").collect();
+        let largest = measured.iter().map(|part| glyph(part).size).fold(0.0, f32::max);
+        let base = |part: &TermGlyph| glyph(part).size > cfg.fraction_term_script_max_size_ratio * largest;
+        let base_count = measured.iter().filter(|part| base(part)).count();
+        measured.iter().find(|part| base(part)).is_some_and(|first| {
+            base_count <= cfg.fraction_term_max_glyphs_count
+                && measured.iter().all(|part| {
+                    (!base(part) || (glyph(part).y - glyph(first).y).abs() <= slack)
                         && glyph(part).size <= cfg.fraction_term_max_size_ratio * smallest
                 })
         })
     };
     let (mut numerator, denominator) = (found(1), found(-1));
+    // A radical sign is in the numerator only over a radicand of it: a
+    // glyph of the numerator starts where the sign ends, on the baseline
+    // the sign reaches down to.
+    let radicand_follows = |sign: &LineGlyph| {
+        numerator.iter().any(|&(idx, k, _)| {
+            let glyph = &lines[idx].glyphs[k];
+            glyph.text != "\u{221A}" && (glyph.x0 - sign.ink.x1).abs() <= slack && sign.ink.y1 >= glyph.y - slack
+        })
+    };
+    let radicals: Vec<bool> = numerator
+        .iter()
+        .map(|&(idx, k, _)| lines[idx].glyphs[k].text != "\u{221A}" || radicand_follows(&lines[idx].glyphs[k]))
+        .collect();
+    let mut keep = radicals.into_iter();
+    numerator.retain(|_| keep.next().unwrap_or(true));
     if !simple(&numerator) || !simple(&denominator) {
         return None;
     }
     numerator.extend(denominator);
     Some((host, numerator))
+}
+
+/// Whether `bar` is the bar of a radical among `glyphs`: it starts where
+/// the radical sign's ink ends, at the sign's top (to within `slack`).
+fn radical_bar(glyphs: &[LineGlyph], bar: &Rect, slack: f32) -> bool {
+    glyphs.iter().any(|glyph| {
+        glyph.text == "\u{221A}" && (bar.x0 - glyph.ink.x1).abs() <= slack && (bar.cy() - glyph.ink.y0).abs() <= slack
+    })
 }
 
 /// A glyph of a fraction's term: line index, glyph index, and 1 for the
@@ -871,67 +1067,84 @@ type TermGlyph = (usize, usize, i8);
 /// Big operators, set larger than the text of their line.
 const BIG_OPERATORS: &str = "\u{2211}\u{220F}\u{222B}\u{22C3}\u{22C2}";
 
-/// Marks the inline fractions of `line`: a superscript and a subscript set
-/// one above the other with a rule between them, as wide as they are
-/// ("(¹⁄₂, ¹⁄₃)" set as \tfrac). Their glyphs get the script level
-/// [`FRACTION_TERM`] (numerator) and its negative (denominator). Stacked
-/// scripts without a bar (a binomial coefficient, "‖x‖²₂") stay scripts.
+/// Marks the inline fractions of `line`: raised and lowered glyphs set one
+/// above the other with a rule between them, as wide as they are ("(¹⁄₂,
+/// ¹⁄₃)" set as \tfrac). The glyphs above the rule are the numerator
+/// ([`FRACTION_TERM`]) and those below it the denominator (its negative),
+/// whatever their own script level: a term may have scripts of its own
+/// (β₁² over √β₂), and the whole fraction may be in a superscript
+/// (t^(−1/2)), then its terms get [`RAISED_FRACTION_TERM`]. Stacked scripts
+/// without a bar (a binomial coefficient, "‖x‖²₂") stay scripts.
 fn mark_fractions(line: &mut Line, raw: &RawPage, cfg: &LinesConfig) {
+    if !line.glyphs.iter().any(|glyph| glyph.script != 0) {
+        return;
+    }
+
+    // Wider bars first: a radical in a term has a bar of its own, shorter
+    // than the fraction's.
+    let mut bars: Vec<Rect> = raw
+        .paths
+        .iter()
+        .chain(&raw.pixel_rules)
+        .filter(|path| path.is_hrule())
+        .map(|path| path.bbox)
+        .filter(|bar| bar.cy() > line.ink.y0 && bar.cy() < line.ink.y1 && bar.cy() < line.baseline)
+        .collect();
+    bars.sort_by(|a, b| b.width().total_cmp(&a.width()));
+    for bar in bars {
+        let Some((numerator, denominator)) = fraction_terms(line, &bar, cfg) else {
+            continue;
+        };
+        let raised = line.baseline - bar.cy() > cfg.fraction_raised_min_rise_em * line.size;
+        let level = if raised { RAISED_FRACTION_TERM } else { FRACTION_TERM };
+        for k in numerator {
+            line.glyphs[k].script = level;
+        }
+        for k in denominator {
+            line.glyphs[k].script = -level;
+        }
+    }
+}
+
+/// The glyphs of the inline fraction of `line` drawn on `bar`: (numerator,
+/// denominator), by glyph index. The terms are raised or lowered glyphs not
+/// yet in a fraction, centred over the bar, the numerator above it and the
+/// denominator below; together they are as wide as the bar, one run of
+/// scripts without a glyph on the baseline among them, and hold no
+/// relation (a formula set in small type is not one fraction). `None` when
+/// the bar is no fraction bar, such as the bar of a radical.
+fn fraction_terms(line: &Line, bar: &Rect, cfg: &LinesConfig) -> Option<(Vec<usize>, Vec<usize>)> {
     let glyphs = &line.glyphs;
-    let mut terms: Vec<usize> = Vec::new();
-    let mut i = 0;
-    while i < glyphs.len() {
-        if glyphs[i].script == 0 {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < glyphs.len() && glyphs[i].script != 0 {
-            i += 1;
-        }
-        let extent = |sign: i8| {
-            (start..i)
-                .filter(|&k| glyphs[k].script == sign)
-                .fold(None, |acc: Option<(f32, f32, f32)>, k| {
-                    let glyph = &glyphs[k];
-                    let (x0, x1, y) = acc.unwrap_or((glyph.x0, glyph.x1, glyph.y));
-                    Some((x0.min(glyph.x0), x1.max(glyph.x1), y))
-                })
-        };
-        let (Some(up), Some(down)) = (extent(1), extent(-1)) else {
-            continue;
-        };
-        let (left, right) = (up.0.min(down.0), up.1.max(down.1));
-        let slack = cfg.fraction_bar_slack_em * line.size;
-        let barred = raw.paths.iter().chain(&raw.pixel_rules).any(|path| {
-            let bar = path.bbox;
-            path.is_hrule()
-                && bar.cy() > up.2
-                && bar.cy() < down.2
-                && bar.x0 <= left + slack
-                && bar.x1 >= right - slack
-                && bar.width() <= right - left + 2.0 * slack
-        });
-        // Each term sits on one baseline, without a relation in it (a
-        // formula set in small type is not one fraction).
-        let one_term = |sign: i8| {
-            let term: Vec<&LineGlyph> = (start..i)
-                .map(|k| &glyphs[k])
-                .filter(|glyph| glyph.script == sign)
-                .collect();
-            term.iter().all(|glyph| {
-                (glyph.y - term[0].y).abs() <= slack
-                    && !glyph.text.chars().any(|ch| "=<>\u{2264}\u{2265}\u{2248}".contains(ch))
-            })
-        };
-        if up.0 < down.1 && down.0 < up.1 && barred && one_term(1) && one_term(-1) {
-            terms.extend(start..i);
-        }
+    let slack = cfg.fraction_bar_slack_em * line.size;
+    if radical_bar(glyphs, bar, slack) {
+        return None;
     }
-    for k in terms {
-        let glyph = &mut line.glyphs[k];
-        glyph.script = glyph.script.signum() * FRACTION_TERM;
+    let terms: Vec<usize> = (0..glyphs.len())
+        .filter(|&k| {
+            let glyph = &glyphs[k];
+            let centre = (glyph.x0 + glyph.x1) / 2.0;
+            glyph.script != 0 && !glyph.is_fraction_term() && centre >= bar.x0 - slack && centre <= bar.x1 + slack
+        })
+        .collect();
+    let (first, last) = (*terms.first()?, *terms.last()?);
+    if (first..=last).any(|k| glyphs[k].script == 0 || glyphs[k].is_fraction_term()) {
+        return None;
     }
+    let (numerator, denominator): (Vec<usize>, Vec<usize>) =
+        terms.iter().partition(|&&k| glyphs[k].ink.cy() < bar.cy());
+    if numerator.is_empty() || denominator.is_empty() {
+        return None;
+    }
+    let left = terms.iter().map(|&k| glyphs[k].x0).fold(f32::INFINITY, f32::min);
+    let right = terms.iter().map(|&k| glyphs[k].x1).fold(f32::NEG_INFINITY, f32::max);
+    let spans_terms = bar.x0 <= left + slack && bar.x1 >= right - slack && bar.width() <= right - left + 2.0 * slack;
+    let relation = terms.iter().any(|&k| {
+        glyphs[k]
+            .text
+            .chars()
+            .any(|ch| "=<>\u{2264}\u{2265}\u{2248}".contains(ch))
+    });
+    (spans_terms && !relation).then_some((numerator, denominator))
 }
 
 /// Removes the word spaces found after a letter of a math font that are
@@ -2401,6 +2614,83 @@ mod tests {
             glyphs,
             ..Default::default()
         }
+    }
+
+    /// A black horizontal glyph of `size` pt type at (`x`, `y`), half an em
+    /// wide.
+    pub(crate) fn sized(text: &str, x: f32, y: f32, size: f32) -> Glyph {
+        let adv = 0.5 * size;
+        Glyph {
+            text: text.to_string(),
+            x,
+            y,
+            adv,
+            size,
+            font: 0,
+            dir: Dir::Horizontal,
+            angle: 0.0,
+            invisible: false,
+            color: [0; 3],
+            ink: Rect::new(x, y - 0.7 * size, x + adv, y),
+        }
+    }
+
+    /// The glyphs of `text` set from `x` on baseline `y` in `size` pt type,
+    /// with a space glyph between words.
+    pub(crate) fn words(text: &str, x: f32, y: f32, size: f32) -> Vec<Glyph> {
+        let mut x = x;
+        text.chars()
+            .map(|ch| {
+                let glyph = sized(&ch.to_string(), x, y, size);
+                x += glyph.adv;
+                glyph
+            })
+            .collect()
+    }
+
+    /// A page with a drop cap "I" of 30 pt over three lines of 10 pt text,
+    /// on the baseline of the second line, and a space glyph after it when
+    /// `spaced`.
+    fn drop_cap_page(first_line: &str, spaced: bool) -> RawPage {
+        let mut cap = sized("I", 10.0, 112.0, 30.0);
+        cap.ink = Rect::new(10.0, 92.0, 22.0, 112.0);
+        let mut glyphs = vec![cap];
+        if spaced {
+            glyphs.push(sized(" ", 25.0, 112.0, 30.0));
+        }
+        // The text starts right where the cap's advance ends, as set by
+        // lettrine (a word space when `spaced` is drawn on the cap's own
+        // baseline instead).
+        let start = if spaced { 31.0 } else { 25.2 };
+        glyphs.extend(words(first_line, start, 100.0, 10.0));
+        glyphs.extend(words("universally acknowledged that", start, 112.0, 10.0));
+        glyphs.extend(words("a single man in possession", 10.0, 124.0, 10.0));
+        page(glyphs)
+    }
+
+    #[test]
+    fn drop_cap_starts_the_line_beside_its_top() {
+        let (lines, _) = build_lines(&drop_cap_page("t is a truth", false), &LinesConfig::default());
+        let texts: Vec<String> = lines.iter().map(Line::text).collect();
+        assert_eq!(
+            texts,
+            [
+                "It is a truth",
+                "universally acknowledged that",
+                "a single man in possession"
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.glyphs.iter().all(|glyph| glyph.script == 0))
+        );
+    }
+
+    #[test]
+    fn drop_cap_followed_by_a_drawn_space_is_a_word() {
+        let (lines, _) = build_lines(&drop_cap_page("couldn't sleep", true), &LinesConfig::default());
+        assert_eq!(lines[0].text(), "I couldn't sleep");
     }
 
     #[test]

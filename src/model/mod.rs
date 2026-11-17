@@ -13,7 +13,7 @@ pub mod style;
 use crate::common::geom::Rect;
 use serde::Serialize;
 
-pub use line::{FRACTION_TERM, Line, LineGlyph, RotatedText};
+pub use line::{FRACTION_TERM, Line, LineGlyph, RAISED_FRACTION_TERM, RotatedText};
 pub use math::MathNode;
 pub use style::*;
 

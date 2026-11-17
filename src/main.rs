@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML, Word, Markdown or LaTeX (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -14,7 +14,8 @@ use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
-    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
+    Paper,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents, Markdown or LaTeX"
+    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -52,7 +53,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word, Markdown or LaTeX.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -119,6 +120,8 @@ enum FormatArg {
     /// LaTeX (.tex) for pdfLaTeX, XeLaTeX or LuaLaTeX: tables, LaTeX formulas, pictures in an image folder
     #[value(name = "tex", alias = "latex")]
     Latex,
+    /// An EPUB 3 book (.epub) for e-readers: reflowing text, MathML formulas, tables, contents
+    Epub,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -184,13 +187,13 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md or .tex; html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex or .epub; html otherwise); --mode applies to html only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx, .md or .tex file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md, .tex or .epub file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored [default: inline for HTML and Word, files for Markdown and LaTeX]
+    /// How images are stored [default: inline for HTML and Word, files for Markdown and LaTeX; EPUB books always hold theirs]
     #[arg(long, value_enum)]
     images: Option<ImagesArg>,
     /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
@@ -208,7 +211,7 @@ struct ConvertArgs {
     /// Fonts of friendly mode, and of the formulas of medium and friendly modes
     #[arg(long, value_enum, default_value = "embed")]
     fonts: FontsArg,
-    /// How medium and friendly modes (and Word, Markdown and LaTeX documents) show displayed formulas
+    /// How medium and friendly modes (and Word, Markdown, LaTeX and EPUB documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
     /// Also write the structured document as JSON (for translation tools)
@@ -345,10 +348,13 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let format = output_format(&args);
     if format != FormatArg::Html && args.all {
-        bail!("--all produces the HTML modes; it cannot be used with --format docx, md or tex");
+        bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex or epub");
     }
     if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
         bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
+    }
+    if format == FormatArg::Epub && (args.images == Some(ImagesArg::Files) || args.image_dir.is_some()) {
+        bail!("an EPUB book holds its pictures: --images files and --image-dir cannot be used with --format epub");
     }
     if let Some(dir) = &args.image_dir
         && (dir.trim().is_empty() || Path::new(dir).is_absolute() || dir.split(['/', '\\']).any(|part| part == ".."))
@@ -376,6 +382,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Docx => write_docx(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "docx"))?,
         FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
         FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
+        FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
     }
 
@@ -390,7 +397,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
 /// file, Markdown when it names a `.md` file, LaTeX when it names a `.tex`
-/// file, HTML otherwise.
+/// file, EPUB when it names an `.epub` file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
         let ext = args
@@ -404,6 +411,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "docx" => FormatArg::Docx,
             "md" | "markdown" => FormatArg::Markdown,
             "tex" | "latex" => FormatArg::Latex,
+            "epub" => FormatArg::Epub,
             _ => FormatArg::Html,
         }
     })
@@ -551,6 +559,63 @@ fn write_latex(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usi
         started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// Writes `analysis` as an EPUB book to `file`, dated now, and reports the
+/// result on stderr.
+///
+/// # Errors
+/// When the file cannot be written.
+fn write_epub(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = EpubOptions {
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+        modified: Some(utc_timestamp(std::time::SystemTime::now())),
+        ..Default::default()
+    };
+    let started = Instant::now();
+    let data = paper.to_epub(analysis, &opts);
+    write_file(file, &data)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB, {:.2}s)",
+        "epub",
+        file.display(),
+        data.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// `time` as `CCYY-MM-DDThh:mm:ssZ` (UTC), the form of the date of an EPUB
+/// book. A time before 1970 gives 1970-01-01T00:00:00Z.
+fn utc_timestamp(time: std::time::SystemTime) -> String {
+    const SECONDS_PER_DAY: u64 = 86_400;
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let (days, rest) = (secs / SECONDS_PER_DAY, secs % SECONDS_PER_DAY);
+    // Days to a civil date (Howard Hinnant's algorithm), on eras of 400
+    // years that start on 1 March.
+    let days = days + 719_468;
+    let era = days / 146_097;
+    let day_of_era = days % 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
 }
 
 /// The library value of `--equations`.
@@ -741,5 +806,24 @@ fn zone_label(loc: &Loc) -> String {
         format!("{}/{}", loc.col + 1, loc.zone_cols)
     } else {
         "-".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc_timestamp;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn timestamps_are_utc_dates() {
+        assert_eq!(utc_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            utc_timestamp(UNIX_EPOCH + Duration::from_secs(951_782_400 + 3_723)),
+            "2000-02-29T01:02:03Z"
+        );
+        assert_eq!(
+            utc_timestamp(UNIX_EPOCH + Duration::from_secs(1_794_960_000)),
+            "2026-11-18T00:00:00Z"
+        );
     }
 }

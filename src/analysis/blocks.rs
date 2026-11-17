@@ -244,6 +244,16 @@ pub struct BlocksConfig {
     /// A line ends short (ending its paragraph) when the next word plus a
     /// space would have fit before the group's right edge minus this.
     pub para_short_line_slack_pt: f32,
+    /// A group of at least this many lines with few of them reaching its
+    /// right edge is set ragged right (a letter quoted in a novel): its
+    /// short lines do not end paragraphs unless they end a sentence.
+    pub ragged_min_lines_count: usize,
+    /// In ragged text, a line ending at most this many font sizes before the
+    /// right edge is a full line of prose.
+    pub ragged_line_max_gap_em: f32,
+    /// Ragged text is prose when at least this share of the words of each
+    /// line start in lowercase.
+    pub ragged_prose_min_lower_ratio: f32,
     /// The right edge of a paragraph is at most this far (points) beyond the
     /// right edge of the column's text, so that one line with a wide inline
     /// formula does not make every full line before it look short.
@@ -309,88 +319,94 @@ pub struct BlocksConfig {
     pub equation_absorb_min_overlap_ratio: f32,
 }
 
+/// The default thresholds of block building.
+const DEFAULT_CONFIG: BlocksConfig = BlocksConfig {
+    orphan_max_chars: 4,
+    orphan_max_width_em: 3.5,
+    right_percentile_min_rows: 8,
+    right_edge_percentile_ratio: 0.92,
+    justified_edge_tol_pt: 1.5,
+    justified_min_ratio: 0.4,
+    isolation_gap_em: 0.55,
+    eqno_margin_em: 2.5,
+    centered_tol_ratio: 0.03,
+    centered_min_tol_pt: 4.0,
+    centered_min_margin_em: 1.2,
+    multi_baseline_em: 0.25,
+    numbered_max_prose_ratio: 0.6,
+    display_min_math_ratio: 0.25,
+    display_max_prose_ratio: 0.5,
+    display_min_indent_em: 3.0,
+    symbolic_min_math_ratio: 0.45,
+    symbolic_max_prose_ratio: 0.15,
+    symbolic_min_chars: 6,
+    symbolic_min_indent_em: 1.0,
+    operator_min_math_ratio: 0.08,
+    operator_max_prose_ratio: 0.8,
+    stacked_min_math_ratio: 0.3,
+    stacked_max_prose_ratio: 0.3,
+    stacked_min_margin_em: 1.0,
+    weak_min_margin_em: 1.2,
+    weak_max_chars: 110,
+    weak_max_prose_ratio: 0.85,
+    weak_tiny_max_chars: 3,
+    weak_flush_max_indent_em: 0.5,
+    weak_full_max_slack_em: 0.5,
+    weak_full_min_prose_chars: 6.0,
+    weak_full_flat_min_chars: 30,
+    weak_min_math_ratio: 0.2,
+    weak_math_max_prose_ratio: 0.3,
+    promote_max_gap_leading: 0.9,
+    merge_max_gap_leading: 0.9,
+    enclosing_min_height_em: 1.8,
+    enclosing_tolerance_pt: 1.0,
+    fraction_bar_max_thickness_pt: 1.2,
+    fraction_bar_min_width_pt: 2.0,
+    fraction_part_max_gap_em: 0.6,
+    inline_fraction_min_chars: 30,
+    sentence_min_words: 4,
+    limit_max_size_ratio: 0.85,
+    footnote_size_drop_pt: 0.4,
+    footnote_rule_min_width_pt: 20.0,
+    footnote_rule_max_width_ratio: 0.62,
+    footnote_rule_min_leaf_pt: 120.0,
+    footnote_rule_align_pt: 8.0,
+    footnote_rule_tol_pt: 2.0,
+    footnote_rule_above_leaf_pt: 20.0,
+    footnote_same_size_max_excess_pt: 0.3,
+    footnote_run_size_drop_pt: 0.9,
+    footnote_gap_leading: 1.25,
+    centered_group_tol_pt: 2.5,
+    centered_group_min_offset_pt: 3.0,
+    para_word_space_em: 0.25,
+    para_short_line_slack_pt: 1.0,
+    ragged_min_lines_count: 4,
+    ragged_line_max_gap_em: 2.5,
+    ragged_prose_min_lower_ratio: 0.6,
+    para_right_overshoot_pt: 3.0,
+    para_label_align_em: 0.6,
+    para_indent_change_em: 0.6,
+    block_gap_leading: 1.25,
+    block_gap_slack_pt: 1.5,
+    block_ink_gap_em: 0.45,
+    block_size_change_pt: 0.6,
+    bold_flip_min_chars: 2,
+    bold_flip_gap_leading: 1.1,
+    bold_run_in_max_words_count: 12,
+    bold_dominant_ratio: 0.95,
+    main_text_min_width_ratio: 0.45,
+    margin_note_max_width_ratio: 0.22,
+    margin_note_max_size_ratio: 0.92,
+    main_text_min_lines_count: 5,
+    equation_join_min_overlap_ratio: 0.5,
+    equation_join_max_gap_em: 3.0,
+    equation_touch_max_gap_em: 0.5,
+    equation_absorb_min_overlap_ratio: 0.8,
+};
+
 impl Default for BlocksConfig {
     fn default() -> Self {
-        Self {
-            orphan_max_chars: 4,
-            orphan_max_width_em: 3.5,
-            right_percentile_min_rows: 8,
-            right_edge_percentile_ratio: 0.92,
-            justified_edge_tol_pt: 1.5,
-            justified_min_ratio: 0.4,
-            isolation_gap_em: 0.55,
-            eqno_margin_em: 2.5,
-            centered_tol_ratio: 0.03,
-            centered_min_tol_pt: 4.0,
-            centered_min_margin_em: 1.2,
-            multi_baseline_em: 0.25,
-            numbered_max_prose_ratio: 0.6,
-            display_min_math_ratio: 0.25,
-            display_max_prose_ratio: 0.5,
-            display_min_indent_em: 3.0,
-            symbolic_min_math_ratio: 0.45,
-            symbolic_max_prose_ratio: 0.15,
-            symbolic_min_chars: 6,
-            symbolic_min_indent_em: 1.0,
-            operator_min_math_ratio: 0.08,
-            operator_max_prose_ratio: 0.8,
-            stacked_min_math_ratio: 0.3,
-            stacked_max_prose_ratio: 0.3,
-            stacked_min_margin_em: 1.0,
-            weak_min_margin_em: 1.2,
-            weak_max_chars: 110,
-            weak_max_prose_ratio: 0.85,
-            weak_tiny_max_chars: 3,
-            weak_flush_max_indent_em: 0.5,
-            weak_full_max_slack_em: 0.5,
-            weak_full_min_prose_chars: 6.0,
-            weak_full_flat_min_chars: 30,
-            weak_min_math_ratio: 0.2,
-            weak_math_max_prose_ratio: 0.3,
-            promote_max_gap_leading: 0.9,
-            merge_max_gap_leading: 0.9,
-            enclosing_min_height_em: 1.8,
-            enclosing_tolerance_pt: 1.0,
-            fraction_bar_max_thickness_pt: 1.2,
-            fraction_bar_min_width_pt: 2.0,
-            fraction_part_max_gap_em: 0.6,
-            inline_fraction_min_chars: 30,
-            sentence_min_words: 4,
-            limit_max_size_ratio: 0.85,
-            footnote_size_drop_pt: 0.4,
-            footnote_rule_min_width_pt: 20.0,
-            footnote_rule_max_width_ratio: 0.62,
-            footnote_rule_min_leaf_pt: 120.0,
-            footnote_rule_align_pt: 8.0,
-            footnote_rule_tol_pt: 2.0,
-            footnote_rule_above_leaf_pt: 20.0,
-            footnote_same_size_max_excess_pt: 0.3,
-            footnote_run_size_drop_pt: 0.9,
-            footnote_gap_leading: 1.25,
-            centered_group_tol_pt: 2.5,
-            centered_group_min_offset_pt: 3.0,
-            para_word_space_em: 0.25,
-            para_short_line_slack_pt: 1.0,
-            para_right_overshoot_pt: 3.0,
-            para_label_align_em: 0.6,
-            para_indent_change_em: 0.6,
-            block_gap_leading: 1.25,
-            block_gap_slack_pt: 1.5,
-            block_ink_gap_em: 0.45,
-            block_size_change_pt: 0.6,
-            bold_flip_min_chars: 2,
-            bold_flip_gap_leading: 1.1,
-            bold_run_in_max_words_count: 12,
-            bold_dominant_ratio: 0.95,
-            main_text_min_width_ratio: 0.45,
-            margin_note_max_width_ratio: 0.22,
-            margin_note_max_size_ratio: 0.92,
-            main_text_min_lines_count: 5,
-            equation_join_min_overlap_ratio: 0.5,
-            equation_join_max_gap_em: 3.0,
-            equation_touch_max_gap_em: 0.5,
-            equation_absorb_min_overlap_ratio: 0.8,
-        }
+        DEFAULT_CONFIG
     }
 }
 
@@ -556,6 +572,8 @@ struct ParagraphBreak<'a> {
     right: f32,
     /// The group is in the footnote area.
     footnote: bool,
+    /// The group is set ragged right (see [`is_ragged`]).
+    ragged: bool,
 }
 
 /// A rule of the paragraph splitting: whether a line starts a new
@@ -1806,7 +1824,7 @@ fn flush_group(ctx: BlockContext, group: &mut Vec<(Line, f32)>, loc: Loc, out: &
             .any(|line| (line.0.bbox.x0 - left).abs() > cfg.centered_group_min_offset_pt)
         && !footnote;
 
-    for para in split_paragraphs(lines, right, centered, footnote, cfg) {
+    for para in split_paragraphs(lines, right, centered, footnote, ctx.fonts, cfg) {
         let gap_before = para[0].1;
         let lines: Vec<Line> = para.into_iter().map(|line| line.0).collect();
         let bbox = lines.iter().fold(Rect::EMPTY, |acc, line| acc.union(&line.bbox));
@@ -1835,8 +1853,10 @@ fn split_paragraphs(
     right: f32,
     centered: bool,
     footnote: bool,
+    fonts: &[FontInfo],
     cfg: &BlocksConfig,
 ) -> Vec<Vec<(Line, f32)>> {
+    let ragged = is_ragged(&lines, right, fonts, cfg);
     let mut paras: Vec<Vec<(Line, f32)>> = Vec::new();
     for (line, gap) in lines {
         let Some(para) = paras.last_mut() else {
@@ -1851,6 +1871,7 @@ fn split_paragraphs(
                 text: &text,
                 right,
                 footnote,
+                ragged,
             };
             PARAGRAPH_RULES.iter().any(|rule| rule(&candidate, cfg))
         };
@@ -1895,13 +1916,56 @@ fn new_enumeration_item(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool 
 }
 
 /// Rule: the previous line ended early although the line's first word
-/// would have fit (and it did not end with a hyphen).
+/// would have fit (and it did not end with a hyphen). Text set ragged right
+/// breaks its lines early anyway: there, a line that nearly reaches the
+/// right edge (within [`BlocksConfig::ragged_line_max_gap_em`]) ends its
+/// paragraph only when it ends a sentence; a much shorter one (an item of a
+/// list of names, a line of code) still does.
 fn follows_short_line(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
     let prev = &candidate.para.last().unwrap().0;
     let em = candidate.line.size;
+    let sentence_end = || {
+        prev.text()
+            .trim_end()
+            .trim_end_matches(['\u{2019}', '\u{201D}', '"', '\'', ')'])
+            .ends_with(['.', '!', '?', ':', ';'])
+    };
+    let nearly_full = candidate.right - prev.bbox.x1 <= cfg.ragged_line_max_gap_em * em;
     !ends_with_hyphen(prev)
+        && (!candidate.ragged || !nearly_full || sentence_end())
         && prev.bbox.x1 + cfg.para_word_space_em * em + candidate.line.first_word_width()
             < candidate.right - cfg.para_short_line_slack_pt
+}
+
+/// Whether a group of `lines` is prose set ragged right: it has at least
+/// [`BlocksConfig::ragged_min_lines_count`] lines, fewer than
+/// [`BlocksConfig::justified_min_ratio`] of those before the last end at the
+/// group's `right` edge (justified text ends nearly all of them there), and
+/// its lines read as sentences: not code (monospaced), and mostly
+/// lowercase words (a list of names and roles is not prose).
+fn is_ragged(lines: &[(Line, f32)], right: f32, fonts: &[FontInfo], cfg: &BlocksConfig) -> bool {
+    if lines.len() < cfg.ragged_min_lines_count {
+        return false;
+    }
+    let prose = lines.iter().all(|(line, _)| {
+        let text = line.text();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let lower = words
+            .iter()
+            .filter(|word| word.starts_with(|ch: char| ch.is_lowercase()))
+            .count();
+        line.font_frac(fonts, |font| font.mono) < cfg.bold_dominant_ratio
+            && lower as f32 >= cfg.ragged_prose_min_lower_ratio * words.len() as f32
+    });
+    if !prose {
+        return false;
+    }
+    let body = &lines[..lines.len() - 1];
+    let flush = body
+        .iter()
+        .filter(|(line, _)| (line.bbox.x1 - right).abs() <= cfg.justified_edge_tol_pt)
+        .count();
+    (flush as f32) < cfg.justified_min_ratio * body.len() as f32
 }
 
 /// Rule: in a paragraph of two lines or more, the line starts left or right
@@ -1917,4 +1981,88 @@ fn indent_changes(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
         .fold(f32::INFINITY, f32::min);
     candidate.line.bbox.x0 > rest_x0 + cfg.para_indent_change_em * em
         || candidate.line.bbox.x0 < rest_x0 - cfg.para_indent_change_em * em
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlocksConfig, split_paragraphs};
+    use crate::analysis::lines::{LinesConfig, build_lines};
+    use crate::backend::{Dir, FontInfo, Glyph, RawPage};
+    use crate::common::geom::Rect;
+    use crate::model::Line;
+
+    /// The lines of a page holding `rows` of 10 pt text, one every 12 pt,
+    /// each glyph half an em wide.
+    fn lines_of(rows: &[&str]) -> Vec<(Line, f32)> {
+        let mut glyphs = Vec::new();
+        for (row, text) in rows.iter().enumerate() {
+            let y = 100.0 + 12.0 * row as f32;
+            for (i, ch) in text.chars().enumerate() {
+                let x = 40.0 + 5.0 * i as f32;
+                glyphs.push(Glyph {
+                    text: ch.to_string(),
+                    x,
+                    y,
+                    adv: 5.0,
+                    size: 10.0,
+                    font: 0,
+                    dir: Dir::Horizontal,
+                    angle: 0.0,
+                    invisible: false,
+                    color: [0; 3],
+                    ink: Rect::new(x, y - 7.0, x + 5.0, y),
+                });
+            }
+        }
+        let raw = RawPage {
+            width: 600.0,
+            height: 800.0,
+            glyphs,
+            ..Default::default()
+        };
+        let (lines, _) = build_lines(&raw, &LinesConfig::default());
+        lines.into_iter().map(|line| (line, 0.0)).collect()
+    }
+
+    /// The paragraphs of `rows`, as lists of line texts.
+    fn paragraphs(rows: &[&str]) -> Vec<Vec<String>> {
+        let lines = lines_of(rows);
+        let right = lines
+            .iter()
+            .map(|(line, _)| line.bbox.x1)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let fonts = [FontInfo::default()];
+        split_paragraphs(lines, right, false, false, &fonts, &BlocksConfig::default())
+            .into_iter()
+            .map(|para| para.iter().map(|(line, _)| line.text()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn ragged_prose_breaks_only_at_the_end_of_a_sentence() {
+        // A letter quoted in a novel, set ragged right: "you" ends its line
+        // early although "will" would have fit.
+        let letter = [
+            "do not like it, for it will make the surprise the greater, when",
+            "I write to them and sign my name as his wife, and then you",
+            "will laugh at me and say that it is a good joke indeed. What",
+            "a good joke it will be! I can hardly write for laughing and",
+            "then I hope you will drink to our good journey.",
+        ];
+        assert_eq!(paragraphs(&letter).len(), 1);
+    }
+
+    #[test]
+    fn ragged_list_of_names_keeps_its_lines_apart() {
+        // Each name and role on a line of its own, the column as wide as
+        // its longest entry.
+        let names = [
+            "Greg Brockman Infrastructure lead",
+            "Trevor Cai Throughput lead",
+            "David Farhi Optimization Team",
+            "Chris Hesse Usability Lead",
+            "Amin Tootoonchian Model Distribution, Systems & Networking Lead",
+        ];
+        assert_eq!(paragraphs(&names).len(), names.len());
+    }
 }

@@ -1,10 +1,11 @@
 //! HTML output in four fidelity modes (see [`Mode`]), Word output
-//! ([`render_docx`]), Markdown output ([`render_markdown`]) and LaTeX output
-//! ([`render_latex`]).
+//! ([`render_docx`]), Markdown output ([`render_markdown`]), LaTeX output
+//! ([`render_latex`]) and EPUB output ([`render_epub`]).
 
 mod assets;
 mod code;
 mod docx;
+mod epub;
 mod escape;
 mod flow;
 mod friendly;
@@ -17,9 +18,11 @@ mod mathml;
 mod medium;
 mod options;
 mod table;
+mod zip;
 
 pub(crate) use assets::ImageStore;
 pub use docx::{DocxOptions, DocxOutput, render_docx, render_docx_with_images};
+pub use epub::{EpubOptions, render_epub};
 pub(crate) use escape::*;
 pub(crate) use flow::*;
 pub use latex::{LatexOptions, LatexOutput, render_latex};

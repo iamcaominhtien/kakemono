@@ -9,7 +9,7 @@
 //! draw them.
 
 use super::page::PageData;
-use crate::common::geom::Rect;
+use crate::common::geom::{Rect, weighted_mode};
 use crate::model::{Line, LineGlyph};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -141,6 +141,17 @@ pub struct FurnitureConfig {
     pub placed_min_text_bytes: usize,
     /// Baselines within this distance (points) are at the same place.
     pub placed_tolerance_pt: f32,
+    /// A shorter line in the bottom part of the page is compared by
+    /// position too ("Pride and Prejudice", a book's running foot set above
+    /// a wide bottom margin) when its text has at least this many bytes ...
+    pub placed_short_min_text_bytes: usize,
+    /// ... it is set smaller than the text of the document (at most this
+    /// share of its size; a chapter heading is larger) ...
+    pub placed_short_max_size_ratio: f32,
+    /// ... and it occurs at the same place on at least this share of the
+    /// pages (a running foot alternating between two texts is on half of
+    /// them).
+    pub placed_short_min_pages_ratio: f32,
 }
 
 impl Default for FurnitureConfig {
@@ -174,6 +185,9 @@ impl Default for FurnitureConfig {
             placed_band_ratio: 0.2,
             placed_min_text_bytes: 30,
             placed_tolerance_pt: 2.0,
+            placed_short_min_text_bytes: 8,
+            placed_short_max_size_ratio: 0.9,
+            placed_short_min_pages_ratio: 0.2,
         }
     }
 }
@@ -189,6 +203,10 @@ pub struct Furniture {
     /// position-preserving renderers).
     pub lines: Vec<Vec<Line>>,
 }
+
+/// Width (points) of the bins in which line sizes are counted to find the
+/// size of the text of the document.
+const BODY_SIZE_STEP_PT: f32 = 0.5;
 
 /// The margin band of a page in which a line lies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -221,6 +239,12 @@ struct RepeatCounts {
     /// Number of pages on which each long line of the top or bottom part
     /// of the page occurs at the same place (see [`PlacedKey`]).
     placed: HashMap<PlacedKey, usize>,
+    /// Number of pages from which on a short line of the bottom part of the
+    /// page repeated at the same place is a running foot (see
+    /// [`placed_short_min_pages_ratio`](FurnitureConfig::placed_short_min_pages_ratio)).
+    short_min_repeat: usize,
+    /// Font size of the text of the document (points).
+    body_size: f32,
 }
 
 impl RepeatCounts {
@@ -258,15 +282,26 @@ pub fn remove_furniture(pages: &mut [PageData], cfg: &FurnitureConfig) -> Furnit
     find_arxiv_stamp(pages, &mut out);
 
     let n_pages = pages.len();
+    let body_size = weighted_mode(
+        pages
+            .iter()
+            .flat_map(|page| &page.lines)
+            .map(|line| (line.size, line.glyphs.len() as f32)),
+        BODY_SIZE_STEP_PT,
+        0.0,
+    );
+    let min_repeat = if n_pages <= cfg.short_doc_max_pages_count {
+        cfg.short_doc_min_repeat_count
+    } else {
+        cfg.min_repeat_count
+    };
     let repeats = RepeatCounts {
         counts: count_head_foot_lines(pages, cfg),
-        min_repeat: if n_pages <= cfg.short_doc_max_pages_count {
-            cfg.short_doc_min_repeat_count
-        } else {
-            cfg.min_repeat_count
-        },
+        min_repeat,
         number_offset: page_number_offset(pages, cfg),
-        placed: count_placed_lines(pages, cfg),
+        placed: count_placed_lines(pages, body_size, cfg),
+        short_min_repeat: min_repeat.max((cfg.placed_short_min_pages_ratio * n_pages as f32).ceil() as usize),
+        body_size,
     };
     for page in pages.iter_mut() {
         let removed = remove_page_furniture(page, &repeats, cfg);
@@ -327,24 +362,35 @@ fn band(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> Option<Band> {
 
 /// The key of `line` for the count by position, when it is long enough and
 /// in the top or bottom part of the page (see
-/// [`placed_band_ratio`](FurnitureConfig::placed_band_ratio)).
-fn placed_key(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> Option<PlacedKey> {
+/// [`placed_band_ratio`](FurnitureConfig::placed_band_ratio)), with whether
+/// it is a short line of the bottom part (see
+/// [`placed_short_min_text_bytes`](FurnitureConfig::placed_short_min_text_bytes)),
+/// which must repeat on more pages. `body_size` is the size of the text of
+/// the document.
+fn placed_key(page: &PageData, line: &Line, body_size: f32, cfg: &FurnitureConfig) -> Option<(PlacedKey, bool)> {
     let band = cfg.placed_band_ratio * page.height;
-    let outer = line.bbox.y1 < band || line.bbox.y0 > page.height - band;
+    let top = line.bbox.y1 < band;
+    let bottom = line.bbox.y0 > page.height - band;
     let text = normalize_furniture(&line.text());
-    (outer && text.len() >= cfg.placed_min_text_bytes)
-        .then(|| (text, (line.baseline / cfg.placed_tolerance_pt).round() as i32))
+    let long = (top || bottom) && text.len() >= cfg.placed_min_text_bytes;
+    let short = bottom
+        && text.len() >= cfg.placed_short_min_text_bytes
+        && line.size <= cfg.placed_short_max_size_ratio * body_size;
+    // A short foot is compared without the page number at either end:
+    // "Free eBooks at Planet eBook.com" and "… eBook.com 13" are one foot.
+    let text = if long { text } else { text.trim_matches('#').to_string() };
+    (long || short).then(|| ((text, (line.baseline / cfg.placed_tolerance_pt).round() as i32), !long))
 }
 
 /// Counts, for every long line of the top or bottom part of the pages, on
 /// how many pages it occurs at the same place.
-fn count_placed_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<PlacedKey, usize> {
+fn count_placed_lines(pages: &[PageData], body_size: f32, cfg: &FurnitureConfig) -> HashMap<PlacedKey, usize> {
     let mut counts: HashMap<PlacedKey, usize> = HashMap::new();
     for page in pages {
         let keys: HashSet<PlacedKey> = page
             .lines
             .iter()
-            .filter_map(|line| placed_key(page, line, cfg))
+            .filter_map(|line| placed_key(page, line, body_size, cfg).map(|(key, _)| key))
             .collect();
         for key in keys {
             *counts.entry(key).or_default() += 1;
@@ -356,11 +402,16 @@ fn count_placed_lines(pages: &[PageData], cfg: &FurnitureConfig) -> HashMap<Plac
 /// Whether `line` is a long line repeated at the same place (within one
 /// step of tolerance) on enough pages to be a running head or foot.
 fn is_placed_repeat(page: &PageData, line: &Line, repeats: &RepeatCounts, cfg: &FurnitureConfig) -> bool {
-    placed_key(page, line, cfg).is_some_and(|(text, step)| {
+    placed_key(page, line, repeats.body_size, cfg).is_some_and(|((text, step), short)| {
         let count: usize = (step - 1..=step + 1)
             .map(|near| repeats.placed.get(&(text.clone(), near)).copied().unwrap_or(0))
             .sum();
-        count >= repeats.min_repeat
+        count
+            >= if short {
+                repeats.short_min_repeat
+            } else {
+                repeats.min_repeat
+            }
     })
 }
 
@@ -375,17 +426,36 @@ fn take_placed_repeats(page: &mut PageData, repeats: &RepeatCounts, cfg: &Furnit
         .iter()
         .map(|line| is_placed_repeat(page, line, repeats, cfg))
         .collect();
-    let flags: Vec<bool> = page
+    // A page number beside a running foot does not make it text; it goes
+    // with the foot.
+    let number: Vec<bool> = page
+        .lines
+        .iter()
+        .map(|line| {
+            // Spaces apart: the digits of a page number may be set apart.
+            let text: String = line.text().split_whitespace().collect();
+            line.glyphs.len() <= cfg.page_number_max_glyphs_count && PAGE_NUMBER.is_match(&text)
+        })
+        .collect();
+    let same_row = |a: &Line, b: &Line| (a.baseline - b.baseline).abs() <= cfg.crowded_min_distance_pt;
+    let mut flags: Vec<bool> = page
         .lines
         .iter()
         .enumerate()
         .map(|(i, line)| {
             placed[i]
-                && !page.lines.iter().enumerate().any(|(j, other)| {
-                    j != i && !placed[j] && (other.baseline - line.baseline).abs() <= cfg.crowded_min_distance_pt
-                })
+                && !page
+                    .lines
+                    .iter()
+                    .enumerate()
+                    .any(|(j, other)| j != i && !placed[j] && !number[j] && same_row(other, line))
         })
         .collect();
+    for j in 0..page.lines.len() {
+        if number[j] && !flags[j] {
+            flags[j] = (0..page.lines.len()).any(|i| flags[i] && same_row(&page.lines[i], &page.lines[j]));
+        }
+    }
     let mut taken = Vec::new();
     let mut kept = Vec::with_capacity(page.lines.len());
     for (i, (line, take)) in std::mem::take(&mut page.lines).into_iter().zip(flags).enumerate() {
@@ -1006,7 +1076,78 @@ fn is_extreme_line(page: &PageData, line: &Line, cfg: &FurnitureConfig) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use super::roman_value;
+    use super::{FurnitureConfig, PageData, remove_furniture, roman_value};
+    use crate::analysis::lines::LinesConfig;
+    use crate::backend::{Dir, Glyph, RawPage};
+    use crate::common::geom::Rect;
+
+    /// The glyphs of `text` from `x` on baseline `y` in `size` pt type.
+    fn words(text: &str, x: f32, y: f32, size: f32) -> Vec<Glyph> {
+        let adv = 0.5 * size;
+        text.chars()
+            .enumerate()
+            .map(|(i, ch)| {
+                let x = x + i as f32 * adv;
+                Glyph {
+                    text: ch.to_string(),
+                    x,
+                    y,
+                    adv,
+                    size,
+                    font: 0,
+                    dir: Dir::Horizontal,
+                    angle: 0.0,
+                    invisible: false,
+                    color: [0; 3],
+                    ink: Rect::new(x, y - 0.7 * size, x + adv, y),
+                }
+            })
+            .collect()
+    }
+
+    /// Page `index` of a small book (320 × 480 pt): ten lines of 10 pt text
+    /// and, at 87 % of the height (above the foot band), a running foot in
+    /// 7 pt alternating between the title and a notice, with the page
+    /// number apart at the other end of its row.
+    fn book_page(index: usize) -> PageData {
+        let mut glyphs = Vec::new();
+        for row in 0..10 {
+            let y = 60.0 + 30.0 * row as f32;
+            glyphs.extend(words("these are the words of a line of running text", 30.0, y, 10.0));
+        }
+        let (foot, number_x) = if index.is_multiple_of(2) {
+            ("Pride and Prejudice", 30.0)
+        } else {
+            ("Free eBooks at Planet eBook.com", 280.0)
+        };
+        let foot_x = if index.is_multiple_of(2) { 200.0 } else { 30.0 };
+        glyphs.extend(words(foot, foot_x, 418.0, 7.0));
+        glyphs.extend(words(&(index + 1).to_string(), number_x, 418.0, 7.0));
+        let raw = RawPage {
+            index,
+            width: 320.0,
+            height: 480.0,
+            glyphs,
+            ..Default::default()
+        };
+        PageData::from_raw(raw, &LinesConfig::default())
+    }
+
+    #[test]
+    fn short_running_feet_above_the_foot_band_are_removed() {
+        let mut pages: Vec<PageData> = (0..10).map(book_page).collect();
+        remove_furniture(&mut pages, &FurnitureConfig::default());
+        for page in &pages {
+            let text: String = page.lines.iter().map(|line| line.text() + " ").collect();
+            assert!(
+                !text.contains("Pride") && !text.contains("eBook"),
+                "page {}: {text}",
+                page.index
+            );
+            assert!(!text.chars().any(|ch| ch.is_ascii_digit()), "page number left: {text}");
+            assert_eq!(text.matches("running").count(), 10, "the text stays: {text}");
+        }
+    }
 
     #[test]
     fn roman_page_numbers_are_read() {

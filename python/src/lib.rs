@@ -1,10 +1,11 @@
 //! The native part of the `kakemono` Python package: PDF bytes in, HTML, a
-//! Word document, Markdown, LaTeX or the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
+//! Word document, Markdown, LaTeX, an EPUB book or the document structure (as JSON) out. `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
 
 use kakemono::source::arxiv;
 use kakemono::{
-    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
+    Paper,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -223,6 +224,40 @@ fn to_latex<'py>(
     Ok((out.latex, py_files(py, out.files)))
 }
 
+/// Converts a PDF to an EPUB book; returns the bytes of the `.epub` file.
+/// `modified` is its date (`CCYY-MM-DDThh:mm:ssZ`), fixed when `None`.
+#[pyfunction]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, max_math_width_em=20.0, cover=true, modified=None))]
+#[allow(clippy::too_many_arguments)]
+fn to_epub<'py>(
+    py: Python<'py>,
+    pdf: Vec<u8>,
+    source: Option<String>,
+    tables: bool,
+    equations: &str,
+    scale: f32,
+    jobs: usize,
+    max_math_width_em: f32,
+    cover: bool,
+    modified: Option<String>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let equations = parse_equations(equations)?;
+    check_scale(scale)?;
+    let data = py.detach(move || {
+        let (paper, analysis) = load(pdf, source, tables, jobs)?;
+        let opts = EpubOptions {
+            scale,
+            jobs,
+            equations,
+            max_math_width_em,
+            cover,
+            modified,
+        };
+        Ok::<_, PyErr>(paper.to_epub(&analysis, &opts))
+    })?;
+    Ok(PyBytes::new(py, &data))
+}
+
 /// Picture files as Python values.
 fn py_files(py: Python<'_>, files: Vec<(String, Vec<u8>)>) -> PyFiles<'_> {
     files
@@ -268,6 +303,7 @@ fn _kakemono(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(to_docx, module)?)?;
     module.add_function(wrap_pyfunction!(to_markdown, module)?)?;
     module.add_function(wrap_pyfunction!(to_latex, module)?)?;
+    module.add_function(wrap_pyfunction!(to_epub, module)?)?;
     module.add_function(wrap_pyfunction!(analyze, module)?)?;
     module.add_function(wrap_pyfunction!(parse_arxiv_id, module)?)?;
     module.add_function(wrap_pyfunction!(fetch_arxiv, module)?)?;

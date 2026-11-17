@@ -8,6 +8,11 @@ use crate::common::geom::Rect;
 /// subscript.
 pub const FRACTION_TERM: i8 = 2;
 
+/// The script level of the numerator of an inline fraction set in a
+/// superscript, such as the exponent of t^(−1/2) (the denominator has its
+/// negative): the fraction reads as part of the superscript.
+pub const RAISED_FRACTION_TERM: i8 = 3;
+
 /// One glyph (or a short run of text from one glyph, such as a ligature
 /// expanded to "fi") of a [`Line`], in page coordinates.
 #[derive(Debug, Clone)]
@@ -27,7 +32,8 @@ pub struct LineGlyph {
     pub font: u16,
     /// 1 = superscript, -1 = subscript, 0 = on the baseline;
     /// [`FRACTION_TERM`] (numerator) and its negative (denominator) for the
-    /// terms of an inline fraction stacked on a bar.
+    /// terms of an inline fraction stacked on a bar, [`RAISED_FRACTION_TERM`]
+    /// and its negative for those of a fraction in a superscript.
     pub script: i8,
     /// A word space precedes this glyph (decided from the gap to the
     /// previous glyph; always false for the first glyph of a line).
@@ -50,6 +56,14 @@ pub struct LineGlyph {
     pub extra: Vec<(f32, f32)>,
     /// Fill colour as RGB.
     pub color: [u8; 3],
+}
+
+impl LineGlyph {
+    /// Whether the glyph is in a term of an inline fraction
+    /// ([`FRACTION_TERM`] or [`RAISED_FRACTION_TERM`]).
+    pub fn is_fraction_term(&self) -> bool {
+        matches!(self.script.abs(), FRACTION_TERM | RAISED_FRACTION_TERM)
+    }
 }
 
 /// A horizontal line of text: glyphs that share a baseline, in reading

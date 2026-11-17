@@ -1,7 +1,7 @@
 # kakemono for Python
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
-documents, Markdown or LaTeX, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
+documents, Markdown, LaTeX or EPUB books, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
 ```bash
@@ -17,6 +17,7 @@ pages = kakemono.convert_all("paper.pdf")                  # {"hard": ..., "hard
 kakemono.to_docx("paper.pdf", "paper.docx")               # a Word document (also returns its bytes)
 text = kakemono.to_markdown("paper.pdf", "paper.md")       # Markdown, pictures in paper_assets/
 tex = kakemono.to_latex("paper.pdf", "paper.tex")          # LaTeX, pictures in paper_assets/
+book = kakemono.to_epub("paper.pdf", "paper.epub")         # an EPUB book (also returns its bytes)
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 ```
 
@@ -44,6 +45,12 @@ pipe tables. Without a path, or with `inline_images=True`, the pictures are embe
 document that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX
 math. LaTeX cannot embed pictures, so they are written to `image_dir` next to the file; without a
 path, only the source is returned.
+
+`to_epub` takes `tables`, `equations`, `scale` and `jobs`, plus `max_math_width_em` (displayed
+formulas wider than this, in multiples of the text size, become pictures; default 20), `cover`
+(the first page as the cover, on by default) and `modified` (the date recorded in the book, `YYYY-MM-DDThh:mm:ssZ`;
+by default, now). It returns an EPUB 3 book with one chapter per top-level section, a table of
+contents, MathML formulas and the pictures inside.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 

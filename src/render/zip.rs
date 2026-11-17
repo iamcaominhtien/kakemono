@@ -1,4 +1,4 @@
-//! A minimal ZIP writer: just what a `.docx` package needs (files stored or
+//! A minimal ZIP writer: just what a `.docx` or `.epub` package needs (files stored or
 //! deflated, no directories, no encryption, no ZIP64).
 //!
 //! Every entry gets the same fixed timestamp, so that the same document

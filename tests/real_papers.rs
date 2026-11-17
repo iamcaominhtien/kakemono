@@ -25,7 +25,8 @@
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
 use kakemono::{
-    AnalyzeOptions, DocxOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage, Paper,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
+    Paper,
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -146,10 +147,10 @@ fn fingerprint(html: &str, files: &[(String, Vec<u8>)]) -> String {
     hex(h.finalize())
 }
 
-/// The files of a `.docx` package (a ZIP archive): (name, contents),
+/// The files of a `.docx` or `.epub` package (a ZIP archive): (name, contents),
 /// inflated. Reads the local headers one after another, which is enough
 /// for the archives kakemono writes (no data descriptors).
-fn docx_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
+fn zip_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
     use std::io::Read;
     let le16 = |at: usize| usize::from(u16::from_le_bytes([docx[at], docx[at + 1]]));
     let le32 = |at: usize| u32::from_le_bytes(docx[at..at + 4].try_into().unwrap()) as usize;
@@ -175,13 +176,15 @@ fn docx_parts(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
     parts
 }
 
-/// Fingerprint of a Word document: its XML parts and the sizes of its
-/// pictures (as for the HTML, not their pixels).
-fn docx_fingerprint(parts: &[(String, Vec<u8>)]) -> String {
+/// Fingerprint of a Word document or an EPUB book: its text parts (XML,
+/// XHTML, CSS) and the sizes of its pictures (as for the HTML, not their
+/// pixels).
+fn package_fingerprint(parts: &[(String, Vec<u8>)]) -> String {
     let mut h = Sha256::new();
     for (name, data) in parts {
         h.update(name.as_bytes());
-        if name.ends_with(".xml") || name.ends_with(".rels") {
+        let text = [".xml", ".rels", ".xhtml", ".opf", ".ncx", ".css"];
+        if text.iter().any(|ext| name.ends_with(ext)) {
             h.update(data);
         } else if data.starts_with(b"\x89PNG") && data.len() >= 24 {
             h.update(&data[16..24]); // width and height
@@ -229,6 +232,88 @@ fn check_docx(parts: &[(String, Vec<u8>)], math: usize) {
             "docx: {name} has no relationship"
         );
     }
+}
+
+/// Checks an EPUB book of a paper with `math` rebuilt formulas: the
+/// `mimetype` entry first, every content document complete and well nested,
+/// every picture in the manifest, every link between documents pointing to
+/// an id, and every rebuilt formula written as MathML.
+fn check_epub(parts: &[(String, Vec<u8>)], math: usize) {
+    assert_eq!(parts[0], ("mimetype".to_string(), b"application/epub+zip".to_vec()));
+    let text = |name: &str| {
+        let data = &parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("epub: no {name}"))
+            .1;
+        String::from_utf8(data.clone()).unwrap()
+    };
+    let opf = text("EPUB/package.opf");
+    let docs: Vec<(&str, String)> = parts
+        .iter()
+        .filter(|(name, _)| name.ends_with(".xhtml"))
+        .map(|(name, data)| (name.as_str(), String::from_utf8(data.clone()).unwrap()))
+        .collect();
+    let ids: Vec<String> = docs
+        .iter()
+        .flat_map(|(name, xhtml)| {
+            let file = name.trim_start_matches("EPUB/");
+            Regex::new(r#" id="([^"]*)""#)
+                .unwrap()
+                .captures_iter(xhtml)
+                .map(|caps| format!("{file}#{}", &caps[1]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let link = Regex::new(r#"href="(c\d{3}\.xhtml#[^"]*)""#).unwrap();
+    let mut blocks = 0;
+    for (name, xhtml) in &docs {
+        assert!(!xhtml.contains('\u{1}'), "epub: {name}: picture placeholder left");
+        assert!(xhtml.ends_with("</html>\n"), "epub: {name}: incomplete document");
+        check_nesting(name, xhtml);
+        for caps in link.captures_iter(xhtml) {
+            assert!(
+                ids.contains(&caps[1].to_string()),
+                "epub: {name}: {} points nowhere",
+                &caps[1]
+            );
+        }
+        blocks += xhtml
+            .matches("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"")
+            .count();
+    }
+    assert_eq!(blocks, math, "epub: every rebuilt formula is written as MathML");
+    for (name, data) in parts.iter().filter(|(name, _)| name.starts_with("EPUB/images/")) {
+        let href = name.trim_start_matches("EPUB/");
+        assert!(
+            opf.contains(&format!("href=\"{href}\"")),
+            "epub: {name} not in the manifest"
+        );
+        assert!(!data.is_empty(), "epub: {name} is empty");
+    }
+}
+
+/// Checks that the elements of an XHTML document are closed in order.
+fn check_nesting(name: &str, xhtml: &str) {
+    let tag = Regex::new(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*?(/?)>").unwrap();
+    let mut open: Vec<String> = Vec::new();
+    for caps in tag.captures_iter(xhtml) {
+        let element = caps[2].to_string();
+        if &caps[3] == "/" {
+            continue;
+        }
+        if &caps[1] == "/" {
+            let last = open.pop();
+            assert_eq!(
+                last.as_deref(),
+                Some(element.as_str()),
+                "epub: {name}: </{element}> closes nothing"
+            );
+        } else {
+            open.push(element);
+        }
+    }
+    assert!(open.is_empty(), "epub: {name}: elements left open: {open:?}");
 }
 
 /// Checks a Markdown document: no placeholder left, every picture file
@@ -488,9 +573,9 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     fingerprints.push(("json", hex(Sha256::digest(json.as_bytes()))));
     // The Word document.
     let docx = paper.to_docx(&analysis, &DocxOptions::default());
-    let parts = docx_parts(&docx);
+    let parts = zip_parts(&docx);
     check_docx(&parts, math);
-    fingerprints.push(("docx", docx_fingerprint(&parts)));
+    fingerprints.push(("docx", package_fingerprint(&parts)));
     // The Markdown document, with its pictures as files.
     let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
     check_markdown(&md.markdown, &md.files, math);
@@ -499,6 +584,22 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let tex = paper.to_latex(&analysis, &LatexOptions::default());
     check_latex(&tex.latex, &tex.files, math);
     fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
+    // The EPUB book.
+    // Formulas wider than a phone screen are pictures in the book.
+    let epub_opts = EpubOptions::default();
+    let narrow_math = doc
+        .blocks
+        .iter()
+        .filter(|b| match &b.kind {
+            BlockKind::Equation { image, .. } => {
+                b.math.is_some() && image.rect.width() <= epub_opts.max_math_width_em * doc.body_size
+            }
+            _ => b.math.is_some(),
+        })
+        .count();
+    let epub = zip_parts(&paper.to_epub(&analysis, &epub_opts));
+    check_epub(&epub, narrow_math);
+    fingerprints.push(("epub", package_fingerprint(&epub)));
     let metrics = Metrics {
         title,
         tables,
@@ -1344,10 +1445,52 @@ fn adam_inline_formulas_are_math() {
     assert!(html.contains(
         "online prediction <math class=\"eq-math im\" alttext=\"ft(θt)\"><mrow><msub><mi>f</mi><mi>t</mi></msub>"
     ));
-    let parts = docx_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
     let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
     let document = String::from_utf8_lossy(document);
     assert!(document.matches("<m:oMath>").count() > document.matches("<m:oMathPara>").count() + 100);
+}
+
+/// Small fractions inside the text are read whole, in every format: terms
+/// with scripts of their own (β₁² over √β₂), a fraction in a superscript
+/// (t^(−1/2)), a radical over a term, a bracket with a power closing the
+/// formula, a term with many scripts (g⁴_{T,i} over 4‖g₁:T,i‖²₂). They used to come out as loose scripts ("β2 √β12", "t−12").
+#[test]
+fn adam_inline_fractions_are_read_whole() {
+    let Some(paper) = load("1412.6980v9") else { return };
+    let analysis = paper.analyze();
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    for formula in [
+        "$\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}$",
+        "rate of $t^{-1/2}$ and",
+        "$\\sqrt{1-\\beta_{2}^{t}}/((1-\\beta_{1}^{t})^{2})\\le1/((1-\\beta_{1})^{2})$",
+        "$\\sum_{t}t\\gamma^{t}\\lt1/((1-\\gamma)^{2})$:",
+        "+g_{T,i}^{4}/(4\\|g_{1:T,i}\\|_{2}^{2})\\ge",
+    ] {
+        assert!(md.contains(formula), "markdown: {formula} not found");
+    }
+    let tex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(tex.contains("\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}"));
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(html.contains(
+        "<mo>≜</mo><msubsup><mi>β</mi><mn>1</mn><mn>2</mn></msubsup><mo stretchy=\"false\" lspace=\"0\" rspace=\"0\">/</mo><msqrt>"
+    ));
+    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
+    assert!(
+        !String::from_utf8_lossy(document).contains("<m:t>12</m:t>"),
+        "docx: β₁² read as β12"
+    );
+}
+
+/// "scaled by 1/√dₖ": the fraction is one formula, not "1" and "√dₖ".
+#[test]
+fn attention_scaling_factor_is_a_fraction() {
+    let Some(paper) = load("1706.03762v7") else { return };
+    let analysis = paper.analyze();
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(md.contains("scaling factor of $1/\\sqrt{d_{k}}$."));
+    assert!(md.contains("dot products by $1/\\sqrt{d_{k}}$."));
 }
 
 /// The APS radical font sets the radical sign on "p" and the pieces of its

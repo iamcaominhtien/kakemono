@@ -2,7 +2,7 @@
 name = "kakemono"
 version = "0.8.0"
 edition = "2024"
-description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes, or Word documents"
+description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes, Word documents, Markdown, LaTeX or EPUB books"
 repository = "https://github.com/iamcaominhtien/kakemono"
 documentation = "https://docs.rs/kakemono"
 readme = "README.md"
