@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Benchmark the kakemono CLI: time, memory and CPU of conversions.
 
-Three experiments, each printed as a Markdown table (and written as CSV
-with --csv DIR):
+Three experiments, each printed as a Markdown table (and written as CSV to
+benchmark-results/ with --csv):
 
   formats     every PDF converted to every output format, one at a time
   threads     one PDF analysed with -j 1, 2, 4, ... (up to the CPU count)
@@ -37,6 +37,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / "target" / "release" / "kakemono"
 GNU_TIME = "/usr/bin/time"
+# Where --csv writes its files, in the current directory.
+CSV_DIR = Path("benchmark-results")
 
 # Output format -> (extra CLI arguments, file extension).
 FORMATS = {
@@ -120,21 +122,12 @@ def table(rows: list[dict], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
-def csv_folder(arg: str) -> Path:
-    """The CSV folder, which must be inside the current directory."""
-    here = Path.cwd().resolve()
-    path = (here / arg).resolve()
-    if not path.is_relative_to(here):
-        raise argparse.ArgumentTypeError(f"{arg}: the CSV folder must be inside {here}")
-    return path
-
-
-def save(rows: list[dict], name: str, csv_dir: Path | None) -> None:
-    """Writes `rows` to `csv_dir/name.csv` when a CSV folder was given."""
-    if csv_dir is None or not rows:
+def save(rows: list[dict], name: str) -> None:
+    """Writes `rows` to `CSV_DIR/name.csv`."""
+    if not rows:
         return
-    csv_dir.mkdir(parents=True, exist_ok=True)
-    with open(csv_dir / f"{name}.csv", "w", newline="") as f:
+    CSV_DIR.mkdir(exist_ok=True)
+    with open(CSV_DIR / f"{name}.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
@@ -238,7 +231,7 @@ def main() -> None:
     parser.add_argument("--formats", default="friendly,epub,docx,md,tex")
     parser.add_argument("--max", type=int, default=16, help="largest number of concurrent conversions")
     parser.add_argument("--jobs", type=int, default=None, help="-j of each concurrent conversion")
-    parser.add_argument("--csv", default=None, type=csv_folder, help="folder (inside the current one) to write the results as CSV")
+    parser.add_argument("--csv", action="store_true", help=f"also write the results as CSV to {CSV_DIR}/")
     args = parser.parse_args()
     if not BIN.exists():
         sys.exit(f"{BIN} not found: run cargo build --release first")
@@ -254,7 +247,8 @@ def main() -> None:
             rows = bench_concurrent(args.pdfs[0], args.max, args.jobs, out_dir)
             cols = list(rows[0])
     print(table(rows, cols))
-    save(rows, args.experiment, args.csv)
+    if args.csv:
+        save(rows, args.experiment)
 
 
 if __name__ == "__main__":

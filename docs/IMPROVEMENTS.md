@@ -180,7 +180,7 @@ pages) and `d2l` joined to itself with `pdfunite` (`d2l-x2`, 2302 pages, 93 MB) 
 To run it again:
 
 ```bash
-scripts/benchmark.py formats tests/data/*.pdf book.pdf --formats friendly,medium,hard,hard-95,epub,docx,md,tex --csv out/bench
+scripts/benchmark.py formats tests/data/*.pdf book.pdf --formats friendly,medium,hard,hard-95,epub,docx,md,tex --csv
 scripts/benchmark.py threads big.pdf
 scripts/benchmark.py concurrent paper.pdf --max 32 --jobs 1
 ```
