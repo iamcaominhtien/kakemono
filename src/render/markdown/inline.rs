@@ -53,7 +53,7 @@ impl Inline<'_> {
         for piece in split(spans) {
             match piece {
                 Piece::Text(spans) => out.push_str(&self.text(&spans)),
-                Piece::Math(node, _) => {
+                Piece::Math(node, _, _) => {
                     let mut tex = latex(&node);
                     if in_table {
                         tex = tex.replace("\\|", "\\Vert ").replace('|', "\\vert ");

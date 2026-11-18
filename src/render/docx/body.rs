@@ -242,7 +242,7 @@ impl<'a> Body<'a> {
         for piece in split(spans) {
             match piece {
                 Piece::Text(spans) => out.push_str(&self.styled_runs(&spans)),
-                Piece::Math(node, _) => out.push_str(&inline_math(&node)),
+                Piece::Math(node, _, _) => out.push_str(&inline_math(&node)),
             }
         }
         out

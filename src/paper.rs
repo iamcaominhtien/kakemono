@@ -6,11 +6,12 @@ use crate::backend::{PageRenderer, PdfFile, PngCompression};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
-    DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions,
-    MarkdownOutput, render, render_docx, render_docx_with_images, render_epub, render_latex, render_markdown,
-    render_to,
+    ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions, JsonOutput,
+    LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, SourceInfo, apply_content, render, render_docx,
+    render_docx_with_images, render_epub, render_json, render_latex, render_markdown, render_to,
 };
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 /// A loaded PDF, ready to be analysed and rendered.
 ///
@@ -22,6 +23,10 @@ pub struct Paper {
     pdf: PdfFile,
     /// Where the PDF came from (file name, arXiv id, ...), recorded in the output.
     source: Option<String>,
+    /// SHA-256 of the PDF bytes, in hexadecimal: the JSON output names its
+    /// source with it, and an edited JSON file is only applied to the same
+    /// PDF.
+    sha256: String,
 }
 
 impl Paper {
@@ -30,9 +35,11 @@ impl Paper {
     /// # Errors
     /// When the data is not a readable PDF, or the PDF has no pages.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        let sha256 = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(Self {
             pdf: PdfFile::open(data)?,
             source: None,
+            sha256,
         })
     }
 
@@ -148,6 +155,40 @@ impl Paper {
     /// are drawn from its PDF.
     pub fn to_epub(&self, analysis: &Analysis, opts: &EpubOptions) -> Vec<u8> {
         render_epub(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as JSON: the content of the document, block by
+    /// block, with its text in a form that can be edited and applied back
+    /// with [`Paper::apply_content`]. `analysis` must come from this paper,
+    /// since the pictures are drawn from its PDF.
+    pub fn to_json(&self, analysis: &Analysis, opts: &JsonOptions) -> JsonOutput {
+        render_json(analysis, &self.pdf, opts, &self.source_info())
+    }
+
+    /// Applies an edited JSON file (written by [`Paper::to_json`] for this
+    /// same PDF) to `analysis`: the edited text replaces the text of its
+    /// blocks, and every output written from `analysis` afterwards shows
+    /// it. Text that was not edited is left as it is. The hard mode, whose
+    /// text layer follows the lines of the PDF, has no text for the edited
+    /// blocks.
+    ///
+    /// # Errors
+    /// When `json` is not a kakemono JSON file, was made from another PDF,
+    /// or names blocks this analysis does not have (it was made with other
+    /// analysis options or another version of kakemono). Problems with the
+    /// text of single blocks are not errors: those blocks keep their text,
+    /// and [`ContentReport::warnings`] says why.
+    pub fn apply_content(&self, analysis: &mut Analysis, json: &str) -> Result<ContentReport> {
+        apply_content(analysis, json, &self.source_info())
+    }
+
+    /// The source as the JSON output names it.
+    fn source_info(&self) -> SourceInfo {
+        SourceInfo {
+            format: "pdf",
+            name: self.source.clone(),
+            sha256: self.sha256.clone(),
+        }
     }
 }
 

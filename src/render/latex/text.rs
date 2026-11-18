@@ -109,7 +109,7 @@ impl Text<'_> {
         for piece in split(spans) {
             match piece {
                 Piece::Text(spans) => out.push_str(&self.runs(&spans)),
-                Piece::Math(node, _) => {
+                Piece::Math(node, _, _) => {
                     let tex = latex(&node).replace(['\n', '\r'], " ");
                     if !tex.trim().is_empty() {
                         out.push_str(&format!("${}$", tex.trim()));

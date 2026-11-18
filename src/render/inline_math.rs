@@ -45,8 +45,10 @@ const FUNCTION_NAMES: &[&str] = &[
 pub(crate) enum Piece {
     /// Spans written as text, with their styles.
     Text(Vec<Span>),
-    /// A formula, with its text as the PDF gives it (alt text).
-    Math(MathNode, String),
+    /// A formula, with its text as the PDF gives it (alt text) and the
+    /// spans it was read from (without the spaces at its ends), which put
+    /// back in running text are read as the same formula again.
+    Math(MathNode, String, Vec<Span>),
 }
 
 /// What a token is to the formula finder.
@@ -145,7 +147,7 @@ pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
         if !text.is_empty() {
             pieces.push(Piece::Text(std::mem::take(&mut text)));
         }
-        pieces.push(Piece::Math(build(&run), alt.to_string()));
+        pieces.push(Piece::Math(build(&run), alt.to_string(), trimmed_spans(&run)));
         let trail = &raw[raw.trim_end().len()..];
         if !trail.is_empty() {
             text.push(Span::plain(trail));
@@ -159,6 +161,27 @@ pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
         pieces.push(Piece::Text(text));
     }
     pieces
+}
+
+/// The spans of the tokens of a formula, without the spaces at its ends
+/// (which stay in the text around it).
+fn trimmed_spans(run: &[Token]) -> Vec<Span> {
+    let mut spans: Vec<Span> = run.iter().map(|token| token.span.clone()).collect();
+    while let Some(first) = spans.first_mut() {
+        first.text = first.text.trim_start().to_string();
+        if !first.text.is_empty() {
+            break;
+        }
+        spans.remove(0);
+    }
+    while let Some(last) = spans.last_mut() {
+        last.text = last.text.trim_end().to_string();
+        if !last.text.is_empty() {
+            break;
+        }
+        spans.pop();
+    }
+    spans
 }
 
 /// Whether `spans` hold a formula at all (a quick test before [`split`]).
@@ -767,7 +790,7 @@ mod tests {
         pieces
             .iter()
             .filter_map(|piece| match piece {
-                Piece::Math(_, alt) => Some(alt.clone()),
+                Piece::Math(_, alt, _) => Some(alt.clone()),
                 Piece::Text(_) => None,
             })
             .collect()
@@ -777,7 +800,7 @@ mod tests {
         pieces
             .iter()
             .map(|piece| match piece {
-                Piece::Math(_, alt) => format!("[{alt}]"),
+                Piece::Math(_, alt, _) => format!("[{alt}]"),
                 Piece::Text(spans) => spans.iter().map(|span| span.text.as_str()).collect(),
             })
             .collect()
@@ -798,7 +821,7 @@ mod tests {
             span("x", MI),
         ];
         let pieces = split(&spans);
-        let [Piece::Math(node, _)] = pieces.as_slice() else {
+        let [Piece::Math(node, _, _)] = pieces.as_slice() else {
             panic!("one formula: {pieces:?}")
         };
         assert_eq!(super::super::latex::math::latex(node), "\\sqrt{1-\\beta_{2}}/x");
@@ -841,7 +864,7 @@ mod tests {
         ];
         let pieces = split(&spans);
         assert_eq!(text_of(&pieces), "the prediction [ft(θt)] and the best");
-        let Piece::Math(node, _) = &pieces[1] else {
+        let Piece::Math(node, _, _) = &pieces[1] else {
             panic!("a formula")
         };
         assert_eq!(crate::render::latex::math::latex(node), "f_{t}(\\theta_{t})");
@@ -950,7 +973,7 @@ mod tests {
         // β₁,ₜ: "1" then ",t" both lowered.
         let spans = [span("β", MI), span("1", SUB), span(",t", MI | SUB)];
         let pieces = split(&spans);
-        let Piece::Math(node, _) = &pieces[0] else {
+        let Piece::Math(node, _, _) = &pieces[0] else {
             panic!("a formula")
         };
         assert_eq!(crate::render::latex::math::latex(node), "\\beta_{1,t}");

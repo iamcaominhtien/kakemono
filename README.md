@@ -15,7 +15,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
-[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [EPUB](#epub) · [Install](#installation) · [Usage](#usage) ·
+[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [EPUB](#epub) · [JSON](#editable-json) · [Install](#installation) · [Usage](#usage) ·
 [Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -27,7 +27,8 @@
 
 Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
 to feed to translation tools, a Word document to edit, Markdown for notes, wikis and LLMs, a
-LaTeX source to edit and typeset again, or an EPUB book for an e-reader.
+LaTeX source to edit and typeset again, an EPUB book for an e-reader, or JSON for other
+programs, which can be edited (translated, say) and turned back into any of these.
 
 ```bash
 kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
@@ -35,6 +36,8 @@ kakemono convert 1706.03762 -o attention.docx   # the same paper as a Word docum
 kakemono convert 1706.03762 -o attention.md     # Markdown, pictures in attention_assets/
 kakemono convert 1706.03762 -o attention.tex    # LaTeX, pictures in attention_assets/
 kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
+kakemono convert 1706.03762 -o attention.json   # the content as editable JSON
+kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages, with the edited text
 ```
 
 ## Features
@@ -49,7 +52,7 @@ kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
 | ✍️ **Markdown** | `.md` with pipe tables, LaTeX formulas (`$$`) and the pictures in a folder of their own. |
 | 📐 **LaTeX** | `.tex` that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX math. |
 | 📚 **EPUB** | `.epub` (EPUB 3) for e-readers: reflowing text, a table of contents, MathML formulas, tables and the first page as the cover. |
-| 🌐 **Translation-ready** | A paragraph is always one DOM element, and `--json` exports the blocks in reading order. |
+| 🌐 **Editable JSON** | `.json` with the blocks in reading order, their text with styles and formulas kept; edit it (translate it, say) and `--content` writes any output from it, the `hard-95` pages included. |
 | ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
 ## The four modes
@@ -148,6 +151,62 @@ it would be cut at the edge of the screen; a picture shrinks to the page. Reader
 show MathML show the text of each formula instead: `--equations image` makes every displayed
 formula a picture.
 
+## Editable JSON
+
+`kakemono convert paper.pdf -o paper.json` (or `--format json`) writes the content of the document
+for other programs: search, language models, data extraction, or your own reader. The blocks come
+in reading order; formulas whose structure is clear also come as LaTeX and MathML, figures and the
+other formulas as pictures in `paper_assets/`:
+
+```json
+{
+  "format": "kakemono-content", "version": 1, "generator": "kakemono 0.10.0",
+  "source": { "format": "pdf", "name": "1602.03837v1.pdf", "sha256": "e5e864c2…" },
+  "meta": { "title": "Observation of Gravitational Waves from a Binary Black Hole Merger" },
+  "pages": [[612.0, 792.0], …],
+  "blocks": [
+    { "id": 7, "type": "heading", "level": 1, "anchor": "sec-I", "text": "I. INTRODUCTION",
+      "layout": { "page": 0, "bbox": [127.67, 308.36, 221.39, 318.86] } },
+    { "id": 5, "type": "paragraph", "abstract": true, "section": 4,
+      "text": "… a peak gravitational-wave strain of 1.0 × <m id=\"1\">10^{-21}</m>. It matches …" },
+    { "id": 20, "type": "equation", "latex": "…", "mathml": "<math …>", "image": "paper_assets/002-eq.png" }
+  ]
+}
+```
+
+- `type` is `title`, `authors`, `note`, `heading` (with its `level` and the `parent` heading),
+  `paragraph` (`abstract` when it is part of the abstract), `list_item`, `list_continuation`,
+  `equation`, `figure` (with its `float` kind, `label`, `image`, the `figure_text` found inside it
+  and a rebuilt `table`), `footnote`, `reference`, `code` (its `lines`) or `contents_entry`.
+  `section` is the id of the heading a block is under; `layout` is its page (from 0) and box in
+  points.
+- `text` is one string, so that a paragraph can be edited (or translated) as a whole: `<b>`, `<i>`,
+  `<code>`, `<sup>`, `<sub>`, `<sf>` (sans-serif), `<sc>` (small capitals), `<mf>` (math font),
+  `<a href>` and `<font color>` keep the styles and links; `<m id="n">…</m>` stands for the n-th
+  formula of the block, with its LaTeX inside.
+
+**Applying an edited file.** `--content` writes any output with the text of an edited JSON file:
+
+```bash
+kakemono convert paper.pdf -o paper.json
+# edit paper.json (translate it, ...) into paper.vi.json
+kakemono convert paper.pdf --content paper.vi.json -m hard-95 -o paper.vi.html
+kakemono convert paper.pdf --content paper.vi.json -o paper.vi.docx   # or .md, .tex, .epub, friendly, medium
+```
+
+The PDF provides the frame (pictures, formulas, page layout), the JSON the text. What can be edited
+is the `text` of blocks and table cells and the `rows` of author groups; formulas stay what they
+are wherever their `<m>` tag is put, whatever is written inside it. The rest is read-only. Blocks
+left out of the file, or left unchanged, keep their text, so an unedited file changes nothing.
+Extra fields are ignored, so a file can keep the original next to the edited text. The file must
+come from the same PDF (its `sha256`) and the same analysis options (`--tables`). A block whose
+markup cannot be read (an unknown tag) keeps its text, with a warning.
+
+In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
+text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them
+again. The `hard` mode shows the pages themselves and cannot show edited text. LaTeX output with
+non-Latin text (Vietnamese, say) needs XeLaTeX or LuaLaTeX.
+
 ## Installation
 
 **Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
@@ -194,6 +253,11 @@ kakemono convert paper.pdf -o paper.tex
 kakemono convert paper.pdf -o paper.epub
 ```
 
+```bash
+kakemono convert paper.pdf -o paper.json
+kakemono convert paper.pdf --content paper.edited.json -m hard-95
+```
+
 The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
 arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
@@ -201,9 +265,10 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|epub>` | HTML (default), a Word document, Markdown, LaTeX or an EPUB book; chosen from `--output` when it ends in `.docx`, `.md`, `.tex` or `.epub` |
-| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex` or `.epub` file, or directory |
-| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown, always for LaTeX; Word keeps them embedded too; never for EPUB) |
+| `-f, --format <html\|docx\|md\|tex\|epub\|json>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book or editable JSON; chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub` or `.json` |
+| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub` or `.json` file, or directory |
+| `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but the `hard` mode |
+| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX; Word keeps them embedded too; never for EPUB) |
 | `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
 | `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML, Word and EPUB |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
@@ -211,7 +276,7 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
 | `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
-| `--json` | Also write `<name>.json`, the document structure |
+| `--json` | Also write `<name>.json`, the document structure with every field of the analysis (see below; to edit the text, use `--format json`) |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
 
 Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
@@ -219,9 +284,10 @@ prints the detected structure (headings, paragraphs, figures, formulas; `<math>`
 rebuilt as MathML); `kakemono formula picture.png` reads pictures of LaTeX formulas and prints
 their MathML (experimental).
 
-## JSON for translation tools
+## The analysis as JSON
 
-`--json` writes the blocks in reading order. Each block has a `type` (`title`, `authors`,
+`--json` writes the `Document` of the analysis as it is, for debugging and tools that want every
+field (the editable [JSON](#editable-json) is `--format json`). It holds the blocks in reading order. Each block has a `type` (`title`, `authors`,
 `heading`, `paragraph`, `list_item`, `list_continuation`, `equation`, `figure`, `footnote`,
 `reference`, `note`, `code`, `contents_entry`), its `page` (from 0), `bbox` and `spans`:
 
@@ -259,7 +325,10 @@ std::fs::write("paper.html", out.html)?;
 (`to_docx_with_images` also returns its pictures as files), and
 `paper.to_markdown(&analysis, &MarkdownOptions::default())` returns Markdown with its picture files,
 `paper.to_latex(&analysis, &LatexOptions::default())` a LaTeX document with its picture files,
-and `paper.to_epub(&analysis, &EpubOptions::default())` the bytes of an EPUB book. `analysis.doc` is the
+`paper.to_epub(&analysis, &EpubOptions::default())` the bytes of an EPUB book, and
+`paper.to_json(&analysis, &JsonOptions::default())` the editable JSON with its picture files.
+`paper.apply_content(&mut analysis, &json)` applies an edited JSON file to the analysis, and every
+output written from it afterwards shows the edited text. `analysis.doc` is the
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
 how the pipeline works is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -344,7 +413,10 @@ cargo test --release
   background and formulas rebuilt as MathML. The limits are the current results: better passes,
   worse fails; tighten them after an improvement
   (`KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
-- **Snapshots**: a hash of each mode's HTML, of the Word document and of the JSON per paper, in `tests/data/snapshots/`.
+- **Editable JSON**: on every paper, an unedited file changes nothing and edited text comes back
+  exactly as written; edited text reaches every output with its formulas and links.
+- **Snapshots**: a hash of each mode's HTML, of the Word, Markdown, LaTeX and EPUB documents, of the
+  editable JSON and of the `--json` document per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 

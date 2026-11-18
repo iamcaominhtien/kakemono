@@ -25,8 +25,8 @@
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
 use kakemono::{
-    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
-    Paper,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
+    PageImage, Paper,
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -410,6 +410,19 @@ fn check_latex(latex: &str, files: &[(String, Vec<u8>)], math: usize) {
 
 /// Compares the outputs of a paper with its stored snapshot, or stores them
 /// when `KAKEMONO_UPDATE_SNAPSHOTS=1`.
+/// Checks the content JSON: it parses, has the format name, a block for
+/// every block of the document, and every picture file is referenced.
+fn check_content(json: &str, files: &[(String, Vec<u8>)]) {
+    let value: serde_json::Value = serde_json::from_str(json).expect("the content JSON parses");
+    assert_eq!(value["format"], "kakemono-content");
+    assert!(value["blocks"].as_array().is_some_and(|blocks| !blocks.is_empty()));
+    assert!(!json.contains('\u{1}'), "image placeholder left in the JSON");
+    for (name, data) in files {
+        assert!(json.contains(name.as_str()), "content JSON: {name} is not referenced");
+        assert!(!data.is_empty(), "content JSON: {name} is empty");
+    }
+}
+
 fn check_snapshot(id: &str, snap: &Snapshot) {
     let dir = data_dir().join("snapshots");
     let file = dir.join(format!("{id}.txt"));
@@ -508,6 +521,23 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let hyphenated = paragraphs.iter().map(|p| compound.find_iter(p).count()).sum();
 
     let json = serde_json::to_string_pretty(doc).expect("serialisable document");
+    // Edited text is recognised by its missing per-line text (see
+    // render::json::apply): the analysis itself never leaves it out.
+    for block in &doc.blocks {
+        assert!(
+            matches!(block.kind, BlockKind::Equation { .. })
+                || block.lines.is_empty()
+                || block.spans.is_empty()
+                || !block.hlines.is_empty(),
+            "block {} has lines but no per-line text: it would read as edited",
+            block.id
+        );
+        assert!(
+            block.inner_lines.is_empty() || !block.inner_spans.is_empty(),
+            "float {} has lines but no per-line text: its table would read as edited",
+            block.id
+        );
+    }
     let mut fingerprints = Vec::new();
     let mut glyphs_left = 0;
     for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
@@ -600,6 +630,10 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let epub = zip_parts(&paper.to_epub(&analysis, &epub_opts));
     check_epub(&epub, narrow_math);
     fingerprints.push(("epub", package_fingerprint(&epub)));
+    // The content as JSON, with its pictures as files.
+    let content = paper.to_json(&analysis, &JsonOptions::default());
+    check_content(&content.json, &content.files);
+    fingerprints.push(("content", fingerprint(&content.json, &content.files)));
     let metrics = Metrics {
         title,
         tables,
@@ -1842,4 +1876,184 @@ fn png_compression_keeps_the_pixels() {
         }
     }
     assert!(compared > 0);
+}
+
+/// The ids of all test papers (`tests/data/papers.txt`).
+fn paper_ids() -> Vec<String> {
+    std::fs::read_to_string(data_dir().join("papers.txt"))
+        .expect("papers.txt")
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// A content JSON with each editable text (block text, author rows, table
+/// cells) replaced by `edit(block id, text)`.
+fn edit_content(json: &str, edit: impl Fn(u64, &str) -> String) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+    for block in value["blocks"].as_array_mut().unwrap() {
+        let id = block["id"].as_u64().unwrap();
+        if matches!(block["type"].as_str(), Some("equation" | "code")) {
+            continue;
+        }
+        if let Some(text) = block.get_mut("text")
+            && let Some(old) = text.as_str()
+        {
+            *text = edit(id, old).into();
+        }
+        if let Some(rows) = block.get_mut("rows").and_then(|rows| rows.as_array_mut()) {
+            for row in rows {
+                *row = edit(id, row.as_str().unwrap()).into();
+            }
+        }
+        if let Some(rows) = block.pointer_mut("/table/rows").and_then(|rows| rows.as_array_mut()) {
+            for cell in rows.iter_mut().flat_map(|row| row.as_array_mut().unwrap()) {
+                let old = cell["text"].as_str().unwrap().to_string();
+                cell["text"] = edit(id, &old).into();
+            }
+        }
+    }
+    serde_json::to_string(&value).unwrap()
+}
+
+/// The content JSON of every paper, applied back unedited, changes no block;
+/// edited, its text comes back exactly as written (styles, links and
+/// formulas included), with no warning.
+#[test]
+fn content_json_round_trips() {
+    for id in paper_ids() {
+        let Some(paper) = load(&id) else { continue };
+        let mut analysis = paper.analyze();
+        let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+        let report = paper.apply_content(&mut analysis, &json).unwrap();
+        assert_eq!(report.edited_blocks, 0, "{id}: an unedited JSON changed blocks");
+        assert!(report.warnings.is_empty(), "{id}: {:?}", report.warnings);
+
+        let edited = edit_content(&json, |block, text| format!("{text} ÐÃSỬA{block}"));
+        let report = paper.apply_content(&mut analysis, &edited).unwrap();
+        assert!(report.warnings.is_empty(), "{id}: {:?}", report.warnings);
+        let again = paper.to_json(&analysis, &JsonOptions::default()).json;
+        let report = paper.apply_content(&mut analysis, &again).unwrap();
+        assert_eq!(
+            report.edited_blocks, 0,
+            "{id}: the edited JSON did not come back as written"
+        );
+        let expected: serde_json::Value = serde_json::from_str(&edited).unwrap();
+        let actual: serde_json::Value = serde_json::from_str(&again).unwrap();
+        for (old, new) in expected["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(actual["blocks"].as_array().unwrap())
+        {
+            assert_eq!(old["text"], new["text"], "{id}: block {}", old["id"]);
+            assert_eq!(old["rows"], new["rows"], "{id}: block {}", old["id"]);
+            assert_eq!(old["table"], new["table"], "{id}: block {}", old["id"]);
+        }
+    }
+}
+
+/// Edited text reaches every output, formulas and links stay where they
+/// were, and hard-95 flows every edited block in its box.
+#[test]
+fn edited_content_reaches_every_output() {
+    let tag = Regex::new(r"<m\b[^>]*>.*?</m>|<[^>]*>|&[#\w]+;").unwrap();
+    for id in ["1602.03837v1", "1706.03762v7", "1412.6980v9"] {
+        let Some(paper) = load(id) else { continue };
+        let mut analysis = paper.analyze();
+        let friendly = |analysis: &kakemono::Analysis, mode: Mode| {
+            paper
+                .to_html(
+                    analysis,
+                    &HtmlOptions {
+                        mode,
+                        ..Default::default()
+                    },
+                )
+                .html
+        };
+        let before = friendly(&analysis, Mode::Friendly);
+        let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+        // Every word in upper case, and a marker at the end of each text.
+        let edited = edit_content(&json, |block, text| {
+            let mut out = String::new();
+            let mut last = 0;
+            for found in tag.find_iter(text) {
+                out.push_str(&text[last..found.start()].to_uppercase());
+                out.push_str(found.as_str());
+                last = found.end();
+            }
+            out.push_str(&text[last..].to_uppercase());
+            format!("{out} ÐÃSỬA{block}")
+        });
+        let report = paper.apply_content(&mut analysis, &edited).unwrap();
+        assert!(report.warnings.is_empty(), "{id}: {:?}", report.warnings);
+        let paragraphs: Vec<usize> = analysis
+            .doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.kind, BlockKind::Paragraph { .. }) && !b.spans.is_empty())
+            .map(|b| b.id)
+            .collect();
+        let after = friendly(&analysis, Mode::Friendly);
+        let count = |html: &str, pat: &str| html.matches(pat).count();
+        assert_eq!(
+            count(&before, "<math"),
+            count(&after, "<math"),
+            "{id}: formulas changed"
+        );
+        assert_eq!(
+            count(&before, "href=\"#"),
+            count(&after, "href=\"#"),
+            "{id}: links changed"
+        );
+        let hard95 = friendly(&analysis, Mode::Hard95);
+        let medium = friendly(&analysis, Mode::Medium);
+        let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+        let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+        let docx = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+        // Word cuts text into runs where formulas may start: its text
+        // without the markup, a paragraph per line.
+        let docx_xml = String::from_utf8_lossy(&docx.iter().find(|(n, _)| n == "word/document.xml").unwrap().1)
+            .replace("</w:p>", "<\n")
+            .split('<')
+            .map(|part| part.split_once('>').map_or(part, |(_, text)| text))
+            .collect::<Vec<_>>()
+            .join("");
+        let epub: String = zip_parts(&paper.to_epub(&analysis, &EpubOptions::default()))
+            .iter()
+            .filter(|(n, _)| n.ends_with(".xhtml"))
+            .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+            .collect();
+        for block in &paragraphs {
+            let marker = format!("ÐÃSỬA{block}<");
+            let marker_docx = format!("ÐÃSỬA{block}\n");
+            let marker_md = format!("ÐÃSỬA{block}\n");
+            for (name, out) in [
+                ("friendly", &after),
+                ("hard-95", &hard95),
+                ("medium", &medium),
+                ("epub", &epub),
+            ] {
+                assert!(out.contains(&marker), "{id}: paragraph {block} not edited in {name}");
+            }
+            assert!(
+                docx_xml.contains(&marker_docx),
+                "{id}: paragraph {block} not edited in docx"
+            );
+            assert!(
+                markdown.contains(&marker_md) || markdown.contains(&format!("ÐÃSỬA{block} ")),
+                "{id}: paragraph {block} not edited in markdown"
+            );
+            assert!(
+                latex.contains(&format!("ÐÃSỬA{block}")),
+                "{id}: paragraph {block} not edited in latex"
+            );
+        }
+        assert!(
+            count(&hard95, " rf ed\"") >= paragraphs.len() / 2,
+            "{id}: edited blocks do not flow in hard-95"
+        );
+    }
 }

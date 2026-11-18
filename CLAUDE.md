@@ -2,7 +2,9 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
-LaTeX (`.tex`, `src/render/latex/`) or to an EPUB book (`.epub`, `src/render/epub/`):
+LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`) or to editable
+JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
+edited (for example translated) text:
 
 - `hard`: a copy of every page, with a selectable text layer.
 - `hard-95`: like `hard`, but all text is real HTML text placed as in the PDF.
@@ -24,6 +26,8 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md)
 ./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
 ./target/release/kakemono convert <file.pdf> -o out/x.epub                    # EPUB 3 book (or -f epub)
+./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
+./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
@@ -65,7 +69,10 @@ committing.
   2. Compare the output text before and after on as many papers as you can (the 8 test papers,
      plus other varied papers if you have them).
 - Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML, of the Word document, of the
-  Markdown, of the LaTeX and of the EPUB book.
+  Markdown, of the LaTeX, of the EPUB book and of the JSON.
+- The editable JSON (`src/render/json/`) is a published format: a field that changes meaning or
+  goes away needs a new `FORMAT_VERSION` and a breaking-change commit (`feat!:`); new fields
+  do not.
 - The LaTeX output must compile: after a change to `src/render/latex/`, compile a few papers with
   `pdflatex` (and `xelatex` or `lualatex`) when TeX is installed; `tests/cli.rs` compiles the LIGO
   paper when `pdflatex` is on the `PATH`.
