@@ -122,7 +122,9 @@ distribution: `amsmath`, `amssymb`, `mathtools`, `graphicx`, `booktabs`, `multir
   links (`\hyperref`), web addresses `\href`.
 
 A character that the fonts of pdfLaTeX lack (Chinese, say) is printed as **?** by pdfLaTeX;
-XeLaTeX and LuaLaTeX print it when their font has it. `--scale` and `--equations` apply.
+XeLaTeX and LuaLaTeX print it when their font has it. Vietnamese letters (ơ, ư, ặ, ữ, ...)
+are set in the T5 encoding of the `vntex` package by pdfLaTeX, the rest of the text staying in
+T1. `--scale` and `--equations` apply.
 
 ## EPUB
 
@@ -204,8 +206,9 @@ markup cannot be read (an unknown tag) keeps its text, with a warning.
 
 In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
 text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them
-again. The `hard` mode shows the pages themselves and cannot show edited text. LaTeX output with
-non-Latin text (Vietnamese, say) needs XeLaTeX or LuaLaTeX.
+again. The `hard` mode shows the pages themselves and cannot show edited text. In LaTeX output,
+pdfLaTeX prints Vietnamese (with `vntex`); for scripts its fonts lack (Chinese, say), use XeLaTeX
+or LuaLaTeX.
 
 ## Installation
 
@@ -348,12 +351,15 @@ kakemono.to_docx("paper.pdf", "paper.docx")           # a Word document (also re
 kakemono.to_markdown("paper.pdf", "paper.md")          # Markdown, pictures in paper_assets/
 kakemono.to_latex("paper.pdf", "paper.tex")            # LaTeX, pictures in paper_assets/
 kakemono.to_epub("paper.pdf", "paper.epub")            # an EPUB book (also returns its bytes)
+content = kakemono.to_json("paper.pdf", "paper.json")  # the editable JSON (a dict), pictures in paper_assets/
+html = kakemono.convert("paper.pdf", "hard-95", content=content)  # any output with the edited text
 doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
 ```
 
 The wheels (Linux, macOS, Windows; Python 3.9+) contain the Rust library: nothing else to install.
 The options are those of the command line (`tables`, `equations`, `page_image`, `embed_fonts`,
-`scale`, `jobs`, `png_compression`); see [python/README.md](python/README.md).
+`scale`, `jobs`, `png_compression`, `content`: an edited JSON as a dict, its text or its path);
+see [python/README.md](python/README.md).
 
 ## Performance
 

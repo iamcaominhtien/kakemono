@@ -2,6 +2,7 @@
 paper committed to the repository."""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -123,3 +124,44 @@ def test_bad_input_raises():
 def test_arxiv_ids_are_recognised_without_downloading():
     assert kakemono._kakemono.parse_arxiv_id("https://arxiv.org/abs/1706.03762v7") == "1706.03762v7"
     assert kakemono._kakemono.parse_arxiv_id("paper.pdf") is None
+
+
+def test_to_json_gives_editable_content(tmp_path):
+    out = tmp_path / "json" / "ligo.json"
+    content = kakemono.to_json(LIGO, out, scale=1.0)
+    assert json.loads(out.read_text(encoding="utf-8")) == content
+    assert content["format"] == "kakemono-content"
+    assert content["meta"]["title"].startswith("Observation of Gravitational Waves")
+    abstract = next(block for block in content["blocks"] if block.get("abstract"))
+    assert '<m id="1">' in abstract["text"]
+    assert (tmp_path / "json" / "ligo_assets" / "001-fig.png").is_file()
+
+
+def test_edited_content_reaches_every_output(tmp_path):
+    content = kakemono.to_json(LIGO, scale=1.0)
+    title = next(block for block in content["blocks"] if block["type"] == "title")
+    title["text"] = "Quan sát sóng hấp dẫn"
+    path = tmp_path / "ligo.vi.json"
+    path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
+    # The edited JSON as a dict, as text or as a path.
+    html = kakemono.convert(LIGO, "hard-95", content=content, embed_fonts=False, scale=1.0)
+    assert "Quan sát sóng hấp dẫn" in html
+    assert "Quan sát sóng hấp dẫn" in kakemono.to_markdown(LIGO, content=str(path), scale=1.0)
+    assert "Quan sát sóng hấp dẫn" in kakemono.to_latex(LIGO, content=path.read_text(encoding="utf-8"))
+    with zipfile.ZipFile(io.BytesIO(kakemono.to_docx(LIGO, content=path, scale=1.0))) as package:
+        assert "Quan sát sóng hấp dẫn" in package.read("word/document.xml").decode()
+    assert kakemono.to_json(LIGO, content=content, scale=1.0)["meta"]["title"] == "Quan sát sóng hấp dẫn"
+    with pytest.raises(ValueError, match="hard mode"):
+        kakemono.convert(LIGO, "hard", content=content)
+
+
+def test_unreadable_edited_text_warns_and_keeps_the_original():
+    content = kakemono.to_json(LIGO, scale=1.0)
+    title = next(block for block in content["blocks"] if block["type"] == "title")
+    title["text"] = "<blink>Quan sát</blink>"
+    with pytest.warns(UserWarning, match="unknown tag"):
+        text = kakemono.to_markdown(LIGO, content=content, scale=1.0)
+    assert "# Observation of Gravitational Waves" in text
+    other = dict(content, source={"format": "pdf", "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="another file"):
+        kakemono.to_markdown(LIGO, content=other)

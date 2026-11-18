@@ -14,6 +14,7 @@ def convert(
     scale: float = 3.0,
     jobs: int = 0,
     png_compression: str = "balanced",
+    content: Optional[str] = None,
 ) -> List[str]: ...
 def to_docx(
     pdf: bytes,
@@ -25,6 +26,7 @@ def to_docx(
     jobs: int = 0,
     png_compression: str = "balanced",
     image_dir: Optional[str] = None,
+    content: Optional[str] = None,
 ) -> Tuple[bytes, List[Tuple[str, bytes]]]: ...
 def to_markdown(
     pdf: bytes,
@@ -37,6 +39,20 @@ def to_markdown(
     png_compression: str = "balanced",
     image_dir: str = "images",
     inline_images: bool = False,
+    content: Optional[str] = None,
+) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+def to_json(
+    pdf: bytes,
+    *,
+    source: Optional[str] = None,
+    tables: bool = True,
+    equations: str = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    png_compression: str = "balanced",
+    image_dir: str = "images",
+    inline_images: bool = False,
+    content: Optional[str] = None,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_latex(
     pdf: bytes,
@@ -48,6 +64,7 @@ def to_latex(
     jobs: int = 0,
     png_compression: str = "balanced",
     image_dir: str = "images",
+    content: Optional[str] = None,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_epub(
     pdf: bytes,
@@ -61,6 +78,7 @@ def to_epub(
     max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,
+    content: Optional[str] = None,
 ) -> bytes: ...
 def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0) -> str: ...
 def parse_arxiv_id(text: str) -> Optional[str]: ...

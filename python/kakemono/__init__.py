@@ -1,4 +1,4 @@
-"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books.
+"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books or editable JSON.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -7,6 +7,8 @@
 >>> text = kakemono.to_markdown("paper.pdf", "out/paper.md")  # Markdown + out/paper_assets/
 >>> tex = kakemono.to_latex("paper.pdf", "out/paper.tex")     # LaTeX + out/paper_assets/
 >>> book = kakemono.to_epub("paper.pdf", "out/paper.epub")    # an EPUB book (also returns its bytes)
+>>> content = kakemono.to_json("paper.pdf", "out/paper.json")  # editable JSON + out/paper_assets/
+>>> html = kakemono.convert("paper.pdf", "hard-95", content="out/paper.vi.json")  # with the edited text
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 
 The work is done by the kakemono Rust library; the GIL is released while it
@@ -32,6 +34,7 @@ __all__ = [
     "fetch_arxiv",
     "to_docx",
     "to_epub",
+    "to_json",
     "to_latex",
     "to_markdown",
     "__version__",
@@ -47,6 +50,8 @@ Mode = Literal["hard", "hard-95", "medium", "friendly"]
 PngCompression = Literal["fast", "balanced", "high"]
 #: A PDF: its bytes, a path to a file, or an arXiv id or URL.
 Source = Union[bytes, bytearray, memoryview, str, "os.PathLike[str]"]
+#: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
+Content = Union[Dict[str, Any], str, "os.PathLike[str]"]
 
 
 def _load(source: Source) -> tuple[bytes, str | None]:
@@ -63,6 +68,18 @@ def _load(source: Source) -> tuple[bytes, str | None]:
     raise FileNotFoundError(f"{path!r} is neither a file nor an arXiv id or URL")
 
 
+def _content(content: Optional[Content]) -> Optional[str]:
+    """The text of an edited JSON file given as a dict, as JSON text or as a path."""
+    if content is None:
+        return None
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
+    if isinstance(content, str) and content.lstrip().startswith("{"):
+        return content
+    with open(os.fspath(content), encoding="utf-8") as file:
+        return file.read()
+
+
 def convert_all(
     source: Source,
     modes: Sequence[Mode] = MODES,
@@ -74,6 +91,7 @@ def convert_all(
     scale: float = 3.0,
     jobs: int = 0,
     png_compression: PngCompression = "balanced",
+    content: Optional[Content] = None,
 ) -> Dict[str, str]:
     """Convert a PDF to HTML in several modes, analysing it only once.
 
@@ -89,9 +107,14 @@ def convert_all(
     - ``png_compression``: ``"fast"`` draws the pictures several times faster
       for PNG files about a quarter larger, ``"high"`` makes them about a
       tenth smaller for ten times the time; the pixels are the same.
+    - ``content``: an edited copy of the JSON of :func:`to_json` for the same
+      PDF (a dict, its text or a path): the output shows its text. The
+      ``hard`` mode cannot. A block whose edited text cannot be read keeps
+      its own, with a ``UserWarning``.
 
-    Raises ``ValueError`` when the data is not a readable PDF or an option is
-    wrong, and ``FileNotFoundError`` when `source` names nothing.
+    Raises ``ValueError`` when the data is not a readable PDF, an option is
+    wrong or `content` does not fit the PDF, and ``FileNotFoundError`` when
+    `source` names nothing.
     """
     modes = list(modes)
     data, name = _load(source)
@@ -106,6 +129,7 @@ def convert_all(
         scale=scale,
         jobs=jobs,
         png_compression=png_compression,
+        content=_content(content),
     )
     return dict(zip(modes, pages))
 
@@ -158,6 +182,7 @@ def to_docx(
     png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     save_images: bool = False,
+    content: Optional[Content] = None,
 ) -> bytes:
     """Convert a PDF to a Word document (``.docx``) and return its bytes.
 
@@ -176,7 +201,7 @@ def to_docx(
     data, name = _load(source)
     docx, files = _kakemono.to_docx(
         data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
-        png_compression=png_compression,
+        png_compression=png_compression, content=_content(content),
     )
     if path is not None:
         _write(path, docx, files)
@@ -194,6 +219,7 @@ def to_markdown(
     png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     inline_images: bool = False,
+    content: Optional[Content] = None,
 ) -> str:
     """Convert a PDF to Markdown and return the text.
 
@@ -220,10 +246,60 @@ def to_markdown(
         png_compression=png_compression,
         image_dir=folder,
         inline_images=inline,
+        content=_content(content),
     )
     if path is not None:
         _write(path, text, files)
     return text
+
+
+def to_json(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    tables: bool = True,
+    equations: Literal["mathml", "image"] = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    png_compression: PngCompression = "balanced",
+    image_dir: Optional[str] = None,
+    inline_images: bool = False,
+    content: Optional[Content] = None,
+) -> Dict[str, Any]:
+    """Convert a PDF to the editable JSON and return it as a dict.
+
+    The blocks come in reading order, each with its ``type``, ``section``,
+    ``layout`` and ``text``: one string whose tags (``<i>``, ``<b>``,
+    ``<a href>``, ...) keep the styles and links, and where ``<m id="n">``
+    stands for a formula. Edit the text (translate it, say), then give the
+    edited dict, its text or its path as ``content`` to any converter of this
+    module to get that output with the edited text.
+
+    Formulas whose structure is clear also come as LaTeX and MathML; figures
+    and the other formulas are pictures. When `path` is given, the JSON is
+    written there and its pictures to `image_dir` (default
+    ``<name>_assets``, relative to the file). With ``inline_images=True``, or
+    without `path`, the pictures are data URIs instead. The other options are
+    those of :func:`convert_all`.
+    """
+    inline = inline_images or path is None
+    folder = _image_dir(path, image_dir) if path is not None else "images"
+    data, name = _load(source)
+    text, files = _kakemono.to_json(
+        data,
+        source=name,
+        tables=tables,
+        equations=equations,
+        scale=scale,
+        jobs=jobs,
+        png_compression=png_compression,
+        image_dir=folder,
+        inline_images=inline,
+        content=_content(content),
+    )
+    if path is not None:
+        _write(path, text, files)
+    return json.loads(text)
 
 
 def to_latex(
@@ -236,6 +312,7 @@ def to_latex(
     jobs: int = 0,
     png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
+    content: Optional[Content] = None,
 ) -> str:
     """Convert a PDF to a LaTeX document (``.tex``) and return its source.
 
@@ -254,7 +331,7 @@ def to_latex(
     data, name = _load(source)
     text, files = _kakemono.to_latex(
         data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
-        png_compression=png_compression,
+        png_compression=png_compression, content=_content(content),
     )
     if path is not None:
         _write(path, text, files)
@@ -273,6 +350,7 @@ def to_epub(
     max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,
+    content: Optional[Content] = None,
 ) -> bytes:
     """Convert a PDF to an EPUB 3 book (``.epub``) and return its bytes.
 
@@ -304,6 +382,7 @@ def to_epub(
         max_math_width_em=max_math_width_em,
         cover=cover,
         modified=modified,
+        content=_content(content),
     )
     if path is not None:
         _write(path, book)
@@ -313,7 +392,8 @@ def to_epub(
 def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:
     """The structure of a PDF: its blocks in reading order, as a dict.
 
-    This is the document that ``kakemono convert --json`` writes: each block
+    This is the document that ``kakemono convert --json`` writes, with every
+    field of the analysis (for the editable JSON, see :func:`to_json`): each block
     has a ``type`` (``heading``, ``paragraph``, ``equation``, ``figure``, ...),
     its ``page``, ``bbox`` and ``spans`` of text.
     """
