@@ -270,6 +270,53 @@ Where the time of d2l goes now (4 threads, analysis 3.6 s of 6.3 s): reading the
 lines 0.85 s, furniture 0.5 s, floats/reading order/blocks 0.75 s (one thread), classification
 0.3 s, building the document 0.4 s, then 2.3 s of rendering.
 
+### The benchmark again: v0.9.0 against these changes
+
+The three experiments of `scripts/benchmark.py`, run with the v0.9.0 binary and then with the new
+one, on the same 4-vCPU cloud machine (16 GB), one run each: differences of 0.1–0.2 s on the
+papers are noise. Wall time / peak resident memory, v0.9.0 → now:
+
+| PDF | Pages | friendly | hard | hard-95 | epub | docx | md |
+| --- | ---: | --- | --- | --- | --- | --- | --- |
+| GPT-4 | 100 | 1.86 → 1.06 s / 250 → 203 MB | 1.22 → 1.02 s / 213 → 126 MB | 1.83 → 1.10 s / 170 → 125 MB | 1.89 → 1.13 s / 250 → 235 MB | 1.97 → 0.99 s / 240 → 204 MB | 1.76 → 0.97 s / 238 → 202 MB |
+| d2l | 1185 | 13.9 → 7.3 s / 1198 → 573 MB | 14.8 → 9.9 s / 1747 → 631 MB | 17.6 → 10.6 s / 1352 → 655 MB | 13.3 → 8.2 s / 1232 → 894 MB | 13.3 → 7.1 s / 1234 → 633 MB | 12.6 → 6.8 s / 1138 → 615 MB |
+| d2l-x2 | 2370 | 30.1 → 13.8 s / 2328 → 1020 MB | 35.1 → 19.9 s / 3426 → 1089 MB | 39.2 → 24.5 s / 2505 → 1170 MB | 28.5 → 16.2 s / 2332 → 1712 MB | 29.5 → 13.5 s / 2370 → 1232 MB | 28.7 → 14.1 s / 2196 → 1099 MB |
+
+- All 80 conversions (the 8 test papers, d2l and d2l-x2, in the 8 formats): 400 s → 227 s.
+  Summed over the 8 formats: d2l-x2 1.9× faster, d2l 1.7×, GPT-4 1.6×, the 15-page papers
+  1.05–1.5×. The memory of the papers stays within about 10 MB of v0.9.0.
+- `medium` and `tex` are like `md` (d2l: 7.7 s / 564 MB and 7.2 s / 611 MB).
+- EPUB now takes the most memory (894 MB on d2l): the book and the Word document are still built
+  in memory, not written as they are drawn like the HTML.
+
+Threads for one file (d2l, `friendly`):
+
+| Build | `-j 1` | `-j 2` | `-j 4` | Speedup at `-j 4` |
+| --- | --- | --- | --- | --- |
+| v0.9.0 | 22.9 s / 912 MB | 15.4 s | 12.2 s / 1203 MB | 1.87× |
+| now | 16.9 s / 499 MB | 11.0 s | 6.9 s / 572 MB | 2.44× |
+
+Several files at once:
+
+| | v0.9.0 | now |
+| --- | --- | --- |
+| Attention, 4 processes with `-j 1` | 207 papers a minute | 283 papers a minute |
+| Attention, 8 processes with `-j 1` | 264 papers a minute | 295 papers a minute |
+| d2l, 4 at once (default `-j`) | 21.8 s, 4.4 GB | 18.6 s, 3.1 GB |
+
+**A small machine:** one core (`taskset -c 0`) and a hard limit of 512 MB without swap (a cgroup
+v1 memory limit: past it, the kernel kills the process).
+
+| PDF | `friendly` | `hard` |
+| --- | --- | --- |
+| Attention, GPT-4 | both builds | both builds |
+| d2l (1185 pages) | v0.9.0 killed; now done in 18.4 s | both killed |
+| d2l-x2 (2370 pages) | both killed | both killed |
+
+A 1000-page book in `friendly` now fits in 512 MB, but only just; longer books, and `hard`, do
+not yet. The leads below on memory (glyphs kept in the `Document`, EPUB and Word written as they
+are drawn, a memory limit with glyphs written to a temporary file) are what is still needed.
+
 ### Leads (not done yet)
 
 - **Drawing the pictures is the rendering.** Writing the HTML of d2l takes 0.15 s; drawing its
@@ -284,6 +331,10 @@ lines 0.85 s, furniture 0.5 s, floats/reading order/blocks 0.75 s (one thread), 
   PNG. Page backgrounds drawn through resvg (an SVG too large to keep) still use its own encoder.
 - **The rest of the per-page analysis** (`layout_page`: floats, reading order, blocks; 0.75 s on
   d2l) could run on `-j` threads like the lines; only the document-wide passes need one thread.
+- **EPUB and Word built in memory.** They draw their pictures a few at a time like the HTML, but
+  build the whole book or document (and its ZIP) in memory before writing it: EPUB takes 894 MB
+  on d2l against 573 MB for `friendly`. Writing the ZIP entries to the file as they are made
+  (with data descriptors, and ZIP64 past 4 GB) would bring them to the level of the HTML.
 - **Memory of the analysis** is now most of the peak. The `Document` of d2l holds 1.9 million
   glyphs (`Block.lines`, `inner_lines`, `loose`), which only `hard`/`hard-95` read: about 250 of
   its 463 MB (one thread), about 107 bytes a glyph with its `String`. A compact glyph type, and a `Document` without glyphs for the
