@@ -207,6 +207,7 @@ arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` c
 | `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
 | `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML, Word and EPUB |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
+| `--png-compression <fast\|balanced\|high>` | How hard PNG pictures are compressed (default `balanced`); `fast` draws them several times faster for files about a quarter larger, `high` makes them a tenth smaller for ten times the time. The pixels are the same |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
 | `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
@@ -283,7 +284,7 @@ doc = kakemono.analyze("paper.pdf")                    # the structure, as with 
 
 The wheels (Linux, macOS, Windows; Python 3.9+) contain the Rust library: nothing else to install.
 The options are those of the command line (`tables`, `equations`, `page_image`, `embed_fonts`,
-`scale`, `jobs`); see [python/README.md](python/README.md).
+`scale`, `jobs`, `png_compression`); see [python/README.md](python/README.md).
 
 ## Performance
 
@@ -307,6 +308,8 @@ default `-j`, `friendly` mode; the other formats take up to a third longer, and 
   process per core with `-j 1`: on 4 cores, about 260 papers a minute, at about 53 MB each.
 - Running more processes than cores only queues them: total throughput stays the same and the
   memory adds up. Four 1185-page books at once take 19 s and 3.2 GB.
+- On a slow machine, `--png-compression fast` saves about a fifth of the time of a book with many
+  pictures (18.3 s → 14.8 s for the textbook on one thread), for an HTML file 28% larger.
 - The command line uses the mimalloc allocator; the library leaves the choice of allocator to
   the program that uses it.
 

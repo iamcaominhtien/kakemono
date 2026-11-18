@@ -29,8 +29,13 @@ doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: bloc
 | `friendly` | One responsive column with themes, contents, a phone layout and a book view |
 
 Options of `convert` and `convert_all`: `tables`, `equations` (`"mathml"` or `"image"`),
-`page_image` (`"svg"`, `"svg-only"`, `"png"`), `embed_fonts`, `scale` and `jobs`. They match the
-command-line options described in the [main README](https://github.com/iamcaominhtien/kakemono#usage).
+`page_image` (`"svg"`, `"svg-only"`, `"png"`), `embed_fonts`, `scale`, `jobs` and
+`png_compression`. They match the command-line options described in the
+[main README](https://github.com/iamcaominhtien/kakemono#usage).
+
+Every conversion function (all but `analyze`) also takes `png_compression`: `"balanced"` (default), `"fast"` (pictures drawn
+several times faster, PNG files about a quarter larger: for many documents on a slow machine) or
+`"high"` (about a tenth smaller, ten times slower). The pixels are the same at every level.
 
 `to_docx` takes `tables`, `equations`, `scale` and `jobs`. Formulas whose structure is clear become
 Word equations (editable in Word), the others pictures; rebuilt tables become Word tables. With

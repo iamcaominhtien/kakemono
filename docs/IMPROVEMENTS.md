@@ -276,8 +276,12 @@ lines 0.85 s, furniture 0.5 s, floats/reading order/blocks 0.75 s (one thread), 
   651 pictures takes 9.4 s on one thread (2.4 s on four): 5.1 s to rasterize, 3.0 s to compress
   the PNGs with the `png` crate's default (`Balanced`) level, the rest to try JPEG for photos.
   The `Fast` level (fdeflate) compresses the same PNGs in 0.75 s, but they are 28% larger
-  (59 MB instead of 46 MB); `High` takes 26 s for 9% less. Not changed: it trades the reader's
-  download for the converter's time.
+  (59 MB instead of 46 MB); `High` takes 26 s for 9% less. The default stays `Balanced`, since
+  a file is converted once and read many times; `--png-compression fast` (`Paper::
+  with_png_compression`) is there for converting many documents on a slow machine: d2l in
+  `friendly` on one thread takes 14.8 s instead of 18.3 s, for an HTML file of 70.7 MB instead of
+  55.3 MB. A few more photographs become JPEG with it, since the JPEG is compared with a larger
+  PNG. Page backgrounds drawn through resvg (an SVG too large to keep) still use its own encoder.
 - **The rest of the per-page analysis** (`layout_page`: floats, reading order, blocks; 0.75 s on
   d2l) could run on `-j` threads like the lines; only the document-wide passes need one thread.
 - **Memory of the analysis** is now most of the peak. The `Document` of d2l holds 1.9 million
