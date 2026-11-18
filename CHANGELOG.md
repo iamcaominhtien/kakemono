@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.10.0](https://github.com/iamcaominhtien/kakemono/compare/v0.9.0...v0.10.0) - 2026-11-18
+
+### Added
+
+- Twice as fast and half the memory on long documents, HTML written as it is drawn ([#12](https://github.com/iamcaominhtien/kakemono/pull/12))
+
+Long documents now convert about twice as fast, with about half the memory, in every mode. Every output stays byte for byte the same. A new option, `--png-compression`, trades file size for drawing time.
+
+| PDF, mode (4 threads) | Before | After |
+| --- | --- | --- |
+| Dive into Deep Learning (1185 pages), `friendly` | 10.6 s / 1.20 GB | 6.3 s / 580 MB |
+| The same book twice (2370 pages), `friendly` | 25.3 s / 2.32 GB | 13.1 s / 1.1 GB |
+| Dive into Deep Learning, `hard` | 13.6 s / 1.73 GB | 8.6 s / 640 MB |
+| Dive into Deep Learning, `friendly`, `-j 1` | 18.8 s / 919 MB | 16.0 s / 506 MB |
+| GPT-4 report (100 pages), `friendly` | 1.33 s / 245 MB | 0.93 s / 208 MB |
+
+The full benchmark against v0.9.0 is in `docs/IMPROVEMENTS.md` §10. It covers every format, the thread sweep, several files at once, and a 1-core machine with 512 MB. Across all 80 conversions (10 PDFs × 8 formats), the time goes from 400 s to 227 s. On that small machine, a 1185-page book in `friendly` now fits where v0.9.0 was killed.
+
+##### Faster analysis
+- **Time now grows linearly with the page count.** Fitting equation pictures (`analysis/crops.rs`) went through every line of the document for each page. The blocks of each page are now indexed once: 3.3 s → 0.08 s on the 1185-page book.
+- **Lines are built on the `-j` threads.** Before, they were built on one thread: 3.1 s → 0.9 s on four threads.
+- **The lines of a page are dropped once it is laid out.** The blocks hold their own copies.
+
+##### Less memory
+- **The command line uses mimalloc** (version 2, freed memory purged at once). With glibc, memory freed by another thread stayed reserved. mimalloc gives it back and is also faster. Small papers take about the same memory as before. The library does not set an allocator.
+- **The HTML is written as its pictures are drawn.** Before, every picture was drawn into memory, then the whole page was built as one more string: `hard` held 348 MB of page pictures and a 472 MB page at once. Now the workers draw at most 4 pictures per thread ahead of the HTML (`parallel::map_ordered`), and the page goes straight to the file.
+- **New API: `Paper::write_html`** writes the HTML to any `io::Write` and gives each picture file to a callback. It produces the same bytes as `Paper::to_html`.
+
+##### PNG compression level
+- **New option:** `--png-compression fast|balanced|high` on the command line, `Paper::with_png_compression` with the new `PngCompression` type in the library, and `png_compression` in every Python conversion function.
+- **The default stays `balanced`**, and its output does not change.
+- **`fast`** is for converting many documents on a slow machine. On the 1185-page textbook, on one thread, it takes 14.8 s instead of 18.3 s, for an HTML file of 70.7 MB instead of 55.3 MB.
+- **`high`** makes that file 49.9 MB, for twice the time.
+- **The pixels are the same at every level.** A few more photographs become JPEG with `fast`, because each JPEG is compared with a larger PNG.
+
+The remaining leads are in `docs/IMPROVEMENTS.md` §10:
+- drawing the pictures is now all of the rendering time;
+- EPUB and Word are still built whole in memory (EPUB takes the most memory now);
+- glyphs kept in the `Document` are now most of the memory;
+- a memory limit for small machines.
+
 ## [0.9.0](https://github.com/iamcaominhtien/kakemono/compare/v0.8.0...v0.9.0) - 2026-11-17
 
 ### Added
