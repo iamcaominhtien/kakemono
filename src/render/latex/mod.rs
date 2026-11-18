@@ -12,6 +12,7 @@
 
 pub(crate) mod math;
 mod text;
+mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
 use super::{
@@ -27,6 +28,12 @@ use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
 /// The packages and commands that every document uses.
 const PREAMBLE: &str = include_str!("preamble.tex");
+/// The encoding of pdfLaTeX's fonts, in [`PREAMBLE`].
+const T1_FONTENC: &str = "\\usepackage[T1]{fontenc}";
+/// The encodings of a document with Vietnamese letters (see
+/// [`vietnamese`]): T5 for those letters, T1 (the last, the main one) for
+/// the rest.
+const T5_FONTENC: &str = "\\usepackage[T5,T1]{fontenc}";
 /// Indentation of a table of contents, per level, in em.
 const CONTENTS_INDENT_EM: f32 = 1.5;
 /// Hanging indentation of a bibliography entry.
@@ -130,8 +137,30 @@ pub fn render_latex(analysis: &Analysis, pdf: &PdfFile, opts: &LatexOptions) -> 
 /// glyph for, the title of the PDF, and `body`.
 fn document(doc: &Document, body: &str) -> String {
     let title = escape(&doc_title(doc));
-    let mut out = String::from(PREAMBLE);
-    let unknown = unknown_chars(&title, body);
+    let (vietnamese, unknown): (Vec<char>, Vec<char>) = unknown_chars(&title, body)
+        .into_iter()
+        .partition(|&ch| vietnamese::t5_letter(ch).is_some());
+    let mut out = if vietnamese.is_empty() {
+        String::from(PREAMBLE)
+    } else {
+        // T1 stays the main encoding (the last one loaded).
+        PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
+    };
+    if !vietnamese.is_empty() {
+        out.push_str(&format!(
+            "% Vietnamese letters: pdfLaTeX sets them in the T5 encoding (vntex).\n\\ifPDFTeX\n  \\newcommand{{{cmd}}}[1]{{{{\\fontencoding{{T5}}\\selectfont#1}}}}\n",
+            cmd = vietnamese::T5_COMMAND
+        ));
+        for ch in vietnamese {
+            let letter = vietnamese::t5_letter(ch).expect("partitioned on t5_letter");
+            out.push_str(&format!(
+                "  \\DeclareUnicodeCharacter{{{:04X}}}{{{}{{{letter}}}}}\n",
+                u32::from(ch),
+                vietnamese::T5_COMMAND
+            ));
+        }
+        out.push_str("\\fi\n");
+    }
     if !unknown.is_empty() {
         out.push_str("% Characters that the fonts of pdfLaTeX do not have.\n\\ifPDFTeX\n");
         for ch in unknown {

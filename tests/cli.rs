@@ -236,3 +236,92 @@ fn formula_reports_a_picture_it_cannot_read() {
     assert!(scores.status.success());
     assert!(String::from_utf8_lossy(&scores.stdout).contains("NaN"));
 }
+
+/// Runs a TeX engine on `file` in `dir`, when it is installed: the output is
+/// a PDF. Returns whether the engine ran.
+fn compile_tex(engine: &str, dir: &Path, file: &str) -> bool {
+    match Command::new(engine)
+        .args(["-interaction=nonstopmode", "-halt-on-error", file])
+        .current_dir(dir)
+        .output()
+    {
+        Ok(out) => {
+            assert!(
+                out.status.success(),
+                "{engine} failed:\n{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            true
+        }
+        Err(err) => {
+            eprintln!("{engine} not run ({err}): the LaTeX output was not compiled");
+            false
+        }
+    }
+}
+
+/// The editable JSON is written with `-o x.json`, applied back with
+/// `--content`; edited Vietnamese text (letters that pdfLaTeX's T1 fonts
+/// lack) next to Polish (letters that T5 lacks) compiles with pdfLaTeX and
+/// XeLaTeX.
+#[test]
+fn edited_json_gives_latex_that_compiles_in_vietnamese() {
+    let dir = scratch("cli-json-vi");
+    let json = dir.join("ligo.json");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", json.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("ligo_assets/001-fig.png").is_file());
+    let mut content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    for block in content["blocks"].as_array_mut().unwrap() {
+        match block["type"].as_str() {
+            Some("title") => block["text"] = "Quan sát sóng hấp dẫn từ sự sáp nhập của một hệ hai lỗ đen".into(),
+            Some("heading") => block["text"] = "Giới thiệu — Łódź, Straße, œuvre, ặ ữ ỹ Ư".into(),
+            _ => {}
+        }
+    }
+    let edited = dir.join("ligo.vi.json");
+    std::fs::write(&edited, serde_json::to_string(&content).unwrap()).unwrap();
+
+    let tex = dir.join("vi.tex");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        tex.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&tex).unwrap();
+    assert!(text.contains("Quan sát sóng hấp dẫn"));
+    assert!(text.contains("\\usepackage[T5,T1]{fontenc}"));
+    assert!(text.contains("\\DeclareUnicodeCharacter{1EB7}{\\kakemonovn{\\d{\\abreve}}}"));
+    // Letters that T5 has are no longer replaced by a question mark.
+    assert!(!text.contains("\\DeclareUnicodeCharacter{1EB7}{\\kakemonomissing}"));
+    for engine in ["pdflatex", "xelatex"] {
+        let _ = std::fs::remove_file(dir.join("vi.pdf"));
+        if compile_tex(engine, &dir, "vi.tex") {
+            assert!(dir.join("vi.pdf").is_file(), "{engine} wrote no PDF");
+        }
+    }
+
+    // A JSON file of another PDF, or the --json document, is refused.
+    let mut other = content.clone();
+    other["source"]["sha256"] = "0".repeat(64).into();
+    std::fs::write(&edited, serde_json::to_string(&other).unwrap()).unwrap();
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        tex.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("another file"));
+    let hard = kakemono(&["convert", LIGO, "-m", "hard", "--content", json.to_str().unwrap()]);
+    assert!(!hard.status.success());
+    assert!(String::from_utf8_lossy(&hard.stderr).contains("hard mode"));
+}
