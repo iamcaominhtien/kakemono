@@ -75,3 +75,23 @@ pub fn render(analysis: &Analysis, pdf: &PdfFile, opts: &HtmlOptions) -> HtmlOut
     let html = renderer_for(opts.mode).render(analysis, &mut images);
     images.finish(pdf, html)
 }
+
+/// Renders an analysed document as HTML, like [`render`], but writes it to
+/// `out` while the pictures are drawn, a few at a time, so that neither the
+/// whole page nor all its pictures are held in memory. When pictures are
+/// not inlined, each picture file goes to `file` as (relative path,
+/// contents) instead.
+///
+/// # Errors
+/// The first error of `out` or `file`.
+pub fn render_to(
+    analysis: &Analysis,
+    pdf: &PdfFile,
+    opts: &HtmlOptions,
+    out: &mut dyn std::io::Write,
+    file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut images = ImageStore { opts, jobs: Vec::new() };
+    let html = renderer_for(opts.mode).render(analysis, &mut images);
+    images.finish_into(pdf, &html, out, file)
+}

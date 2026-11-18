@@ -175,23 +175,31 @@ pub(crate) fn build_document(
             .get(stats.body_font as usize)
             .map(|font| font.name.clone())
             .unwrap_or_default(),
-        math_font: main_math_font(pages, fonts),
+        // Set by the pipeline, which counts the math glyphs of each page
+        // before it drops its lines (see `count_math_glyphs`).
+        math_font: String::new(),
         blocks,
     };
     (doc, loose)
 }
 
-/// PostScript name of the math font with the most glyphs, or an empty
-/// string when no glyph is in a math font.
-fn main_math_font(pages: &[PageData], fonts: &[FontInfo]) -> String {
-    let mut counts: HashMap<u16, usize> = HashMap::new();
-    for glyph in pages.iter().flat_map(|page| &page.lines).flat_map(|line| &line.glyphs) {
+/// Adds the glyphs of `lines` that are in a math font to `counts` (glyphs
+/// per font index), for [`main_math_font`].
+pub(crate) fn count_math_glyphs(counts: &mut HashMap<u16, usize>, lines: &[Line], fonts: &[FontInfo]) {
+    for glyph in lines.iter().flat_map(|line| &line.glyphs) {
         if fonts.get(glyph.font as usize).is_some_and(|font| font.math) {
             *counts.entry(glyph.font).or_default() += 1;
         }
     }
+}
+
+/// PostScript name of the math font with the most glyphs in `counts` (see
+/// [`count_math_glyphs`]), or an empty string when no glyph is in a math
+/// font.
+pub(crate) fn main_math_font(counts: &HashMap<u16, usize>, fonts: &[FontInfo]) -> String {
     counts
-        .into_iter()
+        .iter()
+        .map(|(&font, &count)| (font, count))
         .max_by_key(|&(font, count)| (count, std::cmp::Reverse(font)))
         .and_then(|(font, _)| fonts.get(font as usize))
         .map(|font| font.name.clone())
@@ -455,7 +463,7 @@ impl Assembler<'_> {
         let page_rect = Rect::new(0.0, 0.0, data.width, data.height);
         if edge
             && self.pages.len() > 1
-            && data.lines.len() <= self.cfg.cover_max_lines_count
+            && data.line_count() <= self.cfg.cover_max_lines_count
             && rect.area() >= self.cfg.cover_min_area_ratio * page_rect.area()
         {
             page_rect

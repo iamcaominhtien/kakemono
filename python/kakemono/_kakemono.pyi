@@ -13,6 +13,7 @@ def convert(
     embed_fonts: bool = True,
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: str = "balanced",
 ) -> List[str]: ...
 def to_docx(
     pdf: bytes,
@@ -22,6 +23,7 @@ def to_docx(
     equations: str = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: str = "balanced",
     image_dir: Optional[str] = None,
 ) -> Tuple[bytes, List[Tuple[str, bytes]]]: ...
 def to_markdown(
@@ -32,6 +34,7 @@ def to_markdown(
     equations: str = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: str = "balanced",
     image_dir: str = "images",
     inline_images: bool = False,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
@@ -43,6 +46,7 @@ def to_latex(
     equations: str = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: str = "balanced",
     image_dir: str = "images",
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_epub(
@@ -53,6 +57,7 @@ def to_epub(
     equations: str = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: str = "balanced",
     max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,

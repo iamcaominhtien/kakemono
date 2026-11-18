@@ -5,6 +5,7 @@
 //! and blocks per page, then the document-wide structuring stages of
 //! [`semantics`](super::semantics) and the assembly of the [`Document`].
 
+use super::semantics::assemble::{count_math_glyphs, main_math_font};
 use super::semantics::*;
 use crate::analysis::blocks::{RawBlock, build_blocks, join_equation_parts, mark_margin_notes};
 use crate::analysis::floats::{Float, FloatsConfig, detect_floats, join_caption_labels, table_caption_votes};
@@ -13,8 +14,11 @@ use crate::analysis::lines::{join_math_letters, take_ruby};
 use crate::analysis::order::order_page;
 use crate::analysis::page::{DocStats, PageData, compute_stats};
 use crate::backend::{FontInfo, RawPage};
+use crate::common::parallel;
 use crate::config::AnalyzeOptions;
 use crate::model::*;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 /// Table captions are taken to sit above (or below) their tables when the
 /// votes for that side outnumber the other side by more than this factor;
@@ -42,17 +46,29 @@ pub struct Analysis {
 /// holds every threshold.
 pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts: AnalyzeOptions) -> Analysis {
     let layout = &opts.layout;
-    let mut pages: Vec<PageData> = raw_pages
-        .into_iter()
-        .map(|raw| PageData::from_raw(raw, &layout.lines))
-        .collect();
-    // Furigana leave the text, and are drawn with the running heads by the
-    // position-preserving renderers.
-    let mut ruby: Vec<Vec<Line>> = Vec::with_capacity(pages.len());
-    for page in &mut pages {
-        join_math_letters(&mut page.lines, fonts, &layout.lines);
-        ruby.push(take_ruby(&mut page.lines, &layout.lines));
-    }
+    // Lines are built page by page on `opts.jobs` threads. Each worker takes
+    // its page out of `raw_pages`, so the raw glyphs of a page are freed as
+    // soon as its lines are built. Furigana leave the text, and are drawn
+    // with the running heads by the position-preserving renderers.
+    let raw_pages: Vec<Mutex<Option<RawPage>>> = raw_pages.into_iter().map(|raw| Mutex::new(Some(raw))).collect();
+    let built = parallel::map(
+        raw_pages.len(),
+        opts.jobs,
+        || (),
+        |(), i| {
+            let raw = raw_pages[i]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .expect("every page is taken once");
+            let mut page = PageData::from_raw(raw, &layout.lines);
+            join_math_letters(&mut page.lines, fonts, &layout.lines);
+            let ruby = take_ruby(&mut page.lines, &layout.lines);
+            (page, ruby)
+        },
+    );
+    drop(raw_pages);
+    let (mut pages, ruby): (Vec<PageData>, Vec<Vec<Line>>) = built.into_iter().unzip();
     if let Some(page) = pages.last_mut() {
         page.last = true;
     }
@@ -70,8 +86,14 @@ pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts
         join_caption_labels(page, &layout.floats, &layout.lines);
     }
     let table_caption_above = table_caption_convention(&pages, &stats, fonts, &layout.floats);
+    // Once a page is laid out its blocks hold copies of the lines they
+    // need: the page keeps only what the later stages read (how many lines
+    // it had, and its glyphs in each math font).
+    let mut math_glyphs = HashMap::new();
     for page in pages.iter_mut() {
         layout_page(page, &stats, fonts, table_caption_above, &opts, &mut nodes);
+        count_math_glyphs(&mut math_glyphs, &page.lines, fonts);
+        page.drop_lines();
     }
 
     // --- document structure ---
@@ -82,6 +104,7 @@ pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts
 
     let rotated = pages.iter().map(|page| rotated_runs(page, fonts)).collect();
     let (mut doc, loose) = build_document(nodes, &pages, &stats, fonts, meta, furniture.lines, opts);
+    doc.math_font = main_math_font(&math_glyphs, fonts);
     // Pictures of equations and figures that cut glyphs are made clean.
     crate::analysis::crops::fit_equation_crops(&mut doc, &loose);
     // Displayed formulas get their structure, for MathML.

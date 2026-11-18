@@ -2,12 +2,13 @@
 //! Word, Markdown, LaTeX or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
-use crate::backend::{PageRenderer, PdfFile};
+use crate::backend::{PageRenderer, PdfFile, PngCompression};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
     DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput, MarkdownOptions,
     MarkdownOutput, render, render_docx, render_docx_with_images, render_epub, render_latex, render_markdown,
+    render_to,
 };
 use anyhow::Result;
 
@@ -42,6 +43,17 @@ impl Paper {
         self
     }
 
+    /// Sets how hard the PNG pictures of every output are compressed
+    /// ([`PngCompression::Balanced`] by default). The pixels stay the same;
+    /// [`PngCompression::Fast`] draws the pictures faster for larger files.
+    /// Pictures with many colours are stored as JPEG when that is much
+    /// smaller than their PNG, so a few more of them may be with `Fast`.
+    #[must_use]
+    pub fn with_png_compression(mut self, compression: PngCompression) -> Self {
+        self.pdf.set_png_compression(compression);
+        self
+    }
+
     /// Number of pages.
     pub fn page_count(&self) -> usize {
         self.pdf.page_count()
@@ -54,8 +66,8 @@ impl Paper {
 
     /// Runs content extraction and layout analysis.
     ///
-    /// Pages are read on `opts.jobs` threads; the result does not depend on
-    /// the number of threads.
+    /// Pages are read, and their lines built, on `opts.jobs` threads; the
+    /// result does not depend on the number of threads.
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let (raw, fonts) = self.pdf.extract(opts.jobs);
         let meta = Meta {
@@ -81,6 +93,26 @@ impl Paper {
     /// come from this paper, since images are drawn from its PDF.
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         render(analysis, &self.pdf, opts)
+    }
+
+    /// Writes an analysis as HTML to `out`, like [`Paper::to_html`], but
+    /// without holding the whole page in memory: the pictures are drawn a
+    /// few at a time and written as soon as they are ready, which matters
+    /// for long documents (all the page pictures of `hard` mode). When
+    /// pictures are not inlined, each picture file is given to `file` as
+    /// (path relative to the HTML file, contents) instead of being
+    /// returned. The bytes written are those of [`HtmlOutput::html`].
+    ///
+    /// # Errors
+    /// The first error of `out` or `file`.
+    pub fn write_html(
+        &self,
+        analysis: &Analysis,
+        opts: &HtmlOptions,
+        out: &mut dyn std::io::Write,
+        file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        render_to(analysis, &self.pdf, opts, out, &mut |name, data| file(&name, &data))
     }
 
     /// Writes an analysis as a Word document (`.docx`) and returns the

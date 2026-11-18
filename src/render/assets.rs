@@ -7,6 +7,7 @@ use crate::backend::{PageRenderer, svg_to_png};
 use crate::model::*;
 use base64::Engine;
 use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
 
 /// Marks a placeholder; a control character never written to the HTML.
 pub(crate) const MARK: char = '\u{1}';
@@ -27,6 +28,11 @@ const MAX_PAGE_SVG_BYTES: usize = 1_500_000;
 /// Pixels per PDF point of a page background drawn as a PNG because its
 /// SVG was too large.
 const HEAVY_PAGE_PNG_SCALE: f32 = 2.0;
+
+/// Pictures drawn ahead of the one the HTML is written up to, per thread:
+/// enough to keep every thread busy, few enough that the pictures of a
+/// long document are never all held at once.
+const DRAW_AHEAD_PER_THREAD: usize = 4;
 
 /// Prefix of an SVG line that draws a raster picture.
 const SVG_IMAGE_PREFIX: &str = "<image ";
@@ -166,44 +172,147 @@ impl ImageStore<'_> {
     /// When `html` contains a placeholder that is not closed or whose index
     /// is not a number (it was not written by [`ImageStore::add`]).
     pub(crate) fn finish(self, pdf: &PdfFile, html: String) -> HtmlOutput {
-        let drawn = crate::common::parallel::map(
-            self.jobs.len(),
-            self.opts.jobs,
-            || pdf.renderer(),
-            |renderer, i| self.draw(renderer, &self.jobs[i]),
-        );
-        let mut drawn: Vec<_> = drawn.into_iter().map(Some).collect();
+        let mut out = Vec::with_capacity(html.len());
         let mut files = Vec::new();
-        let mut out = String::with_capacity(html.len());
-        let mut rest = html.as_str();
-        while let Some(start) = rest.find(MARK) {
-            out.push_str(&rest[..start]);
-            let after = &rest[start + MARK.len_utf8()..];
-            let end = after.find(MARK).expect("placeholders are closed");
-            let index: usize = after[..end].parse().expect("placeholder index");
-            // A picture that cannot be drawn leaves an empty `src`.
-            if let Some(image) = drawn[index].take().flatten() {
-                self.put_image(image, &mut out, &mut files);
-            }
-            rest = &after[end + MARK.len_utf8()..];
-        }
-        out.push_str(rest);
-        HtmlOutput { html: out, files }
+        self.finish_into(pdf, &html, &mut out, &mut |name, data| {
+            files.push((name, data));
+            Ok(())
+        })
+        .expect("writing to memory does not fail");
+        let html = String::from_utf8(out).expect("the HTML and the picture sources are UTF-8");
+        HtmlOutput { html, files }
     }
 
-    /// Writes the `src` of a drawn picture to `out`: a data URI, or the name
-    /// of a new file in the asset directory (which is added to `files`).
-    fn put_image(&self, image: DrawnImage, out: &mut String, files: &mut Vec<(String, Vec<u8>)>) {
-        let (data, mime, ext, hint) = image;
-        if self.opts.inline_images {
-            out.push_str("data:");
-            out.push_str(mime);
-            out.push_str(";base64,");
-            base64::engine::general_purpose::STANDARD.encode_string(&data, out);
+    /// Writes `html` to `out` with its placeholders replaced, drawing the
+    /// pictures on several threads; each picture file (when pictures are
+    /// not inlined) goes to `file` as (relative path, contents).
+    ///
+    /// When the placeholders come in the order the pictures were recorded,
+    /// as the renderers write them, the HTML is written as the pictures are
+    /// drawn, a few at a time ([`DRAW_AHEAD_PER_THREAD`]): a long document
+    /// never has all its pictures in memory. Otherwise every picture is
+    /// drawn first.
+    ///
+    /// # Errors
+    /// The first error of `out` or `file`.
+    ///
+    /// # Panics
+    ///
+    /// When `html` contains a placeholder that is not closed or whose index
+    /// is not a number (it was not written by [`ImageStore::add`]).
+    pub(crate) fn finish_into(
+        self,
+        pdf: &PdfFile,
+        html: &str,
+        out: &mut dyn Write,
+        file: &mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut writer = SourceWriter {
+            store: &self,
+            out,
+            file,
+            files: 0,
+            base64: String::new(),
+        };
+        let mut rest = html;
+        if placeholders_in_order(html, self.jobs.len()) {
+            let threads = crate::common::parallel::resolve_jobs(self.opts.jobs);
+            crate::common::parallel::map_ordered(
+                self.jobs.len(),
+                self.opts.jobs,
+                threads * DRAW_AHEAD_PER_THREAD,
+                || pdf.renderer(),
+                |renderer, i| self.draw(renderer, &self.jobs[i]),
+                |_, image| -> io::Result<()> {
+                    let (before, _, after) = next_placeholder(rest).expect("one placeholder per picture");
+                    writer.out.write_all(before.as_bytes())?;
+                    writer.put_image(image)?;
+                    rest = after;
+                    Ok(())
+                },
+            )?;
         } else {
-            let name = format!("{}/{:03}-{}.{}", self.opts.asset_dir, files.len() + 1, hint, ext);
-            out.push_str(&name);
-            files.push((name, data));
+            let drawn = crate::common::parallel::map(
+                self.jobs.len(),
+                self.opts.jobs,
+                || pdf.renderer(),
+                |renderer, i| self.draw(renderer, &self.jobs[i]),
+            );
+            let mut drawn: Vec<_> = drawn.into_iter().map(Some).collect();
+            while let Some((before, index, after)) = next_placeholder(rest) {
+                writer.out.write_all(before.as_bytes())?;
+                writer.put_image(drawn[index].take().flatten())?;
+                rest = after;
+            }
+        }
+        writer.out.write_all(rest.as_bytes())
+    }
+}
+
+/// The text before the next placeholder of `html`, the index in the
+/// placeholder, and the text after it; `None` when there is none left.
+///
+/// # Panics
+///
+/// When the placeholder is not closed or its index is not a number.
+fn next_placeholder(html: &str) -> Option<(&str, usize, &str)> {
+    let start = html.find(MARK)?;
+    let after = &html[start + MARK.len_utf8()..];
+    let end = after.find(MARK).expect("placeholders are closed");
+    let index = after[..end].parse().expect("placeholder index");
+    Some((&html[..start], index, &after[end + MARK.len_utf8()..]))
+}
+
+/// Whether `html` holds the placeholders of `count` pictures, each once,
+/// in the order they were recorded.
+fn placeholders_in_order(html: &str, count: usize) -> bool {
+    let mut rest = html;
+    let mut expected = 0;
+    while let Some((_, index, after)) = next_placeholder(rest) {
+        if index != expected {
+            return false;
+        }
+        expected += 1;
+        rest = after;
+    }
+    expected == count
+}
+
+/// Writes the `src` of drawn pictures in place of their placeholders.
+struct SourceWriter<'a, 'r> {
+    /// The store the pictures were recorded in (for the output options).
+    store: &'a ImageStore<'r>,
+    /// Where the HTML goes.
+    out: &'a mut dyn Write,
+    /// Where the picture files go, when pictures are not inlined.
+    file: &'a mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
+    /// Picture files written so far (they are numbered).
+    files: usize,
+    /// Buffer for the base64 text of an inlined picture.
+    base64: String,
+}
+
+impl SourceWriter<'_, '_> {
+    /// Writes the `src` of a drawn picture: a data URI, or the name of a
+    /// new file in the asset directory (whose contents go to `file`). A
+    /// picture that could not be drawn (`None`) leaves an empty `src`.
+    fn put_image(&mut self, image: Option<DrawnImage>) -> io::Result<()> {
+        let Some((data, mime, ext, hint)) = image else {
+            return Ok(());
+        };
+        let opts = self.store.opts;
+        if opts.inline_images {
+            self.base64.clear();
+            self.base64.push_str("data:");
+            self.base64.push_str(mime);
+            self.base64.push_str(";base64,");
+            base64::engine::general_purpose::STANDARD.encode_string(&data, &mut self.base64);
+            self.out.write_all(self.base64.as_bytes())
+        } else {
+            self.files += 1;
+            let name = format!("{}/{:03}-{}.{}", opts.asset_dir, self.files, hint, ext);
+            self.out.write_all(name.as_bytes())?;
+            (self.file)(name, data)
         }
     }
 }
@@ -276,4 +385,41 @@ pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
         (x * ORIGIN_STEPS_PER_PT).round() as i32,
         (y * ORIGIN_STEPS_PER_PT).round() as i32,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MARK, next_placeholder, placeholders_in_order};
+
+    fn placeholder(index: usize) -> String {
+        format!("{MARK}{index}{MARK}")
+    }
+
+    /// The placeholders are found one after another, with the text around
+    /// them.
+    #[test]
+    fn placeholders_are_split_in_turn() {
+        let html = format!(
+            "<img src=\"{}\"><p>x</p><img src=\"{}\">",
+            placeholder(0),
+            placeholder(1)
+        );
+        let (before, index, rest) = next_placeholder(&html).unwrap();
+        assert_eq!((before, index), ("<img src=\"", 0));
+        let (before, index, rest) = next_placeholder(rest).unwrap();
+        assert_eq!((before, index, rest), ("\"><p>x</p><img src=\"", 1, "\">"));
+        assert!(next_placeholder(rest).is_none());
+    }
+
+    /// Only placeholders of every picture, each once and in order, let the
+    /// pictures be written as they are drawn.
+    #[test]
+    fn placeholders_must_be_in_order() {
+        let html = |indices: &[usize]| indices.iter().map(|&i| placeholder(i) + " ").collect::<String>();
+        assert!(placeholders_in_order(&html(&[0, 1, 2]), 3));
+        assert!(placeholders_in_order("no pictures", 0));
+        assert!(!placeholders_in_order(&html(&[1, 0, 2]), 3));
+        assert!(!placeholders_in_order(&html(&[0, 1]), 3));
+        assert!(!placeholders_in_order(&html(&[0, 1, 1]), 2));
+    }
 }

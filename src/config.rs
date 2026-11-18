@@ -16,7 +16,8 @@ pub use crate::analysis::tables::TablesConfig;
 pub struct AnalyzeOptions {
     /// Reconstruct the row/column structure of tables.
     pub tables: bool,
-    /// Worker threads for reading the pages (0 = one per CPU).
+    /// Worker threads for reading the pages and building their lines (0 =
+    /// one per CPU).
     pub jobs: usize,
     /// Thresholds of the analysis stages.
     pub layout: LayoutConfig,

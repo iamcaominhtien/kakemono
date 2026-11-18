@@ -89,6 +89,9 @@ pub struct PageData {
     pub pixel_rules: Vec<PathBox>,
     /// The last page of the document (where a book has its back cover).
     pub last: bool,
+    /// Lines dropped by [`PageData::drop_lines`], still counted by
+    /// [`PageData::line_count`].
+    dropped_lines: usize,
 }
 
 impl PageData {
@@ -106,7 +109,22 @@ impl PageData {
             paths: raw.paths,
             pixel_rules: raw.pixel_rules,
             last: false,
+            dropped_lines: 0,
         }
+    }
+
+    /// Drops the lines of the page once it is laid out: its blocks hold
+    /// copies of the lines they need, and the later stages only read how
+    /// many lines the page had ([`PageData::line_count`]).
+    pub fn drop_lines(&mut self) {
+        self.dropped_lines += self.lines.len();
+        self.lines = Vec::new();
+    }
+
+    /// Number of lines of the page, those dropped by
+    /// [`PageData::drop_lines`] included.
+    pub fn line_count(&self) -> usize {
+        self.dropped_lines + self.lines.len()
     }
 
     /// The rectangle covering the whole page.

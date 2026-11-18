@@ -15,11 +15,33 @@ use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
-    Paper,
+    Paper, PngCompression,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// mimalloc instead of the system allocator: it gives memory freed on one
+/// thread back to the others (with glibc, the lines built on the worker
+/// threads stay reserved after they are freed), and it is faster.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// mimalloc option `purge_delay`, in milliseconds (its index in
+/// `mi_option_e` of mimalloc.h; the sys crate does not name it).
+const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+
+/// Tunes mimalloc for a short run that should hold as little memory as it
+/// can: freed memory goes back to the system at once rather than after a
+/// delay (10 ms by default). This cuts the peak memory of a 1000-page book
+/// by about a fifth, for about a tenth more time.
+fn tune_allocator() {
+    // SAFETY: `mi_option_set` only stores an option value, and
+    // `MI_OPTION_PURGE_DELAY` is an option of the bundled mimalloc.
+    unsafe {
+        libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
+    }
+}
 
 /// `--scale` must be larger than this (pixels per PDF point): smaller images
 /// are unreadable.
@@ -175,6 +197,31 @@ enum PageImageArg {
     Png,
 }
 
+/// Values of `--png-compression`.
+#[derive(Clone, Copy, ValueEnum)]
+#[allow(
+    clippy::missing_docs_in_private_items,
+    reason = "a doc comment on a variant becomes its help text and would change --help"
+)]
+enum PngCompressionArg {
+    // Several times faster, for files about a quarter larger.
+    Fast,
+    // The default.
+    Balanced,
+    // About a tenth smaller, for ten times the time.
+    High,
+}
+
+impl From<PngCompressionArg> for PngCompression {
+    fn from(arg: PngCompressionArg) -> Self {
+        match arg {
+            PngCompressionArg::Fast => PngCompression::Fast,
+            PngCompressionArg::Balanced => PngCompression::Balanced,
+            PngCompressionArg::High => PngCompression::High,
+        }
+    }
+}
+
 /// Arguments of `convert`; the doc comments of the fields are the help
 /// texts.
 #[derive(clap::Args)]
@@ -205,6 +252,9 @@ struct ConvertArgs {
     /// Page background used by hard and hard-95 modes
     #[arg(long, value_enum, default_value = "svg")]
     page_image: PageImageArg,
+    /// How hard PNG pictures are compressed: fast draws them several times faster, for larger files
+    #[arg(long, value_enum, default_value = "balanced")]
+    png_compression: PngCompressionArg,
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
@@ -268,6 +318,7 @@ impl OutputPaths {
 
 /// Runs the command line and exits with status 1 on error.
 fn main() {
+    tune_allocator();
     if let Err(err) = run() {
         eprintln!("error: {err:#}");
         std::process::exit(1);
@@ -362,6 +413,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         bail!("--image-dir must be a relative folder inside the output directory");
     }
     let (paper, stem) = load(&args.input)?;
+    let paper = paper.with_png_compression(args.png_compression.into());
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
     let analysis = paper.analyze_with(AnalyzeOptions {
@@ -655,17 +707,73 @@ fn write_mode(
         equations: equations(args.equations),
     };
     let started = Instant::now();
-    let out = paper.to_html(analysis, &opts);
-    write_file(file, out.html.as_bytes())?;
-    let report = write_images(file, &out.files)?;
+    let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    if !base.as_os_str().is_empty() {
+        std::fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
+    }
+    // The page is written as its pictures are drawn, to a temporary file
+    // that takes the place of `file` once it is complete.
+    let mut partial = file.as_os_str().to_owned();
+    partial.push(".part");
+    let partial = PathBuf::from(partial);
+    let created = std::fs::File::create(&partial).with_context(|| format!("writing {}", partial.display()))?;
+    let mut out = CountingWriter {
+        inner: std::io::BufWriter::new(created),
+        bytes: 0,
+    };
+    let mut images: Vec<String> = Vec::new();
+    let written = paper
+        .write_html(analysis, &opts, &mut out, &mut |rel, data| {
+            let path = base.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, data)?;
+            images.push(rel.to_string());
+            Ok(())
+        })
+        .and_then(|()| out.inner.flush());
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(err).with_context(|| format!("writing {}", file.display()));
+    }
+    std::fs::rename(&partial, file).with_context(|| format!("writing {}", file.display()))?;
+    let report = match images.first() {
+        Some(first) => format!(
+            " + {} image files in {}",
+            images.len(),
+            base.join(Path::new(first).parent().unwrap_or(Path::new(""))).display()
+        ),
+        None => String::new(),
+    };
     eprintln!(
         "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
         mode.name(),
         file.display(),
-        out.html.len() as f64 / BYTES_PER_MB,
+        out.bytes as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// A writer that counts the bytes written through it.
+struct CountingWriter<W> {
+    /// Where the bytes go.
+    inner: W,
+    /// Bytes written so far.
+    bytes: usize,
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes += written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// The `formula` subcommand: prints the MathML of the formulas pictured in `images`.

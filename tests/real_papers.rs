@@ -1763,3 +1763,83 @@ fn html_text(html: &str) -> String {
         .replace("&#39;", "'")
         .replace("&amp;", "&")
 }
+
+/// The HTML written as the pictures are drawn (`Paper::write_html`) is the
+/// same, byte for byte, as `Paper::to_html`, in every mode, with pictures
+/// inlined or as files, and on one thread or several.
+#[test]
+fn written_html_matches_to_html() {
+    let Some(paper) = load("1602.03837v1") else { return };
+    let analysis = paper.analyze();
+    for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
+        for inline_images in [true, false] {
+            for jobs in [1, 3] {
+                let opts = HtmlOptions {
+                    mode,
+                    inline_images,
+                    jobs,
+                    ..Default::default()
+                };
+                let expected = paper.to_html(&analysis, &opts);
+                let mut html = Vec::new();
+                let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+                paper
+                    .write_html(&analysis, &opts, &mut html, &mut |name, data| {
+                        files.push((name.to_string(), data.to_vec()));
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(
+                    html == expected.html.as_bytes(),
+                    "{mode:?}, inline {inline_images}, -j {jobs}"
+                );
+                assert!(files == expected.files, "{mode:?}, inline {inline_images}, -j {jobs}");
+                assert_eq!(files.is_empty(), inline_images);
+            }
+        }
+    }
+}
+
+/// The PNG compression level changes the size of the pictures, never their
+/// pixels, and the default level is `Balanced`.
+#[test]
+fn png_compression_keeps_the_pixels() {
+    use base64::Engine;
+    use kakemono::PngCompression;
+    let Some(paper) = load("1602.03837v1") else { return };
+    let analysis = paper.analyze();
+    let opts = HtmlOptions {
+        mode: Mode::Friendly,
+        ..Default::default()
+    };
+    let default = paper.to_html(&analysis, &opts).html;
+    let pictures = |compression: PngCompression| {
+        let paper = load("1602.03837v1").unwrap().with_png_compression(compression);
+        let html = paper.to_html(&analysis, &opts).html;
+        let uris: Vec<String> = Regex::new(r#"data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)"#)
+            .unwrap()
+            .captures_iter(&html)
+            .map(|found| format!("{}:{}", &found[1], &found[2]))
+            .collect();
+        (html, uris)
+    };
+    let (balanced, balanced_uris) = pictures(PngCompression::Balanced);
+    assert!(balanced == default, "Balanced is the default");
+    let (_, fast_uris) = pictures(PngCompression::Fast);
+    assert_eq!(fast_uris.len(), balanced_uris.len());
+    assert!(fast_uris != balanced_uris, "Fast must give other files");
+    let decode = |uri: &str| {
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(uri.trim_start_matches("png:"))
+            .unwrap();
+        image::load_from_memory(&data).unwrap().to_rgba8()
+    };
+    let mut compared = 0;
+    for (fast, balanced) in fast_uris.iter().zip(&balanced_uris) {
+        if fast.starts_with("png:") && balanced.starts_with("png:") {
+            assert!(decode(fast) == decode(balanced), "a picture changed");
+            compared += 1;
+        }
+    }
+    assert!(compared > 0);
+}

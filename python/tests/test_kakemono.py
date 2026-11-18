@@ -101,6 +101,16 @@ def test_analyze_gives_blocks_in_reading_order():
     assert "Gravitational Waves" in "".join(span["text"] for span in title["spans"])
 
 
+def test_png_compression_trades_size_for_time():
+    fast = kakemono.convert(LIGO, png_compression="fast", embed_fonts=False)
+    balanced = kakemono.convert(LIGO, png_compression="balanced", embed_fonts=False)
+    assert balanced == kakemono.convert(LIGO, embed_fonts=False)
+    assert fast != balanced
+    assert "data:image/png;base64," in fast
+    with pytest.raises(ValueError, match="unknown png_compression"):
+        kakemono.convert(LIGO, png_compression="max")
+
+
 def test_bad_input_raises():
     with pytest.raises(ValueError):
         kakemono.convert(b"not a pdf")
