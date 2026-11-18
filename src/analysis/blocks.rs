@@ -42,6 +42,14 @@ pub static LIST_LABEL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The equation rules for rows without an equation number, tried in order.
+/// Pieces of big brackets, parentheses and braces (U+239B to U+23AD:
+/// ⎛⎜⎝⎞⎟⎠⎡⎢⎣⎤⎥⎦⎧⎨⎩⎪⎫⎬⎭), which TeX stacks to make the tall delimiters of a display.
+const BRACKET_PIECES: [char; 19] = [
+    '\u{239B}', '\u{239C}', '\u{239D}', '\u{239E}', '\u{239F}', '\u{23A0}', '\u{23A1}', '\u{23A2}', '\u{23A3}',
+    '\u{23A4}', '\u{23A5}', '\u{23A6}', '\u{23A7}', '\u{23A8}', '\u{23A9}', '\u{23AA}', '\u{23AB}', '\u{23AC}',
+    '\u{23AD}',
+];
+
 const EQUATION_RULES: [EquationRule; 6] = [
     displayed_formula,
     symbol_row,
@@ -303,8 +311,9 @@ pub struct BlocksConfig {
     pub main_text_min_lines_count: usize,
 
     // --- parts of one equation ---
-    /// Two equation blocks side by side whose boxes share at least this
-    /// fraction of the height of the lower one ...
+    /// Two equation blocks side by side, in the same column or in columns
+    /// of a zone that holds nothing but parts of equations, whose boxes
+    /// share at least this fraction of the height of the lower one ...
     pub equation_join_min_overlap_ratio: f32,
     /// ... and are at most this far apart (multiple of the body size) are
     /// two parts of one display that the reading order cut apart (a matrix
@@ -312,7 +321,9 @@ pub struct BlocksConfig {
     pub equation_join_max_gap_em: f32,
     /// Equation blocks of different zones of the page whose boxes overlap
     /// or are at most this far apart (multiple of the body size) are parts
-    /// of one display: the reading order cut a tall matrix into zones.
+    /// of one display: the reading order cut a tall matrix into zones. So is
+    /// a text block that holds pieces of a big bracket (⎛, ⎟, ⎠: rows of a
+    /// matrix read as text) at most this far from an equation.
     pub equation_touch_max_gap_em: f32,
     /// A text block with at least this fraction of its area inside the box
     /// of an equation is a part of it (rows of a matrix read as text).
@@ -705,7 +716,9 @@ pub fn join_equation_parts(blocks: &mut Vec<RawBlock>, stats: &DocStats, cfg: &B
             continue;
         };
         let (target, loc) = (equation.bbox, equation.loc);
-        let part = (0..blocks.len()).find(|&j| j != i && is_equation_part(&target, loc, &blocks[j], stats, cfg));
+        let math_zone = is_math_zone(blocks, loc.zone);
+        let part =
+            (0..blocks.len()).find(|&j| j != i && is_equation_part(&target, loc, math_zone, &blocks[j], stats, cfg));
         let Some(j) = part else {
             i += 1;
             continue;
@@ -737,19 +750,47 @@ pub fn join_equation_parts(blocks: &mut Vec<RawBlock>, stats: &DocStats, cfg: &B
     }
 }
 
+/// Whether every block of zone `zone` of the page is an equation or a text
+/// block made of pieces of math (see [`has_bracket_pieces`]): the zone was
+/// cut out of the page by a display, whose columns are not columns of text.
+fn is_math_zone(blocks: &[RawBlock], zone: usize) -> bool {
+    blocks.iter().all(|block| match block {
+        RawBlock::Equation(_) => true,
+        RawBlock::Text(text) | RawBlock::Footnote(text) => text.loc.zone != zone || has_bracket_pieces(text),
+        RawBlock::Float { loc, .. } => loc.zone != zone,
+    })
+}
+
+/// Whether a text block holds pieces of a big bracket (⎛, ⎜, ⎝, ⎞, ⎟,
+/// ⎠ and the like), which only ever make up a display.
+fn has_bracket_pieces(text: &TextBlock) -> bool {
+    text.lines
+        .iter()
+        .any(|line| line.glyphs.iter().any(|glyph| glyph.text.contains(BRACKET_PIECES)))
+}
+
 /// Whether `block` is a part of the equation whose box is `target` (at
-/// `loc`): an equation beside it, level with it, in the same column; an
-/// equation of another zone that touches it; or a text block inside it.
-fn is_equation_part(target: &Rect, loc: Loc, block: &RawBlock, stats: &DocStats, cfg: &BlocksConfig) -> bool {
+/// `loc`): an equation beside it, level with it, in the same column (or
+/// in another column of a zone of math, `math_zone`); an equation of
+/// another zone that touches it; a text block inside it, or a text block
+/// of bracket pieces that touches it.
+fn is_equation_part(
+    target: &Rect,
+    loc: Loc,
+    math_zone: bool,
+    block: &RawBlock,
+    stats: &DocStats,
+    cfg: &BlocksConfig,
+) -> bool {
+    let touches = |bbox: &Rect| {
+        let gap_x = (bbox.x0 - target.x1).max(target.x0 - bbox.x1);
+        let gap_y = (bbox.y0 - target.y1).max(target.y0 - bbox.y1);
+        let max_gap = cfg.equation_touch_max_gap_em * stats.body_size;
+        gap_x <= max_gap && gap_y <= max_gap
+    };
     match block {
-        RawBlock::Equation(other) if other.loc.zone != loc.zone => {
-            let bbox = other.bbox;
-            let gap_x = (bbox.x0 - target.x1).max(target.x0 - bbox.x1);
-            let gap_y = (bbox.y0 - target.y1).max(target.y0 - bbox.y1);
-            let max_gap = cfg.equation_touch_max_gap_em * stats.body_size;
-            gap_x <= max_gap && gap_y <= max_gap
-        }
-        RawBlock::Equation(other) if (other.loc.zone, other.loc.col) == (loc.zone, loc.col) => {
+        RawBlock::Equation(other) if other.loc.zone != loc.zone => touches(&other.bbox),
+        RawBlock::Equation(other) if other.loc.zone == loc.zone && (other.loc.col == loc.col || math_zone) => {
             let bbox = other.bbox;
             let overlap = (target.y1.min(bbox.y1) - target.y0.max(bbox.y0)).max(0.0);
             let lower = target.height().min(bbox.height()).max(1.0);
@@ -764,6 +805,7 @@ fn is_equation_part(target: &Rect, loc: Loc, block: &RawBlock, stats: &DocStats,
             let height = (target.y1.min(bbox.y1) - target.y0.max(bbox.y0)).max(0.0);
             let area = (bbox.width() * bbox.height()).max(1.0);
             width * height >= cfg.equation_absorb_min_overlap_ratio * area
+                || (has_bracket_pieces(text) && touches(&bbox))
         }
         _ => false,
     }
@@ -1985,11 +2027,13 @@ fn indent_changes(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlocksConfig, split_paragraphs};
+    use super::{BlocksConfig, EquationBlock, RawBlock, TextBlock, join_equation_parts, split_paragraphs};
     use crate::analysis::lines::{LinesConfig, build_lines};
+    use crate::analysis::page::DocStats;
     use crate::backend::{Dir, FontInfo, Glyph, RawPage};
     use crate::common::geom::Rect;
     use crate::model::Line;
+    use crate::model::Loc;
 
     /// The lines of a page holding `rows` of 10 pt text, one every 12 pt,
     /// each glyph half an em wide.
@@ -2064,5 +2108,89 @@ mod tests {
             "Amin Tootoonchian Model Distribution, Systems & Networking Lead",
         ];
         assert_eq!(paragraphs(&names).len(), names.len());
+    }
+
+    /// A block of `rows` (see [`lines_of`]) moved right by `dx` and down by
+    /// `dy`, in column `col` of zone `zone`: an equation, or text.
+    fn part(rows: &[&str], dx: f32, dy: f32, zone: usize, col: usize, equation: bool) -> RawBlock {
+        let lines: Vec<Line> = lines_of(rows)
+            .into_iter()
+            .map(|(mut line, _)| {
+                line.bbox = Rect::new(
+                    line.bbox.x0 + dx,
+                    line.bbox.y0 + dy,
+                    line.bbox.x1 + dx,
+                    line.bbox.y1 + dy,
+                );
+                line.baseline += dy;
+                line
+            })
+            .collect();
+        let bbox = lines.iter().map(|line| line.bbox).reduce(|a, b| a.union(&b)).unwrap();
+        let loc = Loc {
+            page: 0,
+            zone,
+            zone_cols: 2,
+            col,
+            leaf: col,
+        };
+        if equation {
+            RawBlock::Equation(EquationBlock {
+                lines,
+                bbox,
+                number: None,
+                number_line: None,
+                loc,
+            })
+        } else {
+            RawBlock::Text(TextBlock {
+                lines,
+                loc,
+                left: bbox.x0,
+                right: bbox.x1,
+                centered: false,
+                gap_before: 0.0,
+                bbox,
+            })
+        }
+    }
+
+    const STATS: DocStats = DocStats {
+        body_size: 10.0,
+        body_font: 0,
+        leading: 12.0,
+    };
+
+    /// A matrix that the reading order cut into two columns of a zone (its
+    /// first rows read as text, set off by the pieces of its brackets) is
+    /// joined into one equation.
+    #[test]
+    fn matrix_cut_into_columns_is_one_equation() {
+        let mut blocks = vec![
+            part(&["⎛ cosh φ"], 60.0, 0.0, 1, 0, false),
+            part(&["", "Λ = ⎜⎜ 0", "⎝ 0"], 60.0, 0.0, 1, 0, true),
+            part(&["− sinh φ 0 0 ⎞"], 120.0, 0.0, 1, 1, false),
+            part(&["", "1 0 ⎟ .", "0 1 ⎠"], 130.0, 0.0, 1, 1, true),
+        ];
+        join_equation_parts(&mut blocks, &STATS, &BlocksConfig::default());
+        assert_eq!(blocks.len(), 1);
+        let RawBlock::Equation(equation) = &blocks[0] else {
+            panic!("the parts make an equation");
+        };
+        assert_eq!(equation.lines.len(), 6);
+    }
+
+    /// Two equations level with each other in the two columns of a zone of
+    /// running text (a two-column page) stay apart.
+    #[test]
+    fn equations_of_two_text_columns_stay_apart() {
+        let mut blocks = vec![
+            part(&["Some running text of the left column."], 0.0, -24.0, 1, 0, false),
+            part(&["x = y + z"], 60.0, 0.0, 1, 0, true),
+            part(&["Some running text of the right column."], 220.0, -24.0, 1, 1, false),
+            part(&["a = b"], 240.0, 0.0, 1, 1, true),
+        ];
+        join_equation_parts(&mut blocks, &STATS, &BlocksConfig::default());
+        assert_eq!(blocks.len(), 4);
     }
 }
