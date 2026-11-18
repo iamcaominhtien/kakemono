@@ -41,7 +41,7 @@ pub mod raster;
 pub mod render;
 
 pub use analysis::pipeline::Analysis;
-pub use backend::PageRenderer;
+pub use backend::{PageRenderer, PngCompression};
 pub use config::{AnalyzeOptions, LayoutConfig};
 pub use paper::{Paper, convert};
 pub use render::{

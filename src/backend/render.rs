@@ -56,6 +56,57 @@ const PIXELATED_STYLE: &str = " style=\"image-rendering: pixelated\"";
 /// 14 cells), and stay sharp.
 const PIXELATED_MIN_PIXEL_PT: f64 = 1.0;
 
+/// How hard the PNG pictures drawn from the PDF are compressed. Every
+/// level keeps the pixels exactly; they differ in time and size only. On a
+/// 1185-page textbook, compressing its 651 pictures took 0.75 s with
+/// `Fast`, 2.9 s with `Balanced` and 26 s with `High`, for 59, 46 and
+/// 42 MB of PNG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PngCompression {
+    /// Several times faster than `Balanced`, for files about a quarter
+    /// larger: for converting many documents on a slow machine.
+    Fast,
+    /// The default.
+    #[default]
+    Balanced,
+    /// Slightly smaller files (about a tenth) for ten times the time.
+    High,
+}
+
+impl PngCompression {
+    /// The level of the `png` crate.
+    fn level(self) -> png::Compression {
+        match self {
+            Self::Fast => png::Compression::Fast,
+            Self::Balanced => png::Compression::Balanced,
+            Self::High => png::Compression::High,
+        }
+    }
+}
+
+/// Encodes a pixmap as a PNG at the `compression` level: opaque pixmaps as
+/// RGB, others as RGBA with straight alpha (as `Pixmap::into_png`, which
+/// gives the `Balanced` level byte for byte).
+fn encode_png(pixmap: Pixmap, compression: PngCompression) -> Option<Vec<u8>> {
+    if compression == PngCompression::Balanced {
+        return pixmap.into_png().ok();
+    }
+    let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+    let (color, pixels) = match pixmap.try_take_rgb8(hayro::vello_cpu::peniko::ImageAlphaType::Alpha) {
+        hayro::vello_cpu::Pixels::Rgb8(pixels) => (png::ColorType::Rgb, pixels),
+        hayro::vello_cpu::Pixels::Rgba8(pixels) => (png::ColorType::Rgba, pixels),
+    };
+    let mut data = Vec::new();
+    let mut encoder = png::Encoder::new(&mut data, width, height);
+    encoder.set_color(color);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(compression.level());
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(&pixels).ok()?;
+    writer.finish().ok()?;
+    Some(data)
+}
+
 /// Draws pages and page regions of one PDF. Keeps the render caches between
 /// calls, so it should be reused for all the pictures a thread draws.
 pub struct PageRenderer<'a> {
@@ -67,6 +118,8 @@ pub struct PageRenderer<'a> {
     svg_cache: hayro_svg::RenderCache<'a>,
     /// Interpreter settings shared by both renderers.
     settings: InterpreterSettings,
+    /// How hard PNG pictures are compressed.
+    png: PngCompression,
 }
 
 impl<'a> PageRenderer<'a> {
@@ -77,7 +130,15 @@ impl<'a> PageRenderer<'a> {
             cache: RenderCache::new(),
             svg_cache: hayro_svg::RenderCache::new(),
             settings: InterpreterSettings::default(),
+            png: PngCompression::default(),
         }
+    }
+
+    /// The same renderer, compressing its PNG pictures at `compression`.
+    #[must_use]
+    pub fn with_png_compression(mut self, compression: PngCompression) -> Self {
+        self.png = compression;
+        self
     }
 
     /// Renders `rect` (page points, top-left origin) of a page at `scale`
@@ -90,7 +151,7 @@ impl<'a> PageRenderer<'a> {
     pub fn region_png(&self, page: usize, rect: Rect, scale: f32, transparent: bool) -> Option<(Vec<u8>, u32, u32)> {
         let pixmap = self.region_pixmap(page, rect, scale, transparent)?;
         let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
-        let png = pixmap.into_png().ok()?;
+        let png = encode_png(pixmap, self.png)?;
         Some((png, width, height))
     }
 
@@ -103,7 +164,7 @@ impl<'a> PageRenderer<'a> {
         let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
         // On white, every pixel is opaque: premultiplied is plain RGBA.
         let rgba = (!transparent).then(|| pixmap.data_as_u8_slice().to_vec());
-        let png = pixmap.into_png().ok()?;
+        let png = encode_png(pixmap, self.png)?;
         if let Some(rgba) = rgba
             && png.len() >= PHOTO_MIN_PNG_BYTES
             && many_colours(&rgba, PHOTO_MIN_COLOURS)

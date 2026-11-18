@@ -782,6 +782,7 @@ dependencies = [
  "kurbo 0.13.1",
  "libmimalloc-sys",
  "mimalloc",
+ "png 0.18.1",
  "regex",
  "resvg",
  "serde",

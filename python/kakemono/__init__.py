@@ -43,6 +43,8 @@ __version__: str = _kakemono.__version__
 MODES = ("hard", "hard-95", "medium", "friendly")
 
 Mode = Literal["hard", "hard-95", "medium", "friendly"]
+#: How hard PNG pictures are compressed (the pixels are the same).
+PngCompression = Literal["fast", "balanced", "high"]
 #: A PDF: its bytes, a path to a file, or an arXiv id or URL.
 Source = Union[bytes, bytearray, memoryview, str, "os.PathLike[str]"]
 
@@ -71,6 +73,7 @@ def convert_all(
     embed_fonts: bool = True,
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: PngCompression = "balanced",
 ) -> Dict[str, str]:
     """Convert a PDF to HTML in several modes, analysing it only once.
 
@@ -83,6 +86,9 @@ def convert_all(
     - ``embed_fonts``: embed the reading and math fonts, or use the reader's.
     - ``scale``: image resolution in pixels per PDF point (3 is about 216 dpi).
     - ``jobs``: worker threads, 0 for one per core.
+    - ``png_compression``: ``"fast"`` draws the pictures several times faster
+      for PNG files about a quarter larger, ``"high"`` makes them about a
+      tenth smaller for ten times the time; the pixels are the same.
 
     Raises ``ValueError`` when the data is not a readable PDF or an option is
     wrong, and ``FileNotFoundError`` when `source` names nothing.
@@ -99,6 +105,7 @@ def convert_all(
         embed_fonts=embed_fonts,
         scale=scale,
         jobs=jobs,
+        png_compression=png_compression,
     )
     return dict(zip(modes, pages))
 
@@ -148,6 +155,7 @@ def to_docx(
     equations: Literal["mathml", "image"] = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     save_images: bool = False,
 ) -> bytes:
@@ -167,7 +175,8 @@ def to_docx(
     folder = _image_dir(path, image_dir) if save_images and path is not None else None
     data, name = _load(source)
     docx, files = _kakemono.to_docx(
-        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder
+        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
+        png_compression=png_compression,
     )
     if path is not None:
         _write(path, docx, files)
@@ -182,6 +191,7 @@ def to_markdown(
     equations: Literal["mathml", "image"] = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     inline_images: bool = False,
 ) -> str:
@@ -207,6 +217,7 @@ def to_markdown(
         equations=equations,
         scale=scale,
         jobs=jobs,
+        png_compression=png_compression,
         image_dir=folder,
         inline_images=inline,
     )
@@ -223,6 +234,7 @@ def to_latex(
     equations: Literal["mathml", "image"] = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
 ) -> str:
     """Convert a PDF to a LaTeX document (``.tex``) and return its source.
@@ -241,7 +253,8 @@ def to_latex(
     folder = _image_dir(path, image_dir) if path is not None else "images"
     data, name = _load(source)
     text, files = _kakemono.to_latex(
-        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder
+        data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
+        png_compression=png_compression,
     )
     if path is not None:
         _write(path, text, files)
@@ -256,6 +269,7 @@ def to_epub(
     equations: Literal["mathml", "image"] = "mathml",
     scale: float = 3.0,
     jobs: int = 0,
+    png_compression: PngCompression = "balanced",
     max_math_width_em: float = 20.0,
     cover: bool = True,
     modified: Optional[str] = None,
@@ -286,6 +300,7 @@ def to_epub(
         equations=equations,
         scale=scale,
         jobs=jobs,
+        png_compression=png_compression,
         max_math_width_em=max_math_width_em,
         cover=cover,
         modified=modified,

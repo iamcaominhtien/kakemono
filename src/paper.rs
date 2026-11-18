@@ -2,7 +2,7 @@
 //! Word, Markdown, LaTeX or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
-use crate::backend::{PageRenderer, PdfFile};
+use crate::backend::{PageRenderer, PdfFile, PngCompression};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
@@ -40,6 +40,17 @@ impl Paper {
     /// in [`Meta::source`].
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
+        self
+    }
+
+    /// Sets how hard the PNG pictures of every output are compressed
+    /// ([`PngCompression::Balanced`] by default). The pixels stay the same;
+    /// [`PngCompression::Fast`] draws the pictures faster for larger files.
+    /// Pictures with many colours are stored as JPEG when that is much
+    /// smaller than their PNG, so a few more of them may be with `Fast`.
+    #[must_use]
+    pub fn with_png_compression(mut self, compression: PngCompression) -> Self {
+        self.pdf.set_png_compression(compression);
         self
     }
 

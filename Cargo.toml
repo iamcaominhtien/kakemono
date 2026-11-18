@@ -46,6 +46,7 @@ resvg = { version = "0.45", default-features = false, features = ["raster-images
 # of the system allocator.
 mimalloc = { version = "0.1.52", features = ["v2"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
+png = "0.18"
 
 [profile.release]
 opt-level = 3

@@ -15,7 +15,7 @@ use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
-    Paper,
+    Paper, PngCompression,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -197,6 +197,31 @@ enum PageImageArg {
     Png,
 }
 
+/// Values of `--png-compression`.
+#[derive(Clone, Copy, ValueEnum)]
+#[allow(
+    clippy::missing_docs_in_private_items,
+    reason = "a doc comment on a variant becomes its help text and would change --help"
+)]
+enum PngCompressionArg {
+    // Several times faster, for files about a quarter larger.
+    Fast,
+    // The default.
+    Balanced,
+    // About a tenth smaller, for ten times the time.
+    High,
+}
+
+impl From<PngCompressionArg> for PngCompression {
+    fn from(arg: PngCompressionArg) -> Self {
+        match arg {
+            PngCompressionArg::Fast => PngCompression::Fast,
+            PngCompressionArg::Balanced => PngCompression::Balanced,
+            PngCompressionArg::High => PngCompression::High,
+        }
+    }
+}
+
 /// Arguments of `convert`; the doc comments of the fields are the help
 /// texts.
 #[derive(clap::Args)]
@@ -227,6 +252,9 @@ struct ConvertArgs {
     /// Page background used by hard and hard-95 modes
     #[arg(long, value_enum, default_value = "svg")]
     page_image: PageImageArg,
+    /// How hard PNG pictures are compressed: fast draws them several times faster, for larger files
+    #[arg(long, value_enum, default_value = "balanced")]
+    png_compression: PngCompressionArg,
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
@@ -385,6 +413,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         bail!("--image-dir must be a relative folder inside the output directory");
     }
     let (paper, stem) = load(&args.input)?;
+    let paper = paper.with_png_compression(args.png_compression.into());
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
     let analysis = paper.analyze_with(AnalyzeOptions {

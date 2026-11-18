@@ -3,7 +3,7 @@
 
 use super::extract::{RawPage, extract_page};
 use super::fonts::{FontInfo, FontRegistry, UNKNOWN_FONT};
-use super::render::PageRenderer;
+use super::render::{PageRenderer, PngCompression};
 use crate::common::parallel;
 use anyhow::{Result, anyhow};
 use hayro_interpret::{InterpreterCache, InterpreterSettings};
@@ -19,6 +19,8 @@ const FILE_NAME_TITLE_MARKS: [&str; 7] = [".tex", ".dvi", ".pdf", ".doc", ".docx
 pub struct PdfFile {
     /// The parsed file.
     pdf: Pdf,
+    /// How hard the renderers compress PNG pictures.
+    png: PngCompression,
 }
 
 impl PdfFile {
@@ -31,7 +33,10 @@ impl PdfFile {
         if pdf.pages().is_empty() {
             return Err(anyhow!("the PDF has no pages"));
         }
-        Ok(Self { pdf })
+        Ok(Self {
+            pdf,
+            png: PngCompression::default(),
+        })
     }
 
     /// Number of pages.
@@ -42,7 +47,12 @@ impl PdfFile {
     /// A renderer for pictures of pages and page regions. Not thread-safe:
     /// every thread that draws needs its own.
     pub fn renderer(&self) -> PageRenderer<'_> {
-        PageRenderer::new(&self.pdf)
+        PageRenderer::new(&self.pdf).with_png_compression(self.png)
+    }
+
+    /// Sets how hard the renderers of this file compress PNG pictures.
+    pub fn set_png_compression(&mut self, compression: PngCompression) {
+        self.png = compression;
     }
 
     /// Interprets every page, on up to `jobs` threads (0 = one per CPU), and
