@@ -16,7 +16,7 @@ use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, Wo
 use super::pictures::normalize;
 use super::styles::{Numbering, RunProps, Styles};
 use super::symbols::{symbol_font_char, symbol_font_text};
-use crate::model::Span;
+use crate::model::{MathNode, Span};
 use anyhow::{Context, Result};
 use fib::{Fib, Pair, Text, plc};
 use props::{CellDef, ParaProps, Run, char_props, char_style, para_props, run_at};
@@ -81,6 +81,7 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
     let table_name = if fib.table_1 { "/1Table" } else { "/0Table" };
     let table = stream(&mut file, table_name)?.context("damaged document: no table stream")?;
     let data_stream = stream(&mut file, "/Data")?.unwrap_or_default();
+    let equations = equation_streams(&mut file);
     let text = Text::read(&word, fib.slice(&table, Pair::Clx))?;
     let fonts = props::fonts(fib.slice(&table, Pair::SttbfFfn));
     let styles = props::stylesheet(fib.slice(&table, Pair::Stshf), &fonts);
@@ -103,6 +104,7 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         anchors: HashMap::new(),
         text_boxes: HashMap::new(),
         boxes: Vec::new(),
+        equations,
     };
     reader.read_text_boxes(&fib, &table);
     for (cp, name) in props::bookmarks(fib.slice(&table, Pair::SttbfBkmk), fib.slice(&table, Pair::PlcfBkf)) {
@@ -134,6 +136,26 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         body_size_pt: styles.body_size_pt,
         body_font: styles.body_font.clone(),
     })
+}
+
+/// The `Equation Native` streams of the objects embedded in the document
+/// (`ObjectPool/_<number>`), by number.
+fn equation_streams(file: &mut cfb::CompoundFile<Cursor<&[u8]>>) -> HashMap<u32, Vec<u8>> {
+    let names: Vec<(u32, String)> = file
+        .read_storage("/ObjectPool")
+        .map(|entries| {
+            entries
+                .filter_map(|entry| {
+                    let number = entry.name().strip_prefix('_')?.parse().ok()?;
+                    Some((number, format!("/ObjectPool/{}/Equation Native", entry.name())))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names
+        .into_iter()
+        .filter_map(|(number, path)| Some((number, stream(file, &path).ok()??)))
+        .collect()
 }
 
 /// The contents of the stream `name`, or `None` when the file has none.
@@ -188,6 +210,11 @@ struct Field {
     in_result: bool,
     /// The link of the result.
     href: Option<String>,
+    /// The formula of an embedded equation object of the field
+    /// (`EMBED Equation.3`), which stands for its result (a picture).
+    formula: Option<MathNode>,
+    /// The result is left out (the formula stands for it).
+    skip_result: bool,
 }
 
 /// A table being read: its rows so far, and the cells of the current row.
@@ -232,6 +259,9 @@ struct Reader<'a> {
     /// Text box contents anchored in the paragraph being read: they come
     /// after it.
     boxes: Vec<Item>,
+    /// The `Equation Native` streams of the embedded formulas, by the
+    /// number of their object storage.
+    equations: HashMap<u32, Vec<u8>>,
 }
 
 impl Reader<'_> {
@@ -338,6 +368,11 @@ impl Reader<'_> {
             let unit = self.text.units[cp as usize];
             let fc = self.text.fcs[cp as usize];
             let (run_props, extras) = self.char_props(&style_id, fc);
+            // The object of an embedding field is named by its separator (or
+            // by a picture character of its instruction).
+            if matches!(unit, PICTURE | FIELD_SEPARATE) && extras.special && extras.ole {
+                self.field_object(extras.picture);
+            }
             if self.field_char(unit, &mut units, current.as_ref(), &mut para) {
                 continue;
             }
@@ -351,6 +386,7 @@ impl Reader<'_> {
             self.character(cp, unit, extras, &mut units, current.as_ref(), &mut para);
         }
         flush(&mut units, current.as_ref(), self.field_href(), &mut para);
+        super::display_alone_formula(&mut para);
         para
     }
 
@@ -369,6 +405,10 @@ impl Reader<'_> {
                 if let Some(field) = self.fields.last_mut() {
                     field.in_result = true;
                     field.href = field_link(&field.instr);
+                    if let Some(node) = field.formula.take() {
+                        para.inlines.push(Inline::Math { node, display: false });
+                        field.skip_result = true;
+                    }
                 }
                 true
             }
@@ -377,6 +417,7 @@ impl Reader<'_> {
                 self.fields.pop();
                 true
             }
+            _ if self.fields.iter().any(|field| field.skip_result) => true,
             _ if self.fields.iter().any(|field| !field.in_result) => {
                 if let Some(field) = self.fields.last_mut() {
                     // Objects of the field (its data) stand in the
@@ -391,6 +432,17 @@ impl Reader<'_> {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Notes the formula of the embedded object stored under `location`
+    /// when it appears in the instruction of the open field.
+    fn field_object(&mut self, location: Option<u32>) {
+        let formula = location
+            .and_then(|location| self.equations.get(&location))
+            .and_then(|native| super::mtef::equation(native));
+        if let Some(field) = self.fields.last_mut().filter(|field| !field.in_result) {
+            field.formula = formula.or(field.formula.take());
         }
     }
 
@@ -413,7 +465,14 @@ impl Reader<'_> {
             }
             PICTURE if extras.special => {
                 flush(units, current, self.field_href(), para);
-                if let Some(location) = extras.picture {
+                let formula = extras
+                    .picture
+                    .filter(|_| extras.ole)
+                    .and_then(|location| self.equations.get(&location))
+                    .and_then(|native| super::mtef::equation(native));
+                if let Some(node) = formula {
+                    para.inlines.push(Inline::Math { node, display: false });
+                } else if let Some(location) = extras.picture {
                     para.inlines.push(self.picture(location));
                 }
             }

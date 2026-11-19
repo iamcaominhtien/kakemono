@@ -12,6 +12,7 @@ mod docx;
 pub mod fmt;
 mod ir;
 pub(crate) mod metafile;
+pub(crate) mod mtef;
 pub(crate) mod omml;
 mod pictures;
 mod styles;
@@ -54,4 +55,37 @@ pub fn read(data: &[u8], format: WordFormat, source: Option<String>) -> Result<D
         WordFormat::Doc => doc::read(data)?,
     };
     Ok(build::build(word, source))
+}
+
+/// The `Equation Native` stream of an embedded OLE object (a compound
+/// file), which holds a MathType or Equation Editor formula.
+pub(crate) fn equation_native(ole: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut file = cfb::CompoundFile::open(std::io::Cursor::new(ole)).ok()?;
+    let mut stream = file.open_stream("/Equation Native").ok()?;
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// Shows a formula alone in its paragraph (an embedded equation object,
+/// with nothing but spaces and tabs around it) on a line of its own.
+pub(crate) fn display_alone_formula(para: &mut ir::Para) {
+    let mut formulas = para
+        .inlines
+        .iter()
+        .filter(|inline| matches!(inline, ir::Inline::Math { .. }));
+    let alone = formulas.next().is_some()
+        && formulas.next().is_none()
+        && para.inlines.iter().all(|inline| match inline {
+            ir::Inline::Math { .. } => true,
+            ir::Inline::Text(span) => span.text.trim().is_empty(),
+            _ => false,
+        });
+    if alone {
+        para.inlines.retain(|inline| matches!(inline, ir::Inline::Math { .. }));
+        if let Some(ir::Inline::Math { display, .. }) = para.inlines.first_mut() {
+            *display = true;
+        }
+    }
 }

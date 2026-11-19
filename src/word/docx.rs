@@ -7,10 +7,11 @@ use super::pictures::normalize;
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
-    DC_NS, DRAWING_NS, MATH_NS, MC_NS, PACKAGE_REL_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child, children, is, val,
+    DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child,
+    children, is, val,
 };
 use super::zip::ZipArchive;
-use crate::model::Span;
+use crate::model::{MathNode, Span};
 use anyhow::{Context, Result};
 use roxmltree::{Document as Xml, Node, ParsingOptions};
 use std::collections::HashMap;
@@ -369,6 +370,7 @@ impl Reader<'_> {
         self.fields.clear();
         let base = self.styles.run_props(style_id, None);
         self.content(node, style_id, base, None, &mut para);
+        super::display_alone_formula(&mut para);
         para
     }
 
@@ -572,6 +574,12 @@ impl Reader<'_> {
             self.fields = fields;
             self.boxes.extend(items);
         }
+        // A MathType or Equation Editor formula: its structure rather than
+        // its picture.
+        if let Some(node) = self.ole_equation(node) {
+            para.inlines.push(Inline::Math { node, display: false });
+            return;
+        }
         if let Some(blip) = node.descendants().find(|item| is(*item, DRAWING_NS, "blip")) {
             let (width_pt, height_pt) = drawing_size(node);
             let alt = node
@@ -609,6 +617,21 @@ impl Reader<'_> {
                 alt: alt.to_string(),
             });
         }
+    }
+
+    /// The formula of an embedded MathType or Equation Editor object in
+    /// `node` (`o:OLEObject` with a `ProgID` of `Equation.*`).
+    fn ole_equation(&self, node: Node<'_, '_>) -> Option<MathNode> {
+        let ole = node.descendants().find(|item| is(*item, OFFICE_NS, "OLEObject"))?;
+        if !ole
+            .attribute("ProgID")
+            .is_some_and(|prog| prog.starts_with("Equation."))
+        {
+            return None;
+        }
+        let rel = self.rels.get(attr(ole, REL_NS, "id")?).filter(|rel| !rel.external)?;
+        let data = self.zip.read(&rel.target).ok()??;
+        super::mtef::equation(&super::equation_native(&data)?)
     }
 
     /// The index of the picture of relationship `id`, read and converted

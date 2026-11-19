@@ -15,6 +15,8 @@ pub(crate) const DRAWING_NS: &str = "http://schemas.openxmlformats.org/drawingml
 pub(crate) const WP_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 /// Namespace of VML (`v:`), the pictures of older documents.
 pub(crate) const VML_NS: &str = "urn:schemas-microsoft-com:vml";
+/// Office extensions of VML (`o:OLEObject`).
+pub(crate) const OFFICE_NS: &str = "urn:schemas-microsoft-com:office:office";
 /// Namespace of the markup compatibility elements (`mc:`).
 pub(crate) const MC_NS: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 /// Namespace of the package relationships (`.rels` parts).

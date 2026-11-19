@@ -48,6 +48,9 @@ const SPRM_C_FTC: u16 = 0x4A3D;
 const SPRM_C_HPS: u16 = 0x4A43;
 /// Character sprm: where a picture is in the `Data` stream.
 const SPRM_C_PIC_LOCATION: u16 = 0x6A03;
+/// The picture of a special character is an embedded OLE object, stored
+/// in the `ObjectPool` storage under the picture location.
+const SPRM_C_FOLE2: u16 = 0x080A;
 /// Character sprm: a symbol character and its font.
 const SPRM_C_SYMBOL: u16 = 0x6A09;
 /// Character sprm: the character style.
@@ -258,6 +261,8 @@ pub(crate) struct CharExtras {
     pub(crate) picture: Option<u32>,
     /// A symbol character: its font and character code.
     pub(crate) symbol: Option<(u16, u16)>,
+    /// The picture is that of an embedded OLE object.
+    pub(crate) ole: bool,
 }
 
 /// The style of a character run: its character style, its text
@@ -292,6 +297,7 @@ pub(crate) fn char_props(grpprl: &[u8], style_props: RunProps, fonts: &[String])
             }
             SPRM_C_SPEC => extras.special = byte != 0,
             SPRM_C_PIC_LOCATION => extras.picture = u32_at(operand, 0),
+            SPRM_C_FOLE2 => extras.ole = operand.first().is_some_and(|&flag| flag != 0),
             SPRM_C_SYMBOL => extras.symbol = Some((u16_at(operand, 0).unwrap_or(0), u16_at(operand, 2).unwrap_or(0))),
             _ => {}
         }
