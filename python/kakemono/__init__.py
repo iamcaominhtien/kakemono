@@ -48,10 +48,12 @@ MODES = ("hard", "hard-95", "medium", "friendly")
 Mode = Literal["hard", "hard-95", "medium", "friendly"]
 #: How hard PNG pictures are compressed (the pixels are the same).
 PngCompression = Literal["fast", "balanced", "high"]
+#: A path to a file, or a string.
+PathArg = Union[str, "os.PathLike[str]"]
 #: A PDF: its bytes, a path to a file, or an arXiv id or URL.
-Source = Union[bytes, bytearray, memoryview, str, "os.PathLike[str]"]
+Source = Union[bytes, bytearray, memoryview, PathArg]
 #: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
-Content = Union[Dict[str, Any], str, "os.PathLike[str]"]
+Content = Union[Dict[str, Any], PathArg]
 
 
 def _load(source: Source) -> tuple[bytes, str | None]:
@@ -142,8 +144,6 @@ def convert(source: Source, mode: Mode = "friendly", **options: Any) -> str:
     """
     return convert_all(source, [mode], **options)[mode]
 
-
-PathArg = Union[str, "os.PathLike[str]"]
 
 
 def _write(path: PathArg, data: Union[bytes, str], files: Sequence[tuple[str, bytes]] = ()) -> None:

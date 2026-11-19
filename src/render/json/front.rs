@@ -184,51 +184,8 @@ struct People {
 impl People {
     /// Reads one author block.
     fn card(&mut self, block: &Block, date: &mut Option<String>) {
-        let rows: Vec<&[Span]> = if block.rows.is_empty() {
-            vec![&block.spans]
-        } else {
-            block.rows.iter().map(Vec::as_slice).collect()
-        };
         let first = self.authors.len();
-        let mut names_done = false;
-        let mut names_continue = false;
-        let mut affiliation_rows: Vec<String> = Vec::new();
-        let mut emails: Vec<String> = Vec::new();
-        for row in rows {
-            let text = plain_of(row);
-            if text.contains('@') {
-                emails.extend(emails_in(&text));
-                names_done = true;
-                continue;
-            }
-            if let Some(found) = row_date(&text) {
-                date.get_or_insert(found);
-                names_done = true;
-                continue;
-            }
-            if starts_with_mark(row) {
-                self.mark_rows.extend(marked_row(row));
-                names_done = true;
-                continue;
-            }
-            // Names fill the first row, and the next ones while a row ends
-            // with a comma or the next starts with "and".
-            let continued = self.authors.len() == first || names_continue || text.starts_with("and ");
-            if !names_done
-                && continued
-                && let Some(names) = names_row(row, &block.lines)
-            {
-                self.authors.extend(names);
-                names_continue = text.ends_with(',');
-                continue;
-            }
-            names_done = true;
-            if is_affiliation(&text) {
-                // The raw text, which keeps the wide spaces between
-                // affiliations printed side by side.
-                affiliation_rows.push(row.iter().map(|span| span.text.as_str()).collect());
-            }
-        }
+        let (affiliation_rows, emails) = self.read_rows(block, date);
         let names = first..self.authors.len();
         // The names of the block just before, when they had no affiliation.
         let unaffiliated = self.unaffiliated.take();
@@ -238,10 +195,7 @@ impl People {
             if let Some(before) = unaffiliated
                 && !affiliation_rows.is_empty()
             {
-                let index = self.affiliation(&affiliation_rows.join(", "));
-                for author in before {
-                    self.authors[author].affiliations.push(index);
-                }
+                self.give_affiliation(before, &affiliation_rows.join(", "));
             }
             self.loose_emails.extend(emails);
             return;
@@ -256,14 +210,10 @@ impl People {
         };
         if let Some(pieces) = side_by_side {
             for (author, part) in names.clone().zip(pieces) {
-                let index = self.affiliation(&part);
-                self.authors[author].affiliations.push(index);
+                self.give_affiliation(author..author + 1, &part);
             }
         } else if !affiliation_rows.is_empty() {
-            let index = self.affiliation(&affiliation_rows.join(", "));
-            for author in names.clone() {
-                self.authors[author].affiliations.push(index);
-            }
+            self.give_affiliation(names.clone(), &affiliation_rows.join(", "));
         }
         if emails.len() == names.len() {
             for (author, email) in names.zip(emails) {
@@ -271,6 +221,58 @@ impl People {
             }
         } else {
             self.loose_emails.extend(emails);
+        }
+    }
+
+    /// Reads the rows of an author block: adds its names to the authors,
+    /// its marked rows to `mark_rows` and its date to `date`, and returns
+    /// its affiliation rows (as printed, wide spaces kept) and its e-mail
+    /// addresses.
+    fn read_rows(&mut self, block: &Block, date: &mut Option<String>) -> (Vec<String>, Vec<String>) {
+        let rows: Vec<&[Span]> = if block.rows.is_empty() {
+            vec![&block.spans]
+        } else {
+            block.rows.iter().map(Vec::as_slice).collect()
+        };
+        let first = self.authors.len();
+        let mut names_done = false;
+        let mut names_continue = false;
+        let mut affiliation_rows: Vec<String> = Vec::new();
+        let mut emails: Vec<String> = Vec::new();
+        for row in rows {
+            let text = plain_of(row);
+            if text.contains('@') {
+                emails.extend(emails_in(&text));
+            } else if let Some(found) = row_date(&text) {
+                date.get_or_insert(found);
+            } else if starts_with_mark(row) {
+                self.mark_rows.extend(marked_row(row));
+            } else {
+                // Names fill the first row, and the next ones while a row
+                // ends with a comma or the next starts with "and".
+                let continued = self.authors.len() == first || names_continue || text.starts_with("and ");
+                if !names_done
+                    && continued
+                    && let Some(names) = names_row(row, &block.lines)
+                {
+                    self.authors.extend(names);
+                    names_continue = text.ends_with(',');
+                    continue;
+                }
+                if is_affiliation(&text) {
+                    affiliation_rows.push(row.iter().map(|span| span.text.as_str()).collect());
+                }
+            }
+            names_done = true;
+        }
+        (affiliation_rows, emails)
+    }
+
+    /// Gives the authors of `authors` the affiliation `text`.
+    fn give_affiliation(&mut self, authors: std::ops::Range<usize>, text: &str) {
+        let index = self.affiliation(text);
+        for author in authors {
+            self.authors[author].affiliations.push(index);
         }
     }
 
