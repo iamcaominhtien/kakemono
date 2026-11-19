@@ -667,6 +667,9 @@ impl Flow<'_> {
             .iter()
             .position(|line| line.page_break || line.column_break)
             .map_or(lines.len(), |offset| at + offset + 1);
+        if self.state.section_mark {
+            return (chunk_end - at, chunk_end);
+        }
         for line in &lines[at..chunk_end] {
             let extra = self.notes_height_for(line);
             if y + line.fit_height > room_bottom - notes_extra - extra + EPS {
@@ -762,15 +765,13 @@ impl Flow<'_> {
     /// they do not fit.
     fn place_lines(&mut self, para: &Para, layout: ParaLayout, gap: f32) {
         self.state.last_style = Some(para.style.clone());
-        let mut lines = layout.lines;
+        let lines = layout.lines;
+        let mut gap = gap;
         if self.state.section_mark {
-            for line in &mut lines {
-                line.fit_height = 0.0;
-            }
+            gap = 0.0;
         }
         let count = lines.len();
         let mut at = 0;
-        let mut gap = gap;
         let borders = para.props.borders;
         let shading = para.props.shading;
         while at < count {
