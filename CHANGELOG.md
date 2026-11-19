@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.11.0](https://github.com/iamcaominhtien/kakemono/compare/v0.10.0...v0.11.0) - 2026-11-19
+
+### Added
+
+- Editable JSON output, --content, bibliographic metadata and analysis fixes ([#13](https://github.com/iamcaominhtien/kakemono/pull/13))
+
+A new output format, editable JSON (`-f json` / `.json`), that holds the content of a document independently of its source format. `--content FILE.json` applies an edited copy back, so every output (hard-95, medium, friendly, docx, md, tex, epub) shows the edited text, for example a translation. The PR also adds read-only fields for search and data extraction, and fixes several analysis bugs found while testing on varied papers and books.
+
+##### Editable JSON (`src/render/json/`)
+- File header: `format: "kakemono-content"`, `version` 1, and `source` (format, name, sha256). Each block has its id, type, section/parent, and its `layout` (page and bbox) in a separate field, so formats without pages can leave it out.
+- `text` is a single string with HTML-like tags (`<b> <i> <code> <sup> <sub> <sf> <sc> <mf> <a href> <font color>`). `<m id="n">LaTeX</m>` stands in for an inline formula; on apply, the formula's original spans are put back in its place.
+- `apply`: only text that differs from what would be exported is applied, so an unedited file changes nothing. The format, version, sha256 and block types are checked. Edited blocks lose their per-line text (`hlines`, `line_texts`, `inner_spans`).
+- hard-95: an edited block reflows inside its box, with the font shrunk down to 62% at most. Paragraphs that run over several columns or pages keep running over them.
+- `--content` works with every output except `-m hard`, which has no text to replace.
+
+##### Read-only fields
+- `plain` on every block and table cell: the text without tags, formulas as `$LaTeX$`. Editing `plain` alone gives a warning.
+- `citation` on each reference: authors (given names first), title, venue, year, volume, pages, DOI, arXiv id, URL. Covered styles: IEEE, ACL/APA, astronomy, physics, books, glued initials.
+- `meta` fields: authors (with affiliations, e-mail addresses and notes), arXiv category, date, DOI, keywords, abstract.
+  - Names printed side by side are separated by the gaps between glyphs.
+  - Braced e-mails (`{a, b}@x`) are expanded.
+  - Numbered affiliation marks are resolved.
+  - Loose e-mails are matched to authors by name.
+
+##### Other changes
+- Python: `to_json()`, plus a `content=` option on every converter.
+- LaTeX: Vietnamese letters print with pdfLaTeX (T5 encoding for those letters only, T1 stays the main encoding).
+- Equations: a matrix cut into columns is joined back into one formula.
+
+##### Analysis fixes
+- An old arXiv id kept its version apart from the date (`gr-qc/9712019v1` used to be read as `v13`).
+- A bibliography without a heading (PRL style): a run of ≥5 paragraphs labelled `[1]`, `[2]`, … in order is references. LIGO now has 118 references.
+- Small marked text is a footnote area only at the foot of the page, or when no text follows it. The affiliations, abstract and keywords under an A&A title are no longer footnotes.
+- Headings:
+  - a bold heading with an italic word still counts as bold;
+  - `Appendix A.1:` set in italics is a heading;
+- italic section numbers of several parts (`2.1. 2-point …`) are not list items;
+  - `4.1.1. …` set like body text is a heading when `4.1` is one.
+  - All 31 headings of astro-ph 1905.06454 are now found.
+- References with a hanging indent and no labels are cut into one block per entry.
+
 ## [0.10.0](https://github.com/iamcaominhtien/kakemono/compare/v0.9.0...v0.10.0) - 2026-11-18
 
 ### Added
