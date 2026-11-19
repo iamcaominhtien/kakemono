@@ -1737,23 +1737,29 @@ fn laid_row_height(row: &Row, cells: &[LaidCell]) -> f32 {
 /// Grows the rows that vertically merged cells span so that they hold the
 /// cells' content, and sets each merged cell's height to the rows it spans.
 fn grow_merged_rows(rows: &mut [LaidRow]) {
-    for row_at in 0..rows.len() {
-        for cell_at in 0..rows[row_at].cells.len() {
-            let merged = rows[row_at].cells[cell_at].merged_rows;
-            if merged <= 1 {
-                continue;
+    // The merges, as (first row, cell, rows), taken by the row they end
+    // in: a merge that ends earlier grows its rows before the merges that
+    // span them are measured.
+    let mut merges: Vec<(usize, usize, usize)> = Vec::new();
+    for (row_at, row) in rows.iter().enumerate() {
+        for (cell_at, cell) in row.cells.iter().enumerate() {
+            if cell.merged_rows > 1 {
+                merges.push((row_at, cell_at, cell.merged_rows));
             }
-            let need = rows[row_at].cells[cell_at].content_height;
-            let span_rows = (row_at..(row_at + merged).min(rows.len())).collect::<Vec<_>>();
-            let have: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
-            if need > have
-                && let Some(&last) = span_rows.last()
-            {
-                rows[last].height += need - have;
-            }
-            let total: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
-            rows[row_at].cells[cell_at].height = total;
         }
+    }
+    merges.sort_by_key(|&(row_at, _, merged)| (row_at + merged, std::cmp::Reverse(row_at)));
+    for &(row_at, cell_at, merged) in &merges {
+        let end = (row_at + merged).min(rows.len());
+        let need = rows[row_at].cells[cell_at].content_height;
+        let have: f32 = rows[row_at..end].iter().map(|row| row.height).sum();
+        if need > have {
+            rows[end - 1].height += need - have;
+        }
+    }
+    for &(row_at, cell_at, merged) in &merges {
+        let end = (row_at + merged).min(rows.len());
+        rows[row_at].cells[cell_at].height = rows[row_at..end].iter().map(|row| row.height).sum();
     }
 }
 

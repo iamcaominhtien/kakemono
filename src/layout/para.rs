@@ -583,7 +583,9 @@ fn cut_piece(piece: Piece, keep: usize) -> (Option<Piece>, Option<Piece>) {
     if keep == 0 {
         return (None, Some(piece));
     }
-    if keep >= piece.glyphs.len() {
+    // Glyphs out of text order (right-to-left text) are not cut.
+    let in_order = piece.glyphs.windows(2).all(|pair| pair[0].text.0 <= pair[1].text.0);
+    if keep >= piece.glyphs.len() || !in_order {
         return (Some(piece), None);
     }
     let split_byte = piece.glyphs[keep].text.0;
@@ -1437,7 +1439,7 @@ fn decimal_offset(segment: &[&Placed]) -> Option<f32> {
             let start = segment.first().map_or(placed.x, |first| first.x);
             for piece in pieces {
                 for glyph in &piece.glyphs {
-                    if piece.text[glyph.text.0..glyph.text.1].contains(['.', ',']) {
+                    if glyph_text(piece, glyph).contains(['.', ',']) {
                         return Some(x + glyph.x - start);
                     }
                 }
@@ -1446,6 +1448,12 @@ fn decimal_offset(segment: &[&Placed]) -> Option<f32> {
         }
     }
     None
+}
+
+/// The text a glyph of `piece` stands for (empty when its range is not in
+/// the piece's text).
+fn glyph_text<'a>(piece: &'a Piece, glyph: &Glyph) -> &'a str {
+    piece.text.get(glyph.text.0..glyph.text.1).unwrap_or("")
 }
 
 /// Moves an item placed on baseline 0 to `baseline`.
@@ -1467,7 +1475,7 @@ fn emit_piece(piece: &Piece, x: f32, extra: f32, items: &mut Vec<Item>) -> f32 {
     let mut glyphs = Vec::with_capacity(piece.glyphs.len());
     let mut shift = 0.0;
     for glyph in &piece.glyphs {
-        let is_space = piece.text[glyph.text.0..glyph.text.1].starts_with(' ');
+        let is_space = glyph_text(piece, glyph).starts_with(' ');
         glyphs.push(Glyph {
             x: glyph.x + shift,
             advance: glyph.advance + if is_space { extra } else { 0.0 },
