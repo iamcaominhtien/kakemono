@@ -5,6 +5,9 @@
 Pipelines:
   pypdf-fixed      pypdf's text, cut every MAX_CHUNK_TOKENS tokens (the usual baseline)
   kakemono-fixed   kakemono's text in reading order, cut the same way (isolates the text)
+  pypdf-fixed256, kakemono-fixed256
+                   the same, cut every 256 tokens: about the mean size of the
+                   kakemono-struct chunks, to tell structure from size
   kakemono-struct  kakemono's blocks grouped by section, never cut inside a block
                    unless it is too long, each chunk headed by its section path
 """
@@ -131,11 +134,13 @@ def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
 
 def build(pipeline: str, pid: str) -> list[str]:
     pdf = PDF / f"{pid}.pdf"
-    if pipeline == "pypdf-fixed":
-        return fixed_chunks(pypdf_text(pdf))
+    # "-fixed" cuts every MAX_CHUNK_TOKENS tokens, "-fixed256" every 256
+    size = int(pipeline.rsplit("fixed", 1)[1] or MAX_CHUNK_TOKENS) if "-fixed" in pipeline else 0
+    if pipeline.startswith("pypdf-fixed"):
+        return fixed_chunks(pypdf_text(pdf), size)
     doc = kakemono_json(pdf)
-    if pipeline == "kakemono-fixed":
-        return fixed_chunks("\n\n".join(t for t in map(block_text, doc["blocks"]) if t))
+    if pipeline.startswith("kakemono-fixed"):
+        return fixed_chunks("\n\n".join(t for t in map(block_text, doc["blocks"]) if t), size)
     if pipeline == "kakemono-struct":
         return struct_chunks(doc)
     raise SystemExit(f"unknown pipeline {pipeline}")
