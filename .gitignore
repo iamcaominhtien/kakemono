@@ -23,3 +23,8 @@ __pycache__/
 *.so
 *.pyd
 benchmark-results/
+
+# Qasper evaluation: downloaded data, embeddings and results
+/eval/qasper/data/
+/eval/qasper/.venv/
+/eval/qasper/.venv-tools/
