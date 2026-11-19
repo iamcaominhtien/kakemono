@@ -21,7 +21,7 @@ So there are two ways in:
 | Structure | Guessed again from glyph positions, by heuristics tuned on arXiv papers | Exact: headings, lists, tables, footnotes, links are written in the file |
 | Formulas | See the measurements: lost here | Office Math (OMML) maps almost one to one onto `MathNode` |
 | Dependencies | LibreOffice at run time (hundreds of MB), its fonts | None new: `flate2` is already a dependency, `roxmltree` already in `Cargo.lock` (through `resvg`) |
-| `.doc` (Word 97–2003) | Same command | No: the binary format is too large to read by hand; convert to `.docx` first |
+| `.doc` (Word 97–2003) | Same command | Converted to `.docx` in Rust first (see "`.doc` without LibreOffice") |
 
 ## Measurements (2026-11, LibreOffice 24.2, this container)
 
@@ -59,9 +59,9 @@ Route B as the main path, route A only as an optional bridge.
    `hard`, `hard-95` and `medium` refuse a Word input with a clear error (or
    fall back to `friendly`, to be decided).
 2. **Phase 2: `.doc`.** Recognised by its signature (`D0 CF 11 E0`, a
-   compound file) and converted to `.docx` with LibreOffice when `soffice` is
-   on the `PATH`; otherwise an error that says what to install. Formulas
-   need `libreoffice-math`.
+   compound file) and converted to `.docx` in Rust, then read by the phase 1
+   reader. See "`.doc` without LibreOffice" below: `rust-docx` does this
+   about as well as LibreOffice, behind an optional cargo feature.
 3. **Phase 3 (optional): page modes for Word.** `--via-pdf`: LibreOffice
    writes a PDF and the existing pipeline runs on it, with the known losses.
 
@@ -71,7 +71,7 @@ Route B as the main path, route A only as an optional bridge.
  PDF bytes ──► backend/ ──► analysis/ ─┐
                                        ├─► Document ──► render/ (unchanged, except pictures)
  DOCX bytes ─► docx input ─────────────┘
- DOC bytes ──► soffice ──► DOCX bytes
+ DOC bytes ──► rust-docx (feature `doc`) ──► DOCX bytes
 ```
 
 - `Paper::from_bytes` already takes bytes: it can tell the formats apart by
@@ -150,8 +150,9 @@ Route B as the main path, route A only as an optional bridge.
   Word → Word input → `Document`; the text, headings, references and formulas
   should come back the same as the PDF analysis.
 - Snapshots of each output, as for the PDFs.
-- `.doc` tests only when `soffice` is on the `PATH`, like the LaTeX
-  compilation test with `pdflatex`.
+- `.doc` fixtures: small files written for the tests, and ideally a few saved
+  by Word itself; a test checks that a `.doc` and the `.docx` it came from give
+  the same `Document`.
 
 ### Size
 
@@ -162,9 +163,54 @@ a page in `model`/`assets` and the renderers ~300 lines, plus tests. Several
 pull requests: the picture change in `model` first, then the reader, then
 `.doc`.
 
+## `.doc` without LibreOffice
+
+Several crates read the Word 97–2003 binary format ([MS-DOC]: compound
+file, FIB, piece table, CHPX/PAPX, style sheet, lists) in pure Rust. All of
+them are less than a year old (checked 2026-11-19):
+
+| Crate | Licence | Downloads | `.doc` → `.docx` | Notes |
+| --- | --- | --- | --- | --- |
+| `rust-docx` 0.3.1 | MIT (its `rust-office-art`/`-charts`: + Apache-2.0, OFL-1.1) | 1.1 k | Yes (`parse_document_bytes` + `package_to_bytes`) | 57 k lines + 2 sister crates, ~100 crates in its tree; 21 releases between 4 and 12 November 2026; also EMF → SVG |
+| `rwml` 0.1.5 | MIT | 32 k | Yes (`Document::open` + `to_docx`) | DOC-only build needs just `cfb`, `encoding_rs`, `thiserror`; 144 k lines |
+| `office_oxide` 0.1.17 | MIT / Apache-2.0 | 1.3 M | No: `.doc` → its own IR (text extraction) | Rebuilds headings partly by guessing |
+| `unfair-codec-doc` 0.1.0 | MPL-2.0 | 181 | — | 1 k lines, too small to matter |
+| `cfb` 0.16 | MIT | 89 M | — | Only the compound-file container: the base for a reader of our own |
+
+Measured on `note.doc` and `ligo.doc` (both written by LibreOffice from the
+`.docx` files above), the result compared with LibreOffice's own `.doc` →
+`.docx`:
+
+| | LibreOffice | `rust-docx` | `rwml` |
+| --- | --- | --- | --- |
+| Time (`ligo.doc`, 1.4 MB) | 1.4 s (with start-up) | 35 ms | 106 ms |
+| Text of every paragraph | reference | identical (219/219, 24/24) | identical |
+| Paragraph styles (`Title`, `Author`, `Abstract`, `Caption`, `Bibliography`, …) | all | all | only `Heading1/2` |
+| List numbering (`numPr`, `note`) | 4 | 4 | 2 |
+| Links (669 in LIGO) | `w:hyperlink` | `HYPERLINK` fields (same meaning) | `w:fldSimple` (same meaning) |
+| Bookmarks (148 in LIGO: anchors of references, figures) | 148 | 148 | 0 |
+| Character styles (`rStyle`) | 669 | 669 | 0 |
+| Bold, italic, superscript, colours | reference | same counts | same counts |
+| Footnote, table, 5 pictures | yes | yes | yes |
+
+So `rust-docx` keeps what kakemono needs, and `rwml` loses the styles and
+anchors the reader relies on. Proposal: `rust-docx` behind a cargo feature
+`doc` (on by default in the CLI and the Python wheels, optional for library
+users), pinned to an exact version (`=0.3.1`) while its API moves this fast,
+and used only as a converter: its `.docx` goes into kakemono's own reader, so
+replacing it later (by a newer crate, or a reader of our own on `cfb`) changes
+nothing else. Writing that reader ourselves is possible ([MS-DOC] is public,
+Apache POI HWPF and antiword are references) but is several thousand lines.
+
+Not covered by any of them, nor tested here: formulas in `.doc` files are
+OLE objects (Equation Editor 3.0 or MathType, MTEF data) with a WMF preview.
+No crate turns MTEF into Office Math; at best the preview picture is kept. The
+test files were written by LibreOffice, not by Word: files saved by Word
+(fast save, older versions) still need to be tried before relying on this.
+
 ## Decisions to take before phase 1
 
 1. Page modes with a Word input: refuse, or fall back to `friendly`?
 2. The model change for pictures (breaking, 0.12) is acceptable?
-3. `.doc`: depend on LibreOffice at run time (optional), or leave `.doc` out
-   and document "save as `.docx`"?
+3. `.doc`: `rust-docx` behind a cargo feature (proposed), a reader of our
+   own on `cfb`, or leave `.doc` out and document "save as `.docx`"?
