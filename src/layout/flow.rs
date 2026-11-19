@@ -1187,6 +1187,14 @@ impl Flow<'_> {
         let x = self.column_left();
         let y = self.state.y;
         let page = self.pages.len() - 1;
+        if trace() {
+            let heights: Vec<String> = row
+                .cells
+                .iter()
+                .map(|cell| format!("{:.2}", cell.content_height))
+                .collect();
+            eprintln!("ROWTRACE\t{page}\t{y:.2}\t{:.2}\t{}", row.height, heights.join(" "));
+        }
         for cell in &row.cells {
             if let Some(color) = cell.shading {
                 self.pages[page].items.push(Item::Rect {
@@ -1486,6 +1494,8 @@ impl Flow<'_> {
             }
             push_items(&mut sub.items, &row_items, 0.0, sub.y);
             sub.y += row.height;
+            // The cell around the table can be cut between its rows.
+            sub.breaks.push(sub.y);
         }
         sub.last_style = None;
     }
@@ -1711,7 +1721,15 @@ fn laid_row_height(row: &Row, cells: &[LaidCell]) -> f32 {
     let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max) + border;
     match row.height {
         Some((value, true)) => value,
-        Some((value, false)) => content.max(value),
+        // A minimum height is that of the cells' content, inside their
+        // margins and the row's border.
+        Some((value, false)) => {
+            let margins = cells
+                .iter()
+                .map(|cell| cell.top_margin + cell.bottom_margin)
+                .fold(0.0, f32::max);
+            content.max(value + margins + border)
+        }
         None => content,
     }
 }

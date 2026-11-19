@@ -1250,6 +1250,8 @@ impl Builder {
     /// the tallest ascent, descent and leading of their text.
     fn line_parts(&self, ctx: &mut Ctx<'_>, placed: &[Placed]) -> LineParts {
         let mut parts = LineParts::default();
+        // A tab's font counts only on a line without text.
+        let mut tab_metrics = (0.0f32, 0.0f32, 0.0f32);
         for item in placed {
             match &item.atom {
                 Atom::Word { pieces, .. } => {
@@ -1280,9 +1282,9 @@ impl Builder {
                 }
                 Atom::Tab { fmt } => {
                     let (tab_ascent, tab_descent, tab_leading) = ctx.line_metrics(fmt);
-                    parts.ascent = parts.ascent.max(tab_ascent);
-                    parts.descent = parts.descent.max(tab_descent);
-                    parts.leading = parts.leading.max(tab_leading);
+                    tab_metrics.0 = tab_metrics.0.max(tab_ascent);
+                    tab_metrics.1 = tab_metrics.1.max(tab_descent);
+                    tab_metrics.2 = tab_metrics.2.max(tab_leading);
                     if let Some(stop) = item.tab.map(|index| self.tab_stops[index])
                         && let Some(leader) = stop.leader
                     {
@@ -1296,6 +1298,11 @@ impl Builder {
                 }
                 _ => {}
             }
+        }
+        if parts.ascent == 0.0 {
+            parts.ascent = tab_metrics.0;
+            parts.descent = tab_metrics.1;
+            parts.leading = tab_metrics.2;
         }
         parts
     }
