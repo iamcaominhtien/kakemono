@@ -601,8 +601,10 @@ pub(crate) fn bookmarks(names: &[u8], starts: &[u8]) -> Vec<(u32, String)> {
 /// UTF-16 little-endian bytes as text.
 pub(crate) fn utf16(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
     String::from_utf16_lossy(&units)
 }
@@ -610,8 +612,10 @@ pub(crate) fn utf16(bytes: &[u8]) -> String {
 /// UTF-16 little-endian bytes as text, up to the first NUL.
 fn utf16_until_nul(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|&unit| unit != 0)
         .collect();
     String::from_utf16_lossy(&units)
