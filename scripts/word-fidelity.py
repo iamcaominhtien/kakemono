@@ -12,7 +12,7 @@ Totals are over all lines and all documents. A document kakemono cannot
 convert fails the run. With GITHUB_STEP_SUMMARY set, a table is added to
 the summary of the CI run.
 """
-import argparse, concurrent.futures as cf, importlib.util, json, os, resource, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, importlib.util, json, os, resource, shutil, subprocess, sys, tempfile, time
 
 here = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location('compare', os.path.join(here, 'compare-layout.py'))
@@ -64,6 +64,7 @@ def one(name):
 
 
 results = list(cf.ThreadPoolExecutor(max(2, os.cpu_count() or 2)).map(one, docs))
+shutil.rmtree(out_dir, ignore_errors=True)
 ok = [r for r in results if 'error' not in r]
 errors = [r for r in results if 'error' in r]
 lines = sum(r['lines_matched'] for r in ok)

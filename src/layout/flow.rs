@@ -487,27 +487,37 @@ impl Flow<'_> {
 
     /// Places blocks in the body.
     fn blocks(&mut self, blocks: &[Block]) {
-        let mut at = 0;
-        while at < blocks.len() {
-            match &blocks[at] {
+        // The current chain of paragraphs kept with the next was moved to a
+        // new column: its later paragraphs stay with it.
+        let mut chain_moved = false;
+        for block in blocks.iter().enumerate() {
+            let (at, block) = block;
+            match block {
                 Block::Para(para) => {
                     // A paragraph kept with the next: the chain must start on
-                    // a page where it fits.
-                    // One holding a page break starts the new page itself.
-                    if para.props.keep_next && !self.state.fresh && !breaks_page(para) {
+                    // a page where it fits (checked again at each of its
+                    // paragraphs, as long as it was not moved). One holding a
+                    // page break starts the new page itself.
+                    if para.props.keep_next && !chain_moved && !self.state.fresh && !breaks_page(para) {
                         let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
                         if need > room + EPS && need <= page_room {
                             self.next_column();
                             self.state.pushed = true;
+                            chain_moved = true;
                         }
+                    }
+                    if !para.props.keep_next {
+                        chain_moved = false;
                     }
                     self.paragraph(para);
                 }
-                Block::Table(table) => self.table(table),
+                Block::Table(table) => {
+                    chain_moved = false;
+                    self.table(table);
+                }
             }
-            at += 1;
         }
     }
 
@@ -599,7 +609,8 @@ impl Flow<'_> {
 
     /// Places a paragraph.
     fn paragraph(&mut self, para: &Para) {
-        if para.props.page_break_before && !self.state.fresh {
+        // The empty paragraph that holds a section break stays on its page.
+        if para.props.page_break_before && !self.state.fresh && !self.state.section_mark {
             self.next_page();
         }
         let width = self.column_width();
