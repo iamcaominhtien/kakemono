@@ -45,6 +45,11 @@ fn atleast_baseline(value: f32, ascent: f32, descent: f32, leading: f32) -> f32 
 /// Share of the width of its spaces a justified line may lose to fit one
 /// more word.
 const JUSTIFY_SHRINK_RATIO: f32 = 0.25;
+
+/// Share of its own width a word may stick out of a justified line, whose
+/// spaces are then squeezed, and still stay on it (measured on Word's PDFs:
+/// with the limit on the spaces, it gives Word's choice for 9 words in 10).
+const JUSTIFY_OVERHANG_RATIO: f32 = 0.45;
 /// Lines fit when their text exceeds the width by less than this, in points
 /// (rounding).
 const FIT_TOLERANCE_PT: f32 = 0.01;
@@ -934,10 +939,10 @@ fn place_atom(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, atom: Atom,
     let props = &para.props;
     let (body, trailing) = atom_width(&atom);
     let (_, right) = line_bounds(props, builder.width, *first_line);
-    // Word squeezes the spaces of a justified line to fit one
-    // more word.
+    // Word squeezes the spaces of a justified line to fit one more word,
+    // when most of the word is inside the line.
     let shrink = if matches!(props.align, Align::Both | Align::Distribute) && ctx.doc.compat_mode >= 15 {
-        builder.space_width() * justify_shrink()
+        (builder.space_width() * justify_shrink()).min(body * JUSTIFY_OVERHANG_RATIO)
     } else {
         0.0
     };
