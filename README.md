@@ -450,7 +450,7 @@ cargo test --release
 ```
 
 - **Unit tests** and **end-to-end tests** on small generated PDFs.
-- **8 real arXiv papers** (`tests/real_papers.rs`): per paper, the title, tables rebuilt,
+- **9 real arXiv papers** (`tests/real_papers.rs`): per paper, the title, tables rebuilt,
   paragraphs broken mid-sentence, words still hyphenated, characters left in the `hard-95`
   background and formulas rebuilt as MathML. The limits are the current results: better passes,
   worse fails; tighten them after an improvement

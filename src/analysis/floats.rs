@@ -354,6 +354,17 @@ pub struct FloatsConfig {
     /// ... (with the caption counted as at least this wide) is prose and
     /// ends the table rows.
     pub fallback_prose_min_width_pt: f32,
+    /// A line in the body size, give or take this, ...
+    pub fallback_prose_size_tol_pt: f32,
+    /// ... at least this many font sizes wide ...
+    pub fallback_column_prose_min_width_em: f32,
+    /// ... with no gap wider than this many font sizes between two glyphs
+    /// (a gap between table cells) looks like running text ...
+    pub fallback_cell_gap_em: f32,
+    /// ... and two such lines side by side, on baselines at most this far
+    /// apart, are running text in two columns: they end the table rows,
+    /// however wide the caption.
+    pub fallback_prose_baseline_tol_pt: f32,
     /// Table rows overlap the caption widened by this on both sides.
     pub fallback_x_margin_pt: f32,
     /// A caption whose centre is further than this fraction of the page
@@ -388,6 +399,14 @@ pub struct FloatsConfig {
     pub absorb_probe_pt: f32,
     /// A line inside the region grown by this is inside it.
     pub absorb_inside_tol_pt: f32,
+    /// A table takes the row of cells outside it on the side away from its
+    /// caption when the row is at most this far from it (and within its
+    /// width, give or take this) ...
+    pub far_row_max_gap_pt: f32,
+    /// ... its cells share a baseline, give or take this ...
+    pub far_row_baseline_tol_pt: f32,
+    /// ... and there are at least this many of them.
+    pub far_row_min_cells_count: usize,
     /// A touching line overlaps the probe vertically by at least this
     /// fraction of its height...
     pub absorb_touch_y_ratio: f32,
@@ -569,6 +588,10 @@ impl Default for FloatsConfig {
             fallback_prose_min_chars: 50,
             fallback_prose_width_ratio: 0.8,
             fallback_prose_min_width_pt: 150.0,
+            fallback_prose_size_tol_pt: 0.5,
+            fallback_column_prose_min_width_em: 18.0,
+            fallback_cell_gap_em: 1.5,
+            fallback_prose_baseline_tol_pt: 1.0,
             fallback_x_margin_pt: 40.0,
             fallback_column_offset_ratio: 0.15,
             fallback_edge_tol_pt: 2.0,
@@ -580,6 +603,9 @@ impl Default for FloatsConfig {
             beside_rows_max_graphics_ratio: 0.5,
             absorb_max_passes_count: 4,
             absorb_probe_pt: 5.0,
+            far_row_max_gap_pt: 3.0,
+            far_row_baseline_tol_pt: 1.0,
+            far_row_min_cells_count: 3,
             absorb_inside_tol_pt: 1.0,
             absorb_touch_y_ratio: 0.4,
             absorb_touch_x_ratio: 0.5,
@@ -813,6 +839,9 @@ struct PageContext<'a> {
     captions: &'a [Caption],
     /// For every line of the page, whether it belongs to a caption.
     is_caption_line: &'a [bool],
+    /// The document's convention for table captions: `Some(true)` above
+    /// their tables, `Some(false)` below, `None` unknown.
+    table_caption_above: Option<bool>,
     /// The thresholds.
     cfg: &'a FloatsConfig,
 }
@@ -878,7 +907,10 @@ pub fn join_caption_labels(page: &mut PageData, cfg: &FloatsConfig, lines_cfg: &
 
 /// Collects evidence on whether table captions are set above or below the
 /// table in this document: returns (votes for above, votes for below) from
-/// captions that have a table on one side only. A page without table
+/// captions that have a table on one side only. A table is a graphic next to
+/// the caption, or rows of text without graphics (see [`tabular_rows`]): a
+/// caption between a text-only table and a ruled one, or between a table
+/// and prose, still has a table on one side only. A page without table
 /// captions returns `(0, 0)`.
 pub fn table_caption_votes(
     page: &PageData,
@@ -895,10 +927,22 @@ pub fn table_caption_votes(
         .filter(|comp| large_enough(comp, cfg))
         .collect();
     comps.extend(rule_tables(page, &captions, cfg));
+    let is_caption_line = caption_line_mask(&captions, page.lines.len());
+    let ctx = PageContext {
+        page,
+        stats,
+        fonts,
+        captions: &captions,
+        is_caption_line: &is_caption_line,
+        table_caption_above: None,
+        cfg,
+    };
     let (mut above, mut below) = (0, 0);
     for caption in captions.iter().filter(|caption| caption.kind == FloatKind::Table) {
-        let has_below = comps.iter().any(|comp| table_next_to(caption, comp, true, cfg));
-        let has_above = comps.iter().any(|comp| table_next_to(caption, comp, false, cfg));
+        let has_below = comps.iter().any(|comp| table_next_to(caption, comp, true, cfg))
+            || tabular_rows(&ctx, caption, true).is_some();
+        let has_above = comps.iter().any(|comp| table_next_to(caption, comp, false, cfg))
+            || tabular_rows(&ctx, caption, false).is_some();
         match (has_above, has_below) {
             (false, true) => above += 1,
             (true, false) => below += 1,
@@ -936,10 +980,11 @@ pub fn detect_floats(
             fonts,
             captions: &captions,
             is_caption_line: &is_caption_line,
+            table_caption_above,
             cfg,
         };
         let mut comps = candidate_components(page, &captions, cfg);
-        let mut cap_region = pair_captions(&ctx, &mut comps, table_caption_above);
+        let mut cap_region = pair_captions(&ctx, &mut comps);
         grow_caption_regions(&ctx, &mut comps, &mut cap_region);
         claim_paneled_figures(&ctx, &mut comps, &mut cap_region);
         let graphic_regions = uncaptioned_regions(&comps, cfg);
@@ -1802,16 +1847,12 @@ fn split_side_by_side_tables(comps: &mut Vec<Component>, tables: &[Component], c
 /// component to at most one caption. Marks the claimed components' owner and
 /// returns, per caption, the claimed region and whether it is above the
 /// caption.
-fn pair_captions(
-    ctx: &PageContext,
-    comps: &mut [Component],
-    table_caption_above: Option<bool>,
-) -> Vec<Option<(Rect, bool)>> {
+fn pair_captions(ctx: &PageContext, comps: &mut [Component]) -> Vec<Option<(Rect, bool)>> {
     // Seed assignment: (score, caption, component, above?).
     let mut pairs: Vec<(f32, usize, usize, bool)> = Vec::new();
     for (cap_idx, caption) in ctx.captions.iter().enumerate() {
         for (comp_idx, comp) in comps.iter().enumerate() {
-            if let Some((score, above)) = pair_score(ctx, caption, comp, table_caption_above) {
+            if let Some((score, above)) = pair_score(ctx, caption, comp) {
                 pairs.push((score, cap_idx, comp_idx, above));
             }
         }
@@ -1861,12 +1902,7 @@ fn pair_left_captions(
 /// component is above the caption. `None` when they cannot belong together:
 /// no horizontal overlap, the component is beside the caption or too far,
 /// or prose lies between them.
-fn pair_score(
-    ctx: &PageContext,
-    caption: &Caption,
-    comp: &Component,
-    table_caption_above: Option<bool>,
-) -> Option<(f32, bool)> {
+fn pair_score(ctx: &PageContext, caption: &Caption, comp: &Component) -> Option<(f32, bool)> {
     let cfg = ctx.cfg;
     let (cap_box, comp_box) = (&caption.bbox, &comp.bbox);
     let overlap = cap_box.x_overlap(comp_box);
@@ -1896,7 +1932,7 @@ fn pair_score(
     if ctx.body_between(top, bottom, cap_box) {
         return None;
     }
-    let penalty = side_penalty(caption.kind, above, table_caption_above, cfg);
+    let penalty = side_penalty(caption.kind, above, ctx.table_caption_above, cfg);
     let mismatch = kind_mismatch(caption.kind, comp.table_like, cfg);
     let misalign = misalignment(cap_box, comp_box, cfg);
     Some((dist + penalty + mismatch + misalign, above))
@@ -2189,14 +2225,20 @@ fn pending_floats(
 }
 
 /// Fallback for tables without any graphics: gives a table caption that
-/// claimed nothing the tabular rows below it, or else above it. Other
-/// floats are left alone.
+/// claimed nothing the tabular rows below it, or else above it; in a
+/// document whose table captions are set below their tables, the rows
+/// above it first. Other floats are left alone.
 fn tabular_fallback(ctx: &PageContext, float: &mut PendingFloat) {
     if float.region.is_some() || !matches!(float.kind, FloatKind::Table) {
         return;
     }
     let caption = &ctx.captions[float.cap.expect("table floats come from a caption")];
-    for &down in &[true, false] {
+    let order = if ctx.table_caption_above == Some(false) {
+        [false, true]
+    } else {
+        [true, false]
+    };
+    for down in order {
         if let Some(region) = tabular_rows(ctx, caption, down) {
             float.region = Some(region);
             float.above = !down;
@@ -2207,7 +2249,7 @@ fn tabular_fallback(ctx: &PageContext, float: &mut PendingFloat) {
 }
 
 /// The region of the rows of text directly below (`down`) or above the
-/// caption, up to a large gap or a line of prose. `None` when there are too
+/// caption, up to a large gap, a line of prose or a section heading. `None` when there are too
 /// few rows, or they are too low to be a table.
 /// Gives a narrow caption set in the margin, still without a region, the
 /// rows of text beside it: a table without rules, or a diagram made of
@@ -2254,11 +2296,7 @@ fn beside_rows(ctx: &PageContext, caption: &Caption) -> Option<Rect> {
     let cap_box = caption.bbox;
     let caption_left = cap_box.cx() < ctx.page.width / 2.0;
     let prose = |line: &Line| {
-        let wide_gap = line
-            .glyphs
-            .windows(2)
-            .any(|pair| pair[1].x0 - pair[0].x1 > cfg.beside_cell_gap_em * line.size);
-        line.char_count() >= cfg.fallback_prose_min_chars && !wide_gap
+        line.char_count() >= cfg.fallback_prose_min_chars && !has_gap_wider_than(line, cfg.beside_cell_gap_em)
     };
     let mut candidates: Vec<&Line> = ctx
         .page
@@ -2295,9 +2333,10 @@ fn tabular_rows(ctx: &PageContext, caption: &Caption, down: bool) -> Option<Rect
     let cfg = ctx.cfg;
     let cap_box = caption.bbox;
     let prose = |line: &Line| {
-        line.char_count() >= cfg.fallback_prose_min_chars
+        let as_wide_as_caption = line.char_count() >= cfg.fallback_prose_min_chars
             && line.bbox.width()
-                >= cfg.fallback_prose_width_ratio * cap_box.width().max(cfg.fallback_prose_min_width_pt)
+                >= cfg.fallback_prose_width_ratio * cap_box.width().max(cfg.fallback_prose_min_width_pt);
+        as_wide_as_caption || column_prose(ctx, line)
     };
     let column = cap_box.inflate(cfg.fallback_x_margin_pt, 0.0);
     // A caption in one half of the page heads a table in its column: the
@@ -2332,7 +2371,7 @@ fn tabular_rows(ctx: &PageContext, caption: &Caption, down: bool) -> Option<Rect
     let mut rows = 0;
     for line in candidates {
         let gap = if down { line.bbox.y0 - edge } else { edge - line.bbox.y1 };
-        if gap > cfg.fallback_max_row_gap_em * ctx.stats.body_size || prose(line) {
+        if gap > cfg.fallback_max_row_gap_em * ctx.stats.body_size || prose(line) || section_heading(ctx, line) {
             break;
         }
         region = region.union(&line.bbox);
@@ -2345,6 +2384,50 @@ fn tabular_rows(ctx: &PageContext, caption: &Caption, down: bool) -> Option<Rect
     }
     (rows >= cfg.fallback_min_rows_count && region.height() > cfg.fallback_min_height_em * ctx.stats.body_size)
         .then_some(region)
+}
+
+/// Whether `line` is a line of running text in one of two columns, which a
+/// table's rows never are: it and another line on the same baseline, beside
+/// it, both look like running text (see [`running_text_like`]). A caption
+/// across both columns of the page is wider than such a line, so the width
+/// test against the caption does not catch it; a wide cell of a table has
+/// no such neighbour.
+fn column_prose(ctx: &PageContext, line: &Line) -> bool {
+    let cfg = ctx.cfg;
+    running_text_like(line, ctx.stats, cfg)
+        && ctx.page.lines.iter().any(|other| {
+            (other.baseline - line.baseline).abs() <= cfg.fallback_prose_baseline_tol_pt
+                && other.bbox.x_overlap(&line.bbox) <= 0.0
+                && running_text_like(other, ctx.stats, cfg)
+        })
+}
+
+/// Whether `line` looks like a line of running text: set in the body size,
+/// wide (see [`FloatsConfig::fallback_column_prose_min_width_em`]) and with
+/// no gap between two glyphs as wide as a gap between table cells.
+fn running_text_like(line: &Line, stats: &DocStats, cfg: &FloatsConfig) -> bool {
+    (line.size - stats.body_size).abs() <= cfg.fallback_prose_size_tol_pt
+        && line.bbox.width() >= cfg.fallback_column_prose_min_width_em * line.size
+        && !has_gap_wider_than(line, cfg.fallback_cell_gap_em)
+}
+
+/// Whether two neighbouring glyphs of `line` are further apart than
+/// `gap_em` times its font size: the gap between two cells of a table row,
+/// wider than any space between words.
+fn has_gap_wider_than(line: &Line, gap_em: f32) -> bool {
+    line.glyphs
+        .windows(2)
+        .any(|pair| pair[1].x0 - pair[0].x1 > gap_em * line.size)
+}
+
+/// Whether `line` is a numbered section heading ("3.3. Results") set at
+/// least in the body size and in bold: the text that follows a table, not a
+/// row of it.
+fn section_heading(ctx: &PageContext, line: &Line) -> bool {
+    let cfg = ctx.cfg;
+    line.size >= ctx.stats.body_size - cfg.heading_size_tol_pt
+        && line.font_frac(ctx.fonts, |font| font.bold) >= cfg.heading_bold_ratio
+        && HEADING_LIKE.is_match(&line.text())
 }
 
 /// Fixes the final region of float `float_idx`: absorbs the text inside and
@@ -2374,6 +2457,9 @@ fn settle_region(
     if let Some(cap_idx) = float.cap.filter(|_| !beside) {
         let caption = &ctx.captions[cap_idx];
         region = absorb_between_caption(ctx, absorbed, float_idx, region, caption, float.above);
+        if float.table_like {
+            region = absorb_far_row(ctx, absorbed, float_idx, region, float.above);
+        }
         // Never let the image overlap its own caption.
         if float.above {
             end_above(&mut region, &caption.bbox, ctx.cfg);
@@ -2661,6 +2747,66 @@ fn absorb_between_caption(
             absorbed[i] = Some(float_idx);
             region = region.union(&line.bbox);
         }
+    }
+    region
+}
+
+/// Absorbs the row of cells right outside the table `region` on the side
+/// away from its caption (`above`: the table is above the caption, so the
+/// row is above it): a header row over the first rule, or a total row
+/// under the last one. The lines of the row are not prose, share a
+/// baseline, are at least `FloatsConfig::far_row_min_cells_count` and are
+/// within `FloatsConfig::far_row_max_gap_pt` of the region. Returns the
+/// grown region.
+fn absorb_far_row(
+    ctx: &PageContext,
+    absorbed: &mut [Option<usize>],
+    float_idx: usize,
+    region: Rect,
+    above: bool,
+) -> Rect {
+    let cfg = ctx.cfg;
+    let gap_to_region = |line: &Line| {
+        if above {
+            region.y0 - line.bbox.y1
+        } else {
+            line.bbox.y0 - region.y1
+        }
+    };
+    let candidates: Vec<usize> = ctx
+        .page
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(i, line)| {
+            !ctx.is_caption_line[*i]
+                && absorbed[*i].is_none()
+                && !body_like(line, ctx.stats, cfg)
+                && (0.0..=cfg.far_row_max_gap_pt).contains(&gap_to_region(line))
+                && line.bbox.x0 >= region.x0 - cfg.far_row_max_gap_pt
+                && line.bbox.x1 <= region.x1 + cfg.far_row_max_gap_pt
+        })
+        .map(|(i, _)| i)
+        .collect();
+    // The row next to the region: the candidates on the baseline nearest to it.
+    let Some(&nearest) = candidates
+        .iter()
+        .min_by(|&&a, &&b| gap_to_region(&ctx.page.lines[a]).total_cmp(&gap_to_region(&ctx.page.lines[b])))
+    else {
+        return region;
+    };
+    let baseline = ctx.page.lines[nearest].baseline;
+    let row: Vec<usize> = candidates
+        .into_iter()
+        .filter(|&i| (ctx.page.lines[i].baseline - baseline).abs() <= cfg.far_row_baseline_tol_pt)
+        .collect();
+    if row.len() < cfg.far_row_min_cells_count {
+        return region;
+    }
+    let mut region = region;
+    for i in row {
+        absorbed[i] = Some(float_idx);
+        region = region.union(&ctx.page.lines[i].bbox);
     }
     region
 }

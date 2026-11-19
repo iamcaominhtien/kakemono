@@ -842,6 +842,62 @@ paper_test!(
     math >= 34
 );
 
+paper_test!(
+    gamewikisum,
+    "2002.06851v1",
+    "GameWikiSum",
+    tables >= 4,
+    broken <= 1,
+    split <= 0,
+    glyphs <= 0,
+    hyphenated <= 51,
+    math >= 0
+);
+
+/// GameWikiSum sets its table captions below the tables, and its tables have
+/// no rules around the rows (Table 2, Table 4) or only rules inside them
+/// (Table 3). Each caption takes the table above it, not the content below:
+/// Table 2 is the list of datasets, not the platform table under its
+/// caption, and Table 3 is the platform table, not the two columns of body
+/// text under its caption.
+#[test]
+fn caption_below_table_takes_the_table_above() {
+    let Some(table2) = table("2002.06851v1", "Table 2") else {
+        return;
+    };
+    let first_cells = |rows: &[Vec<String>]| rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>();
+    assert_eq!(table2[0][0], "Dataset", "Table 2 header: {:?}", table2[0]);
+    assert!(
+        first_cells(&table2).iter().any(|c| c.starts_with("GameWikiSum")),
+        "Table 2 rows: {:?}",
+        first_cells(&table2)
+    );
+    let table3 = table("2002.06851v1", "Table 3").expect("downloaded");
+    assert_eq!(table3[0][0], "Platform", "Table 3 header: {:?}", table3[0]);
+    assert!(
+        first_cells(&table3).contains(&"Wii U".to_string()) && first_cells(&table3).contains(&"All".to_string()),
+        "Table 3 rows: {:?}",
+        first_cells(&table3)
+    );
+    let table4 = table("2002.06851v1", "Table 4").expect("downloaded");
+    assert!(
+        first_cells(&table4).contains(&"LEAD-3".to_string()),
+        "Table 4 rows: {:?}",
+        first_cells(&table4)
+    );
+    // The body text and the heading under Table 3's caption stay text.
+    let paper = load("2002.06851v1").expect("downloaded");
+    let analysis = paper.analyze();
+    assert!(
+        analysis
+            .doc
+            .blocks
+            .iter()
+            .any(|b| matches!(b.kind, BlockKind::Heading { .. }) && plain(&b.spans).contains("Baselines")),
+        "the heading \"3.2. Baselines\" is not a heading"
+    );
+}
+
 /// Table 2 of the Transformer paper: "EN-DE" and "EN-FR" are two columns
 /// under a shared header ("BLEU"), not one merged cell.
 #[test]

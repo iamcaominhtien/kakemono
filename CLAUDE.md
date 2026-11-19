@@ -29,8 +29,8 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
-scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
-cargo test --release                                  # unit tests + 8 real papers + snapshots
+scripts/fetch-test-pdfs.sh                            # download the 8 test papers (once)
+cargo test --release                                  # unit tests + 9 real papers + snapshots
 KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
@@ -66,7 +66,7 @@ committing.
   field name ends with its unit: `_em`, `_pt` or `_ratio`. No magic numbers in code.
 - A rule that fixes one paper easily breaks another. After each change:
   1. Run the tests again and see which snapshots changed.
-  2. Compare the output text before and after on as many papers as you can (the 8 test papers,
+  2. Compare the output text before and after on as many papers as you can (the 9 test papers,
      plus other varied papers if you have them).
 - Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML, of the Word document, of the
   Markdown, of the LaTeX, of the EPUB book and of the JSON.

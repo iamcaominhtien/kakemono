@@ -118,6 +118,6 @@ CI checks these conventions (`clippy.toml`, lints in `lib.rs`).
 ## Guarantee of unchanged behavior
 
 Every structural change must keep the output the same. `tests/real_papers.rs` compares the output
-hashes of 8 real papers, in all four modes, in Word, in Markdown, in LaTeX, in EPUB, in editable JSON and in `--json`, with `tests/data/snapshots`; one character of
+hashes of 9 real papers, in all four modes, in Word, in Markdown, in LaTeX, in EPUB, in editable JSON and in `--json`, with `tests/data/snapshots`; one character of
 difference turns the test red. When you change the output on purpose, run
 `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit the snapshots with the change.
