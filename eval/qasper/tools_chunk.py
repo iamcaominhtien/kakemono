@@ -32,6 +32,7 @@ def docling_chunker():
         doc = conv.convert(str(pdf)).document
         return [chunker.contextualize(c) for c in chunker.chunk(dl_doc=doc)]
 
+    run.conv, run.chunker = conv, chunker  # timing.py times the two steps apart
     return run
 
 
