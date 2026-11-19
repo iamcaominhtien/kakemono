@@ -31,6 +31,19 @@ MODELS = {
         "",
     ),
     "bge-base": ("BAAI/bge-base-en-v1.5", "Represent this sentence for searching relevant passages: ", ""),
+    "nomic": ("nomic-ai/nomic-embed-text-v1.5", "search_query: ", "search_document: "),
+}
+
+# nomic's model code is not in transformers: it is downloaded from the Hub and
+# run (trust_remote_code). Both its repositories are pinned to the commits
+# whose code was read, so that what runs cannot change.
+REMOTE_CODE = {
+    "nomic": dict(
+        trust_remote_code=True,
+        revision="e9b6763023c676ca8431644204f50c2b100d9aab",
+        config_kwargs={"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
+        model_kwargs={"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
+    ),
 }
 
 
@@ -62,7 +75,9 @@ def embedder(model: str):
     from sentence_transformers import SentenceTransformer
 
     hf, qp, dp = MODELS[model]
-    m = SentenceTransformer(hf, device="cpu", model_kwargs={"dtype": torch.bfloat16 if model == "qwen3" else torch.float32})
+    extra = dict(REMOTE_CODE.get(model, {}))
+    model_kwargs = {"dtype": torch.bfloat16 if model == "qwen3" else torch.float32, **extra.pop("model_kwargs", {})}
+    m = SentenceTransformer(hf, device="cpu", model_kwargs=model_kwargs, **extra)
     m.max_seq_length = 640  # chunks are at most 512 tokens (+ the prompt)
     return lambda texts, query: m.encode([(qp if query else dp) + t for t in texts], batch_size=8, normalize_embeddings=True)
 
