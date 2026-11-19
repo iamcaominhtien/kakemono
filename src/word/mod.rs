@@ -9,8 +9,9 @@
 mod build;
 mod doc;
 mod docx;
+pub mod fmt;
 mod ir;
-mod omml;
+pub(crate) mod omml;
 mod pictures;
 mod styles;
 mod symbols;

@@ -1,0 +1,31 @@
+//! The Word layout engine: a Word document ([`FDoc`]) laid out in pages as
+//! Word lays it out (fonts with Word's metrics, line breaking, line
+//! spacing, page breaking, tables, headers and footers, footnotes), and
+//! written as a PDF. The page modes of the HTML output use that PDF.
+
+pub mod display;
+pub mod flow;
+pub mod fonts;
+pub mod lines;
+pub mod para;
+pub mod pdf;
+pub mod shape;
+
+use crate::word::fmt::FDoc;
+use anyhow::Result;
+
+/// Lays out a Word document and writes it as a PDF.
+///
+/// # Errors
+/// When the PDF cannot be written.
+pub fn to_pdf(doc: &FDoc) -> Result<Vec<u8>> {
+    let mut book = fonts::FontBook::new(&doc.fonts, &doc.font_kinds);
+    let laid = flow::layout(doc, &mut book);
+    pdf::write(
+        &laid.pages,
+        &laid.destinations,
+        &book,
+        &doc.images,
+        doc.title.as_deref(),
+    )
+}

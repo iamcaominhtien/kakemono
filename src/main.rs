@@ -90,6 +90,13 @@ enum Command {
         /// Local PDF or Word file, arXiv id or arXiv URL
         input: String,
     },
+    /// Print the text lines of a PDF with their baselines, as tab-separated
+    /// page, baseline, left, right and text (for comparing layouts).
+    #[command(hide = true)]
+    Lines {
+        /// A PDF file
+        input: PathBuf,
+    },
     /// Read pictures of formulas (black on white, as LaTeX renders them) and
     /// print them as MathML. With several pictures, each line is the file
     /// name, a tab and its MathML (empty when it cannot be read).
@@ -146,6 +153,8 @@ enum FormatArg {
     Epub,
     /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
     Json,
+    /// A PDF (.pdf) of a Word document, laid out in pages as Word lays it out
+    Pdf,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -343,6 +352,18 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Inspect { input } => inspect(&input),
+        Command::Lines { input } => {
+            let data = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let (lines, pages) = kakemono::layout::lines::pdf_lines(data)?;
+            println!("pages\t{pages}");
+            for line in lines {
+                println!(
+                    "{}\t{:.2}\t{:.2}\t{:.2}\t{}",
+                    line.page, line.baseline, line.left, line.right, line.text
+                );
+            }
+            Ok(())
+        }
         Command::Formula { images, scores } => formula(&images, scores),
     }
 }
@@ -422,6 +443,20 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let (paper, stem) = load(&args.input)?;
     let paper = paper.with_png_compression(args.png_compression.into());
+    if format == FormatArg::Pdf {
+        let started = Instant::now();
+        let file = OutputPaths::new(args.output.as_ref(), false).single_file(&stem, "pdf");
+        let data = paper.to_pdf()?;
+        write_file(&file, &data)?;
+        eprintln!(
+            "{:<8} -> {} ({:.1} MB, {:.2}s)",
+            "pdf",
+            file.display(),
+            data.len() as f64 / BYTES_PER_MB,
+            started.elapsed().as_secs_f32()
+        );
+        return Ok(());
+    }
     if !paper.format().has_pages() && format == FormatArg::Html && !args.all && args.mode != ModeArg::Friendly {
         bail!("a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use --mode friendly");
     }
@@ -459,6 +494,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
+        FormatArg::Pdf => unreachable!("written above"),
     }
 
     if args.json {
@@ -489,6 +525,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "tex" | "latex" => FormatArg::Latex,
             "epub" => FormatArg::Epub,
             "json" => FormatArg::Json,
+            "pdf" => FormatArg::Pdf,
             _ => FormatArg::Html,
         }
     })

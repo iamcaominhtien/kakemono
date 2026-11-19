@@ -34,11 +34,11 @@ const MAX_XML_NODES: u32 = u32::MAX;
 /// A relationship of a part: its target and whether it is outside the
 /// package (a web address).
 #[derive(Debug, Clone)]
-struct Rel {
+pub(crate) struct Rel {
     /// The target: a path in the package (resolved), or a URL.
-    target: String,
+    pub(crate) target: String,
     /// The target is outside the package.
-    external: bool,
+    pub(crate) external: bool,
 }
 
 /// A field (`w:fldChar` ... `w:fldChar`) being read: its instruction, and
@@ -152,7 +152,7 @@ pub(crate) fn is_docx(data: &[u8]) -> bool {
 }
 
 /// Parses an XML part, with DTDs refused and the node limit raised.
-fn parse(text: &str) -> Result<Xml<'_>> {
+pub(crate) fn parse(text: &str) -> Result<Xml<'_>> {
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: MAX_XML_NODES,
@@ -161,7 +161,7 @@ fn parse(text: &str) -> Result<Xml<'_>> {
 }
 
 /// The path of the main document part, from the package relationships.
-fn main_part(zip: &ZipArchive<'_>) -> Result<String> {
+pub(crate) fn main_part(zip: &ZipArchive<'_>) -> Result<String> {
     Ok(read_rels(zip, "")?
         .into_iter()
         .find(|(_, kind, rel)| !rel.external && kind == OFFICE_DOCUMENT_REL)
@@ -173,7 +173,7 @@ fn main_part(zip: &ZipArchive<'_>) -> Result<String> {
 /// The path of the part related to `part` by a relationship whose type ends
 /// with `/kind` (`styles`, `numbering`, `footnotes`), or the usual path
 /// next to it.
-fn related_part(zip: &ZipArchive<'_>, part: &str, kind: &str) -> String {
+pub(crate) fn related_part(zip: &ZipArchive<'_>, part: &str, kind: &str) -> String {
     let dir = part.rsplit_once('/').map_or("", |(dir, _)| dir);
     let usual = if dir.is_empty() {
         format!("{kind}.xml")
@@ -189,7 +189,7 @@ fn related_part(zip: &ZipArchive<'_>, part: &str, kind: &str) -> String {
 
 /// The relationships of `part` (the package relationships for `""`), by id,
 /// with their targets resolved to paths in the package.
-fn rels_of(zip: &ZipArchive<'_>, part: &str) -> Result<HashMap<String, Rel>> {
+pub(crate) fn rels_of(zip: &ZipArchive<'_>, part: &str) -> Result<HashMap<String, Rel>> {
     Ok(read_rels(zip, part)?
         .into_iter()
         .map(|(id, _, rel)| (id, rel))
@@ -197,7 +197,7 @@ fn rels_of(zip: &ZipArchive<'_>, part: &str) -> Result<HashMap<String, Rel>> {
 }
 
 /// The relationships of `part` as (last word of their type, target path).
-fn rel_types_of(zip: &ZipArchive<'_>, part: &str) -> Vec<(String, String)> {
+pub(crate) fn rel_types_of(zip: &ZipArchive<'_>, part: &str) -> Vec<(String, String)> {
     read_rels(zip, part)
         .unwrap_or_default()
         .into_iter()
@@ -238,7 +238,7 @@ fn read_rels(zip: &ZipArchive<'_>, part: &str) -> Result<Vec<(String, String, Re
 
 /// The path of `target` relative to the directory `dir`, with `..` and
 /// `.` resolved (a target starting with `/` is from the package root).
-fn resolve(dir: &str, target: &str) -> String {
+pub(crate) fn resolve(dir: &str, target: &str) -> String {
     let mut parts: Vec<&str> = if target.starts_with('/') {
         Vec::new()
     } else {
@@ -257,7 +257,7 @@ fn resolve(dir: &str, target: &str) -> String {
 }
 
 /// The title in the document properties (`docProps/core.xml`).
-fn document_title(zip: &ZipArchive<'_>) -> Result<Option<String>> {
+pub(crate) fn document_title(zip: &ZipArchive<'_>) -> Result<Option<String>> {
     let Some(xml) = zip.read_text("docProps/core.xml")? else {
         return Ok(None);
     };
@@ -635,7 +635,7 @@ impl Reader<'_> {
 
 /// The content of an `mc:AlternateContent` to read: its first choice
 /// (Word's own markup), else its fallback.
-fn alternate<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
+pub(crate) fn alternate<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
     child(node, MC_NS, "Choice").or_else(|| child(node, MC_NS, "Fallback"))
 }
 
@@ -677,7 +677,7 @@ pub(crate) fn field_link(instr: &str) -> Option<String> {
 
 /// The words of a field instruction: quoted strings are one word without
 /// their quotes.
-fn field_words(instr: &str) -> Vec<String> {
+pub(crate) fn field_words(instr: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut chars = instr.chars().peekable();
     while let Some(&ch) = chars.peek() {
@@ -703,7 +703,7 @@ fn field_words(instr: &str) -> Vec<String> {
 }
 
 /// The size of a DrawingML picture in points, from its `wp:extent`.
-fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
+pub(crate) fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
     node.descendants()
         .find(|item| is(*item, WP_NS, "extent"))
         .map(|extent| {
@@ -720,7 +720,7 @@ fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
 
 /// The size in points of a VML shape, from its `style` attribute
 /// (`width:120pt;height:3.5in`).
-fn vml_size(style: &str) -> (f32, f32) {
+pub(crate) fn vml_size(style: &str) -> (f32, f32) {
     let mut size = (0.0, 0.0);
     for declaration in style.split(';') {
         let Some((name, value)) = declaration.split_once(':') else {

@@ -50,6 +50,9 @@ png = "0.18"
 sha2 = "0.10"
 roxmltree = "0.20"
 cfb = "0.16"
+# The Word layout engine: text shaping, and the PDF it writes.
+rustybuzz = "0.20"
+krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
 
 [profile.release]
 opt-level = 3

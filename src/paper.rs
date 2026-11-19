@@ -47,8 +47,9 @@ impl InputFormat {
 enum Source {
     /// A PDF, analysed on demand.
     Pdf(PdfFile),
-    /// A Word document, read into its structure when loaded.
-    Word(Box<Document>, InputFormat),
+    /// A Word document, read into its structure when loaded, with its file
+    /// (read again with its formatting for the layout).
+    Word(Box<Document>, InputFormat, Vec<u8>),
 }
 
 /// A loaded PDF or Word document, ready to be analysed and rendered.
@@ -84,7 +85,7 @@ impl Paper {
                     WordFormat::Docx => InputFormat::Docx,
                     WordFormat::Doc => InputFormat::Doc,
                 };
-                Source::Word(Box::new(doc), format)
+                Source::Word(Box::new(doc), format, data)
             }
             None => Source::Pdf(PdfFile::open(data)?),
         };
@@ -99,7 +100,7 @@ impl Paper {
     pub fn format(&self) -> InputFormat {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
-            Source::Word(_, format) => *format,
+            Source::Word(_, format, _) => *format,
         }
     }
 
@@ -108,6 +109,25 @@ impl Paper {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
             Source::Word(..) => None,
+        }
+    }
+
+    /// The document laid out in pages as Word lays it out, as a PDF: only
+    /// for a Word document (a PDF already has its pages).
+    ///
+    /// # Errors
+    /// When the paper is a PDF, or the layout cannot be written.
+    pub fn to_pdf(&self) -> Result<Vec<u8>> {
+        match &self.file {
+            Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
+            Source::Word(_, format, data) => {
+                let format = match format {
+                    InputFormat::Doc => WordFormat::Doc,
+                    _ => WordFormat::Docx,
+                };
+                let doc = word::fmt::read(data, format)?;
+                crate::layout::to_pdf(&doc)
+            }
         }
     }
 
@@ -150,7 +170,7 @@ impl Paper {
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _) => {
+            Source::Word(doc, _, _) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 return Analysis {

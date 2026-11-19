@@ -1,0 +1,1646 @@
+//! Pages: the paragraphs and tables of each section placed in its columns
+//! and pages, with Word's rules for space between paragraphs, widows and
+//! orphans, paragraphs kept together or with the next one, page breaks,
+//! headers and footers, footnotes and floating objects.
+
+use super::display::{Destination, Item, Page};
+use super::fonts::FontBook;
+use super::para::{self, Ctx, Float, FloatKind, Line, ParaLayout};
+use super::shape::Shaper;
+use crate::word::fmt::model::{
+    Align, AnchorAlign, AnchorFrom, Block, Border, BorderStyle, Cell, FDoc, Inline, NumFormat, Para, ParaBorders, Rgb,
+    Section, SectionStart, Shape, Table, VAlign, VMerge, Width, Wrap,
+};
+use std::collections::HashMap;
+
+/// Space Word puts before and after a paragraph with automatic spacing.
+const AUTO_SPACING_PT: f32 = 14.0;
+/// Length of the line that separates footnotes from the text.
+const NOTE_SEPARATOR_LEN_PT: f32 = 144.0;
+/// Width of the separator line.
+const NOTE_SEPARATOR_WIDTH_PT: f32 = 0.5;
+/// Fewest lines of a paragraph left at the bottom or top of a page with
+/// widow control.
+const WIDOW_LINES: usize = 2;
+/// Smallest room, in points, under which nothing more is placed in a
+/// column (rounding).
+const EPS: f32 = 0.01;
+
+/// Whether the placed lines are printed (`KAKEMONO_LAYOUT_TRACE`), for
+/// calibration against Word's own PDFs.
+fn trace() -> bool {
+    std::env::var_os("KAKEMONO_LAYOUT_TRACE").is_some()
+}
+
+/// The laid-out document.
+pub struct Layout {
+    /// The pages.
+    pub pages: Vec<Page>,
+    /// Where the bookmarks land.
+    pub destinations: Vec<Destination>,
+}
+
+/// Lays out a whole document.
+pub fn layout(doc: &FDoc, book: &mut FontBook) -> Layout {
+    let notes = number_notes(doc);
+    let mut shaper = Shaper::default();
+    let mut coverage = HashMap::new();
+    let mut flow = Flow {
+        doc,
+        book,
+        shaper: &mut shaper,
+        coverage: &mut coverage,
+        notes: &notes,
+        pages: Vec::new(),
+        page_info: Vec::new(),
+        destinations: Vec::new(),
+        state: State::default(),
+    };
+    for (at, section) in doc.sections.iter().enumerate() {
+        flow.section(at, section);
+    }
+    flow.endnotes();
+    flow.finish_page();
+    flow.headers_and_footers();
+    Layout {
+        pages: flow.pages,
+        destinations: flow.destinations,
+    }
+}
+
+/// The numbers of the notes, in the order the text refers to them.
+fn number_notes(doc: &FDoc) -> HashMap<(bool, String), String> {
+    let mut numbers = HashMap::new();
+    let mut counts = [0u32; 2];
+    let mut visit = |inline: &Inline| {
+        if let Inline::NoteRef { endnote, id, .. } = inline {
+            let key = (*endnote, id.clone());
+            if !numbers.contains_key(&key) {
+                let slot = usize::from(*endnote);
+                counts[slot] += 1;
+                let format = if *endnote {
+                    &doc.endnote_format
+                } else {
+                    &doc.footnote_format
+                };
+                numbers.insert(key, crate::word::fmt::model::format_page(counts[slot], format));
+            }
+        }
+    };
+    for section in &doc.sections {
+        walk_inlines(&section.blocks, &mut visit);
+    }
+    numbers
+}
+
+/// Calls `visit` on every inline of `blocks`, in order.
+fn walk_inlines(blocks: &[Block], visit: &mut dyn FnMut(&Inline)) {
+    for block in blocks {
+        match block {
+            Block::Para(para) => {
+                for inline in &para.inlines {
+                    visit(inline);
+                    if let Inline::Shape(shape) = inline {
+                        walk_inlines(&shape.blocks, visit);
+                    }
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        walk_inlines(&cell.blocks, visit);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Per page: its section, its number, whether it is the section's first.
+#[derive(Debug, Clone)]
+struct PageInfo {
+    section: usize,
+    number: u32,
+    first_of_section: bool,
+}
+
+/// Where the flow is.
+#[derive(Debug, Clone, Default)]
+struct State {
+    /// The page being filled exists.
+    open: bool,
+    /// Index of the section being placed.
+    section: usize,
+    /// Its column being filled.
+    column: usize,
+    /// Left edge and width of each column of the current section.
+    columns: Vec<(f32, f32)>,
+    /// Top of the body area.
+    top: f32,
+    /// Bottom of the body area.
+    bottom: f32,
+    /// Next free position in the column.
+    y: f32,
+    /// Nothing has been placed in the column yet.
+    fresh: bool,
+    /// Space after the last paragraph, with its style and whether it is
+    /// contextual.
+    pending_after: Option<(f32, String, bool)>,
+    /// Footnotes on the page: their lines, in order.
+    page_notes: Vec<Vec<Line>>,
+    /// Height of the footnote area (with its separator).
+    notes_height: f32,
+    /// Number of the page being filled.
+    number: u32,
+    /// Areas text flows around on this page: (left, top, right, bottom),
+    /// and whether text stays only above and below.
+    exclusions: Vec<([f32; 4], bool)>,
+    /// Style of the last paragraph placed.
+    last_style: Option<String>,
+    /// The text continues below this position (a floating object across
+    /// the column).
+    pending_push: Option<f32>,
+    /// Space after the previous paragraph and before this one, for the
+    /// trace.
+    trace_spacing: (f32, f32),
+    /// Borders and indents of the last paragraph placed: paragraphs with the
+    /// same ones are framed together.
+    last_borders: Option<(ParaBorders, f32, f32)>,
+    /// Height the bottom border of the last paragraph adds below it, unless
+    /// the next paragraph is in the same frame.
+    pending_border: f32,
+}
+
+/// The layout of the body.
+struct Flow<'a> {
+    doc: &'a FDoc,
+    book: &'a mut FontBook,
+    shaper: &'a mut Shaper,
+    coverage: &'a mut HashMap<(super::fonts::FaceId, char), bool>,
+    notes: &'a HashMap<(bool, String), String>,
+    pages: Vec<Page>,
+    page_info: Vec<PageInfo>,
+    destinations: Vec<Destination>,
+    state: State,
+}
+
+impl Flow<'_> {
+    /// The layout context.
+    fn ctx(&mut self) -> Ctx<'_> {
+        Ctx {
+            book: self.book,
+            shaper: self.shaper,
+            doc: self.doc,
+            notes: self.notes,
+            own_note: None,
+            page: None,
+            page_count: None,
+            section_pages: None,
+            coverage: self.coverage,
+        }
+    }
+
+    /// Places a section.
+    fn section(&mut self, at: usize, section: &Section) {
+        let continuous = section.start == SectionStart::Continuous && self.state.open && at > 0;
+        let previous_number = self.state.number;
+        if !continuous {
+            self.finish_page();
+            if matches!(section.start, SectionStart::OddPage | SectionStart::EvenPage) {
+                let next = section.page_number_start.unwrap_or(previous_number + 1);
+                let want_odd = section.start == SectionStart::OddPage;
+                if at > 0 && (next % 2 == 1) != want_odd {
+                    // A blank page keeps the parity.
+                    self.start_page(at, section, next.saturating_sub(1), true);
+                    self.finish_page();
+                }
+            }
+        }
+        self.state.section = at;
+        let page = &section.page;
+        let left = page.left + page.gutter;
+        let width = (page.width - page.left - page.right - page.gutter).max(1.0);
+        self.state.columns = column_boxes(section, left, width);
+        if continuous {
+            // The columns of the new section start below what is there.
+            self.state.column = 0;
+            let y = self.state.y;
+            self.state.fresh = false;
+            let _ = y;
+        } else {
+            let number = section.page_number_start.unwrap_or(previous_number + 1);
+            self.start_page(at, section, number, true);
+        }
+        self.blocks(&section.blocks);
+    }
+
+    /// Opens a new page of section `at`, numbered `number`.
+    fn start_page(&mut self, at: usize, section: &Section, number: u32, first_of_section: bool) {
+        let page = &section.page;
+        self.pages.push(Page {
+            width: page.width,
+            height: page.height,
+            items: Vec::new(),
+        });
+        self.page_info.push(PageInfo {
+            section: at,
+            number,
+            first_of_section,
+        });
+        self.state.open = true;
+        self.state.number = number;
+        self.state.column = 0;
+        let (header_bottom, footer_top) = self.header_extent(at, number, first_of_section);
+        self.state.top = page.top.abs().max(header_bottom);
+        self.state.bottom = (page.height - page.bottom.abs()).min(footer_top);
+        self.state.y = self.state.top;
+        self.state.fresh = true;
+        self.state.pending_after = None;
+        self.state.page_notes.clear();
+        self.state.notes_height = 0.0;
+        self.state.exclusions.clear();
+        self.state.pending_push = None;
+    }
+
+    /// Closes the current page: draws its footnotes.
+    fn finish_page(&mut self) {
+        if !self.state.open {
+            return;
+        }
+        self.state.open = false;
+        if self.state.page_notes.is_empty() {
+            return;
+        }
+        let (x, _) = self.state.columns.first().copied().unwrap_or((72.0, 468.0));
+        let mut y = self.state.bottom - self.state.notes_height;
+        let separator = self.separator_height();
+        let page = self.pages.len() - 1;
+        let rule_y = y + separator / 2.0;
+        self.pages[page].items.push(Item::Line {
+            x1: x,
+            y1: rule_y,
+            x2: x + NOTE_SEPARATOR_LEN_PT,
+            y2: rule_y,
+            width: NOTE_SEPARATOR_WIDTH_PT,
+            color: [0, 0, 0],
+            dash: None,
+        });
+        y += separator;
+        let notes = std::mem::take(&mut self.state.page_notes);
+        for lines in notes {
+            for line in lines {
+                push_items(&mut self.pages[page].items, &line.items, x, y);
+                y += line.height;
+            }
+        }
+    }
+
+    /// Height of the footnote separator: a single line of the normal font.
+    fn separator_height(&mut self) -> f32 {
+        let fmt = self
+            .doc
+            .footnotes
+            .first()
+            .and_then(|(_, blocks)| match blocks.first() {
+                Some(Block::Para(para)) => Some(para.mark.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let para = Para {
+            mark: fmt,
+            ..Default::default()
+        };
+        let layout = para::layout(&mut self.ctx(), &para, 100.0);
+        layout.lines.first().map_or(12.0, |line| line.height)
+    }
+
+    /// Bottom of the header and top of the footer of a page, laid out with
+    /// a provisional page number.
+    fn header_extent(&mut self, section: usize, number: u32, first: bool) -> (f32, f32) {
+        let sect = &self.doc.sections[section];
+        let page = sect.page;
+        let width = (page.width - page.left - page.right - page.gutter).max(1.0);
+        let header = self.header_part(section, number, first, true);
+        let footer = self.header_part(section, number, first, false);
+        let mut header_bottom = 0.0;
+        if let Some(part) = header {
+            let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
+            header_bottom = page.header + height;
+        }
+        let mut footer_top = page.height;
+        if let Some(part) = footer {
+            let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
+            footer_top = page.height - page.footer - height;
+        }
+        (header_bottom, footer_top)
+    }
+
+    /// The header (or footer) part of a page.
+    fn header_part(&self, section: usize, number: u32, first: bool, header: bool) -> Option<usize> {
+        let sect = &self.doc.sections[section];
+        let set = if header { sect.headers } else { sect.footers };
+        if first && sect.title_page {
+            return set.first;
+        }
+        if self.doc.even_and_odd_headers && number % 2 == 0 {
+            return set.even;
+        }
+        set.default
+    }
+
+    /// Height of blocks laid out at `width` (headers, footers, cells).
+    fn blocks_height(&mut self, blocks: &[Block], width: f32, page: Option<u32>) -> f32 {
+        let mut sub = SubFlow::new(width);
+        self.sub_blocks(&mut sub, blocks, page, None);
+        sub.y
+    }
+
+    /// Draws the headers and footers of every page, now that the page
+    /// count is known.
+    fn headers_and_footers(&mut self) {
+        let count = self.pages.len() as u32;
+        for at in 0..self.pages.len() {
+            let info = self.page_info[at].clone();
+            let sect = &self.doc.sections[info.section];
+            let page = sect.page;
+            let left = page.left + page.gutter;
+            let width = (page.width - page.left - page.right - page.gutter).max(1.0);
+            let section_pages = self
+                .page_info
+                .iter()
+                .filter(|other| other.section == info.section)
+                .count() as u32;
+            let format = sect.page_number_format.clone();
+            for header in [true, false] {
+                let Some(part) = self.header_part(info.section, info.number, info.first_of_section, header) else {
+                    continue;
+                };
+                let mut sub = SubFlow::new(width);
+                sub.page_count = Some(count);
+                sub.section_pages = Some(section_pages);
+                sub.format = format.clone();
+                let blocks = &self.doc.parts[part];
+                self.sub_blocks(&mut sub, blocks, Some(info.number), None);
+                let y = if header {
+                    page.header
+                } else {
+                    page.height - page.footer - sub.y
+                };
+                let mut items = Vec::new();
+                push_items(&mut items, &sub.items, left, y);
+                // Headers are drawn behind the body.
+                let body = std::mem::take(&mut self.pages[at].items);
+                self.pages[at].items = items;
+                self.pages[at].items.extend(body);
+            }
+        }
+    }
+
+    /// Places blocks in the body.
+    fn blocks(&mut self, blocks: &[Block]) {
+        let mut at = 0;
+        while at < blocks.len() {
+            match &blocks[at] {
+                Block::Para(para) => {
+                    // A paragraph kept with the next: the chain must start on
+                    // a page where it fits.
+                    if para.props.keep_next && !self.state.fresh {
+                        let need = self.chain_height(&blocks[at..]);
+                        let room = self.state.bottom - self.state.notes_height - self.state.y;
+                        let page_room = self.state.bottom - self.state.top;
+                        if need > room + EPS && need <= page_room {
+                            self.next_column();
+                        }
+                    }
+                    self.paragraph(para);
+                }
+                Block::Table(table) => self.table(table),
+            }
+            at += 1;
+        }
+    }
+
+    /// Height of a chain of paragraphs kept with the next, with the first
+    /// two lines of the paragraph that ends it.
+    fn chain_height(&mut self, blocks: &[Block]) -> f32 {
+        let width = self.column_width();
+        let mut height = 0.0;
+        for block in blocks {
+            match block {
+                Block::Para(para) => {
+                    let layout = para::layout(&mut self.ctx(), para, width);
+                    let before = self.before_space(para);
+                    if para.props.keep_next {
+                        height += before + layout.lines.iter().map(|line| line.height).sum::<f32>() + para.props.after;
+                    } else {
+                        height += before
+                            + layout
+                                .lines
+                                .iter()
+                                .take(WIDOW_LINES)
+                                .map(|line| line.height)
+                                .sum::<f32>();
+                        break;
+                    }
+                }
+                Block::Table(_) => break,
+            }
+        }
+        height
+    }
+
+    /// Width of the current column.
+    fn column_width(&self) -> f32 {
+        self.state
+            .columns
+            .get(self.state.column)
+            .map_or(468.0, |&(_, width)| width)
+    }
+
+    /// Left edge of the current column.
+    fn column_left(&self) -> f32 {
+        self.state
+            .columns
+            .get(self.state.column)
+            .map_or(72.0, |&(left, _)| left)
+    }
+
+    /// Moves to the next column, or the next page.
+    fn next_column(&mut self) {
+        if self.state.column + 1 < self.state.columns.len() {
+            self.state.column += 1;
+            self.state.y = self.state.top;
+            self.state.fresh = true;
+            self.state.pending_after = None;
+            return;
+        }
+        self.next_page();
+    }
+
+    /// Moves to the next page of the current section.
+    fn next_page(&mut self) {
+        self.finish_page();
+        let at = self.state.section;
+        let number = self.state.number + 1;
+        let section = &self.doc.sections[at];
+        self.start_page(at, section, number, false);
+    }
+
+    /// The space before a paragraph, given what precedes it.
+    fn before_space(&self, para: &Para) -> f32 {
+        let before = if para.props.before_auto {
+            AUTO_SPACING_PT
+        } else {
+            para.props.before
+        };
+        match &self.state.pending_after {
+            Some((_, style, _)) if para.props.contextual && *style == para.style => 0.0,
+            _ => before,
+        }
+    }
+
+    /// Places a paragraph.
+    fn paragraph(&mut self, para: &Para) {
+        if para.props.page_break_before && !self.state.fresh {
+            self.next_page();
+        }
+        let width = self.column_width();
+        let layout = para::layout(&mut self.ctx(), para, width);
+        let after_prev = match self.state.pending_after.take() {
+            Some((after, style, contextual)) if !(contextual && style == para.style) => after,
+            _ => 0.0,
+        };
+        let before = if para.props.before_auto {
+            AUTO_SPACING_PT
+        } else {
+            para.props.before
+        };
+        let before = if para.props.contextual && self.state_style_matches(para) {
+            0.0
+        } else {
+            before
+        };
+        self.state.trace_spacing = (after_prev, before);
+        let mut gap = self.spacing(after_prev, before);
+        // Borders: the top border (and its distance) is above the first
+        // paragraph of a frame, the bottom one below the last.
+        let borders = para.props.borders;
+        let key = (borders, para.props.left, para.props.right);
+        let framed = borders.top.is_some() || borders.bottom.is_some();
+        let same_frame = framed && self.state.last_borders == Some(key);
+        let pending_border = std::mem::take(&mut self.state.pending_border);
+        if !same_frame {
+            gap += pending_border;
+            if let Some(top) = borders.top {
+                gap += top.space + top.width;
+            }
+        }
+        self.state.last_borders = framed.then_some(key);
+        self.state.pending_border = borders.bottom.map_or(0.0, |bottom| bottom.space + bottom.width);
+        if let Some(push) = self.state.pending_push.take()
+            && push > self.state.y
+        {
+            gap += push - self.state.y;
+        }
+        self.place_lines(para, layout, gap);
+        let after = if para.props.after_auto {
+            AUTO_SPACING_PT
+        } else {
+            para.props.after
+        };
+        self.state.pending_after = Some((after, para.style.clone(), para.props.contextual));
+    }
+
+    /// The space between two paragraphs: the larger of the space after the
+    /// first and before the second, or their sum in documents that ask for
+    /// it.
+    fn spacing(&self, after: f32, before: f32) -> f32 {
+        if self.doc.add_paragraph_spacing {
+            after + before
+        } else {
+            after.max(before)
+        }
+    }
+
+    /// Whether the previous paragraph has the same style as `para`.
+    fn state_style_matches(&self, para: &Para) -> bool {
+        self.state.last_style.as_deref() == Some(para.style.as_str())
+    }
+
+    /// Places the lines of a paragraph, breaking columns and pages where
+    /// they do not fit.
+    fn place_lines(&mut self, para: &Para, layout: ParaLayout, gap: f32) {
+        self.state.last_style = Some(para.style.clone());
+        let lines = layout.lines;
+        let count = lines.len();
+        let mut at = 0;
+        let mut gap = gap;
+        let widow = para.props.widow_control;
+        let borders = para.props.borders;
+        let shading = para.props.shading;
+        while at < count {
+            // How many of the remaining lines fit here.
+            let room_bottom = self.state.bottom - self.state.notes_height;
+            let mut y = self.state.y + gap;
+            let mut fit = 0;
+            let mut notes_extra = 0.0;
+            for line in &lines[at..] {
+                let extra = self.notes_height_for(line);
+                if y + line.fit_height > room_bottom - notes_extra - extra + EPS {
+                    break;
+                }
+                notes_extra += extra;
+                y += line.height;
+                fit += 1;
+            }
+            let remaining = count - at;
+            let mut take = fit;
+            if take < remaining {
+                if para.props.keep_lines && at == 0 && !self.state.fresh {
+                    take = 0;
+                } else if widow {
+                    if take == remaining - 1 && remaining > WIDOW_LINES {
+                        take -= 1;
+                    }
+                    if take < WIDOW_LINES
+                        && (at == 0 && remaining > take)
+                        && remaining >= WIDOW_LINES
+                        && !self.state.fresh
+                    {
+                        take = 0;
+                    }
+                }
+            }
+            if take == 0 && self.state.fresh {
+                take = fit.max(1);
+            }
+            if take == 0 {
+                self.next_column();
+                gap = if at == 0 { self.top_gap(para) } else { 0.0 };
+                continue;
+            }
+            let x = self.column_left();
+            let start_y = self.state.y + gap;
+            let mut y = start_y;
+            let page = self.pages.len() - 1;
+            for line in &lines[at..at + take] {
+                for bookmark in &line.bookmarks {
+                    self.destinations.push(Destination {
+                        name: bookmark.clone(),
+                        page,
+                        y,
+                    });
+                }
+                push_items(&mut self.pages[page].items, &line.items, x, y);
+                if trace() {
+                    let text: String = line
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            Item::Text(run) => Some(run.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    let first = std::ptr::eq(line, &lines[0]);
+                    let (after_prev, before) = if first { self.state.trace_spacing } else { (0.0, 0.0) };
+                    eprintln!(
+                        "TRACE\t{page}\t{y:.2}\t{:.2}\t{:.2}\t{:?}\t{}\t{}\t{after_prev:.2}\t{before:.2}\t{:.2},{:.2},{:.2}\t{}",
+                        line.baseline,
+                        line.height,
+                        para.props.line,
+                        para.style,
+                        first,
+                        line.metrics.0,
+                        line.metrics.1,
+                        line.metrics.2,
+                        text.split_whitespace().collect::<Vec<_>>().join(" ")
+                    );
+                }
+                for (shape_x, shape) in &line.shapes {
+                    let top = y + line.baseline - shape.height;
+                    self.draw_shape(shape, x + shape_x, top);
+                }
+                self.add_notes(line);
+                y += line.height;
+            }
+            // Floats anchored on the placed lines.
+            for float in layout
+                .floats
+                .iter()
+                .filter(|float| float.line >= at && float.line < at + take)
+            {
+                let line_y = start_y
+                    + lines[at..float.line.min(at + take)]
+                        .iter()
+                        .map(|line| line.height)
+                        .sum::<f32>();
+                self.place_float(float, x, start_y, line_y);
+            }
+            // Borders and shading around the placed lines.
+            self.para_frame(para, borders, shading, x, start_y, y, at == 0, at + take == count);
+            self.state.y = y;
+            self.state.fresh = false;
+            at += take;
+            gap = 0.0;
+            if let Some(last) = lines.get(at - 1) {
+                if last.page_break {
+                    self.next_page();
+                } else if last.column_break {
+                    self.next_column();
+                }
+            }
+            if at < count {
+                self.next_column();
+            }
+        }
+    }
+
+    /// The gap above a paragraph that starts a new column or page.
+    fn top_gap(&self, para: &Para) -> f32 {
+        if para.props.before_auto {
+            AUTO_SPACING_PT
+        } else {
+            para.props.before
+        }
+    }
+
+    /// Extra footnote height a line needs on this page.
+    fn notes_height_for(&mut self, line: &Line) -> f32 {
+        let mut height = 0.0;
+        for (endnote, id) in &line.notes {
+            if *endnote {
+                continue;
+            }
+            if self.state.page_notes.is_empty() && height == 0.0 {
+                height += self.separator_height();
+            }
+            height += self.note_lines(id).iter().map(|line| line.height).sum::<f32>();
+        }
+        height
+    }
+
+    /// The lines of footnote `id`.
+    fn note_lines(&mut self, id: &str) -> Vec<Line> {
+        let Some((_, blocks)) = self.doc.footnotes.iter().find(|(note_id, _)| note_id == id) else {
+            return Vec::new();
+        };
+        let width = self.state.columns.first().map_or(468.0, |&(_, width)| width);
+        let own = self.notes.get(&(false, id.to_string())).cloned();
+        let mut sub = SubFlow::new(width);
+        sub.own_note = own;
+        self.sub_blocks(&mut sub, blocks, Some(self.state.number), None);
+        vec![Line {
+            height: sub.y,
+            baseline: 0.0,
+            items: sub.items,
+            ..Default::default()
+        }]
+    }
+
+    /// Adds the footnotes of a placed line to the page.
+    fn add_notes(&mut self, line: &Line) {
+        for (endnote, id) in &line.notes {
+            if *endnote {
+                continue;
+            }
+            if self.state.page_notes.is_empty() {
+                self.state.notes_height += self.separator_height();
+            }
+            let lines = self.note_lines(id);
+            self.state.notes_height += lines.iter().map(|line| line.height).sum::<f32>();
+            self.state.page_notes.push(lines);
+        }
+    }
+
+    /// Draws the borders and shading of the part of a paragraph between
+    /// `top` and `bottom`.
+    #[allow(clippy::too_many_arguments)]
+    fn para_frame(
+        &mut self,
+        para: &Para,
+        borders: ParaBorders,
+        shading: Option<Rgb>,
+        x: f32,
+        top: f32,
+        bottom: f32,
+        first: bool,
+        last: bool,
+    ) {
+        let width = self.column_width();
+        let left = x + para.props.left;
+        let right = x + width - para.props.right;
+        let page = self.pages.len() - 1;
+        let mut back = Vec::new();
+        if let Some(color) = shading {
+            back.push(Item::Rect {
+                x: left,
+                y: top,
+                w: right - left,
+                h: bottom - top,
+                color,
+            });
+        }
+        let mut lines = Vec::new();
+        if first && let Some(border) = borders.top {
+            border_line(&mut lines, border, left, top - border.space, right, top - border.space);
+        }
+        if last && let Some(border) = borders.bottom {
+            border_line(
+                &mut lines,
+                border,
+                left,
+                bottom + border.space,
+                right,
+                bottom + border.space,
+            );
+        }
+        if let Some(border) = borders.left {
+            border_line(
+                &mut lines,
+                border,
+                left - border.space,
+                top,
+                left - border.space,
+                bottom,
+            );
+        }
+        if let Some(border) = borders.right {
+            border_line(
+                &mut lines,
+                border,
+                right + border.space,
+                top,
+                right + border.space,
+                bottom,
+            );
+        }
+        if !back.is_empty() {
+            let items = &mut self.pages[page].items;
+            // Shading goes behind the paragraph's text, placed just before.
+            let insert_at = items.len().saturating_sub(0);
+            let _ = insert_at;
+            let mut rest = std::mem::take(items);
+            let keep = rest.len();
+            let _ = keep;
+            items.append(&mut back);
+            items.append(&mut rest);
+        }
+        self.pages[page].items.extend(lines);
+    }
+
+    /// Places a floating object anchored in a paragraph.
+    fn place_float(&mut self, float: &Float, column_x: f32, para_top: f32, line_top: f32) {
+        let section = &self.doc.sections[self.state.section];
+        let page = section.page;
+        let width = self.column_width();
+        let anchor = &float.anchor;
+        let h_area = match anchor.h.from {
+            AnchorFrom::Page => (0.0, page.width),
+            AnchorFrom::Margin => (page.left, page.width - page.right),
+            AnchorFrom::Column => (column_x, column_x + width),
+            AnchorFrom::Character => (column_x + float.x, column_x + float.x),
+            AnchorFrom::StartMargin | AnchorFrom::InsideMargin => (0.0, page.left),
+            AnchorFrom::EndMargin | AnchorFrom::OutsideMargin => (page.width - page.right, page.width),
+            _ => (column_x, column_x + width),
+        };
+        let v_area = match anchor.v.from {
+            AnchorFrom::Page => (0.0, page.height),
+            AnchorFrom::Margin => (page.top, page.height - page.bottom),
+            AnchorFrom::Paragraph => (para_top, para_top),
+            AnchorFrom::Line => (line_top, line_top),
+            AnchorFrom::StartMargin => (0.0, page.top),
+            AnchorFrom::EndMargin => (page.height - page.bottom, page.height),
+            _ => (para_top, para_top),
+        };
+        let place = |area: (f32, f32), align: Option<AnchorAlign>, offset: f32, size: f32| match align {
+            Some(AnchorAlign::Center) => (area.0 + area.1 - size) / 2.0,
+            Some(AnchorAlign::End | AnchorAlign::Outside) => area.1 - size,
+            Some(AnchorAlign::Start | AnchorAlign::Inside) => area.0,
+            None => area.0 + offset,
+        };
+        let x = place(h_area, anchor.h.align, anchor.h.offset, float.width);
+        let mut y = place(v_area, anchor.v.align, anchor.v.offset, float.height);
+        // An object is kept on its page.
+        if y + float.height > page.height {
+            y = (page.height - float.height).max(0.0);
+        }
+        let y = y.max(0.0);
+        match &float.kind {
+            FloatKind::Image(index, crop) => {
+                if let Some(index) = index {
+                    let item = Item::Image {
+                        index: *index,
+                        x,
+                        y,
+                        w: float.width,
+                        h: float.height,
+                        crop: *crop,
+                    };
+                    let page_at = self.pages.len() - 1;
+                    if anchor.behind {
+                        self.pages[page_at].items.insert(0, item);
+                    } else {
+                        self.pages[page_at].items.push(item);
+                    }
+                }
+            }
+            FloatKind::Shape(shape) => self.draw_shape(shape, x, y),
+        }
+        if matches!(anchor.wrap, Wrap::Square | Wrap::Tight | Wrap::TopBottom) {
+            let [top, bottom, left, right] = anchor.dist;
+            self.state.exclusions.push((
+                [x - left, y - top, x + float.width + right, y + float.height + bottom],
+                anchor.wrap == Wrap::TopBottom,
+            ));
+            // Text below the object in the same column moves past it when
+            // the object covers the whole column.
+            let column_left = column_x;
+            let column_right = column_x + width;
+            let covers = x - left <= column_left + 1.0 && x + float.width + right >= column_right - 1.0;
+            if (anchor.wrap == Wrap::TopBottom || covers)
+                && y - top <= self.state.y + 1.0
+                && y + float.height + bottom > self.state.y
+            {
+                // Handled by the caller's next lines: the cursor moves down.
+                self.state.pending_push = Some(y + float.height + bottom);
+            }
+        }
+    }
+
+    /// Draws a shape (text box, rectangle) at `x`, `y`.
+    fn draw_shape(&mut self, shape: &Shape, x: f32, y: f32) {
+        let mut height = shape.height;
+        let inner_width = (shape.width - shape.insets[0] - shape.insets[2]).max(1.0);
+        let mut sub = SubFlow::new(inner_width);
+        if !shape.blocks.is_empty() {
+            self.sub_blocks(&mut sub, &shape.blocks, Some(self.state.number), None);
+            if shape.auto_height {
+                height = height.max(sub.y + shape.insets[1] + shape.insets[3]);
+            }
+        }
+        let page = self.pages.len() - 1;
+        if let Some(color) = shape.fill {
+            self.pages[page].items.push(Item::Rect {
+                x,
+                y,
+                w: shape.width,
+                h: height,
+                color,
+            });
+        }
+        for &(index, px, py, pw, ph) in &shape.pictures {
+            self.pages[page].items.push(Item::Image {
+                index,
+                x: x + px,
+                y: y + py,
+                w: pw,
+                h: ph,
+                crop: [0.0; 4],
+            });
+        }
+        if let Some(line) = shape.line {
+            let mut lines = Vec::new();
+            border_line(&mut lines, line, x, y, x + shape.width, y);
+            border_line(&mut lines, line, x, y + height, x + shape.width, y + height);
+            border_line(&mut lines, line, x, y, x, y + height);
+            border_line(&mut lines, line, x + shape.width, y, x + shape.width, y + height);
+            self.pages[page].items.extend(lines);
+        }
+        push_items(
+            &mut self.pages[page].items,
+            &sub.items,
+            x + shape.insets[0],
+            y + shape.insets[1],
+        );
+    }
+
+    /// Places a table in the body, row by row.
+    fn table(&mut self, table: &Table) {
+        let after_prev = self.state.pending_after.take().map_or(0.0, |(after, _, _)| after);
+        self.state.y += after_prev + std::mem::take(&mut self.state.pending_border);
+        self.state.last_borders = None;
+        let width = self.column_width();
+        let laid = self.lay_table(table, width);
+        let header_rows: Vec<usize> = (0..laid.rows.len()).take_while(|&at| table.rows[at].header).collect();
+        let mut at = 0;
+        // Right after a page break (and the repeated header rows), a row is
+        // placed even when it does not fit.
+        let mut forced = false;
+        let mut rest: Option<LaidRow> = None;
+        while at < laid.rows.len() {
+            let row = rest.take().unwrap_or_else(|| laid.rows[at].clone());
+            let room = self.state.bottom - self.state.notes_height - self.state.y;
+            if row.height <= room + EPS || forced && self.state.fresh {
+                if row.height > room + EPS
+                    && let Some((first, second)) = split_row(&row, room)
+                {
+                    self.draw_row(&first);
+                    rest = Some(second);
+                    self.page_break_in_table(&laid, &header_rows, at);
+                    forced = true;
+                    continue;
+                }
+                forced = false;
+                self.draw_row(&row);
+                at += 1;
+                continue;
+            }
+            // The row does not fit: split it at a line, or move it on.
+            if !table.rows[at].cant_split
+                && let Some((first, second)) = split_row(&row, room)
+            {
+                self.draw_row(&first);
+                rest = Some(second);
+            } else {
+                rest = Some(row);
+            }
+            self.page_break_in_table(&laid, &header_rows, at);
+            forced = true;
+        }
+        self.state.last_style = None;
+    }
+
+    /// Moves a table to the next column or page, repeating its header rows.
+    fn page_break_in_table(&mut self, laid: &LaidTable, header_rows: &[usize], at: usize) {
+        self.next_column();
+        if !header_rows.is_empty() && at >= header_rows.len() {
+            for &header in header_rows {
+                let row = laid.rows[header].clone();
+                self.draw_row(&row);
+            }
+        }
+        // The page counts as fresh for the row that follows.
+        self.state.fresh = true;
+    }
+
+    /// Draws a laid-out row at the cursor.
+    fn draw_row(&mut self, row: &LaidRow) {
+        let x = self.column_left();
+        let y = self.state.y;
+        let page = self.pages.len() - 1;
+        for cell in &row.cells {
+            if let Some(color) = cell.shading {
+                self.pages[page].items.push(Item::Rect {
+                    x: x + cell.x,
+                    y,
+                    w: cell.width,
+                    h: cell.height.max(row.height),
+                    color,
+                });
+            }
+        }
+        for cell in &row.cells {
+            let height = cell.height.max(row.height);
+            let offset = match cell.valign {
+                VAlign::Top => 0.0,
+                VAlign::Center => (height - cell.content_height) / 2.0,
+                VAlign::Bottom => height - cell.content_height,
+            }
+            .max(0.0);
+            push_items(&mut self.pages[page].items, &cell.items, x + cell.x, y + offset);
+            for (bookmark, dy) in &cell.bookmarks {
+                self.destinations.push(Destination {
+                    name: bookmark.clone(),
+                    page,
+                    y: y + dy,
+                });
+            }
+        }
+        for cell in &row.cells {
+            let height = cell.height.max(row.height);
+            let (left, right) = (x + cell.x, x + cell.x + cell.width);
+            let (top, bottom) = (y, y + height);
+            let mut lines = Vec::new();
+            let [b_top, b_left, b_bottom, b_right] = cell.borders;
+            if let Some(border) = b_top.filter(|_| cell.draw_top) {
+                border_line(&mut lines, border, left, top, right, top);
+            }
+            if let Some(border) = b_bottom.filter(|_| cell.draw_bottom) {
+                border_line(&mut lines, border, left, bottom, right, bottom);
+            }
+            if let Some(border) = b_left {
+                border_line(&mut lines, border, left, top, left, bottom);
+            }
+            if let Some(border) = b_right {
+                border_line(&mut lines, border, right, top, right, bottom);
+            }
+            self.pages[page].items.extend(lines);
+        }
+        self.state.y += row.height;
+        self.state.fresh = false;
+    }
+
+    /// Lays out a table at a column width: column positions, row heights and
+    /// cell content.
+    fn lay_table(&mut self, table: &Table, width: f32) -> LaidTable {
+        let grid = table_grid(table, width);
+        let total: f32 = grid.iter().sum();
+        let first_margin = table
+            .rows
+            .first()
+            .and_then(|row| row.cells.first())
+            .map_or(table.props.cell_margins[0], |cell| cell_margin(cell, table, 0));
+        let mut left = match table.props.align {
+            Align::Center => (width - total) / 2.0,
+            Align::Right => width - total,
+            _ => table.props.indent,
+        };
+        if self.doc.compat_mode < 15 && table.props.align == Align::Left {
+            // Before Word 2013, the text of the first cell is on the margin.
+            left -= first_margin;
+        }
+        let mut rows: Vec<LaidRow> = Vec::new();
+        // Merged cells: the row where each column's merge started.
+        let mut merge_start: HashMap<usize, (usize, usize)> = HashMap::new();
+        for (row_at, row) in table.rows.iter().enumerate() {
+            let mut column = row.grid_before;
+            let mut cells = Vec::new();
+            for cell in &row.cells {
+                let span = cell.span.max(1);
+                let cell_x = left + grid.iter().take(column).sum::<f32>();
+                let cell_width: f32 = grid.iter().skip(column).take(span).sum();
+                let margins = [
+                    cell_margin(cell, table, 0),
+                    cell_margin(cell, table, 1),
+                    cell_margin(cell, table, 2),
+                    cell_margin(cell, table, 3),
+                ];
+                let inner = (cell_width - margins[0] - margins[2]).max(1.0);
+                let mut laid = LaidCell {
+                    x: cell_x,
+                    width: cell_width,
+                    height: 0.0,
+                    content_height: 0.0,
+                    items: Vec::new(),
+                    breaks: Vec::new(),
+                    top_margin: margins[1],
+                    bottom_margin: margins[3],
+                    bookmarks: Vec::new(),
+                    borders: cell.borders,
+                    shading: cell.shading,
+                    valign: cell.valign,
+                    draw_top: true,
+                    draw_bottom: true,
+                    merged_rows: 1,
+                };
+                if cell.vmerge == VMerge::Continue {
+                    laid.draw_top = false;
+                    if let Some(&(start_row, start_cell)) = merge_start.get(&column)
+                        && let Some(start) = rows.get_mut(start_row).and_then(|row| row.cells.get_mut(start_cell))
+                    {
+                        start.merged_rows += 1;
+                        start.draw_bottom = false;
+                    }
+                    laid.shading = None;
+                    laid.borders[0] = None;
+                } else {
+                    let mut sub = SubFlow::new(inner);
+                    sub.in_cell = true;
+                    self.sub_blocks(&mut sub, &cell.blocks, Some(self.state.number), None);
+                    laid.content_height = sub.y + margins[1] + margins[3];
+                    laid.height = laid.content_height;
+                    laid.breaks = sub.breaks.iter().map(|y| y + margins[1]).collect();
+                    let mut items = Vec::new();
+                    push_items(&mut items, &sub.items, margins[0], margins[1]);
+                    laid.items = items;
+                    laid.bookmarks = sub
+                        .bookmarks
+                        .into_iter()
+                        .map(|(name, y)| (name, y + margins[1]))
+                        .collect();
+                    if cell.vmerge == VMerge::Restart {
+                        merge_start.insert(column, (row_at, cells.len()));
+                        laid.height = 0.0;
+                    } else {
+                        merge_start.remove(&column);
+                    }
+                }
+                cells.push(laid);
+                column += span;
+            }
+            let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max);
+            let height = match row.height {
+                Some((value, true)) => value,
+                Some((value, false)) => content.max(value),
+                None => content,
+            };
+            rows.push(LaidRow { height, cells });
+        }
+        // Merged cells: the rows they span grow to hold their content.
+        for row_at in 0..rows.len() {
+            for cell_at in 0..rows[row_at].cells.len() {
+                let merged = rows[row_at].cells[cell_at].merged_rows;
+                if merged <= 1 {
+                    continue;
+                }
+                let need = rows[row_at].cells[cell_at].content_height;
+                let span_rows = (row_at..(row_at + merged).min(rows.len())).collect::<Vec<_>>();
+                let have: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
+                if need > have
+                    && let Some(&last) = span_rows.last()
+                {
+                    rows[last].height += need - have;
+                }
+                let total: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
+                rows[row_at].cells[cell_at].height = total;
+            }
+        }
+        LaidTable { rows }
+    }
+
+    /// Lays out blocks in a sub-flow (a cell, a header, a note, a text
+    /// box): no pages, only a growing height.
+    fn sub_blocks(&mut self, sub: &mut SubFlow, blocks: &[Block], page: Option<u32>, _: Option<()>) {
+        for block in blocks {
+            match block {
+                Block::Para(para) => {
+                    let mut ctx = self.ctx();
+                    ctx.page = page.map(|number| (number, sub.format.clone()));
+                    ctx.page_count = sub.page_count;
+                    ctx.section_pages = sub.section_pages;
+                    ctx.own_note = sub.own_note.clone();
+                    let layout = para::layout(&mut ctx, para, sub.width);
+                    let after_prev = match sub.pending_after.take() {
+                        Some((after, style, contextual)) if !(contextual && style == para.style) => after,
+                        _ => 0.0,
+                    };
+                    let before = if para.props.before_auto {
+                        if sub.y == 0.0 && sub.in_cell {
+                            0.0
+                        } else {
+                            AUTO_SPACING_PT
+                        }
+                    } else {
+                        para.props.before
+                    };
+                    let before = if para.props.contextual && sub.last_style.as_deref() == Some(para.style.as_str()) {
+                        0.0
+                    } else {
+                        before
+                    };
+                    sub.y += self.spacing(after_prev, before);
+                    let top = sub.y;
+                    for line in &layout.lines {
+                        for bookmark in &line.bookmarks {
+                            sub.bookmarks.push((bookmark.clone(), sub.y));
+                        }
+                        push_items(&mut sub.items, &line.items, 0.0, sub.y);
+                        sub.y += line.height;
+                        sub.breaks.push(sub.y);
+                    }
+                    if let Some(color) = para.props.shading {
+                        sub.items.insert(
+                            0,
+                            Item::Rect {
+                                x: para.props.left,
+                                y: top,
+                                w: sub.width - para.props.left - para.props.right,
+                                h: sub.y - top,
+                                color,
+                            },
+                        );
+                    }
+                    let after = if para.props.after_auto {
+                        AUTO_SPACING_PT
+                    } else {
+                        para.props.after
+                    };
+                    sub.pending_after = Some((after, para.style.clone(), para.props.contextual));
+                    sub.last_style = Some(para.style.clone());
+                }
+                Block::Table(table) => {
+                    if let Some((after, _, _)) = sub.pending_after.take() {
+                        sub.y += after;
+                    }
+                    let laid = self.lay_table(table, sub.width);
+                    for row in &laid.rows {
+                        let mut row_items = Vec::new();
+                        for cell in &row.cells {
+                            let height = cell.height.max(row.height);
+                            if let Some(color) = cell.shading {
+                                row_items.push(Item::Rect {
+                                    x: cell.x,
+                                    y: 0.0,
+                                    w: cell.width,
+                                    h: height,
+                                    color,
+                                });
+                            }
+                            push_items(&mut row_items, &cell.items, cell.x, 0.0);
+                            let [b_top, b_left, b_bottom, b_right] = cell.borders;
+                            let (l, r) = (cell.x, cell.x + cell.width);
+                            if let Some(border) = b_top.filter(|_| cell.draw_top) {
+                                border_line(&mut row_items, border, l, 0.0, r, 0.0);
+                            }
+                            if let Some(border) = b_bottom.filter(|_| cell.draw_bottom) {
+                                border_line(&mut row_items, border, l, height, r, height);
+                            }
+                            if let Some(border) = b_left {
+                                border_line(&mut row_items, border, l, 0.0, l, height);
+                            }
+                            if let Some(border) = b_right {
+                                border_line(&mut row_items, border, r, 0.0, r, height);
+                            }
+                        }
+                        push_items(&mut sub.items, &row_items, 0.0, sub.y);
+                        sub.y += row.height;
+                    }
+                    sub.last_style = None;
+                }
+            }
+        }
+        // The space after the last paragraph counts in a cell.
+        if let Some((after, _, _)) = sub.pending_after.take()
+            && sub.in_cell
+        {
+            sub.y += after;
+        }
+    }
+
+    /// Places the endnotes after the body.
+    fn endnotes(&mut self) {
+        if self.doc.endnotes.is_empty() {
+            return;
+        }
+        let mut referenced: Vec<&(String, Vec<Block>)> = self
+            .doc
+            .endnotes
+            .iter()
+            .filter(|(id, _)| self.notes.contains_key(&(true, id.clone())))
+            .collect();
+        referenced.sort_by_key(|(id, _)| {
+            self.notes
+                .get(&(true, id.clone()))
+                .map(|number| roman_value(number))
+                .unwrap_or(0)
+        });
+        if referenced.is_empty() {
+            return;
+        }
+        let x = self.column_left();
+        let separator = self.separator_height();
+        let page = self.pages.len() - 1;
+        if let Some((_, after, _)) = self.state.pending_after.take().map(|(a, s, c)| (s, a, c)) {
+            self.state.y += after;
+        }
+        let rule_y = self.state.y + separator / 2.0;
+        self.pages[page].items.push(Item::Line {
+            x1: x,
+            y1: rule_y,
+            x2: x + NOTE_SEPARATOR_LEN_PT,
+            y2: rule_y,
+            width: NOTE_SEPARATOR_WIDTH_PT,
+            color: [0, 0, 0],
+            dash: None,
+        });
+        self.state.y += separator;
+        for (id, blocks) in referenced {
+            let own = self.notes.get(&(true, id.clone())).cloned();
+            for block in blocks {
+                if let Block::Para(para) = block {
+                    let width = self.column_width();
+                    let mut ctx = self.ctx();
+                    ctx.own_note = own.clone();
+                    let layout = para::layout(&mut ctx, para, width);
+                    let after_prev = self.state.pending_after.take().map_or(0.0, |(after, _, _)| after);
+                    let gap = self.spacing(after_prev, para.props.before);
+                    self.place_lines(para, layout, gap);
+                    self.state.pending_after = Some((para.props.after, para.style.clone(), para.props.contextual));
+                }
+            }
+        }
+    }
+}
+
+/// A laid-out table.
+#[derive(Debug, Clone)]
+struct LaidTable {
+    rows: Vec<LaidRow>,
+}
+
+/// A laid-out row.
+#[derive(Debug, Clone)]
+struct LaidRow {
+    height: f32,
+    cells: Vec<LaidCell>,
+}
+
+/// A laid-out cell, relative to the table's left edge and the row's top.
+#[derive(Debug, Clone)]
+struct LaidCell {
+    x: f32,
+    width: f32,
+    height: f32,
+    content_height: f32,
+    items: Vec<Item>,
+    /// Where the content may be cut across pages (from the top of the
+    /// cell).
+    breaks: Vec<f32>,
+    /// Top margin.
+    top_margin: f32,
+    /// Bottom margin.
+    bottom_margin: f32,
+    bookmarks: Vec<(String, f32)>,
+    borders: [Option<Border>; 4],
+    shading: Option<Rgb>,
+    valign: VAlign,
+    draw_top: bool,
+    draw_bottom: bool,
+    merged_rows: usize,
+}
+
+/// Blocks laid out without pages.
+struct SubFlow {
+    width: f32,
+    y: f32,
+    items: Vec<Item>,
+    /// Bottoms of the lines placed: where the content may be cut across
+    /// pages.
+    breaks: Vec<f32>,
+    bookmarks: Vec<(String, f32)>,
+    pending_after: Option<(f32, String, bool)>,
+    last_style: Option<String>,
+    in_cell: bool,
+    own_note: Option<String>,
+    page_count: Option<u32>,
+    section_pages: Option<u32>,
+    format: NumFormat,
+}
+
+impl SubFlow {
+    /// An empty sub-flow of width `width`.
+    fn new(width: f32) -> Self {
+        SubFlow {
+            width,
+            y: 0.0,
+            items: Vec::new(),
+            breaks: Vec::new(),
+            bookmarks: Vec::new(),
+            pending_after: None,
+            last_style: None,
+            in_cell: false,
+            own_note: None,
+            page_count: None,
+            section_pages: None,
+            format: NumFormat::Decimal,
+        }
+    }
+}
+
+/// Cuts a row so that its first part fits in `room`: each cell is cut at
+/// its last line that fits. `None` when no cell has a line that fits.
+fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
+    let mut first = row.clone();
+    let mut second = row.clone();
+    let mut any = false;
+    let mut rest_height: f32 = 0.0;
+    for (at, cell) in row.cells.iter().enumerate() {
+        let limit = room - cell.bottom_margin;
+        let content_bottom = cell.content_height - cell.bottom_margin;
+        let cut = if content_bottom <= limit + EPS {
+            content_bottom
+        } else {
+            match cell
+                .breaks
+                .iter()
+                .copied()
+                .filter(|y| *y <= limit + EPS)
+                .reduce(f32::max)
+            {
+                Some(cut) => {
+                    any = true;
+                    cut
+                }
+                None => cell.top_margin,
+            }
+        };
+        let (head, tail): (Vec<Item>, Vec<Item>) =
+            cell.items.iter().cloned().partition(|item| item_top(item) < cut - EPS);
+        first.cells[at].items = head;
+        first.cells[at].draw_bottom = false;
+        first.cells[at].height = room;
+        let shift = cut - cell.top_margin;
+        let mut moved = Vec::new();
+        push_items(&mut moved, &tail, 0.0, -shift);
+        second.cells[at].items = moved;
+        second.cells[at].breaks = cell
+            .breaks
+            .iter()
+            .filter(|y| **y > cut + EPS)
+            .map(|y| y - shift)
+            .collect();
+        second.cells[at].draw_top = false;
+        let remaining = (cell.content_height - shift).max(cell.top_margin + cell.bottom_margin);
+        second.cells[at].content_height = remaining;
+        second.cells[at].height = remaining;
+        rest_height = rest_height.max(remaining);
+    }
+    if !any {
+        return None;
+    }
+    first.height = room;
+    second.height = rest_height;
+    Some((first, second))
+}
+
+/// The top of an item, to tell which part of a cut cell it is in.
+fn item_top(item: &Item) -> f32 {
+    match item {
+        Item::Text(run) => run.y - run.size * 0.5,
+        Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } => *y,
+        Item::Line { y1, y2, .. } => y1.min(*y2),
+    }
+}
+
+/// The margin of a cell on one side (0 left, 1 top, 2 right, 3 bottom):
+/// its own, else the table's.
+fn cell_margin(cell: &Cell, table: &Table, side: usize) -> f32 {
+    let own = cell.margins[side];
+    if own.is_nan() {
+        table.props.cell_margins[side]
+    } else {
+        own
+    }
+}
+
+/// The widths of the grid columns of a table: Word's last layout, else
+/// from the cell widths, else equal.
+fn table_grid(table: &Table, width: f32) -> Vec<f32> {
+    let columns = table
+        .rows
+        .iter()
+        .map(|row| row.grid_before + row.grid_after + row.cells.iter().map(|cell| cell.span.max(1)).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    if table.grid.len() >= columns && table.grid.iter().sum::<f32>() > 0.0 {
+        let mut grid = table.grid.clone();
+        if let Width::Pct(share) = table.props.width
+            && !table.props.fixed
+        {
+            // A table set to a share of the width is scaled to it.
+            let total: f32 = grid.iter().sum();
+            let want = share * width;
+            if total > 0.0 && (want - total).abs() > 1.0 {
+                for col in &mut grid {
+                    *col *= want / total;
+                }
+            }
+        }
+        return grid;
+    }
+    let count = columns.max(1);
+    vec![width / count as f32; count]
+}
+
+/// The left edge and width of each column of a section.
+fn column_boxes(section: &Section, left: f32, width: f32) -> Vec<(f32, f32)> {
+    let columns = &section.columns;
+    if !columns.widths.is_empty() {
+        let mut x = left;
+        return columns
+            .widths
+            .iter()
+            .map(|&(w, space)| {
+                let column = (x, w);
+                x += w + space;
+                column
+            })
+            .collect();
+    }
+    let count = columns.count.max(1) as f32;
+    let column_width = (width - columns.space * (count - 1.0)) / count;
+    (0..columns.count.max(1))
+        .map(|at| (left + at as f32 * (column_width + columns.space), column_width))
+        .collect()
+}
+
+/// Adds `items` moved by (`dx`, `dy`) to `out`.
+fn push_items(out: &mut Vec<Item>, items: &[Item], dx: f32, dy: f32) {
+    for item in items {
+        let mut item = item.clone();
+        match &mut item {
+            Item::Text(run) => {
+                run.x += dx;
+                run.y += dy;
+            }
+            Item::Rect { x, y, .. } | Item::Image { x, y, .. } | Item::Link { x, y, .. } => {
+                *x += dx;
+                *y += dy;
+            }
+            Item::Line { x1, y1, x2, y2, .. } => {
+                *x1 += dx;
+                *x2 += dx;
+                *y1 += dy;
+                *y2 += dy;
+            }
+        }
+        out.push(item);
+    }
+}
+
+/// Draws a border line.
+fn border_line(out: &mut Vec<Item>, border: Border, x1: f32, y1: f32, x2: f32, y2: f32) {
+    let dash = match border.style {
+        BorderStyle::Dotted => Some(border.width),
+        BorderStyle::Dashed => Some(border.width * 3.0),
+        _ => None,
+    };
+    if border.style == BorderStyle::Double {
+        let gap = border.width;
+        let (dx, dy) = if (y1 - y2).abs() < f32::EPSILON {
+            (0.0, gap)
+        } else {
+            (gap, 0.0)
+        };
+        for sign in [-1.0, 1.0] {
+            out.push(Item::Line {
+                x1: x1 + dx * sign,
+                y1: y1 + dy * sign,
+                x2: x2 + dx * sign,
+                y2: y2 + dy * sign,
+                width: border.width / 2.0,
+                color: border.color,
+                dash: None,
+            });
+        }
+        return;
+    }
+    out.push(Item::Line {
+        x1,
+        y1,
+        x2,
+        y2,
+        width: border.width,
+        color: border.color,
+        dash,
+    });
+}
+
+/// The value of a note number written in Roman numerals or digits, for
+/// ordering endnotes.
+fn roman_value(text: &str) -> u32 {
+    if let Ok(number) = text.parse() {
+        return number;
+    }
+    let value = |ch: char| match ch.to_ascii_lowercase() {
+        'i' => 1,
+        'v' => 5,
+        'x' => 10,
+        'l' => 50,
+        'c' => 100,
+        'd' => 500,
+        'm' => 1000,
+        _ => 0,
+    };
+    let digits: Vec<i64> = text.chars().map(value).collect();
+    let mut total: i64 = 0;
+    for (at, &digit) in digits.iter().enumerate() {
+        if digits.get(at + 1).is_some_and(|&next| next > digit) {
+            total -= digit;
+        } else {
+            total += digit;
+        }
+    }
+    total.max(0) as u32
+}

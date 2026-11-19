@@ -35,6 +35,8 @@ pub mod backend;
 #[doc(hidden)]
 pub mod common;
 #[doc(hidden)]
+pub mod layout;
+#[doc(hidden)]
 pub mod paper;
 #[doc(hidden)]
 pub mod raster;
