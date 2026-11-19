@@ -60,6 +60,12 @@ jobs:
         if: steps.papers.outputs.cache-hit != 'true'
         run: scripts/fetch-test-pdfs.sh
 
+      # A few Word documents of the fidelity corpus, with Word's PDFs, for
+      # tests/word_layout.rs (public gov.uk documents, downloaded, not
+      # committed).
+      - name: Download the Word layout fixtures
+        run: scripts/fetch-word-corpus.sh 8 $(cat tests/data/word-layout-fixtures.txt)
+
       - name: cargo test
         run: cargo test
         env:

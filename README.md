@@ -523,6 +523,11 @@ cargo test --release
   (`scripts/compare-layout.py`): the share of lines broken at the same words, and of documents
   with the same page count. The job fails below its minimums. Pairs left out, and why, are in
   `tests/data/word-corpus-excluded.tsv`.
+- **Word layout fixtures** (`tests/word_layout.rs`): seven documents of that corpus, chosen for
+  what they hold (columns, text boxes, floating shapes, frames, EMF pictures, rows of exact height),
+  are laid out and compared with Word's PDFs on every CI run, with a minimum per document; they
+  are downloaded first (`scripts/fetch-word-corpus.sh 8 $(cat tests/data/word-layout-fixtures.txt)`)
+  and skipped when missing.
 - **Crash test**: `scripts/word-crash-test.py DIR...` converts every Word file found to every
   output and reports panics and timeouts (run on 4,300 public Word files: none).
 

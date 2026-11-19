@@ -2,11 +2,13 @@
 # Downloads the Word documents of tests/data/word-corpus.tsv, with the PDF Word
 # made of each, into tests/data/word-corpus/ (not committed), and checks
 # their sha256. A file whose source changed is skipped with a warning.
-# Usage: scripts/fetch-word-corpus.sh [JOBS]
+# Usage: scripts/fetch-word-corpus.sh [JOBS] [ID...]  (only these documents when ids are given)
 set -euo pipefail
 cd "$(dirname "$0")/../tests/data"
 mkdir -p word-corpus
 jobs="${1:-8}"
+shift || true
+wanted=" $* "
 fetch() {
   local file="$1" sum="$2" url="$3"
   if [[ -f "word-corpus/$file" ]] && echo "$sum  word-corpus/$file" | sha256sum -c --status; then
@@ -28,6 +30,7 @@ fetch() {
 export -f fetch
 grep -v '^#' word-corpus.tsv | while IFS=$'\t' read -r id ext word_sum word_url pdf_sum pdf_url; do
   [[ -n "$id" ]] || continue
+  [[ "$wanted" == "  " || "$wanted" == *" $id "* ]] || continue
   printf '%s\0%s\0%s\0' "$id.$ext" "$word_sum" "$word_url"
   printf '%s\0%s\0%s\0' "$id.pdf" "$pdf_sum" "$pdf_url"
 done | xargs -0 -n 3 -P "$jobs" bash -c 'fetch "$@"' _
