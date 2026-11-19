@@ -58,6 +58,7 @@ const LFO_LEN: usize = 16;
 const LIST_LEVELS: usize = 9;
 /// Size of a list level override (`LFOLVL`).
 const LFOLVL_LEN: usize = 8;
+
 /// `istdBase` of a style based on no other.
 const NO_BASE: u16 = 0x0FFF;
 /// Stories of the header document before those of the sections
@@ -72,6 +73,10 @@ const TWIPS_PER_PT: f32 = 20.0;
 const DEFAULT_SIZE_PT: f32 = 10.0;
 /// Cell edges closer than this are one grid line, in points.
 const GRID_TOLERANCE_PT: f32 = 1.5;
+
+/// Each style of the style sheet, by index (`istd`): its kind, the style it
+/// is based on, and its raw paragraph and character property lists.
+type StyleKinds = HashMap<u16, (StyleKind, u16, Vec<u8>, Vec<u8>)>;
 
 /// A field being read.
 #[derive(Debug, Default)]
@@ -160,83 +165,8 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         compat_mode: 11,
         ..Default::default()
     };
-    // Sections.
-    let (bounds, seds) = plc(fib.slice(&table, Pair::PlcfSed), SED_LEN);
-    let mut sections = Vec::new();
-    let mut ranges: Vec<(u32, u32, SectionProps)> = Vec::new();
-    for (at, sed) in seds.iter().enumerate() {
-        let (Some(&start), Some(&end)) = (bounds.get(at), bounds.get(at + 1)) else {
-            break;
-        };
-        let fc = u32_at(sed, 2).unwrap_or(u32::MAX);
-        let grpprl = if fc == u32::MAX {
-            &[][..]
-        } else {
-            let fc = fc as usize;
-            let len = usize::from(u16_at(&word, fc).unwrap_or(0));
-            word.get(fc + 2..fc + 2 + len).unwrap_or(&[])
-        };
-        ranges.push((start, end.min(fib.ccp_text), section_props(grpprl)));
-    }
-    if ranges.is_empty() {
-        ranges.push((0, fib.ccp_text, section_props(&[])));
-    }
-    // Headers and footers: six stories per section, an empty one inherits
-    // the previous section's.
-    let (hdd, _) = plc(fib.slice(&table, Pair::PlcfHdd), 0);
-    let hdd_base = fib.ccp_text + fib.ccp_ftn;
-    // The first story is the footnote separator.
-    if let (Some(&from), Some(&to)) = (hdd.first(), hdd.get(1))
-        && to > from
-    {
-        doc.footnote_separator = Some(reader.story(hdd_base + from, hdd_base + to));
-    }
-    let mut previous = [None; STORIES_PER_SECTION];
-    for (at, (start, end, props)) in ranges.into_iter().enumerate() {
-        let mut stories = previous;
-        for (slot, story) in stories.iter_mut().enumerate() {
-            let index = SEPARATOR_STORIES + at * STORIES_PER_SECTION + slot;
-            let (Some(&from), Some(&to)) = (hdd.get(index), hdd.get(index + 1)) else {
-                continue;
-            };
-            if to > from {
-                let blocks = reader.story(hdd_base + from, hdd_base + to);
-                doc.parts.push(blocks);
-                *story = Some(doc.parts.len() - 1);
-            }
-        }
-        previous = stories;
-        let [
-            even_header,
-            odd_header,
-            even_footer,
-            odd_footer,
-            first_header,
-            first_footer,
-        ] = stories;
-        let blocks = reader.blocks(start, end);
-        sections.push(Section {
-            page: props.page,
-            columns: props.columns,
-            start: props.start,
-            headers: HeaderSet {
-                default: odd_header,
-                first: first_header,
-                even: even_header,
-            },
-            footers: HeaderSet {
-                default: odd_footer,
-                first: first_footer,
-                even: even_footer,
-            },
-            title_page: props.title_page,
-            page_number_start: props.page_number_start,
-            page_number_format: props.page_number_format,
-            grid_pitch: props.grid_pitch,
-            blocks,
-        });
-    }
-    doc.sections = sections;
+    let ranges = section_ranges(&fib, &table, &word);
+    doc.sections = reader.sections(&mut doc, &fib, &table, ranges);
     for (endnote, ranges) in [(false, footnotes), (true, endnotes)] {
         for (index, (_, (start, end))) in ranges.into_iter().enumerate() {
             let blocks = reader.blocks(start, end);
@@ -252,10 +182,103 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
     Ok(doc)
 }
 
+/// The sections of the main text: the range of characters of each, with
+/// its properties (one section for the whole text when there is none).
+fn section_ranges(fib: &Fib, table: &[u8], word: &[u8]) -> Vec<(u32, u32, SectionProps)> {
+    let (bounds, seds) = plc(fib.slice(table, Pair::PlcfSed), SED_LEN);
+    let mut ranges: Vec<(u32, u32, SectionProps)> = Vec::new();
+    for (at, sed) in seds.iter().enumerate() {
+        let (Some(&start), Some(&end)) = (bounds.get(at), bounds.get(at + 1)) else {
+            break;
+        };
+        let fc = u32_at(sed, 2).unwrap_or(u32::MAX);
+        let grpprl = if fc == u32::MAX {
+            &[][..]
+        } else {
+            let fc = fc as usize;
+            let len = usize::from(u16_at(word, fc).unwrap_or(0));
+            word.get(fc + 2..fc + 2 + len).unwrap_or(&[])
+        };
+        ranges.push((start, end.min(fib.ccp_text), section_props(grpprl)));
+    }
+    if ranges.is_empty() {
+        ranges.push((0, fib.ccp_text, section_props(&[])));
+    }
+    ranges
+}
+
+impl Reader<'_> {
+    /// Reads the sections in `ranges` with their headers and footers (six
+    /// stories per section; an empty one inherits the previous section's),
+    /// adding the stories and the footnote separator to `doc`.
+    fn sections(
+        &mut self,
+        doc: &mut FDoc,
+        fib: &Fib,
+        table: &[u8],
+        ranges: Vec<(u32, u32, SectionProps)>,
+    ) -> Vec<Section> {
+        let mut sections = Vec::new();
+        let (hdd, _) = plc(fib.slice(table, Pair::PlcfHdd), 0);
+        let hdd_base = fib.ccp_text + fib.ccp_ftn;
+        // The first story is the footnote separator.
+        if let (Some(&from), Some(&to)) = (hdd.first(), hdd.get(1))
+            && to > from
+        {
+            doc.footnote_separator = Some(self.story(hdd_base + from, hdd_base + to));
+        }
+        let mut previous = [None; STORIES_PER_SECTION];
+        for (at, (start, end, props)) in ranges.into_iter().enumerate() {
+            let mut stories = previous;
+            for (slot, story) in stories.iter_mut().enumerate() {
+                let index = SEPARATOR_STORIES + at * STORIES_PER_SECTION + slot;
+                let (Some(&from), Some(&to)) = (hdd.get(index), hdd.get(index + 1)) else {
+                    continue;
+                };
+                if to > from {
+                    let blocks = self.story(hdd_base + from, hdd_base + to);
+                    doc.parts.push(blocks);
+                    *story = Some(doc.parts.len() - 1);
+                }
+            }
+            previous = stories;
+            let [
+                even_header,
+                odd_header,
+                even_footer,
+                odd_footer,
+                first_header,
+                first_footer,
+            ] = stories;
+            let blocks = self.blocks(start, end);
+            sections.push(Section {
+                page: props.page,
+                columns: props.columns,
+                start: props.start,
+                headers: HeaderSet {
+                    default: odd_header,
+                    first: first_header,
+                    even: even_header,
+                },
+                footers: HeaderSet {
+                    default: odd_footer,
+                    first: first_footer,
+                    even: even_footer,
+                },
+                title_page: props.title_page,
+                page_number_start: props.page_number_start,
+                page_number_format: props.page_number_format,
+                grid_pitch: props.grid_pitch,
+                blocks,
+            });
+        }
+        sections
+    }
+}
+
 /// The style sheet: the styles with their raw property lists, the default
 /// text properties, and each style's kind, base and lists.
-#[allow(clippy::type_complexity)]
-fn stylesheet(stsh: &[u8], fonts: &[String]) -> (Styles, RawRun, HashMap<u16, (StyleKind, u16, Vec<u8>, Vec<u8>)>) {
+fn stylesheet(stsh: &[u8], fonts: &[String]) -> (Styles, RawRun, StyleKinds) {
     let header_len = usize::from(u16_at(stsh, 0).unwrap_or(0));
     let header = stsh.get(2..2 + header_len).unwrap_or(&[]);
     let count = usize::from(u16_at(header, 0).unwrap_or(0));
@@ -311,7 +334,11 @@ fn stylesheet(stsh: &[u8], fonts: &[String]) -> (Styles, RawRun, HashMap<u16, (S
             _ => (Vec::new(), Vec::new()),
         };
         if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
-            eprintln!("STYLE {istd} {kind:?} base {base}: {} | {}", debug_sprms(&papx), debug_sprms(&chpx));
+            eprintln!(
+                "STYLE {istd} {kind:?} base {base}: {} | {}",
+                debug_sprms(&papx),
+                debug_sprms(&chpx)
+            );
         }
         kinds.insert(istd as u16, (kind, base, papx, chpx));
     }
@@ -455,13 +482,8 @@ fn level(bytes: &[u8], fonts: &[String]) -> Option<(Level, usize)> {
 
 impl Reader<'_> {
     /// Resolves every style with what it inherits.
-    fn resolve_styles(&mut self, kinds: &HashMap<u16, (StyleKind, u16, Vec<u8>, Vec<u8>)>) {
-        fn resolve(
-            istd: u16,
-            kinds: &HashMap<u16, (StyleKind, u16, Vec<u8>, Vec<u8>)>,
-            fonts: &[String],
-            depth: usize,
-        ) -> (RawPara, RawRun) {
+    fn resolve_styles(&mut self, kinds: &StyleKinds) {
+        fn resolve(istd: u16, kinds: &StyleKinds, fonts: &[String], depth: usize) -> (RawPara, RawRun) {
             let Some((_, base, papx, chpx)) = kinds.get(&istd) else {
                 return (RawPara::default(), RawRun::default());
             };
@@ -554,10 +576,10 @@ impl Reader<'_> {
                 if !rows.is_empty() {
                     blocks.push(Block::Table(build_table(std::mem::take(&mut rows))));
                 }
-                blocks.push(Block::Para(para));
+                blocks.push(Block::Para(Box::new(para)));
                 continue;
             }
-            cell.push(Block::Para(para));
+            cell.push(Block::Para(Box::new(para)));
             if terminator == CELL_END && depth == 1 {
                 cells.push(std::mem::take(&mut cell));
             }
@@ -568,27 +590,18 @@ impl Reader<'_> {
         blocks
     }
 
-    /// A paragraph: its resolved properties and content.
-    fn paragraph(&mut self, start: u32, mark: u32, istd: u16, grpprl: &[u8], in_table: bool) -> Para {
-        let _ = in_table;
-        let (style_para, style_run) = self.para_styles.get(&istd).cloned().unwrap_or_default();
-        let mut base_run = self.defaults.clone();
-        base_run.overlay(&style_run);
-        let mut direct = RawPara::default();
-        apply_para(grpprl, &mut direct);
-        let mut para_raw = style_para.clone();
-        // The paragraph mark's own character properties.
-        let mark_fc = self.text.fcs.get(mark as usize).copied().unwrap_or(0);
-        let mark_chpx = run_at(&self.chars, mark_fc)
-            .map(|run| run.grpprl.clone())
-            .unwrap_or_default();
-        if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
-            eprintln!("MARK {istd} {}", debug_sprms(&mark_chpx));
-        }
-        let mut mark_raw = base_run.clone();
-        let mark_base = mark_raw.clone();
-        apply_chars(&mark_chpx, &mut mark_raw, &mark_base, self.fonts);
-        // The list: from the paragraph, else its style.
+    /// The list number or bullet of a paragraph, from its own list (in
+    /// `direct`) or else its style's (`style_para`): the list level's
+    /// properties are laid into `para_raw` (beneath the style's when the
+    /// list comes from the style). `None` when the paragraph is in no list,
+    /// its mark is hidden or its number is empty.
+    fn list_number(
+        &mut self,
+        style_para: &RawPara,
+        direct: &RawPara,
+        para_raw: &mut RawPara,
+        mark_raw: &RawRun,
+    ) -> Option<NumberMark> {
         let mut numbering = style_para.numbering.clone();
         if let Some((id, level)) = &direct.numbering {
             let (old_id, old_level) = numbering.take().unwrap_or_default();
@@ -604,8 +617,8 @@ impl Reader<'_> {
                 // the style's own indents win over the level's.
                 if from_style {
                     let mut under = def.para.clone();
-                    under.overlay(&para_raw);
-                    para_raw = under;
+                    under.overlay(para_raw);
+                    *para_raw = under;
                 } else {
                     para_raw.overlay(&def.para);
                 }
@@ -628,6 +641,30 @@ impl Reader<'_> {
                 }
             }
         }
+        number
+    }
+
+    /// A paragraph: its resolved properties and content.
+    fn paragraph(&mut self, start: u32, mark: u32, istd: u16, grpprl: &[u8], in_table: bool) -> Para {
+        let _ = in_table;
+        let (style_para, style_run) = self.para_styles.get(&istd).cloned().unwrap_or_default();
+        let mut base_run = self.defaults.clone();
+        base_run.overlay(&style_run);
+        let mut direct = RawPara::default();
+        apply_para(grpprl, &mut direct);
+        let mut para_raw = style_para.clone();
+        // The paragraph mark's own character properties.
+        let mark_fc = self.text.fcs.get(mark as usize).copied().unwrap_or(0);
+        let mark_chpx = run_at(&self.chars, mark_fc)
+            .map(|run| run.grpprl.clone())
+            .unwrap_or_default();
+        if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
+            eprintln!("MARK {istd} {}", debug_sprms(&mark_chpx));
+        }
+        let mut mark_raw = base_run.clone();
+        let mark_base = mark_raw.clone();
+        apply_chars(&mark_chpx, &mut mark_raw, &mark_base, self.fonts);
+        let number = self.list_number(&style_para, &direct, &mut para_raw, &mark_raw);
         para_raw.overlay(&direct);
         let mut para = Para {
             style: istd.to_string(),
@@ -650,7 +687,12 @@ impl Reader<'_> {
                 .unwrap_or_default();
             let fmt = self.run_fmt(&base_run, &chpx);
             if unit == PAGE_BREAK && std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
-                eprintln!("BREAK hidden={} fields={:?} chpx={}", fmt.hidden, self.fields, debug_sprms(&chpx));
+                eprintln!(
+                    "BREAK hidden={} fields={:?} chpx={}",
+                    fmt.hidden,
+                    self.fields,
+                    debug_sprms(&chpx)
+                );
             }
             if self.field_char(unit, &mut text, current.as_ref(), &fmt, &mut para) {
                 continue;
@@ -896,25 +938,8 @@ fn build_table(rows: Vec<(Vec<Vec<Block>>, RowProps)>) -> Table {
     let grid: Vec<f32> = lines.windows(2).map(|pair| pair[1] - pair[0]).collect();
     let first = rows.first().map(|(_, props)| props.clone()).unwrap_or_default();
     let left_edge = lines.first().copied().unwrap_or(0.0);
-    let first_left = cell_margin(&first, 0, 0);
     let mut table = Table {
-        props: TableProps {
-            width: Width::Auto,
-            // The text of the first cell starts at the edge plus the cell's
-            // margin (the layout takes the margin off for older documents).
-            indent: left_edge + first_left,
-            align: first.align,
-            fixed: true,
-            cell_margins: [
-                first.margins[0].unwrap_or(first.gap_half),
-                first.margins[1].unwrap_or(0.0),
-                first.margins[2].unwrap_or(first.gap_half),
-                first.margins[3].unwrap_or(0.0),
-            ],
-            borders: first.table_borders,
-            cell_spacing: 0.0,
-            float: None,
-        },
+        props: table_props(&first, left_edge),
         grid,
         rows: Vec::new(),
     };
@@ -937,7 +962,7 @@ fn build_table(rows: Vec<(Vec<Vec<Block>>, RowProps)>) -> Table {
             let left = props.edges.get(at).copied().unwrap_or(0.0);
             let right = props.edges.get(at + 1).copied().unwrap_or(left);
             let span = match (column(left), column(right)) {
-                (Some(l), Some(r)) if r > l => r - l,
+                (Some(first), Some(end)) if end > first => end - first,
                 _ => 1,
             };
             let own = props.cell_borders.get(at).copied().unwrap_or_default();
@@ -974,6 +999,29 @@ fn build_table(rows: Vec<(Vec<Vec<Block>>, RowProps)>) -> Table {
     table
 }
 
+/// The properties of a table whose first row has `first` and whose grid
+/// starts at `left_edge`.
+fn table_props(first: &RowProps, left_edge: f32) -> TableProps {
+    let first_left = cell_margin(first, 0, 0);
+    TableProps {
+        width: Width::Auto,
+        // The text of the first cell starts at the edge plus the cell's
+        // margin (the layout takes the margin off for older documents).
+        indent: left_edge + first_left,
+        align: first.align,
+        fixed: true,
+        cell_margins: [
+            first.margins[0].unwrap_or(first.gap_half),
+            first.margins[1].unwrap_or(0.0),
+            first.margins[2].unwrap_or(first.gap_half),
+            first.margins[3].unwrap_or(0.0),
+        ],
+        borders: first.table_borders,
+        cell_spacing: 0.0,
+        float: None,
+    }
+}
+
 /// The margin of cell `at` of a row on `side` (left, top, right, bottom):
 /// the cell's own, else the row's, else half the gap between cells (left and
 /// right) or unset (top and bottom).
@@ -982,7 +1030,7 @@ fn cell_margin(row: &RowProps, at: usize, side: usize) -> f32 {
         .get(at)
         .and_then(|margins| margins[side])
         .or(row.margins[side])
-        .unwrap_or(if side % 2 == 0 { row.gap_half } else { f32::NAN })
+        .unwrap_or(if side.is_multiple_of(2) { row.gap_half } else { f32::NAN })
 }
 
 /// Adds the characters `text` as an [`Inline::Text`], and empties them.

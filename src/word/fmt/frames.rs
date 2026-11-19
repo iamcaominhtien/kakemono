@@ -37,7 +37,10 @@ fn group_blocks(blocks: &mut Vec<Block>) {
             }
         }
     }
-    if !blocks.iter().any(|block| matches!(block, Block::Para(para) if para.props.frame.is_some())) {
+    if !blocks
+        .iter()
+        .any(|block| matches!(block, Block::Para(para) if para.props.frame.is_some()))
+    {
         return;
     }
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
@@ -86,10 +89,10 @@ fn group_blocks(blocks: &mut Vec<Block>) {
             Block::Table(_) => None,
         }) {
             Some(para) => para.inlines.extend(waiting),
-            None => out.push(Block::Para(Para {
+            None => out.push(Block::Para(Box::new(Para {
                 inlines: waiting,
                 ..Default::default()
-            })),
+            }))),
         }
     }
     *blocks = out;

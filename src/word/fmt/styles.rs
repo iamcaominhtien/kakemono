@@ -68,10 +68,14 @@ impl Styles {
         let mut styles = Styles::default();
         let Some(root) = root else { return styles };
         if let Some(defaults) = child(root, WORD_NS, "docDefaults") {
-            if let Some(props) = child(defaults, WORD_NS, "rPrDefault").and_then(|d| child(d, WORD_NS, "rPr")) {
+            if let Some(props) =
+                child(defaults, WORD_NS, "rPrDefault").and_then(|default| child(default, WORD_NS, "rPr"))
+            {
                 styles.default_run = RawRun::parse(props, theme);
             }
-            if let Some(props) = child(defaults, WORD_NS, "pPrDefault").and_then(|d| child(d, WORD_NS, "pPr")) {
+            if let Some(props) =
+                child(defaults, WORD_NS, "pPrDefault").and_then(|default| child(default, WORD_NS, "pPr"))
+            {
                 styles.default_para = RawPara::parse(props);
             }
         }
@@ -247,6 +251,10 @@ pub(crate) struct Level {
     pub(crate) legal: bool,
 }
 
+/// A list's override of one level of its abstract definition: a new start
+/// number, and a whole new level.
+type LevelOverride = (Option<u32>, Option<Level>);
+
 /// The list definitions and their counters.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Numbering {
@@ -254,8 +262,8 @@ pub(crate) struct Numbering {
     /// The style an abstract definition takes its levels from.
     style_links: HashMap<String, String>,
     /// For each list (`numId`): its abstract definition, and its levels
-    /// that override the definition's (start, whole level).
-    lists: HashMap<String, (String, HashMap<u8, (Option<u32>, Option<Level>)>)>,
+    /// that override the definition's.
+    lists: HashMap<String, (String, HashMap<u8, LevelOverride>)>,
     counters: HashMap<String, [Option<u32>; LIST_LEVELS]>,
     started: HashSet<String>,
 }
@@ -309,7 +317,7 @@ impl Numbering {
         num_id: String,
         abstract_id: String,
         mut levels: Vec<Level>,
-        overrides: HashMap<u8, (Option<u32>, Option<Level>)>,
+        overrides: HashMap<u8, LevelOverride>,
     ) {
         levels.resize(LIST_LEVELS, Level::default());
         self.abstracts.insert(abstract_id.clone(), levels);

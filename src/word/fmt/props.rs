@@ -3,8 +3,8 @@
 //! hierarchy sets it, and their merging into resolved properties.
 
 use super::model::{
-    Align, AnchorAlign, AnchorFrom, Border, Frame, Wrap, BorderStyle, LineSpacing, ParaBorders, ParaProps, Rgb, RunFmt, TabKind, TabStop, Underline, VAlign,
-    VertAlign, Width,
+    Align, AnchorAlign, AnchorFrom, Border, BorderStyle, Frame, LineSpacing, ParaBorders, ParaProps, Rgb, RunFmt,
+    TabKind, TabStop, Underline, VAlign, VertAlign, Width, Wrap,
 };
 use crate::word::xml::{WORD_NS, attr, child, children, toggle, val};
 use roxmltree::Node;
@@ -113,8 +113,8 @@ impl RawRun {
         raw.size_cs = half_points(props, "szCs");
         raw.bold = toggle(props, "b");
         raw.italic = toggle(props, "i");
-        if let Some(u) = child(props, WORD_NS, "u") {
-            raw.underline = Some(match attr(u, WORD_NS, "val").unwrap_or("single") {
+        if let Some(under) = child(props, WORD_NS, "u") {
+            raw.underline = Some(match attr(under, WORD_NS, "val").unwrap_or("single") {
                 "none" => None,
                 "words" => Some(Underline::Words),
                 "double" => Some(Underline::Double),
@@ -126,7 +126,7 @@ impl RawRun {
                 value if value.starts_with("wav") => Some(Underline::Wave),
                 _ => Some(Underline::Single),
             });
-            raw.underline_color = attr(u, WORD_NS, "color").map(parse_color);
+            raw.underline_color = attr(under, WORD_NS, "color").map(parse_color);
         }
         raw.strike = toggle(props, "strike");
         raw.dstrike = toggle(props, "dstrike");
@@ -335,31 +335,7 @@ impl RawPara {
         raw.page_break_before = toggle(props, "pageBreakBefore");
         raw.widow_control = toggle(props, "widowControl");
         if let Some(tabs) = child(props, WORD_NS, "tabs") {
-            for tab in children(tabs, WORD_NS, "tab") {
-                let Some(pos) = attr(tab, WORD_NS, "pos").and_then(|pos| pos.parse::<f32>().ok()) else {
-                    continue;
-                };
-                let kind = match attr(tab, WORD_NS, "val").unwrap_or("left") {
-                    "clear" => None,
-                    "center" => Some(TabKind::Center),
-                    "right" | "end" => Some(TabKind::Right),
-                    "decimal" => Some(TabKind::Decimal),
-                    "bar" => Some(TabKind::Bar),
-                    _ => Some(TabKind::Left),
-                };
-                let leader = match attr(tab, WORD_NS, "leader") {
-                    Some("dot") => Some('.'),
-                    Some("hyphen") => Some('-'),
-                    Some("underscore" | "heavy") => Some('_'),
-                    Some("middleDot") => Some('·'),
-                    _ => None,
-                };
-                raw.tabs.push(RawTab {
-                    pos: pos / TWIPS_PER_PT,
-                    kind,
-                    leader,
-                });
-            }
+            raw.tabs.extend(children(tabs, WORD_NS, "tab").filter_map(parse_tab));
         }
         if let Some(borders) = child(props, WORD_NS, "pBdr") {
             let side = |name: &str| child(borders, WORD_NS, name).map(parse_border);
@@ -747,17 +723,17 @@ fn parse_margins(node: Node<'_, '_>) -> [Option<f32>; 4] {
 
 /// The theme fonts in `theme1.xml`.
 pub(crate) fn theme_fonts(root: Node<'_, '_>) -> ThemeFonts {
-    const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+    const DRAWING_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
     let mut fonts = ThemeFonts::default();
     let Some(scheme) = root
         .descendants()
-        .find(|node| crate::word::xml::is(*node, A, "fontScheme"))
+        .find(|node| crate::word::xml::is(*node, DRAWING_NS, "fontScheme"))
     else {
         return fonts;
     };
     let typeface = |group: &str, kind: &str| {
-        child(scheme, A, group)
-            .and_then(|group| child(group, A, kind))
+        child(scheme, DRAWING_NS, group)
+            .and_then(|group| child(group, DRAWING_NS, kind))
             .and_then(|font| font.attribute("typeface"))
             .unwrap_or_default()
             .to_string()
@@ -769,6 +745,32 @@ pub(crate) fn theme_fonts(root: Node<'_, '_>) -> ThemeFonts {
     fonts.major_cs = typeface("majorFont", "cs");
     fonts.minor_cs = typeface("minorFont", "cs");
     fonts
+}
+
+/// A tab stop (`w:tab`): its position, kind (`None` clears an inherited
+/// stop) and leader; `None` when it has no position.
+fn parse_tab(tab: Node<'_, '_>) -> Option<RawTab> {
+    let pos = attr(tab, WORD_NS, "pos").and_then(|pos| pos.parse::<f32>().ok())?;
+    let kind = match attr(tab, WORD_NS, "val").unwrap_or("left") {
+        "clear" => None,
+        "center" => Some(TabKind::Center),
+        "right" | "end" => Some(TabKind::Right),
+        "decimal" => Some(TabKind::Decimal),
+        "bar" => Some(TabKind::Bar),
+        _ => Some(TabKind::Left),
+    };
+    let leader = match attr(tab, WORD_NS, "leader") {
+        Some("dot") => Some('.'),
+        Some("hyphen") => Some('-'),
+        Some("underscore" | "heavy") => Some('_'),
+        Some("middleDot") => Some('·'),
+        _ => None,
+    };
+    Some(RawTab {
+        pos: pos / TWIPS_PER_PT,
+        kind,
+        leader,
+    })
 }
 
 /// A frame (`w:framePr`); `None` for a drop capital, kept in the text.
@@ -797,20 +799,20 @@ fn parse_frame(node: Node<'_, '_>) -> Option<Frame> {
         exact: attr(node, WORD_NS, "hRule") == Some("exact"),
         ..Default::default()
     };
-    frame.anchor.h.from = match attr(node, WORD_NS, "hAnchor").unwrap_or("page") {
+    frame.anchor.horizontal.from = match attr(node, WORD_NS, "hAnchor").unwrap_or("page") {
         "text" => AnchorFrom::Column,
         "margin" => AnchorFrom::Margin,
         _ => AnchorFrom::Page,
     };
-    frame.anchor.v.from = match attr(node, WORD_NS, "vAnchor").unwrap_or("page") {
+    frame.anchor.vertical.from = match attr(node, WORD_NS, "vAnchor").unwrap_or("page") {
         "text" => AnchorFrom::Paragraph,
         "margin" => AnchorFrom::Margin,
         _ => AnchorFrom::Page,
     };
-    frame.anchor.h.offset = twips("x");
-    frame.anchor.v.offset = twips("y");
-    frame.anchor.h.align = align("xAlign");
-    frame.anchor.v.align = align("yAlign");
+    frame.anchor.horizontal.offset = twips("x");
+    frame.anchor.vertical.offset = twips("y");
+    frame.anchor.horizontal.align = align("xAlign");
+    frame.anchor.vertical.align = align("yAlign");
     frame.anchor.wrap = match attr(node, WORD_NS, "wrap").unwrap_or("auto") {
         "notBeside" => Wrap::TopBottom,
         "none" => Wrap::None,

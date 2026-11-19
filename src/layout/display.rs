@@ -27,9 +27,9 @@ pub enum Item {
         /// Top.
         y: f32,
         /// Width.
-        w: f32,
+        width: f32,
         /// Height.
-        h: f32,
+        height: f32,
         /// Colour.
         color: Rgb,
     },
@@ -59,9 +59,9 @@ pub enum Item {
         /// Top.
         y: f32,
         /// Width.
-        w: f32,
+        width: f32,
         /// Height.
-        h: f32,
+        height: f32,
         /// Share cut off each side: left, top, right, bottom.
         crop: [f32; 4],
     },
@@ -72,9 +72,9 @@ pub enum Item {
         /// Top.
         y: f32,
         /// Width.
-        w: f32,
+        width: f32,
         /// Height.
-        h: f32,
+        height: f32,
         /// A web address, or `#bookmark`.
         target: String,
     },

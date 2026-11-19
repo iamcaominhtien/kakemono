@@ -47,6 +47,12 @@ pub struct Metrics {
 /// Identifier of a loaded face.
 pub type FaceId = usize;
 
+/// A family name with the bold and italic flags asked for.
+type StyleKey = (String, bool, bool);
+
+/// The face chosen for a style, and whether bold and italic must be faked.
+type ChosenFace = (FaceId, bool, bool);
+
 /// A face found on the computer or in the document, before it is loaded.
 #[derive(Debug, Clone)]
 struct Candidate {
@@ -71,7 +77,7 @@ pub struct FontBook {
     by_family: HashMap<String, Vec<Candidate>>,
     loaded: HashMap<(Source, u32), FaceId>,
     embedded: Vec<Arc<Vec<u8>>>,
-    resolved: HashMap<(String, bool, bool), Option<(FaceId, bool, bool)>>,
+    resolved: HashMap<StyleKey, Option<ChosenFace>>,
     fallback_faces: Option<Vec<FaceId>>,
     kinds: HashMap<String, FontKind>,
 }
@@ -266,8 +272,8 @@ impl FontBook {
     /// Loads the best face of family `name` for the style.
     fn load_family(&mut self, name: &str, bold: bool, italic: bool) -> Option<(FaceId, bool, bool)> {
         let candidates = self.by_family.get(name)?.clone();
-        let score = |c: &Candidate| u8::from(c.bold != bold) * 2 + u8::from(c.italic != italic);
-        let best = candidates.iter().min_by_key(|c| score(c))?;
+        let score = |cand: &Candidate| u8::from(cand.bold != bold) * 2 + u8::from(cand.italic != italic);
+        let best = candidates.iter().min_by_key(|cand| score(cand))?;
         let id = self.load(best.source.clone(), best.index, name)?;
         Some((id, bold && !best.bold, italic && !best.italic))
     }
@@ -401,11 +407,11 @@ fn metrics(face: &ttf_parser::Face<'_>) -> Metrics {
         ascent: win_ascent / upem,
         descent: win_descent / upem,
         leading: leading / upem,
-        underline_pos: underline.map_or(0.1, |u| -f32::from(u.position) / upem),
-        underline_thickness: underline.map_or(0.05, |u| f32::from(u.thickness).max(1.0) / upem),
-        strike_pos: strike.map_or(0.25, |s| f32::from(s.position) / upem),
-        x_height: face.x_height().map_or(0.45, |h| f32::from(h) / upem),
-        cap_height: face.capital_height().map_or(0.65, |h| f32::from(h) / upem),
+        underline_pos: underline.map_or(0.1, |line| -f32::from(line.position) / upem),
+        underline_thickness: underline.map_or(0.05, |line| f32::from(line.thickness).max(1.0) / upem),
+        strike_pos: strike.map_or(0.25, |line| f32::from(line.position) / upem),
+        x_height: face.x_height().map_or(0.45, |height| f32::from(height) / upem),
+        cap_height: face.capital_height().map_or(0.65, |height| f32::from(height) / upem),
     }
 }
 

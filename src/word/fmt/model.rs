@@ -228,8 +228,8 @@ pub enum NumFormat {
 /// A paragraph or a table.
 #[derive(Debug, Clone)]
 pub enum Block {
-    /// A paragraph.
-    Para(Para),
+    /// A paragraph (boxed: it is much larger than a table).
+    Para(Box<Para>),
     /// A table.
     Table(Table),
 }
@@ -388,8 +388,8 @@ impl Default for Frame {
             height: 0.0,
             exact: false,
             anchor: Anchor {
-                h: pos(AnchorFrom::Column),
-                v: pos(AnchorFrom::Paragraph),
+                horizontal: pos(AnchorFrom::Column),
+                vertical: pos(AnchorFrom::Paragraph),
                 wrap: Wrap::Square,
                 behind: false,
                 dist: [0.0; 4],
@@ -715,9 +715,9 @@ pub struct Shape {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Anchor {
     /// Horizontal position.
-    pub h: AnchorPos,
+    pub horizontal: AnchorPos,
     /// Vertical position.
-    pub v: AnchorPos,
+    pub vertical: AnchorPos,
     /// How text flows around it.
     pub wrap: Wrap,
     /// It is drawn behind the text.

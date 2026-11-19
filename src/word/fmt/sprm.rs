@@ -3,8 +3,8 @@
 //! paragraphs, table rows and sections.
 
 use super::model::{
-    Align, AnchorAlign, AnchorFrom, Border, BorderStyle, Columns, Frame, Wrap, LineSpacing, NumFormat, PageSetup, Rgb, SectionStart, TabKind, Underline,
-    VAlign, VertAlign,
+    Align, AnchorAlign, AnchorFrom, Border, BorderStyle, Columns, Frame, LineSpacing, NumFormat, PageSetup, Rgb,
+    SectionStart, TabKind, Underline, VAlign, VertAlign, Wrap,
 };
 use super::props::{RawPara, RawRun, RawTab};
 use crate::word::doc::fib::{i16_at, u16_at, u32_at};
@@ -198,19 +198,19 @@ fn frame_sprm(sprm: u16, operand: &[u8], raw: &mut RawPara) {
         .get_or_insert_with(Frame::default);
     match sprm {
         0x261B => {
-            frame.anchor.v.from = match (byte >> 4) & 3 {
+            frame.anchor.vertical.from = match (byte >> 4) & 3 {
                 0 => AnchorFrom::Margin,
                 1 => AnchorFrom::Page,
                 _ => AnchorFrom::Paragraph,
             };
-            frame.anchor.h.from = match (byte >> 6) & 3 {
+            frame.anchor.horizontal.from = match (byte >> 6) & 3 {
                 1 => AnchorFrom::Margin,
                 2 => AnchorFrom::Page,
                 _ => AnchorFrom::Column,
             };
         }
         0x8418 => {
-            (frame.anchor.h.align, frame.anchor.h.offset) = match signed {
+            (frame.anchor.horizontal.align, frame.anchor.horizontal.offset) = match signed {
                 -4 => (Some(AnchorAlign::Center), 0.0),
                 -8 => (Some(AnchorAlign::End), 0.0),
                 -12 => (Some(AnchorAlign::Inside), 0.0),
@@ -219,7 +219,7 @@ fn frame_sprm(sprm: u16, operand: &[u8], raw: &mut RawPara) {
             };
         }
         0x8419 => {
-            (frame.anchor.v.align, frame.anchor.v.offset) = match signed {
+            (frame.anchor.vertical.align, frame.anchor.vertical.offset) = match signed {
                 -4 => (Some(AnchorAlign::Start), 0.0),
                 -8 => (Some(AnchorAlign::Center), 0.0),
                 -12 => (Some(AnchorAlign::End), 0.0),
@@ -438,53 +438,9 @@ pub(crate) fn row_props(grpprl: &[u8]) -> RowProps {
                 let body = operand.get(1..).unwrap_or(&[]);
                 row.shading = body.chunks(10).map(|chunk| shd(chunk).flatten()).collect();
             }
-            0xD62C => {
-                let body = operand.get(1..).unwrap_or(&[]);
-                let (first, lim, align) = (body.first(), body.get(1), body.get(2));
-                if let (Some(&first), Some(&lim), Some(&align)) = (first, lim, align) {
-                    for cell in usize::from(first)..usize::from(lim) {
-                        if let Some(slot) = row.valign.get_mut(cell) {
-                            *slot = match align {
-                                1 => VAlign::Center,
-                                2 => VAlign::Bottom,
-                                _ => VAlign::Top,
-                            };
-                        }
-                    }
-                }
-            }
-            0xD62B => {
-                let (Some(&cell), Some(&flags)) = (operand.get(1), operand.get(2)) else {
-                    continue;
-                };
-                if let Some(slot) = row.merges.get_mut(usize::from(cell)) {
-                    slot.1 = flags != 0;
-                    slot.2 = flags == 3;
-                }
-            }
-            0xD634 | 0xD632 => {
-                // Cell margins (the row's default, or a range of cells'):
-                // first cell, limit, sides, unit, width.
-                let body = operand.get(1..).unwrap_or(&[]);
-                let (first, lim) = (body.first().copied().unwrap_or(0), body.get(1).copied().unwrap_or(0));
-                let sides = body.get(2).copied().unwrap_or(0);
-                let width = u16_at(body, 4).map_or(0.0, |twips| f32::from(twips) / TWIPS_PER_PT);
-                for (bit, slot) in [(1, 1), (2, 0), (4, 3), (8, 2)] {
-                    if sides & bit == 0 {
-                        continue;
-                    }
-                    if sprm == 0xD634 {
-                        row.margins[slot] = Some(width);
-                    } else {
-                        for cell in usize::from(first)..usize::from(lim) {
-                            if row.cell_margins.len() <= cell {
-                                row.cell_margins.resize(cell + 1, [None; 4]);
-                            }
-                            row.cell_margins[cell][slot] = Some(width);
-                        }
-                    }
-                }
-            }
+            0xD62C => set_cell_valign(operand, &mut row),
+            0xD62B => set_cell_merge(operand, &mut row),
+            0xD634 | 0xD632 => set_cell_margins(sprm, operand, &mut row),
             0xD620 | 0xD62F => set_cell_borders(sprm, operand, &mut row),
             _ => {}
         }
@@ -521,6 +477,60 @@ fn def_table(operand: &[u8], row: &mut RowProps) {
         }
         let side = |offset: usize| tc.and_then(|tc| tc.get(offset..offset + 4)).and_then(brc80).flatten();
         row.cell_borders.push([side(4), side(8), side(12), side(16)]);
+    }
+}
+
+/// Reads `sprmTVertAlign`: the vertical alignment of a range of cells.
+fn set_cell_valign(operand: &[u8], row: &mut RowProps) {
+    let body = operand.get(1..).unwrap_or(&[]);
+    let (first, lim, align) = (body.first(), body.get(1), body.get(2));
+    if let (Some(&first), Some(&lim), Some(&align)) = (first, lim, align) {
+        for cell in usize::from(first)..usize::from(lim) {
+            if let Some(slot) = row.valign.get_mut(cell) {
+                *slot = match align {
+                    1 => VAlign::Center,
+                    2 => VAlign::Bottom,
+                    _ => VAlign::Top,
+                };
+            }
+        }
+    }
+}
+
+/// Reads `sprmTVertMerge`: whether a cell is in a vertical merge, and
+/// whether it starts it.
+fn set_cell_merge(operand: &[u8], row: &mut RowProps) {
+    let (Some(&cell), Some(&flags)) = (operand.get(1), operand.get(2)) else {
+        return;
+    };
+    if let Some(slot) = row.merges.get_mut(usize::from(cell)) {
+        slot.1 = flags != 0;
+        slot.2 = flags == 3;
+    }
+}
+
+/// Reads `sprmTCellPaddingDefault` (0xD634, the row's default) or
+/// `sprmTCellPadding` (a range of cells'): first cell, limit, sides, unit,
+/// width.
+fn set_cell_margins(sprm: u16, operand: &[u8], row: &mut RowProps) {
+    let body = operand.get(1..).unwrap_or(&[]);
+    let (first, lim) = (body.first().copied().unwrap_or(0), body.get(1).copied().unwrap_or(0));
+    let sides = body.get(2).copied().unwrap_or(0);
+    let width = u16_at(body, 4).map_or(0.0, |twips| f32::from(twips) / TWIPS_PER_PT);
+    for (bit, slot) in [(1, 1), (2, 0), (4, 3), (8, 2)] {
+        if sides & bit == 0 {
+            continue;
+        }
+        if sprm == 0xD634 {
+            row.margins[slot] = Some(width);
+        } else {
+            for cell in usize::from(first)..usize::from(lim) {
+                if row.cell_margins.len() <= cell {
+                    row.cell_margins.resize(cell + 1, [None; 4]);
+                }
+                row.cell_margins[cell][slot] = Some(width);
+            }
+        }
     }
 }
 
@@ -562,29 +572,7 @@ pub(crate) struct SectionProps {
 /// The section properties in a property list (`SEPX`), over Word 97's
 /// defaults.
 pub(crate) fn section_props(grpprl: &[u8]) -> SectionProps {
-    let mut section = SectionProps {
-        page: PageSetup {
-            width: 612.0,
-            height: 792.0,
-            top: 72.0,
-            bottom: 72.0,
-            left: 90.0,
-            right: 90.0,
-            header: 36.0,
-            footer: 36.0,
-            gutter: 0.0,
-        },
-        columns: Columns {
-            count: 1,
-            space: 36.0,
-            ..Default::default()
-        },
-        start: SectionStart::NextPage,
-        title_page: false,
-        page_number_start: None,
-        page_number_format: NumFormat::Decimal,
-        grid_pitch: None,
-    };
+    let mut section = word97_section();
     let mut restart = false;
     let mut start_at = None;
     let mut grid_type = 0;
@@ -650,20 +638,59 @@ pub(crate) fn section_props(grpprl: &[u8]) -> SectionProps {
         section.page_number_start = Some(start_at.unwrap_or(1));
     }
     if !equal && !widths.is_empty() {
-        let count = section.columns.count as usize;
-        section.columns.widths = (0..count)
-            .map(|at| {
-                let width = widths.iter().find(|(index, _)| *index == at).map_or(0.0, |(_, w)| *w);
-                let space = spaces.iter().find(|(index, _)| *index == at).map_or(0.0, |(_, s)| *s);
-                (width, space)
-            })
-            .collect();
+        section.columns.widths = column_widths(section.columns.count as usize, &widths, &spaces);
     }
     // Lines snap to the grid only for the "lines" grid types.
     if matches!(grid_type, 1..=3) {
         section.grid_pitch = pitch;
     }
     section
+}
+
+/// Word 97's default section: a Letter page with its margins, one column,
+/// starting on a new page.
+fn word97_section() -> SectionProps {
+    SectionProps {
+        page: PageSetup {
+            width: 612.0,
+            height: 792.0,
+            top: 72.0,
+            bottom: 72.0,
+            left: 90.0,
+            right: 90.0,
+            header: 36.0,
+            footer: 36.0,
+            gutter: 0.0,
+        },
+        columns: Columns {
+            count: 1,
+            space: 36.0,
+            ..Default::default()
+        },
+        start: SectionStart::NextPage,
+        title_page: false,
+        page_number_start: None,
+        page_number_format: NumFormat::Decimal,
+        grid_pitch: None,
+    }
+}
+
+/// The width and following space of each of `count` columns, from the
+/// widths and spaces set by column index (0 where one is not set).
+fn column_widths(count: usize, widths: &[(usize, f32)], spaces: &[(usize, f32)]) -> Vec<(f32, f32)> {
+    (0..count)
+        .map(|at| {
+            let width = widths
+                .iter()
+                .find(|(index, _)| *index == at)
+                .map_or(0.0, |(_, width)| *width);
+            let space = spaces
+                .iter()
+                .find(|(index, _)| *index == at)
+                .map_or(0.0, |(_, space)| *space);
+            (width, space)
+        })
+        .collect()
 }
 
 /// The style (`istd`) a character property list names.

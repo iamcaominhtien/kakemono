@@ -9,9 +9,10 @@ use super::para::{self, Ctx, Float, FloatKind, Line, ParaLayout};
 use super::shape::Shaper;
 use crate::word::fmt::model::{
     Align, AnchorAlign, AnchorFrom, Block, Border, BorderStyle, Cell, FDoc, Inline, NumFormat, Para, ParaBorders, Rgb,
-    Section, SectionStart, Shape, Table, VAlign, VMerge, Width, Wrap,
+    Row, Section, SectionStart, Shape, Table, VAlign, VMerge, Width, Wrap,
 };
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 /// Space Word puts before and after a paragraph with automatic spacing.
 const AUTO_SPACING_PT: f32 = 14.0;
@@ -75,7 +76,7 @@ fn number_notes(doc: &FDoc) -> HashMap<(bool, String), String> {
     let mut visit = |inline: &Inline| {
         if let Inline::NoteRef { endnote, id, .. } = inline {
             let key = (*endnote, id.clone());
-            if !numbers.contains_key(&key) {
+            if let Entry::Vacant(slot_entry) = numbers.entry(key) {
                 let slot = usize::from(*endnote);
                 counts[slot] += 1;
                 let format = if *endnote {
@@ -83,7 +84,7 @@ fn number_notes(doc: &FDoc) -> HashMap<(bool, String), String> {
                 } else {
                     &doc.footnote_format
                 };
-                numbers.insert(key, crate::word::fmt::model::format_page(counts[slot], format));
+                slot_entry.insert(crate::word::fmt::model::format_page(counts[slot], format));
             }
         }
     };
@@ -355,7 +356,7 @@ impl Flow<'_> {
         if first && sect.title_page {
             return set.first;
         }
-        if self.doc.even_and_odd_headers && number % 2 == 0 {
+        if self.doc.even_and_odd_headers && number.is_multiple_of(2) {
             return set.even;
         }
         set.default
@@ -531,7 +532,8 @@ impl Flow<'_> {
         } else {
             para.props.before
         };
-        let before = if para.props.contextual && self.state_style_matches(para) || self.state.fresh && self.state.pushed {
+        let before = if para.props.contextual && self.state_style_matches(para) || self.state.fresh && self.state.pushed
+        {
             0.0
         } else {
             before
@@ -578,6 +580,105 @@ impl Flow<'_> {
         }
     }
 
+    /// How many of `lines`, from `at`, fit in the rest of the column after a
+    /// space of `gap`, with the notes they refer to; and the end of the
+    /// chunk they belong to (a page or column break ends a chunk). Returns
+    /// (lines that fit, chunk end).
+    fn lines_that_fit(&mut self, lines: &[Line], at: usize, gap: f32) -> (usize, usize) {
+        let room_bottom = self.state.bottom - self.state.notes_height;
+        let mut y = self.state.y + gap;
+        let mut fit = 0;
+        let mut notes_extra = 0.0;
+        let chunk_end = lines[at..]
+            .iter()
+            .position(|line| line.page_break || line.column_break)
+            .map_or(lines.len(), |offset| at + offset + 1);
+        for line in &lines[at..chunk_end] {
+            let extra = self.notes_height_for(line);
+            if y + line.fit_height > room_bottom - notes_extra - extra + EPS {
+                break;
+            }
+            notes_extra += extra;
+            y += line.height;
+            fit += 1;
+        }
+        (fit, chunk_end)
+    }
+
+    /// How many of the `fit` lines that fit (of `remaining` in the chunk,
+    /// from line `at`) go in this column, after the paragraph's
+    /// keep-lines-together and widow and orphan rules. 0 moves the lines to
+    /// the next column; a fresh column takes at least one line.
+    fn lines_to_take(&self, para: &Para, at: usize, fit: usize, remaining: usize) -> usize {
+        let mut take = fit;
+        if take < remaining {
+            if para.props.keep_lines && at == 0 && !self.state.fresh {
+                take = 0;
+            } else if para.props.widow_control {
+                if take == remaining - 1 && remaining > WIDOW_LINES {
+                    take -= 1;
+                }
+                if take < WIDOW_LINES && (at == 0 && remaining > take) && remaining >= WIDOW_LINES && !self.state.fresh
+                {
+                    take = 0;
+                }
+            }
+        }
+        if take == 0 && self.state.fresh {
+            take = fit.max(1);
+        }
+        take
+    }
+
+    /// Places one line of `para` at (`x`, `y`) on page `page`: its items,
+    /// bookmarks, inline shapes and notes. `first` is whether it is the
+    /// paragraph's first line.
+    fn place_line(&mut self, para: &Para, line: &Line, first: bool, page: usize, x: f32, y: f32) {
+        for bookmark in &line.bookmarks {
+            self.destinations.push(Destination {
+                name: bookmark.clone(),
+                page,
+                y,
+            });
+        }
+        push_items(&mut self.pages[page].items, &line.items, x, y);
+        if trace() {
+            self.trace_line(para, line, first, page, y);
+        }
+        for (shape_x, shape) in &line.shapes {
+            let top = y + line.baseline - shape.height;
+            let page = self.pages.len() - 1;
+            self.draw_shape(shape, page, x + shape_x, top, shape.width);
+        }
+        self.add_notes(line);
+    }
+
+    /// Prints a placed line for debugging (`trace()`).
+    fn trace_line(&self, para: &Para, line: &Line, first: bool, page: usize, y: f32) {
+        let text: String = line
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Text(run) => Some(run.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let (after_prev, before) = if first { self.state.trace_spacing } else { (0.0, 0.0) };
+        eprintln!(
+            "TRACE\t{page}\t{y:.2}\t{:.2}\t{:.2}\t{:?}\t{}\t{}\t{after_prev:.2}\t{before:.2}\t{:.2},{:.2},{:.2}\t{}",
+            line.baseline,
+            line.height,
+            para.props.line,
+            para.style,
+            first,
+            line.metrics.0,
+            line.metrics.1,
+            line.metrics.2,
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+
     /// Whether the previous paragraph has the same style as `para`.
     fn state_style_matches(&self, para: &Para) -> bool {
         self.state.last_style.as_deref() == Some(para.style.as_str())
@@ -591,50 +692,11 @@ impl Flow<'_> {
         let count = lines.len();
         let mut at = 0;
         let mut gap = gap;
-        let widow = para.props.widow_control;
         let borders = para.props.borders;
         let shading = para.props.shading;
         while at < count {
-            // How many of the remaining lines fit here.
-            let room_bottom = self.state.bottom - self.state.notes_height;
-            let mut y = self.state.y + gap;
-            let mut fit = 0;
-            let mut notes_extra = 0.0;
-            // A page or column break ends what can go here.
-            let chunk_end = lines[at..]
-                .iter()
-                .position(|line| line.page_break || line.column_break)
-                .map_or(count, |offset| at + offset + 1);
-            for line in &lines[at..chunk_end] {
-                let extra = self.notes_height_for(line);
-                if y + line.fit_height > room_bottom - notes_extra - extra + EPS {
-                    break;
-                }
-                notes_extra += extra;
-                y += line.height;
-                fit += 1;
-            }
-            let remaining = chunk_end - at;
-            let mut take = fit;
-            if take < remaining {
-                if para.props.keep_lines && at == 0 && !self.state.fresh {
-                    take = 0;
-                } else if widow {
-                    if take == remaining - 1 && remaining > WIDOW_LINES {
-                        take -= 1;
-                    }
-                    if take < WIDOW_LINES
-                        && (at == 0 && remaining > take)
-                        && remaining >= WIDOW_LINES
-                        && !self.state.fresh
-                    {
-                        take = 0;
-                    }
-                }
-            }
-            if take == 0 && self.state.fresh {
-                take = fit.max(1);
-            }
+            let (fit, chunk_end) = self.lines_that_fit(&lines, at, gap);
+            let take = self.lines_to_take(para, at, fit, chunk_end - at);
             if take == 0 {
                 self.next_column();
                 gap = if at == 0 { self.top_gap(para) } else { 0.0 };
@@ -645,45 +707,8 @@ impl Flow<'_> {
             let mut y = start_y;
             let page = self.pages.len() - 1;
             for line in &lines[at..at + take] {
-                for bookmark in &line.bookmarks {
-                    self.destinations.push(Destination {
-                        name: bookmark.clone(),
-                        page,
-                        y,
-                    });
-                }
-                push_items(&mut self.pages[page].items, &line.items, x, y);
-                if trace() {
-                    let text: String = line
-                        .items
-                        .iter()
-                        .filter_map(|item| match item {
-                            Item::Text(run) => Some(run.text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let first = std::ptr::eq(line, &lines[0]);
-                    let (after_prev, before) = if first { self.state.trace_spacing } else { (0.0, 0.0) };
-                    eprintln!(
-                        "TRACE\t{page}\t{y:.2}\t{:.2}\t{:.2}\t{:?}\t{}\t{}\t{after_prev:.2}\t{before:.2}\t{:.2},{:.2},{:.2}\t{}",
-                        line.baseline,
-                        line.height,
-                        para.props.line,
-                        para.style,
-                        first,
-                        line.metrics.0,
-                        line.metrics.1,
-                        line.metrics.2,
-                        text.split_whitespace().collect::<Vec<_>>().join(" ")
-                    );
-                }
-                for (shape_x, shape) in &line.shapes {
-                    let top = y + line.baseline - shape.height;
-                    let page = self.pages.len() - 1;
-                    self.draw_shape(shape, page, x + shape_x, top, shape.width);
-                }
-                self.add_notes(line);
+                let first = std::ptr::eq(line, &lines[0]);
+                self.place_line(para, line, first, page, x, y);
                 y += line.height;
             }
             // Floats anchored on the placed lines.
@@ -792,8 +817,8 @@ impl Flow<'_> {
             back.push(Item::Rect {
                 x: left,
                 y: top,
-                w: right - left,
-                h: bottom - top,
+                width: right - left,
+                height: bottom - top,
                 color,
             });
         }
@@ -849,7 +874,14 @@ impl Flow<'_> {
     fn place_float(&mut self, float: &Float, column_x: f32, para_top: f32, line_top: f32) {
         let width = self.column_width();
         let page_at = self.pages.len() - 1;
-        self.put_float(float, self.state.section, page_at, (column_x, width), (para_top, line_top), true);
+        self.put_float(
+            float,
+            self.state.section,
+            page_at,
+            (column_x, width),
+            (para_top, line_top),
+            true,
+        );
     }
 
     /// Draws a floating object on page `page_at` of `section`, in a column
@@ -866,7 +898,7 @@ impl Flow<'_> {
     ) {
         let page = self.doc.sections[section].page;
         let anchor = &float.anchor;
-        let h_area = match anchor.h.from {
+        let h_area = match anchor.horizontal.from {
             AnchorFrom::Page => (0.0, page.width),
             AnchorFrom::Margin => (page.left, page.width - page.right),
             AnchorFrom::Column => (column_x, column_x + width),
@@ -875,7 +907,7 @@ impl Flow<'_> {
             AnchorFrom::EndMargin | AnchorFrom::OutsideMargin => (page.width - page.right, page.width),
             _ => (column_x, column_x + width),
         };
-        let v_area = match anchor.v.from {
+        let v_area = match anchor.vertical.from {
             AnchorFrom::Page => (0.0, page.height),
             AnchorFrom::Margin => (page.top, page.height - page.bottom),
             AnchorFrom::Paragraph => (para_top, para_top),
@@ -895,8 +927,8 @@ impl Flow<'_> {
             FloatKind::Shape(shape) => self.shape_size(shape, width, page_at),
             FloatKind::Image(..) => (float.width, float.height),
         };
-        let x = place(h_area, anchor.h.align, anchor.h.offset, float_width);
-        let mut y = place(v_area, anchor.v.align, anchor.v.offset, float_height);
+        let x = place(h_area, anchor.horizontal.align, anchor.horizontal.offset, float_width);
+        let mut y = place(v_area, anchor.vertical.align, anchor.vertical.offset, float_height);
         // An object is kept on its page.
         if y + float_height > page.height {
             y = (page.height - float_height).max(0.0);
@@ -909,8 +941,8 @@ impl Flow<'_> {
                         index: *index,
                         x,
                         y,
-                        w: float.width,
-                        h: float.height,
+                        width: float.width,
+                        height: float.height,
                         crop: *crop,
                     };
                     if anchor.behind {
@@ -958,8 +990,8 @@ impl Flow<'_> {
             self.pages[page].items.push(Item::Rect {
                 x,
                 y,
-                w: width,
-                h: height,
+                width,
+                height,
                 color,
             });
         }
@@ -968,8 +1000,8 @@ impl Flow<'_> {
                 index,
                 x: x + px,
                 y: y + py,
-                w: pw,
-                h: ph,
+                width: pw,
+                height: ph,
                 crop: [0.0; 4],
             });
         }
@@ -988,7 +1020,14 @@ impl Flow<'_> {
             y + shape.insets[1],
         );
         let section = self.page_section(page);
-        self.put_sub_floats(&sub.floats, section, page, x + shape.insets[0], y + shape.insets[1], inner_width);
+        self.put_sub_floats(
+            &sub.floats,
+            section,
+            page,
+            x + shape.insets[0],
+            y + shape.insets[1],
+            inner_width,
+        );
     }
 
     /// The number of page `page`.
@@ -1107,8 +1146,8 @@ impl Flow<'_> {
                 self.pages[page].items.push(Item::Rect {
                     x: x + cell.x,
                     y,
-                    w: cell.width,
-                    h: cell.height.max(row.height),
+                    width: cell.width,
+                    height: cell.height.max(row.height),
                     color,
                 });
             }
@@ -1160,6 +1199,44 @@ impl Flow<'_> {
     /// cell content.
     fn lay_table(&mut self, table: &Table, width: f32) -> LaidTable {
         let grid = table_grid(table, width);
+        let left = self.table_left(table, width, &grid);
+        let mut rows: Vec<LaidRow> = Vec::new();
+        // Merged cells: the row where each column's merge started.
+        let mut merge_start: HashMap<usize, (usize, usize)> = HashMap::new();
+        for (row_at, row) in table.rows.iter().enumerate() {
+            let mut column = row.grid_before;
+            let mut cells = Vec::new();
+            for cell in &row.cells {
+                let span = cell.span.max(1);
+                let cell_x = left + grid.iter().take(column).sum::<f32>();
+                let cell_width: f32 = grid.iter().skip(column).take(span).sum();
+                let mut laid = self.lay_cell(table, cell, cell_x, cell_width);
+                if cell.vmerge == VMerge::Continue {
+                    if let Some(&(start_row, start_cell)) = merge_start.get(&column)
+                        && let Some(start) = rows.get_mut(start_row).and_then(|row| row.cells.get_mut(start_cell))
+                    {
+                        start.merged_rows += 1;
+                        start.draw_bottom = false;
+                    }
+                } else if cell.vmerge == VMerge::Restart {
+                    merge_start.insert(column, (row_at, cells.len()));
+                    laid.height = 0.0;
+                } else {
+                    merge_start.remove(&column);
+                }
+                cells.push(laid);
+                column += span;
+            }
+            let height = laid_row_height(row, &cells);
+            rows.push(LaidRow { height, cells });
+        }
+        grow_merged_rows(&mut rows);
+        LaidTable { rows }
+    }
+
+    /// The left edge of a table in a column of `width`, from its alignment
+    /// and indent; `grid` is the widths of its grid columns.
+    fn table_left(&self, table: &Table, width: f32, grid: &[f32]) -> f32 {
         let total: f32 = grid.iter().sum();
         let first_margin = table
             .rows
@@ -1175,111 +1252,63 @@ impl Flow<'_> {
             // Before Word 2013, the text of the first cell is on the margin.
             left -= first_margin;
         }
-        let mut rows: Vec<LaidRow> = Vec::new();
-        // Merged cells: the row where each column's merge started.
-        let mut merge_start: HashMap<usize, (usize, usize)> = HashMap::new();
-        for (row_at, row) in table.rows.iter().enumerate() {
-            let mut column = row.grid_before;
-            let mut cells = Vec::new();
-            for cell in &row.cells {
-                let span = cell.span.max(1);
-                let cell_x = left + grid.iter().take(column).sum::<f32>();
-                let cell_width: f32 = grid.iter().skip(column).take(span).sum();
-                let margins = [
-                    cell_margin(cell, table, 0),
-                    cell_margin(cell, table, 1),
-                    cell_margin(cell, table, 2),
-                    cell_margin(cell, table, 3),
-                ];
-                let inner = (cell_width - margins[0] - margins[2]).max(1.0);
-                let mut laid = LaidCell {
-                    x: cell_x,
-                    width: cell_width,
-                    height: 0.0,
-                    content_height: 0.0,
-                    items: Vec::new(),
-                    floats: Vec::new(),
-                    breaks: Vec::new(),
-                    top_margin: margins[1],
-                    bottom_margin: margins[3],
-                    bookmarks: Vec::new(),
-                    borders: cell.borders,
-                    shading: cell.shading,
-                    valign: cell.valign,
-                    draw_top: true,
-                    draw_bottom: true,
-                    merged_rows: 1,
-                };
-                if cell.vmerge == VMerge::Continue {
-                    laid.draw_top = false;
-                    if let Some(&(start_row, start_cell)) = merge_start.get(&column)
-                        && let Some(start) = rows.get_mut(start_row).and_then(|row| row.cells.get_mut(start_cell))
-                    {
-                        start.merged_rows += 1;
-                        start.draw_bottom = false;
-                    }
-                    laid.shading = None;
-                    laid.borders[0] = None;
-                } else {
-                    let mut sub = SubFlow::new(inner);
-                    sub.in_cell = true;
-                    self.sub_blocks(&mut sub, &cell.blocks, Some(self.state.number), None);
-                    laid.content_height = sub.y + margins[1] + margins[3];
-                    laid.height = laid.content_height;
-                    laid.breaks = sub.breaks.iter().map(|y| y + margins[1]).collect();
-                    let mut items = Vec::new();
-                    push_items(&mut items, &sub.items, margins[0], margins[1]);
-                    laid.items = items;
-                    laid.floats = sub.floats.iter().map(|float| float.moved(margins[0], margins[1])).collect();
-                    laid.bookmarks = sub
-                        .bookmarks
-                        .into_iter()
-                        .map(|(name, y)| (name, y + margins[1]))
-                        .collect();
-                    if cell.vmerge == VMerge::Restart {
-                        merge_start.insert(column, (row_at, cells.len()));
-                        laid.height = 0.0;
-                    } else {
-                        merge_start.remove(&column);
-                    }
-                }
-                cells.push(laid);
-                column += span;
-            }
-            // Word adds the width of the row's top border to its content.
-            let border = cells
-                .iter()
-                .filter(|cell| cell.draw_top)
-                .filter_map(|cell| cell.borders[0].map(|border| border.width))
-                .fold(0.0, f32::max);
-            let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max) + border;
-            let height = match row.height {
-                Some((value, true)) => value,
-                Some((value, false)) => content.max(value),
-                None => content,
-            };
-            rows.push(LaidRow { height, cells });
+        left
+    }
+
+    /// Lays out one cell at `cell_x`, `cell_width` wide. A cell that
+    /// continues a vertical merge gets no content, top border or shading.
+    fn lay_cell(&mut self, table: &Table, cell: &Cell, cell_x: f32, cell_width: f32) -> LaidCell {
+        let margins = [
+            cell_margin(cell, table, 0),
+            cell_margin(cell, table, 1),
+            cell_margin(cell, table, 2),
+            cell_margin(cell, table, 3),
+        ];
+        let inner = (cell_width - margins[0] - margins[2]).max(1.0);
+        let mut laid = LaidCell {
+            x: cell_x,
+            width: cell_width,
+            height: 0.0,
+            content_height: 0.0,
+            items: Vec::new(),
+            floats: Vec::new(),
+            breaks: Vec::new(),
+            top_margin: margins[1],
+            bottom_margin: margins[3],
+            bookmarks: Vec::new(),
+            borders: cell.borders,
+            shading: cell.shading,
+            valign: cell.valign,
+            draw_top: true,
+            draw_bottom: true,
+            merged_rows: 1,
+        };
+        if cell.vmerge == VMerge::Continue {
+            laid.draw_top = false;
+            laid.shading = None;
+            laid.borders[0] = None;
+            return laid;
         }
-        // Merged cells: the rows they span grow to hold their content.
-        for row_at in 0..rows.len() {
-            for cell_at in 0..rows[row_at].cells.len() {
-                let merged = rows[row_at].cells[cell_at].merged_rows;
-                if merged <= 1 {
-                    continue;
-                }
-                let need = rows[row_at].cells[cell_at].content_height;
-                let span_rows = (row_at..(row_at + merged).min(rows.len())).collect::<Vec<_>>();
-                let have: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
-                if need > have
-                    && let Some(&last) = span_rows.last()
-                {
-                    rows[last].height += need - have;
-                }
-                let total: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
-                rows[row_at].cells[cell_at].height = total;
-            }
-        }
-        LaidTable { rows }
+        let mut sub = SubFlow::new(inner);
+        sub.in_cell = true;
+        self.sub_blocks(&mut sub, &cell.blocks, Some(self.state.number), None);
+        laid.content_height = sub.y + margins[1] + margins[3];
+        laid.height = laid.content_height;
+        laid.breaks = sub.breaks.iter().map(|y| y + margins[1]).collect();
+        let mut items = Vec::new();
+        push_items(&mut items, &sub.items, margins[0], margins[1]);
+        laid.items = items;
+        laid.floats = sub
+            .floats
+            .iter()
+            .map(|float| float.moved(margins[0], margins[1]))
+            .collect();
+        laid.bookmarks = sub
+            .bookmarks
+            .into_iter()
+            .map(|(name, y)| (name, y + margins[1]))
+            .collect();
+        laid
     }
 
     /// Lays out blocks in a sub-flow (a cell, a header, a note, a text
@@ -1287,114 +1316,8 @@ impl Flow<'_> {
     fn sub_blocks(&mut self, sub: &mut SubFlow, blocks: &[Block], page: Option<u32>, _: Option<()>) {
         for block in blocks {
             match block {
-                Block::Para(para) => {
-                    let mut ctx = self.ctx();
-                    ctx.page = page.map(|number| (number, sub.format.clone()));
-                    ctx.page_count = sub.page_count;
-                    ctx.section_pages = sub.section_pages;
-                    ctx.own_note = sub.own_note.clone();
-                    let layout = para::layout(&mut ctx, para, sub.width);
-                    let after_prev = match sub.pending_after.take() {
-                        Some((after, style, contextual)) if !(contextual && style == para.style) => after,
-                        _ => 0.0,
-                    };
-                    let before = if para.props.before_auto {
-                        if sub.y == 0.0 && sub.in_cell {
-                            0.0
-                        } else {
-                            AUTO_SPACING_PT
-                        }
-                    } else {
-                        para.props.before
-                    };
-                    let before = if para.props.contextual && sub.last_style.as_deref() == Some(para.style.as_str()) {
-                        0.0
-                    } else {
-                        before
-                    };
-                    sub.y += self.spacing(after_prev, before);
-                    let top = sub.y;
-                    for float in &layout.floats {
-                        let line_top = top
-                            + layout.lines[..float.line.min(layout.lines.len())]
-                                .iter()
-                                .map(|line| line.height)
-                                .sum::<f32>();
-                        sub.floats.push(SubFloat {
-                            float: float.clone(),
-                            x: 0.0,
-                            para_top: top,
-                            line_top,
-                        });
-                    }
-                    for line in &layout.lines {
-                        for bookmark in &line.bookmarks {
-                            sub.bookmarks.push((bookmark.clone(), sub.y));
-                        }
-                        push_items(&mut sub.items, &line.items, 0.0, sub.y);
-                        sub.y += line.height;
-                        sub.breaks.push(sub.y);
-                    }
-                    if let Some(color) = para.props.shading {
-                        sub.items.insert(
-                            0,
-                            Item::Rect {
-                                x: para.props.left,
-                                y: top,
-                                w: sub.width - para.props.left - para.props.right,
-                                h: sub.y - top,
-                                color,
-                            },
-                        );
-                    }
-                    let after = if para.props.after_auto {
-                        AUTO_SPACING_PT
-                    } else {
-                        para.props.after
-                    };
-                    sub.pending_after = Some((after, para.style.clone(), para.props.contextual));
-                    sub.last_style = Some(para.style.clone());
-                }
-                Block::Table(table) => {
-                    if let Some((after, _, _)) = sub.pending_after.take() {
-                        sub.y += after;
-                    }
-                    let laid = self.lay_table(table, sub.width);
-                    for row in &laid.rows {
-                        let mut row_items = Vec::new();
-                        for cell in &row.cells {
-                            let height = cell.height.max(row.height);
-                            if let Some(color) = cell.shading {
-                                row_items.push(Item::Rect {
-                                    x: cell.x,
-                                    y: 0.0,
-                                    w: cell.width,
-                                    h: height,
-                                    color,
-                                });
-                            }
-                            push_items(&mut row_items, &cell.items, cell.x, 0.0);
-                            sub.floats.extend(cell.floats.iter().map(|float| float.moved(cell.x, sub.y)));
-                            let [b_top, b_left, b_bottom, b_right] = cell.borders;
-                            let (l, r) = (cell.x, cell.x + cell.width);
-                            if let Some(border) = b_top.filter(|_| cell.draw_top) {
-                                border_line(&mut row_items, border, l, 0.0, r, 0.0);
-                            }
-                            if let Some(border) = b_bottom.filter(|_| cell.draw_bottom) {
-                                border_line(&mut row_items, border, l, height, r, height);
-                            }
-                            if let Some(border) = b_left {
-                                border_line(&mut row_items, border, l, 0.0, l, height);
-                            }
-                            if let Some(border) = b_right {
-                                border_line(&mut row_items, border, r, 0.0, r, height);
-                            }
-                        }
-                        push_items(&mut sub.items, &row_items, 0.0, sub.y);
-                        sub.y += row.height;
-                    }
-                    sub.last_style = None;
-                }
+                Block::Para(para) => self.sub_para(sub, para, page),
+                Block::Table(table) => self.sub_table(sub, table),
             }
         }
         // The space after the last paragraph counts in a cell.
@@ -1403,6 +1326,122 @@ impl Flow<'_> {
         {
             sub.y += after;
         }
+    }
+
+    /// Lays out a paragraph in a sub-flow, with the space before it and its
+    /// floats, bookmarks and shading. `page` is the page number its fields
+    /// show.
+    fn sub_para(&mut self, sub: &mut SubFlow, para: &Para, page: Option<u32>) {
+        let mut ctx = self.ctx();
+        ctx.page = page.map(|number| (number, sub.format.clone()));
+        ctx.page_count = sub.page_count;
+        ctx.section_pages = sub.section_pages;
+        ctx.own_note = sub.own_note.clone();
+        let layout = para::layout(&mut ctx, para, sub.width);
+        let after_prev = match sub.pending_after.take() {
+            Some((after, style, contextual)) if !(contextual && style == para.style) => after,
+            _ => 0.0,
+        };
+        let before = if para.props.before_auto {
+            if sub.y == 0.0 && sub.in_cell {
+                0.0
+            } else {
+                AUTO_SPACING_PT
+            }
+        } else {
+            para.props.before
+        };
+        let before = if para.props.contextual && sub.last_style.as_deref() == Some(para.style.as_str()) {
+            0.0
+        } else {
+            before
+        };
+        sub.y += self.spacing(after_prev, before);
+        let top = sub.y;
+        for float in &layout.floats {
+            let line_top = top
+                + layout.lines[..float.line.min(layout.lines.len())]
+                    .iter()
+                    .map(|line| line.height)
+                    .sum::<f32>();
+            sub.floats.push(SubFloat {
+                float: float.clone(),
+                x: 0.0,
+                para_top: top,
+                line_top,
+            });
+        }
+        for line in &layout.lines {
+            for bookmark in &line.bookmarks {
+                sub.bookmarks.push((bookmark.clone(), sub.y));
+            }
+            push_items(&mut sub.items, &line.items, 0.0, sub.y);
+            sub.y += line.height;
+            sub.breaks.push(sub.y);
+        }
+        if let Some(color) = para.props.shading {
+            sub.items.insert(
+                0,
+                Item::Rect {
+                    x: para.props.left,
+                    y: top,
+                    width: sub.width - para.props.left - para.props.right,
+                    height: sub.y - top,
+                    color,
+                },
+            );
+        }
+        let after = if para.props.after_auto {
+            AUTO_SPACING_PT
+        } else {
+            para.props.after
+        };
+        sub.pending_after = Some((after, para.style.clone(), para.props.contextual));
+        sub.last_style = Some(para.style.clone());
+    }
+
+    /// Lays out a table in a sub-flow, row by row, with its shading and
+    /// borders.
+    fn sub_table(&mut self, sub: &mut SubFlow, table: &Table) {
+        if let Some((after, _, _)) = sub.pending_after.take() {
+            sub.y += after;
+        }
+        let laid = self.lay_table(table, sub.width);
+        for row in &laid.rows {
+            let mut row_items = Vec::new();
+            for cell in &row.cells {
+                let height = cell.height.max(row.height);
+                if let Some(color) = cell.shading {
+                    row_items.push(Item::Rect {
+                        x: cell.x,
+                        y: 0.0,
+                        width: cell.width,
+                        height,
+                        color,
+                    });
+                }
+                push_items(&mut row_items, &cell.items, cell.x, 0.0);
+                sub.floats
+                    .extend(cell.floats.iter().map(|float| float.moved(cell.x, sub.y)));
+                let [b_top, b_left, b_bottom, b_right] = cell.borders;
+                let (left, right) = (cell.x, cell.x + cell.width);
+                if let Some(border) = b_top.filter(|_| cell.draw_top) {
+                    border_line(&mut row_items, border, left, 0.0, right, 0.0);
+                }
+                if let Some(border) = b_bottom.filter(|_| cell.draw_bottom) {
+                    border_line(&mut row_items, border, left, height, right, height);
+                }
+                if let Some(border) = b_left {
+                    border_line(&mut row_items, border, left, 0.0, left, height);
+                }
+                if let Some(border) = b_right {
+                    border_line(&mut row_items, border, right, 0.0, right, height);
+                }
+            }
+            push_items(&mut sub.items, &row_items, 0.0, sub.y);
+            sub.y += row.height;
+        }
+        sub.last_style = None;
     }
 
     /// Places the endnotes after the body.
@@ -1428,7 +1467,7 @@ impl Flow<'_> {
         let x = self.column_left();
         let separator = self.separator_height();
         let page = self.pages.len() - 1;
-        if let Some((_, after, _)) = self.state.pending_after.take().map(|(a, s, c)| (s, a, c)) {
+        if let Some((after, _, _)) = self.state.pending_after.take() {
             self.state.y += after;
         }
         let rule_y = self.state.y + separator / 2.0;
@@ -1569,10 +1608,16 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
         };
         let (head, tail): (Vec<Item>, Vec<Item>) =
             cell.items.iter().cloned().partition(|item| item_top(item) < cut - EPS);
-        let (float_head, float_tail): (Vec<SubFloat>, Vec<SubFloat>) =
-            cell.floats.iter().cloned().partition(|float| float.para_top < cut - EPS);
+        let (float_head, float_tail): (Vec<SubFloat>, Vec<SubFloat>) = cell
+            .floats
+            .iter()
+            .cloned()
+            .partition(|float| float.para_top < cut - EPS);
         first.cells[at].floats = float_head;
-        second.cells[at].floats = float_tail.iter().map(|float| float.moved(0.0, -(cut - cell.top_margin))).collect();
+        second.cells[at].floats = float_tail
+            .iter()
+            .map(|float| float.moved(0.0, -(cut - cell.top_margin)))
+            .collect();
         first.cells[at].items = head;
         first.cells[at].draw_bottom = false;
         first.cells[at].height = room;
@@ -1606,6 +1651,45 @@ fn item_top(item: &Item) -> f32 {
         Item::Text(run) => run.y - run.size * 0.5,
         Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } => *y,
         Item::Line { y1, y2, .. } => y1.min(*y2),
+    }
+}
+
+/// The height of a laid-out row: its cells' content plus the width of its
+/// top border (Word adds it), or the row's set height (exact, or at least).
+fn laid_row_height(row: &Row, cells: &[LaidCell]) -> f32 {
+    let border = cells
+        .iter()
+        .filter(|cell| cell.draw_top)
+        .filter_map(|cell| cell.borders[0].map(|border| border.width))
+        .fold(0.0, f32::max);
+    let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max) + border;
+    match row.height {
+        Some((value, true)) => value,
+        Some((value, false)) => content.max(value),
+        None => content,
+    }
+}
+
+/// Grows the rows that vertically merged cells span so that they hold the
+/// cells' content, and sets each merged cell's height to the rows it spans.
+fn grow_merged_rows(rows: &mut [LaidRow]) {
+    for row_at in 0..rows.len() {
+        for cell_at in 0..rows[row_at].cells.len() {
+            let merged = rows[row_at].cells[cell_at].merged_rows;
+            if merged <= 1 {
+                continue;
+            }
+            let need = rows[row_at].cells[cell_at].content_height;
+            let span_rows = (row_at..(row_at + merged).min(rows.len())).collect::<Vec<_>>();
+            let have: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
+            if need > have
+                && let Some(&last) = span_rows.last()
+            {
+                rows[last].height += need - have;
+            }
+            let total: f32 = span_rows.iter().map(|&at| rows[at].height).sum();
+            rows[row_at].cells[cell_at].height = total;
+        }
     }
 }
 
@@ -1657,9 +1741,9 @@ fn column_boxes(section: &Section, left: f32, width: f32) -> Vec<(f32, f32)> {
         return columns
             .widths
             .iter()
-            .map(|&(w, space)| {
-                let column = (x, w);
-                x += w + space;
+            .map(|&(width, space)| {
+                let column = (x, width);
+                x += width + space;
                 column
             })
             .collect();
@@ -1795,5 +1879,5 @@ fn items_extent(items: &[Item]) -> Option<(f32, f32)> {
             }
             _ => None,
         })
-        .reduce(|(left, right), (l, r)| (left.min(l), right.max(r)))
+        .reduce(|(left, right), (other_left, other_right)| (left.min(other_left), right.max(other_right)))
 }

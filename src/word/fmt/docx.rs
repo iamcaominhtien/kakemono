@@ -312,7 +312,7 @@ impl Reader<'_> {
                     && let Some(props) = child(item, WORD_NS, "pPr")
                     && let Some(sect) = child(props, WORD_NS, "sectPr")
                 {
-                    blocks.push(Block::Para(reader.paragraph(item)));
+                    blocks.push(Block::Para(Box::new(reader.paragraph(item))));
                     let section = reader.section(sect, &previous, std::mem::take(blocks));
                     previous = section.clone();
                     previous.blocks.clear();
@@ -357,7 +357,7 @@ impl Reader<'_> {
             match item.tag_name().name() {
                 "p" => {
                     let para = self.paragraph(item);
-                    blocks.push(Block::Para(para));
+                    blocks.push(Block::Para(Box::new(para)));
                 }
                 "tbl" => blocks.push(Block::Table(self.table(item))),
                 "sdt" => {
@@ -386,42 +386,8 @@ impl Reader<'_> {
     /// A section from its `w:sectPr`, inheriting the headers and footers of
     /// the previous section where it sets none.
     fn section(&mut self, sect: Node<'_, '_>, previous: &Section, blocks: Vec<Block>) -> Section {
-        let mut page = PageSetup::default();
-        if let Some(size) = child(sect, WORD_NS, "pgSz") {
-            page.width = twips(size, "w").unwrap_or(page.width);
-            page.height = twips(size, "h").unwrap_or(page.height);
-        }
-        if let Some(margins) = child(sect, WORD_NS, "pgMar") {
-            page.top = twips(margins, "top").unwrap_or(page.top);
-            page.bottom = twips(margins, "bottom").unwrap_or(page.bottom);
-            page.left = twips(margins, "left").unwrap_or(page.left);
-            page.right = twips(margins, "right").unwrap_or(page.right);
-            page.header = twips(margins, "header").unwrap_or(page.header);
-            page.footer = twips(margins, "footer").unwrap_or(page.footer);
-            page.gutter = twips(margins, "gutter").unwrap_or(0.0);
-        }
-        let mut columns = Columns {
-            count: 1,
-            space: 36.0,
-            ..Default::default()
-        };
-        if let Some(cols) = child(sect, WORD_NS, "cols") {
-            columns.count = attr(cols, WORD_NS, "num")
-                .and_then(|num| num.parse().ok())
-                .unwrap_or(1u32)
-                .max(1);
-            columns.space = twips(cols, "space").unwrap_or(columns.space);
-            columns.separator = attr(cols, WORD_NS, "sep").is_some_and(is_on);
-            let equal = attr(cols, WORD_NS, "equalWidth").is_none_or(is_on);
-            if !equal {
-                columns.widths = children(cols, WORD_NS, "col")
-                    .map(|col| (twips(col, "w").unwrap_or(0.0), twips(col, "space").unwrap_or(0.0)))
-                    .collect();
-                if !columns.widths.is_empty() {
-                    columns.count = columns.widths.len() as u32;
-                }
-            }
-        }
+        let page = page_setup(sect);
+        let columns = section_columns(sect);
         let start = match val(sect, "type") {
             Some("continuous") => SectionStart::Continuous,
             Some("nextColumn") => SectionStart::NextColumn,
@@ -729,27 +695,14 @@ impl Reader<'_> {
                 }
                 "br" | "cr" => {
                     flush(&mut text, &fmt, para);
-                    let kind = match attr(item, WORD_NS, "type") {
-                        Some("page") => BreakKind::Page,
-                        Some("column") => BreakKind::Column,
-                        _ => BreakKind::Line,
-                    };
+                    let kind = break_kind(item);
                     para.inlines.push(Inline::Break { kind, fmt: fmt.clone() });
                 }
                 "noBreakHyphen" => text.push('\u{2011}'),
                 "softHyphen" => text.push('\u{00AD}'),
                 "sym" => {
                     flush(&mut text, &fmt, para);
-                    let font = attr(item, WORD_NS, "font").unwrap_or_default();
-                    if let Some(code) = attr(item, WORD_NS, "char").and_then(|code| u32::from_str_radix(code, 16).ok())
-                    {
-                        let mut sym_fmt = fmt.clone();
-                        sym_fmt.font = font.to_string();
-                        sym_fmt.font_hansi = font.to_string();
-                        let raw: String = char::from_u32(code).into_iter().collect();
-                        let text = symbol_text(&raw, &mut sym_fmt);
-                        para.inlines.push(Inline::Text { text, fmt: sym_fmt });
-                    }
+                    para.inlines.extend(symbol(item, &fmt));
                 }
                 "pgNum" => {
                     flush(&mut text, &fmt, para);
@@ -1083,7 +1036,7 @@ impl Reader<'_> {
                 TEXTBOX_INSET_Y_PT,
             ],
             pictures: Vec::new(),
-            auto_height: css.get("mso-fit-shape-to-text").is_some(),
+            auto_height: css.contains_key("mso-fit-shape-to-text"),
             fmt: fmt.clone(),
         })))
     }
@@ -1203,61 +1156,8 @@ impl Reader<'_> {
         let cells: Vec<Node<'_, '_>> = row_cells(row);
         let cell_count = cells.len();
         for (col_at, cell) in cells.into_iter().enumerate() {
-            let mut conditions = vec!["wholeTable"];
-            if look.band_rows {
-                let band = row_at.saturating_sub(usize::from(look.first_row));
-                conditions.push(if band % 2 == 0 { "band1Horz" } else { "band2Horz" });
-            }
-            if look.band_cols {
-                let band = col_at.saturating_sub(usize::from(look.first_col));
-                conditions.push(if band % 2 == 0 { "band1Vert" } else { "band2Vert" });
-            }
-            let first_row = look.first_row && row_at == 0;
-            let last_row = look.last_row && row_at + 1 == row_count;
-            let first_col = look.first_col && col_at == 0;
-            let last_col = look.last_col && col_at + 1 == cell_count;
-            if first_col {
-                conditions.push("firstCol");
-            }
-            if last_col {
-                conditions.push("lastCol");
-            }
-            if first_row {
-                conditions.push("firstRow");
-            }
-            if last_row {
-                conditions.push("lastRow");
-            }
-            if first_row && first_col {
-                conditions.push("nwCell");
-            }
-            if first_row && last_col {
-                conditions.push("neCell");
-            }
-            if last_row && first_col {
-                conditions.push("swCell");
-            }
-            if last_row && last_col {
-                conditions.push("seCell");
-            }
-            let mut context = CellContext {
-                para: style.para.clone(),
-                run: style.run.clone(),
-            };
-            let mut cell_raw = style.cell.clone();
-            let mut cond_borders: [Option<Option<super::model::Border>>; 6] = Default::default();
-            for name in conditions {
-                if let Some(Conditional { run, para, cell }) = style.conditions.get(name) {
-                    context.run.overlay(run);
-                    context.para.overlay(para);
-                    cell_raw.overlay(cell);
-                    for (slot, border) in cond_borders.iter_mut().zip(cell.borders) {
-                        if border.is_some() {
-                            *slot = border;
-                        }
-                    }
-                }
-            }
+            let conditions = cell_conditions(look, row_at, row_count, col_at, cell_count);
+            let (context, mut cell_raw, cond_borders) = conditional_formats(style, conditions);
             let props = child(cell, WORD_NS, "tcPr");
             let direct = props.map(RawCell::parse).unwrap_or_default();
             cell_raw.overlay(&direct);
@@ -1349,6 +1249,153 @@ impl TableLook {
         look.band_cols = flag("noVBand").map_or(look.band_cols, |no| !no);
         look
     }
+}
+
+/// The page size and margins of a section's `w:sectPr`.
+fn page_setup(sect: Node<'_, '_>) -> PageSetup {
+    let mut page = PageSetup::default();
+    if let Some(size) = child(sect, WORD_NS, "pgSz") {
+        page.width = twips(size, "w").unwrap_or(page.width);
+        page.height = twips(size, "h").unwrap_or(page.height);
+    }
+    if let Some(margins) = child(sect, WORD_NS, "pgMar") {
+        page.top = twips(margins, "top").unwrap_or(page.top);
+        page.bottom = twips(margins, "bottom").unwrap_or(page.bottom);
+        page.left = twips(margins, "left").unwrap_or(page.left);
+        page.right = twips(margins, "right").unwrap_or(page.right);
+        page.header = twips(margins, "header").unwrap_or(page.header);
+        page.footer = twips(margins, "footer").unwrap_or(page.footer);
+        page.gutter = twips(margins, "gutter").unwrap_or(0.0);
+    }
+    page
+}
+
+/// The columns of a section's `w:sectPr`: their count and spacing, or
+/// their own widths when they are not equal.
+fn section_columns(sect: Node<'_, '_>) -> Columns {
+    let mut columns = Columns {
+        count: 1,
+        space: 36.0,
+        ..Default::default()
+    };
+    if let Some(cols) = child(sect, WORD_NS, "cols") {
+        columns.count = attr(cols, WORD_NS, "num")
+            .and_then(|num| num.parse().ok())
+            .unwrap_or(1u32)
+            .max(1);
+        columns.space = twips(cols, "space").unwrap_or(columns.space);
+        columns.separator = attr(cols, WORD_NS, "sep").is_some_and(is_on);
+        let equal = attr(cols, WORD_NS, "equalWidth").is_none_or(is_on);
+        if !equal {
+            columns.widths = children(cols, WORD_NS, "col")
+                .map(|col| (twips(col, "w").unwrap_or(0.0), twips(col, "space").unwrap_or(0.0)))
+                .collect();
+            if !columns.widths.is_empty() {
+                columns.count = columns.widths.len() as u32;
+            }
+        }
+    }
+    columns
+}
+
+/// The kind of a break (`w:br`, `w:cr`): page, column or line.
+fn break_kind(item: Node<'_, '_>) -> BreakKind {
+    match attr(item, WORD_NS, "type") {
+        Some("page") => BreakKind::Page,
+        Some("column") => BreakKind::Column,
+        _ => BreakKind::Line,
+    }
+}
+
+/// The text of a symbol (`w:sym`) in a run of format `fmt`, in its own
+/// font; `None` when its character code cannot be read.
+fn symbol(item: Node<'_, '_>, fmt: &RunFmt) -> Option<Inline> {
+    let font = attr(item, WORD_NS, "font").unwrap_or_default();
+    let code = attr(item, WORD_NS, "char").and_then(|code| u32::from_str_radix(code, 16).ok())?;
+    let mut sym_fmt = fmt.clone();
+    sym_fmt.font = font.to_string();
+    sym_fmt.font_hansi = font.to_string();
+    let raw: String = char::from_u32(code).into_iter().collect();
+    let text = symbol_text(&raw, &mut sym_fmt);
+    Some(Inline::Text { text, fmt: sym_fmt })
+}
+
+/// The conditional formats of a table style that apply to the cell at
+/// (`row_at`, `col_at`) of a table of `row_count` rows with `cell_count`
+/// cells in the row, from the table's look, in the order they apply.
+fn cell_conditions(
+    look: &TableLook,
+    row_at: usize,
+    row_count: usize,
+    col_at: usize,
+    cell_count: usize,
+) -> Vec<&'static str> {
+    let mut conditions = vec!["wholeTable"];
+    if look.band_rows {
+        let band = row_at.saturating_sub(usize::from(look.first_row));
+        conditions.push(if band % 2 == 0 { "band1Horz" } else { "band2Horz" });
+    }
+    if look.band_cols {
+        let band = col_at.saturating_sub(usize::from(look.first_col));
+        conditions.push(if band % 2 == 0 { "band1Vert" } else { "band2Vert" });
+    }
+    let first_row = look.first_row && row_at == 0;
+    let last_row = look.last_row && row_at + 1 == row_count;
+    let first_col = look.first_col && col_at == 0;
+    let last_col = look.last_col && col_at + 1 == cell_count;
+    if first_col {
+        conditions.push("firstCol");
+    }
+    if last_col {
+        conditions.push("lastCol");
+    }
+    if first_row {
+        conditions.push("firstRow");
+    }
+    if last_row {
+        conditions.push("lastRow");
+    }
+    if first_row && first_col {
+        conditions.push("nwCell");
+    }
+    if first_row && last_col {
+        conditions.push("neCell");
+    }
+    if last_row && first_col {
+        conditions.push("swCell");
+    }
+    if last_row && last_col {
+        conditions.push("seCell");
+    }
+    conditions
+}
+
+/// The table style's text, paragraph and cell properties and borders for a
+/// cell, with the formats of `conditions` laid over the whole table's in
+/// order.
+fn conditional_formats(
+    style: &TableStyle,
+    conditions: Vec<&str>,
+) -> (CellContext, RawCell, [Option<Option<super::model::Border>>; 6]) {
+    let mut context = CellContext {
+        para: style.para.clone(),
+        run: style.run.clone(),
+    };
+    let mut cell_raw = style.cell.clone();
+    let mut cond_borders: [Option<Option<super::model::Border>>; 6] = Default::default();
+    for name in conditions {
+        if let Some(Conditional { run, para, cell }) = style.conditions.get(name) {
+            context.run.overlay(run);
+            context.para.overlay(para);
+            cell_raw.overlay(cell);
+            for (slot, border) in cond_borders.iter_mut().zip(cell.borders) {
+                if border.is_some() {
+                    *slot = border;
+                }
+            }
+        }
+    }
+    (context, cell_raw, cond_borders)
 }
 
 /// The rows of a table, looking through structured document tags.
@@ -1516,17 +1563,17 @@ fn drawing_anchor(node: Node<'_, '_>) -> Anchor {
             .map_or(0.0, |value| value / EMU_PER_PT);
         AnchorPos { from, align, offset }
     };
-    let mut h = position("positionH", AnchorFrom::Column);
-    let mut v = position("positionV", AnchorFrom::Paragraph);
+    let mut horizontal = position("positionH", AnchorFrom::Column);
+    let mut vertical = position("positionV", AnchorFrom::Paragraph);
     if node.attribute("simplePos").is_some_and(is_on)
         && let Some(simple) = child(node, WP_NS, "simplePos")
     {
-        h = AnchorPos {
+        horizontal = AnchorPos {
             from: AnchorFrom::Page,
             align: None,
             offset: emu(simple, "x").unwrap_or(0.0),
         };
-        v = AnchorPos {
+        vertical = AnchorPos {
             from: AnchorFrom::Page,
             align: None,
             offset: emu(simple, "y").unwrap_or(0.0),
@@ -1542,8 +1589,8 @@ fn drawing_anchor(node: Node<'_, '_>) -> Anchor {
         Wrap::None
     };
     Anchor {
-        h,
-        v,
+        horizontal,
+        vertical,
         wrap,
         behind: node.attribute("behindDoc").is_some_and(is_on),
         dist: [dist("distT"), dist("distB"), dist("distL"), dist("distR")],
@@ -1572,12 +1619,12 @@ fn table_anchor(node: Node<'_, '_>) -> Anchor {
         other => other,
     };
     Anchor {
-        h: AnchorPos {
+        horizontal: AnchorPos {
             from: h_from,
             align: align("tblpXSpec"),
             offset: twips(node, "tblpX").unwrap_or(0.0),
         },
-        v: AnchorPos {
+        vertical: AnchorPos {
             from: from("vertAnchor", AnchorFrom::Margin),
             align: align("tblpYSpec"),
             offset: twips(node, "tblpY").unwrap_or(0.0),
@@ -1731,12 +1778,12 @@ fn vml_anchor(shape: Node<'_, '_>, css: &HashMap<String, String>) -> Anchor {
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
     Anchor {
-        h: AnchorPos {
+        horizontal: AnchorPos {
             from: h_from,
             align: align("mso-position-horizontal"),
             offset: length("margin-left") + length("left"),
         },
-        v: AnchorPos {
+        vertical: AnchorPos {
             from: from("mso-position-vertical-relative", AnchorFrom::Paragraph),
             align: align("mso-position-vertical"),
             offset: length("margin-top") + length("top"),
