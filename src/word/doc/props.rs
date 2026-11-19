@@ -32,6 +32,9 @@ const SPRM_C_BOLD: u16 = 0x0835;
 const SPRM_C_ITALIC: u16 = 0x0836;
 /// Character sprm: hidden text.
 const SPRM_C_VANISH: u16 = 0x083C;
+/// Character sprm: text deleted with change tracking (read as hidden: the
+/// document is read with its changes accepted).
+const SPRM_C_RMARK_DEL: u16 = 0x0800;
 /// Character sprm: the character is special (picture, note mark, ...).
 const SPRM_C_SPEC: u16 = 0x0855;
 /// Character sprm: superscript or subscript.
@@ -278,6 +281,7 @@ pub(crate) fn char_props(grpprl: &[u8], style_props: RunProps, fonts: &[String])
             SPRM_C_BOLD => props.bold = toggle(byte, style_props.bold),
             SPRM_C_ITALIC => props.italic = toggle(byte, style_props.italic),
             SPRM_C_VANISH => props.hidden = toggle(byte, style_props.hidden),
+            SPRM_C_RMARK_DEL if byte == 1 => props.hidden = Some(true),
             SPRM_C_ISS => {
                 props.raised = Some(match byte {
                     1 => Some(true),

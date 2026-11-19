@@ -99,6 +99,10 @@ struct Reader<'a> {
     /// Resolved properties of each paragraph style and of each character
     /// style, by `istd`.
     para_styles: HashMap<u16, (RawPara, RawRun)>,
+    /// Each paragraph style's properties split into what Normal gives and
+    /// what the style and its other base styles set (a list set by the
+    /// style goes between them).
+    style_layers: HashMap<u16, (RawPara, RawPara)>,
     char_styles: HashMap<u16, RawRun>,
     numbering: Numbering,
     chars: Vec<Run>,
@@ -144,6 +148,7 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         fonts: &fonts,
         styles,
         para_styles: HashMap::new(),
+        style_layers: HashMap::new(),
         char_styles: HashMap::new(),
         numbering,
         chars: runs(&word, fib.slice(&table, Pair::PlcfBteChpx), false),
@@ -521,6 +526,28 @@ impl Reader<'_> {
         }
         for (&istd, (kind, _, _, _)) in kinds {
             let (para, run) = resolve(istd, kinds, self.fonts, 0);
+            if *kind != StyleKind::Character {
+                // Normal (style 0), and what the styles above it set.
+                let mut chain = vec![istd];
+                while let Some(&(_, base, _, _)) = chain.last().and_then(|at| kinds.get(at)) {
+                    if base == NO_BASE || chain.len() > 16 {
+                        break;
+                    }
+                    chain.push(base);
+                }
+                let normal = if chain.contains(&0) && istd != 0 {
+                    resolve(0, kinds, self.fonts, 1).0
+                } else {
+                    RawPara::default()
+                };
+                let mut own = RawPara::default();
+                for at in chain.iter().rev().filter(|&&at| at != 0 || istd == 0) {
+                    if let Some((_, _, papx, _)) = kinds.get(at) {
+                        apply_para(papx, &mut own);
+                    }
+                }
+                self.style_layers.insert(istd, (normal, own));
+            }
             match kind {
                 StyleKind::Character => {
                     self.char_styles.insert(istd, run);
@@ -621,6 +648,7 @@ impl Reader<'_> {
     /// its mark is hidden or its number is empty.
     fn list_number(
         &mut self,
+        istd: u16,
         style_para: &RawPara,
         direct: &RawPara,
         para_raw: &mut RawPara,
@@ -637,13 +665,17 @@ impl Reader<'_> {
         if let Some((num_id, level)) = numbering.filter(|(id, _)| !id.is_empty() && id != "0") {
             let level = level.unwrap_or(0);
             if let Some(def) = self.numbering.level(&num_id, level, &self.styles) {
-                // A list set by the paragraph's style is beneath the style:
-                // the style's own indents win over the level's.
+                // A list set by the paragraph's style is beneath the style
+                // but above Normal: the indents of the style (and of its
+                // base styles) win over the level's, Normal's do not.
                 if from_style {
-                    let mut under = def.para.clone();
+                    let mut level = def.para.clone();
                     // The style's tab stops replace the level's.
-                    under.tabs.clear();
-                    under.overlay(para_raw);
+                    level.tabs.clear();
+                    let (inherited, own) = self.style_layers.get(&istd).cloned().unwrap_or_default();
+                    let mut under = inherited;
+                    under.overlay(&level);
+                    under.overlay(&own);
                     *para_raw = under;
                 } else {
                     para_raw.overlay(&def.para);
@@ -690,7 +722,7 @@ impl Reader<'_> {
         let mut mark_raw = base_run.clone();
         let mark_base = mark_raw.clone();
         apply_chars(&mark_chpx, &mut mark_raw, &mark_base, self.fonts);
-        let number = self.list_number(&style_para, &direct, &mut para_raw, &mark_raw);
+        let number = self.list_number(istd, &style_para, &direct, &mut para_raw, &mark_raw);
         para_raw.overlay(&direct);
         let mut para = Para {
             style: istd.to_string(),

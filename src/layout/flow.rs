@@ -407,7 +407,13 @@ impl Flow<'_> {
         let mut header_bottom = 0.0;
         if let Some(part) = header {
             let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
-            header_bottom = page.header + height;
+            // The space after the header's last paragraph is part of it.
+            let after = match self.doc.parts[part].last() {
+                Some(Block::Para(para)) if para.props.after_auto => AUTO_SPACING_PT,
+                Some(Block::Para(para)) => para.props.after,
+                _ => 0.0,
+            };
+            header_bottom = page.header + height + after;
         }
         let mut footer_top = page.height;
         if let Some(part) = footer {
@@ -488,16 +494,7 @@ impl Flow<'_> {
                     // A paragraph kept with the next: the chain must start on
                     // a page where it fits.
                     // One holding a page break starts the new page itself.
-                    let breaks_page = para.inlines.iter().any(|inline| {
-                        matches!(
-                            inline,
-                            Inline::Break {
-                                kind: crate::word::fmt::model::BreakKind::Page,
-                                ..
-                            }
-                        )
-                    });
-                    if para.props.keep_next && !self.state.fresh && !breaks_page {
+                    if para.props.keep_next && !self.state.fresh && !breaks_page(para) {
                         let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
@@ -524,6 +521,12 @@ impl Flow<'_> {
                 Block::Para(para) => {
                     let layout = para::layout(&mut self.ctx(), para, width);
                     let before = self.before_space(para);
+                    if breaks_page(para) {
+                        // The chain ends at a page break: what comes before
+                        // it stays on this page.
+                        height += before + layout.lines.first().map_or(0.0, |line| line.height);
+                        break;
+                    }
                     if para.props.keep_next {
                         height += before + layout.lines.iter().map(|line| line.height).sum::<f32>() + para.props.after;
                     } else {
@@ -1341,6 +1344,15 @@ impl Flow<'_> {
                 shift_cell(cell, border);
             }
             let height = laid_row_height(row, &cells);
+            if matches!(row.height, Some((_, true))) {
+                // Word leaves out what does not fit in a row of exact height
+                // (but a merged cell spans more rows).
+                for (laid, cell) in cells.iter_mut().zip(&row.cells) {
+                    if cell.vmerge == VMerge::None {
+                        clip_cell(laid, height);
+                    }
+                }
+            }
             rows.push(LaidRow { height, cells });
         }
         grow_merged_rows(&mut rows);
@@ -1758,6 +1770,27 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
     first.height = room;
     second.height = rest_height;
     Some((first, second))
+}
+
+/// Whether a paragraph holds a page break.
+fn breaks_page(para: &Para) -> bool {
+    para.inlines.iter().any(|inline| {
+        matches!(
+            inline,
+            Inline::Break {
+                kind: crate::word::fmt::model::BreakKind::Page,
+                ..
+            }
+        )
+    })
+}
+
+/// Leaves out of a cell what starts below `height`.
+fn clip_cell(cell: &mut LaidCell, height: f32) {
+    cell.items.retain(|item| item_top(item) < height);
+    cell.breaks.retain(|&at| at < height);
+    cell.content_height = cell.content_height.min(height);
+    cell.height = cell.height.min(height);
 }
 
 /// The top of an item, to tell which part of a cut cell it is in.

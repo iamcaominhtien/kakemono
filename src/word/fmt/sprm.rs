@@ -145,6 +145,9 @@ pub(crate) fn apply_chars(grpprl: &[u8], raw: &mut RawRun, base: &RawRun, fonts:
             0x083A => raw.small_caps = toggle(byte, base.small_caps),
             0x083B => raw.caps = toggle(byte, base.caps),
             0x083C => raw.hidden = toggle(byte, base.hidden),
+            // Text deleted with change tracking: the document is laid out
+            // with its changes accepted.
+            0x0800 if byte == 1 => raw.hidden = Some(true),
             0x2A53 => raw.dstrike = toggle(byte, base.dstrike),
             0x2A3E => {
                 raw.underline = Some(match byte {
