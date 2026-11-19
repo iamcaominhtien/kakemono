@@ -67,6 +67,18 @@ pub struct Paper {
     /// names its source with it, and an edited JSON file is only applied to
     /// the same file.
     sha256: String,
+    /// A Word document laid out in pages, read back as a PDF and analysed,
+    /// for the modes that show pages (made when first needed; `None` when
+    /// the layout failed).
+    laid: std::sync::OnceLock<Option<Laid>>,
+}
+
+/// A Word document laid out in pages as Word lays it out.
+struct Laid {
+    /// The PDF of the pages.
+    pdf: PdfFile,
+    /// Its analysis.
+    analysis: Analysis,
 }
 
 impl Paper {
@@ -93,6 +105,7 @@ impl Paper {
             file,
             source: None,
             sha256,
+            laid: std::sync::OnceLock::new(),
         })
     }
 
@@ -109,6 +122,56 @@ impl Paper {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
             Source::Word(..) => None,
+        }
+    }
+
+    /// The format a Word document is read with.
+    fn word_format(&self) -> Option<WordFormat> {
+        match &self.file {
+            Source::Pdf(_) => None,
+            Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
+            Source::Word(..) => Some(WordFormat::Docx),
+        }
+    }
+
+    /// The Word document laid out in pages and analysed, made once.
+    fn laid(&self) -> Option<&Laid> {
+        self.word_format()?;
+        self.laid
+            .get_or_init(|| {
+                let pdf = PdfFile::open(self.to_pdf().ok()?).ok()?;
+                let (raw, fonts) = pdf.extract(1);
+                let meta = Meta {
+                    source: self.source.clone(),
+                    ..Default::default()
+                };
+                let analysis = analyze(raw, &fonts, meta, AnalyzeOptions::default());
+                Some(Laid { pdf, analysis })
+            })
+            .as_ref()
+    }
+
+    /// The HTML of a Word document in a mode that shows its layout: its
+    /// pages (`hard`, `hard-95`), or Word's formatting in one continuous
+    /// page (`medium`). `None` for a PDF, the `friendly` mode, or when the
+    /// layout failed.
+    fn word_layout_html(&self, opts: &HtmlOptions) -> Option<HtmlOutput> {
+        let Source::Word(_, _, data) = &self.file else {
+            return None;
+        };
+        match opts.mode {
+            Mode::Friendly => None,
+            Mode::Medium => {
+                let doc = word::fmt::read(data, self.word_format()?).ok()?;
+                Some(HtmlOutput {
+                    html: crate::layout::html::to_html(&doc),
+                    files: Vec::new(),
+                })
+            }
+            Mode::Hard | Mode::Hard95 => {
+                let laid = self.laid()?;
+                Some(render(&laid.analysis, Some(&laid.pdf), opts))
+            }
         }
     }
 
@@ -203,9 +266,14 @@ impl Paper {
 
     /// Renders an analysis to HTML in the requested mode. `analysis` must
     /// come from this paper, since images are drawn from its PDF. A Word
-    /// document has no pages to show: the `hard`, `hard-95` and `medium`
-    /// modes give the `friendly` page for it.
+    /// document is first laid out as Word lays it out: `hard` and `hard-95`
+    /// show its pages, `medium` its formatting in one continuous page
+    /// (neither shows text edited with [`Paper::apply_content`]); when the
+    /// layout fails, they give the `friendly` page.
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
+        if let Some(output) = self.word_layout_html(opts) {
+            return output;
+        }
         render(analysis, self.pdf(), &self.html_options(opts))
     }
 
@@ -235,6 +303,17 @@ impl Paper {
         out: &mut dyn std::io::Write,
         file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
+        if self.word_format().is_some() && opts.mode != Mode::Friendly {
+            if opts.mode == Mode::Medium {
+                if let Some(output) = self.word_layout_html(opts) {
+                    return out.write_all(output.html.as_bytes());
+                }
+            } else if let Some(laid) = self.laid() {
+                return render_to(&laid.analysis, Some(&laid.pdf), opts, out, &mut |name, data| {
+                    file(&name, &data)
+                });
+            }
+        }
         render_to(
             analysis,
             self.pdf(),

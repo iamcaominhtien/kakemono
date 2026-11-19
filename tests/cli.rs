@@ -348,14 +348,8 @@ fn word_document_converts_to_friendly_html() {
 }
 
 #[test]
-fn word_document_has_no_page_modes() {
+fn word_document_has_every_mode() {
     let dir = scratch("cli-word-modes");
-    let html = dir.join("sample.hard.html");
-    let out = kakemono(&["convert", WORD_SAMPLE, "-m", "hard", "-o", html.to_str().unwrap()]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("a Word document has no pages"));
-    assert!(!html.exists());
-    // With --all, only the friendly page is written.
     let out = kakemono(&[
         "convert",
         WORD_SAMPLE,
@@ -366,9 +360,25 @@ fn word_document_has_no_page_modes() {
         dir.to_str().unwrap(),
     ]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let written: Vec<String> = std::fs::read_dir(&dir)
+    let mut written: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(written, ["sample.friendly.html"]);
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "sample.friendly.html",
+            "sample.hard-95.html",
+            "sample.hard.html",
+            "sample.medium.html"
+        ]
+    );
+    // hard and hard-95 show the pages Word would print; medium shows Word's
+    // formatting on one continuous sheet.
+    let hard95 = std::fs::read_to_string(dir.join("sample.hard-95.html")).unwrap();
+    assert!(hard95.contains("pages") || hard95.contains("page"));
+    let medium = std::fs::read_to_string(dir.join("sample.medium.html")).unwrap();
+    assert!(medium.contains("class=\"sheet\""), "medium is one sheet");
+    assert!(medium.contains("font-family:"), "medium keeps Word's fonts");
 }

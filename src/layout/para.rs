@@ -6,10 +6,11 @@
 
 use super::display::{Glyph, Item, TextRun};
 use super::fonts::{FaceId, FontBook};
-use super::shape::Shaper;
+use super::metrics::MetricFace;
+use super::shape::{Shaped, Shaper};
 use crate::word::fmt::model::{
-    Align, Anchor, BreakKind, FDoc, FieldKind, Inline, LineSpacing, NumFormat, NumberSuffix, Para, RunFmt, Shape,
-    TabKind, TabStop, Underline, VertAlign,
+    Align, Anchor, BreakKind, FDoc, FieldKind, Inline, LineSpacing, NumFormat, NumberMark, NumberSuffix, Para,
+    ParaProps, Rgb, RunFmt, Shape, TabKind, TabStop, Underline, VertAlign,
 };
 use std::collections::HashMap;
 
@@ -174,13 +175,12 @@ struct Piece {
 /// Something placed on a line.
 #[derive(Debug, Clone)]
 enum Atom {
-    /// A word: its text pieces, the width of its trailing spaces, and
-    /// whether it ends with a soft hyphen.
+    /// A word: its text pieces, the width of its body and of its
+    /// trailing spaces.
     Word {
         pieces: Vec<Piece>,
         body: f32,
         trailing: f32,
-        soft_hyphen: bool,
     },
     /// A tab.
     Tab { fmt: RunFmt },
@@ -236,7 +236,13 @@ impl Ctx<'_> {
             .then(|| super::metrics::lookup(&family, fmt.bold, fmt.italic))
             .flatten()
             .filter(|metric| ch.is_whitespace() || metric.advance(ch).is_some());
-        (face, fake_bold, fake_italic, size, metric.map(|metric| metric as *const _ as usize))
+        (
+            face,
+            fake_bold,
+            fake_italic,
+            size,
+            metric.map(|metric| metric as *const _ as usize),
+        )
     }
 
     /// The face and size for `ch`, with the family the run asks for.
@@ -323,41 +329,7 @@ impl Ctx<'_> {
         let kern = fmt.kern_from.is_some_and(|from| size >= from);
         let shaped = self.shaper.shape(self.book, face, &shown, kern, fmt.rtl);
         let scale = fmt.scale / 100.0;
-        let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
-        let mut x = 0.0;
-        let mut spaces = 0;
-        let clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
-        let mut drawn_width = 0.0;
-        for (at, glyph) in shaped.glyphs.iter().enumerate() {
-            let start = glyph.cluster;
-            // The width of the font Word used, when it is known.
-            let first_of_cluster = at == 0 || shaped.glyphs[at - 1].cluster != start;
-            let measured = metric.and_then(|metric| {
-                let ch = shown[start..].chars().next()?;
-                if first_of_cluster { metric.advance(ch) } else { Some(0.0) }
-            });
-            drawn_width += glyph.advance;
-            let advance = measured.unwrap_or(glyph.advance) * size * scale + fmt.spacing;
-            let end = clusters
-                .iter()
-                .copied()
-                .filter(|&cluster| cluster > start)
-                .min()
-                .unwrap_or(shown.len());
-            if shown[start..end].starts_with(' ') {
-                spaces += 1;
-            }
-            glyphs.push(Glyph {
-                id: glyph.id,
-                x,
-                advance,
-                dx: glyph.dx * size * scale,
-                dy: glyph.dy * size,
-                text: (start, end),
-            });
-            let _ = at;
-            x += advance;
-        }
+        let (glyphs, x, spaces, drawn_width) = place_glyphs(&shaped, &shown, metric, size, scale, fmt.spacing);
         let mut metrics = self.book.get(face).metrics;
         let mut draw_scale = scale;
         if let Some(metric) = metric {
@@ -395,7 +367,7 @@ impl Ctx<'_> {
 
     /// The single line height parts (ascent, descent, leading) of format
     /// `fmt`, for empty lines and line heights.
-    fn line_metrics(&mut self, fmt: &RunFmt) -> (f32, f32, f32) {
+    pub(crate) fn line_metrics(&mut self, fmt: &RunFmt) -> (f32, f32, f32) {
         let ch = 'x';
         let (face, _, _, size, metric) = self.face_for(ch, fmt);
         if let Some(metric) = metric.and_then(|address| metric_by_address(address, fmt)) {
@@ -493,55 +465,10 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
         width,
     };
     // The number or bullet starts the first line.
-    let first_indent = props.left + props.first_line;
-    builder.x = first_indent;
+    builder.x = props.left + props.first_line;
     if let Some(number) = &para.number {
-        let pieces = ctx.pieces(&number.text, &number.fmt);
-        let number_width: f32 = pieces.iter().map(|piece| piece.width).sum();
-        let start = match number.align {
-            Align::Center => first_indent - number_width / 2.0,
-            Align::Right => first_indent - number_width,
-            _ => first_indent,
-        };
-        builder.current.push(Placed {
-            atom: Atom::Word {
-                pieces,
-                body: number_width,
-                trailing: 0.0,
-                soft_hyphen: false,
-            },
-            x: start,
-            space_extra: 0.0,
-            tab: None,
-        });
-        builder.x = start + number_width;
-        match number.suffix {
-            NumberSuffix::Tab => {
-                let stop = next_stop(
-                    builder.x,
-                    &props.tabs,
-                    props.left,
-                    props.first_line,
-                    ctx.doc.default_tab,
-                    true,
-                );
-                builder.x = stop.map_or(builder.x, |stop| stop.pos.max(builder.x));
-            }
-            NumberSuffix::Space => {
-                let space = ctx.pieces(" ", &number.fmt);
-                builder.x += space.iter().map(|piece| piece.width).sum::<f32>();
-            }
-            NumberSuffix::Nothing => {}
-        }
+        place_number(ctx, para, number, &mut builder);
     }
-    let line_width = |first: bool| {
-        let left = if first {
-            props.left + props.first_line
-        } else {
-            props.left
-        };
-        (left, width - props.right)
-    };
     let mut first_line = true;
     for atom in atoms {
         match atom {
@@ -554,87 +481,10 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
             Atom::Break(kind) => {
                 builder.finish_line(ctx, para, first_line, LineEnd::Break(kind));
                 first_line = false;
-                builder.x = line_width(false).0;
+                builder.x = line_bounds(props, width, false).0;
             }
-            Atom::Tab { ref fmt } => {
-                let fmt = fmt.clone();
-                let (_, right) = line_width(first_line);
-                let stop = next_stop(
-                    builder.x,
-                    &props.tabs,
-                    props.left,
-                    if first_line { props.first_line } else { 0.0 },
-                    ctx.doc.default_tab,
-                    first_line,
-                );
-                let stop = stop.filter(|stop| stop.pos <= right + TAB_OVERFLOW_PT || stop.kind != TabKind::Left);
-                match stop {
-                    Some(stop) => {
-                        builder.close_tab_segment();
-                        let index = builder.tab_stops.iter().position(|s| *s == stop).unwrap_or_else(|| {
-                            builder.tab_stops.push(stop);
-                            builder.tab_stops.len() - 1
-                        });
-                        let start = builder.x;
-                        builder.current.push(Placed {
-                            atom: Atom::Tab { fmt },
-                            x: start,
-                            space_extra: 0.0,
-                            tab: Some(index),
-                        });
-                        if stop.kind == TabKind::Left || stop.kind == TabKind::Bar {
-                            builder.x = stop.pos.max(start);
-                        }
-                    }
-                    None => {
-                        // No stop left on this line: the tab starts the next.
-                        builder.finish_line(ctx, para, first_line, LineEnd::Wrap);
-                        first_line = false;
-                        builder.x = line_width(false).0;
-                        let stop = next_stop(builder.x, &props.tabs, props.left, 0.0, ctx.doc.default_tab, false);
-                        if let Some(stop) = stop {
-                            builder.x = stop.pos;
-                        }
-                    }
-                }
-            }
-            atom => {
-                let (body, trailing) = atom_width(&atom);
-                let (left, right) = line_width(first_line);
-                // Word squeezes the spaces of a justified line to fit one
-                // more word.
-                let shrink = if matches!(props.align, Align::Both | Align::Distribute) && ctx.doc.compat_mode >= 15 {
-                    builder.space_width() * justify_shrink()
-                } else {
-                    0.0
-                };
-                let fits = builder.x + body - shrink <= right + FIT_TOLERANCE_PT;
-                if !fits && builder.has_content() {
-                    builder.finish_line(ctx, para, first_line, LineEnd::Wrap);
-                    first_line = false;
-                    builder.x = line_width(false).0;
-                }
-                let (_, right) = line_width(first_line);
-                if builder.x + body > right + FIT_TOLERANCE_PT && !builder.has_content() {
-                    // A word longer than the line: cut it.
-                    let mut rest = Some(atom);
-                    while let Some(atom) = rest.take() {
-                        let room = right - builder.x;
-                        let (head, tail) = split_word(atom, room);
-                        let (head_body, head_trailing) = atom_width(&head);
-                        builder.push(head, head_body + head_trailing);
-                        if let Some(tail) = tail {
-                            builder.finish_line(ctx, para, first_line, LineEnd::Wrap);
-                            first_line = false;
-                            builder.x = line_width(false).0;
-                            rest = Some(tail);
-                        }
-                    }
-                    continue;
-                }
-                let _ = left;
-                builder.push(atom, body + trailing);
-            }
+            Atom::Tab { ref fmt } => place_tab(ctx, para, &mut builder, fmt.clone(), &mut first_line),
+            atom => place_atom(ctx, para, &mut builder, atom, &mut first_line),
         }
     }
     // Since Word 2013, the mark of a paragraph that ends with a page or
@@ -708,7 +558,6 @@ fn split_word(atom: Atom, room: f32) -> (Atom, Option<Atom>) {
             pieces,
             body: width,
             trailing: 0.0,
-            soft_hyphen: false,
         }
     };
     let tail = (!tail.is_empty()).then(|| make(tail));
@@ -796,14 +645,7 @@ fn atoms(ctx: &mut Ctx<'_>, para: &Para) -> Vec<Atom> {
                 continue;
             }
             Inline::Field { kind, fmt, format } => {
-                let value = match kind {
-                    FieldKind::Page => ctx.page.clone().map(|(number, section_format)| {
-                        crate::word::fmt::model::format_page(number, format.as_ref().unwrap_or(&section_format))
-                    }),
-                    FieldKind::NumPages => ctx.page_count.map(|count| count.to_string()),
-                    FieldKind::SectionPages => ctx.section_pages.map(|count| count.to_string()),
-                };
-                stretch.push((value.unwrap_or_else(|| "1".into()), fmt.clone()));
+                stretch.push((field_value(ctx, *kind, format.as_ref()), fmt.clone()));
                 continue;
             }
             _ => {}
@@ -812,67 +654,18 @@ fn atoms(ctx: &mut Ctx<'_>, para: &Para) -> Vec<Atom> {
         match inline {
             Inline::Tab { fmt } => atoms.push(Atom::Tab { fmt: fmt.clone() }),
             Inline::Break { kind, .. } => atoms.push(Atom::Break(*kind)),
-            Inline::Image {
-                index,
-                width,
-                height,
-                anchor,
-                fmt,
-                crop,
-                ..
-            } => match anchor {
-                Some(anchor) => atoms.push(Atom::Float(Float {
-                    line: 0,
-                    x: 0.0,
-                    kind: FloatKind::Image(*index, *crop),
-                    width: *width,
-                    height: *height,
-                    anchor: anchor.clone(),
-                })),
-                None => atoms.push(Atom::Image {
-                    index: *index,
-                    width: *width,
-                    height: *height,
-                    crop: *crop,
-                    fmt: fmt.clone(),
-                }),
-            },
-            Inline::Shape(shape) => match &shape.anchor {
-                Some(anchor) => atoms.push(Atom::Float(Float {
-                    line: 0,
-                    x: 0.0,
-                    kind: FloatKind::Shape(shape.clone()),
-                    width: shape.width,
-                    height: shape.height,
-                    anchor: anchor.clone(),
-                })),
-                None => atoms.push(Atom::Shape(shape.clone())),
-            },
+            Inline::Image { .. } | Inline::Shape(_) => atoms.extend(object_atom(inline)),
             Inline::NoteRef { endnote, id, fmt } => {
                 let number = ctx.notes.get(&(*endnote, id.clone())).cloned().unwrap_or_default();
-                let pieces = ctx.pieces(&number, fmt);
-                let width: f32 = pieces.iter().map(|piece| piece.width).sum();
                 atoms.push(Atom::NoteRef {
-                    word: Box::new(Atom::Word {
-                        pieces,
-                        body: width,
-                        trailing: 0.0,
-                        soft_hyphen: false,
-                    }),
+                    word: Box::new(number_word(ctx, &number, fmt)),
                     endnote: *endnote,
                     id: id.clone(),
                 });
             }
             Inline::NoteNumber { fmt } => {
                 let number = ctx.own_note.clone().unwrap_or_default();
-                let pieces = ctx.pieces(&number, fmt);
-                let width: f32 = pieces.iter().map(|piece| piece.width).sum();
-                atoms.push(Atom::Word {
-                    pieces,
-                    body: width,
-                    trailing: 0.0,
-                    soft_hyphen: false,
-                });
+                atoms.push(number_word(ctx, &number, fmt));
             }
             Inline::Math { node, fmt, display } => {
                 let text = crate::word::omml::plain_text(node);
@@ -894,6 +687,75 @@ fn atoms(ctx: &mut Ctx<'_>, para: &Para) -> Vec<Atom> {
     }
     flush_stretch(ctx, &mut stretch, &mut atoms);
     atoms
+}
+
+/// The text a field shows: the page number (in `format`, or else the
+/// section's), the number of pages or of the section's pages; "1" when it
+/// is not known.
+fn field_value(ctx: &Ctx<'_>, kind: FieldKind, format: Option<&NumFormat>) -> String {
+    let value = match kind {
+        FieldKind::Page => ctx.page.clone().map(|(number, section_format)| {
+            crate::word::fmt::model::format_page(number, format.unwrap_or(&section_format))
+        }),
+        FieldKind::NumPages => ctx.page_count.map(|count| count.to_string()),
+        FieldKind::SectionPages => ctx.section_pages.map(|count| count.to_string()),
+    };
+    value.unwrap_or_else(|| "1".into())
+}
+
+/// The atom of a picture or shape: a float when it is anchored, else an
+/// atom in the line. `None` for any other inline.
+fn object_atom(inline: &Inline) -> Option<Atom> {
+    match inline {
+        Inline::Image {
+            index,
+            width,
+            height,
+            anchor,
+            fmt,
+            crop,
+            ..
+        } => Some(match anchor {
+            Some(anchor) => Atom::Float(Float {
+                line: 0,
+                x: 0.0,
+                kind: FloatKind::Image(*index, *crop),
+                width: *width,
+                height: *height,
+                anchor: anchor.clone(),
+            }),
+            None => Atom::Image {
+                index: *index,
+                width: *width,
+                height: *height,
+                crop: *crop,
+                fmt: fmt.clone(),
+            },
+        }),
+        Inline::Shape(shape) => Some(match &shape.anchor {
+            Some(anchor) => Atom::Float(Float {
+                line: 0,
+                x: 0.0,
+                kind: FloatKind::Shape(shape.clone()),
+                width: shape.width,
+                height: shape.height,
+                anchor: anchor.clone(),
+            }),
+            None => Atom::Shape(shape.clone()),
+        }),
+        _ => None,
+    }
+}
+
+/// A note number `number` in format `fmt`, as one word.
+fn number_word(ctx: &mut Ctx<'_>, number: &str, fmt: &RunFmt) -> Atom {
+    let pieces = ctx.pieces(number, fmt);
+    let width: f32 = pieces.iter().map(|piece| piece.width).sum();
+    Atom::Word {
+        pieces,
+        body: width,
+        trailing: 0.0,
+    }
 }
 
 /// Breaks the collected text runs into word atoms.
@@ -936,14 +798,209 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
                 }
             }
         }
-        let soft_hyphen = text[start..body_end].ends_with('\u{00AD}');
-        atoms.push(Atom::Word {
-            pieces,
-            body,
-            trailing,
-            soft_hyphen,
-        });
+        atoms.push(Atom::Word { pieces, body, trailing });
     }
+}
+
+/// The left and right edges of a line of a paragraph with `props` in a
+/// column of `width`; `first` is whether it is the first line.
+fn line_bounds(props: &ParaProps, width: f32, first: bool) -> (f32, f32) {
+    let left = if first {
+        props.left + props.first_line
+    } else {
+        props.left
+    };
+    (left, width - props.right)
+}
+
+/// Places the number or bullet of `para` at the start of its first line,
+/// followed by its tab, space or nothing.
+fn place_number(ctx: &mut Ctx<'_>, para: &Para, number: &NumberMark, builder: &mut Builder) {
+    let props = &para.props;
+    let first_indent = props.left + props.first_line;
+    let pieces = ctx.pieces(&number.text, &number.fmt);
+    let number_width: f32 = pieces.iter().map(|piece| piece.width).sum();
+    let start = match number.align {
+        Align::Center => first_indent - number_width / 2.0,
+        Align::Right => first_indent - number_width,
+        _ => first_indent,
+    };
+    builder.current.push(Placed {
+        atom: Atom::Word {
+            pieces,
+            body: number_width,
+            trailing: 0.0,
+        },
+        x: start,
+        space_extra: 0.0,
+        tab: None,
+    });
+    builder.x = start + number_width;
+    match number.suffix {
+        NumberSuffix::Tab => {
+            let stop = next_stop(
+                builder.x,
+                &props.tabs,
+                props.left,
+                props.first_line,
+                ctx.doc.default_tab,
+                true,
+            );
+            builder.x = stop.map_or(builder.x, |stop| stop.pos.max(builder.x));
+        }
+        NumberSuffix::Space => {
+            let space = ctx.pieces(" ", &number.fmt);
+            builder.x += space.iter().map(|piece| piece.width).sum::<f32>();
+        }
+        NumberSuffix::Nothing => {}
+    }
+}
+
+/// Places a tab of format `fmt`: it moves to the next tab stop, or, when no
+/// stop is left on the line, starts the next line. `first_line` is whether
+/// the line being built is the paragraph's first, and is cleared when a line
+/// ends.
+fn place_tab(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, fmt: RunFmt, first_line: &mut bool) {
+    let props = &para.props;
+    let (_, right) = line_bounds(props, builder.width, *first_line);
+    let stop = next_stop(
+        builder.x,
+        &props.tabs,
+        props.left,
+        if *first_line { props.first_line } else { 0.0 },
+        ctx.doc.default_tab,
+        *first_line,
+    );
+    let stop = stop.filter(|stop| stop.pos <= right + TAB_OVERFLOW_PT || stop.kind != TabKind::Left);
+    match stop {
+        Some(stop) => {
+            builder.close_tab_segment();
+            let index = builder
+                .tab_stops
+                .iter()
+                .position(|known| *known == stop)
+                .unwrap_or_else(|| {
+                    builder.tab_stops.push(stop);
+                    builder.tab_stops.len() - 1
+                });
+            let start = builder.x;
+            builder.current.push(Placed {
+                atom: Atom::Tab { fmt },
+                x: start,
+                space_extra: 0.0,
+                tab: Some(index),
+            });
+            if stop.kind == TabKind::Left || stop.kind == TabKind::Bar {
+                builder.x = stop.pos.max(start);
+            }
+        }
+        None => {
+            // No stop left on this line: the tab starts the next.
+            builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
+            *first_line = false;
+            builder.x = line_bounds(props, builder.width, false).0;
+            let stop = next_stop(builder.x, &props.tabs, props.left, 0.0, ctx.doc.default_tab, false);
+            if let Some(stop) = stop {
+                builder.x = stop.pos;
+            }
+        }
+    }
+}
+
+/// Places a word, picture or other atom: on the current line when it fits,
+/// else on a new line; a word longer than a whole line is cut. `first_line`
+/// is whether the line being built is the paragraph's first, and is cleared
+/// when a line ends.
+fn place_atom(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, atom: Atom, first_line: &mut bool) {
+    let props = &para.props;
+    let (body, trailing) = atom_width(&atom);
+    let (_, right) = line_bounds(props, builder.width, *first_line);
+    // Word squeezes the spaces of a justified line to fit one
+    // more word.
+    let shrink = if matches!(props.align, Align::Both | Align::Distribute) && ctx.doc.compat_mode >= 15 {
+        builder.space_width() * justify_shrink()
+    } else {
+        0.0
+    };
+    let fits = builder.x + body - shrink <= right + FIT_TOLERANCE_PT;
+    if !fits && builder.has_content() {
+        builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
+        *first_line = false;
+        builder.x = line_bounds(props, builder.width, false).0;
+    }
+    let (_, right) = line_bounds(props, builder.width, *first_line);
+    if builder.x + body > right + FIT_TOLERANCE_PT && !builder.has_content() {
+        // A word longer than the line: cut it.
+        let mut rest = Some(atom);
+        while let Some(atom) = rest.take() {
+            let room = right - builder.x;
+            let (head, tail) = split_word(atom, room);
+            let (head_body, head_trailing) = atom_width(&head);
+            builder.push(head, head_body + head_trailing);
+            if let Some(tail) = tail {
+                builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
+                *first_line = false;
+                builder.x = line_bounds(props, builder.width, false).0;
+                rest = Some(tail);
+            }
+        }
+        return;
+    }
+    builder.push(atom, body + trailing);
+}
+
+/// The shaped glyphs of `shown` placed one after another, at `size` and
+/// horizontal `scale`: `metric` (the widths of the font Word used) gives the
+/// advances when it is known, and `spacing` is added after each glyph. Returns the
+/// glyphs, their total advance, the number of spaces and the width of the
+/// glyphs as the face draws them, in em.
+fn place_glyphs(
+    shaped: &Shaped,
+    shown: &str,
+    metric: Option<&MetricFace>,
+    size: f32,
+    scale: f32,
+    spacing: f32,
+) -> (Vec<Glyph>, f32, usize, f32) {
+    let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
+    let mut x = 0.0;
+    let mut spaces = 0;
+    let clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+    let mut drawn_width = 0.0;
+    for (at, glyph) in shaped.glyphs.iter().enumerate() {
+        let start = glyph.cluster;
+        // The width of the font Word used, when it is known.
+        let first_of_cluster = at == 0 || shaped.glyphs[at - 1].cluster != start;
+        let measured = metric.and_then(|metric| {
+            let ch = shown[start..].chars().next()?;
+            if first_of_cluster {
+                metric.advance(ch)
+            } else {
+                Some(0.0)
+            }
+        });
+        drawn_width += glyph.advance;
+        let advance = measured.unwrap_or(glyph.advance) * size * scale + spacing;
+        let end = clusters
+            .iter()
+            .copied()
+            .filter(|&cluster| cluster > start)
+            .min()
+            .unwrap_or(shown.len());
+        if shown[start..end].starts_with(' ') {
+            spaces += 1;
+        }
+        glyphs.push(Glyph {
+            id: glyph.id,
+            x,
+            advance,
+            dx: glyph.dx * size * scale,
+            dy: glyph.dy * size,
+            text: (start, end),
+        });
+        x += advance;
+    }
+    (glyphs, x, spaces, drawn_width)
 }
 
 /// Builds lines.
@@ -1099,37 +1156,7 @@ impl Builder {
         // is the last.
         let justify = justify || free < 0.0 && matches!(align, Align::Both | Align::Distribute);
         if justify && free.abs() > f32::EPSILON {
-            // Spaces between words after the last tab, not the trailing ones.
-            let mut spaces = 0usize;
-            let end_index = placed.len();
-            let mut last_word = None;
-            for (at, item) in placed.iter().enumerate().skip(last_tab) {
-                if let Atom::Word { body, .. } = &item.atom
-                    && *body > 0.0
-                {
-                    last_word = Some(at);
-                }
-            }
-            for item in placed[last_tab..last_word.unwrap_or(end_index)].iter() {
-                if let Atom::Word { pieces, .. } = &item.atom {
-                    spaces += pieces.iter().map(|piece| piece.spaces).sum::<usize>();
-                }
-            }
-            if spaces > 0 {
-                let extra = free / spaces as f32;
-                let mut shift = 0.0;
-                for (at, item) in placed.iter_mut().enumerate().skip(last_tab) {
-                    item.x += shift;
-                    if Some(at) >= last_word {
-                        continue;
-                    }
-                    if let Atom::Word { pieces, .. } = &item.atom {
-                        let count: usize = pieces.iter().map(|piece| piece.spaces).sum();
-                        item.space_extra = extra;
-                        shift += extra * count as f32;
-                    }
-                }
-            }
+            justify_spaces(&mut placed, last_tab, free);
         }
         let line = self.make_line(ctx, para, placed, end);
         self.lines.push(line);
@@ -1137,115 +1164,26 @@ impl Builder {
 
     /// Turns placed atoms into a line with its height and items.
     fn make_line(&mut self, ctx: &mut Ctx<'_>, para: &Para, placed: Vec<Placed>, end: LineEnd) -> Line {
-        let mut ascent: f32 = 0.0;
-        let mut descent: f32 = 0.0;
-        let mut leading: f32 = 0.0;
-        let mut items = Vec::new();
-        let mut notes = Vec::new();
-        let mut shapes = Vec::new();
-        let mut text_seen = false;
-        let mut picture_ascent: f32 = 0.0;
-        let mut picture_descent: f32 = 0.0;
-        let mut images = Vec::new();
-        for item in &placed {
-            match &item.atom {
-                Atom::Word { pieces, .. } => {
-                    text_seen = true;
-                    let mut x = item.x;
-                    for piece in pieces {
-                        ascent = ascent.max(piece.ascent);
-                        descent = descent.max(piece.descent);
-                        leading = leading.max(piece.leading);
-                        x = emit_piece(piece, x, item.space_extra, &mut items);
-                    }
-                }
-                Atom::NoteRef { word, endnote, id } => {
-                    notes.push((*endnote, id.clone()));
-                    if let Atom::Word { pieces, .. } = word.as_ref() {
-                        let mut x = item.x;
-                        for piece in pieces {
-                            ascent = ascent.max(piece.ascent);
-                            descent = descent.max(piece.descent);
-                            leading = leading.max(piece.leading);
-                            x = emit_piece(piece, x, 0.0, &mut items);
-                        }
-                    }
-                }
-                Atom::Image {
-                    index,
-                    width,
-                    height,
-                    crop,
-                    fmt,
-                } => {
-                    let (_, fmt_descent, _) = ctx.line_metrics(fmt);
-                    picture_ascent = picture_ascent.max(*height);
-                    picture_descent = picture_descent.max(fmt_descent);
-                    images.push((item.x, *index, *width, *height, *crop));
-                }
-                Atom::Shape(shape) => {
-                    picture_ascent = picture_ascent.max(shape.height);
-                    shapes.push((item.x, shape.as_ref().clone()));
-                }
-                Atom::Tab { fmt } => {
-                    let (a, d, l) = ctx.line_metrics(fmt);
-                    ascent = ascent.max(a);
-                    descent = descent.max(d);
-                    leading = leading.max(l);
-                    if let Some(stop) = item.tab.map(|index| self.tab_stops[index])
-                        && let Some(leader) = stop.leader
-                    {
-                        let next = placed
-                            .iter()
-                            .skip_while(|other| !std::ptr::eq(*other, item))
-                            .nth(1)
-                            .map_or(stop.pos, |next| next.x);
-                        emit_leader(ctx, leader, fmt, item.x, next, &mut items);
-                    }
-                }
-                _ => {}
-            }
-        }
+        let mut parts = self.line_parts(ctx, &placed);
         // The paragraph mark's font counts only on a line with nothing else.
-        if !text_seen && images.is_empty() && shapes.is_empty() {
-            let (a, d, l) = ctx.line_metrics(&para.mark);
-            ascent = ascent.max(a);
-            descent = descent.max(d);
-            leading = leading.max(l);
+        if !parts.text_seen && parts.images.is_empty() && parts.shapes.is_empty() {
+            let (mark_ascent, mark_descent, mark_leading) = ctx.line_metrics(&para.mark);
+            parts.ascent = parts.ascent.max(mark_ascent);
+            parts.descent = parts.descent.max(mark_descent);
+            parts.leading = parts.leading.max(mark_leading);
         }
-        // Line spacing multiplies the height of the text, not that of
-        // pictures: a line of pictures alone is as tall as they are.
-        let text_height = ascent + descent + leading;
-        let picture_height = if text_seen {
-            picture_ascent + descent.max(picture_descent) + leading
-        } else {
-            picture_ascent
-        };
-        let auto_height = |multiple: f32| (text_height * multiple).max(picture_height);
-        if picture_ascent > ascent {
-            if text_seen {
-                descent = descent.max(picture_descent);
-            } else {
-                descent = 0.0;
-                leading = 0.0;
-            }
-            ascent = picture_ascent;
-        }
-        let natural = ascent + descent + leading;
-        let height = match para.props.line {
-            LineSpacing::Auto(multiple) => auto_height(multiple),
-            LineSpacing::Exact(value) => value,
-            LineSpacing::AtLeast(value) => natural.max(value),
-        };
-        // Word puts the text at the top of a line made taller by multiple
-        // spacing (below its external leading), and its baseline at 80% of
-        // an exact height.
-        let baseline = match para.props.line {
-            LineSpacing::Auto(_) => leading + ascent,
-            LineSpacing::Exact(value) => value * EXACT_BASELINE_RATIO,
-            LineSpacing::AtLeast(value) if value > natural => atleast_baseline(value, ascent, descent, leading),
-            LineSpacing::AtLeast(_) => leading + ascent,
-        };
+        let (height, baseline) = parts.height_and_baseline(para.props.line);
+        let LineParts {
+            ascent,
+            descent,
+            leading,
+            mut items,
+            notes,
+            shapes,
+            text_seen,
+            images,
+            ..
+        } = parts;
         // Items were placed with y = 0 on the baseline: move them.
         for item in &mut items {
             shift_item(item, baseline);
@@ -1257,15 +1195,17 @@ impl Builder {
                     index,
                     x,
                     y: baseline - height,
-                    w: width,
-                    h: height,
+                    width,
+                    height,
                     crop,
                 });
             }
         }
-        let shapes = shapes.into_iter().map(|(x, shape)| (x, shape)).collect::<Vec<_>>();
         let only_pictures = !text_seen && (has_images || !shapes.is_empty());
-        let break_only = !text_seen && !has_images && shapes.is_empty() && matches!(end, LineEnd::Break(BreakKind::Page | BreakKind::Column));
+        let break_only = !text_seen
+            && !has_images
+            && shapes.is_empty()
+            && matches!(end, LineEnd::Break(BreakKind::Page | BreakKind::Column));
         let fit_height = match para.props.line {
             // A line holding only a page break stays on its page below the
             // margin rather than leaving a blank page.
@@ -1285,6 +1225,182 @@ impl Builder {
             notes,
             bookmarks: std::mem::take(&mut self.pending_bookmarks),
             shapes,
+        }
+    }
+
+    /// Gathers what the placed atoms of a line hold: their text items (with
+    /// y = 0 on the baseline), tab leaders, notes, pictures and shapes, and
+    /// the tallest ascent, descent and leading of their text.
+    fn line_parts(&self, ctx: &mut Ctx<'_>, placed: &[Placed]) -> LineParts {
+        let mut parts = LineParts::default();
+        for item in placed {
+            match &item.atom {
+                Atom::Word { pieces, .. } => {
+                    parts.text_seen = true;
+                    parts.emit_pieces(pieces, item.x, item.space_extra);
+                }
+                Atom::NoteRef { word, endnote, id } => {
+                    parts.notes.push((*endnote, id.clone()));
+                    if let Atom::Word { pieces, .. } = word.as_ref() {
+                        parts.emit_pieces(pieces, item.x, 0.0);
+                    }
+                }
+                Atom::Image {
+                    index,
+                    width,
+                    height,
+                    crop,
+                    fmt,
+                } => {
+                    let (_, fmt_descent, _) = ctx.line_metrics(fmt);
+                    parts.picture_ascent = parts.picture_ascent.max(*height);
+                    parts.picture_descent = parts.picture_descent.max(fmt_descent);
+                    parts.images.push((item.x, *index, *width, *height, *crop));
+                }
+                Atom::Shape(shape) => {
+                    parts.picture_ascent = parts.picture_ascent.max(shape.height);
+                    parts.shapes.push((item.x, shape.as_ref().clone()));
+                }
+                Atom::Tab { fmt } => {
+                    let (tab_ascent, tab_descent, tab_leading) = ctx.line_metrics(fmt);
+                    parts.ascent = parts.ascent.max(tab_ascent);
+                    parts.descent = parts.descent.max(tab_descent);
+                    parts.leading = parts.leading.max(tab_leading);
+                    if let Some(stop) = item.tab.map(|index| self.tab_stops[index])
+                        && let Some(leader) = stop.leader
+                    {
+                        let next = placed
+                            .iter()
+                            .skip_while(|other| !std::ptr::eq(*other, item))
+                            .nth(1)
+                            .map_or(stop.pos, |next| next.x);
+                        emit_leader(ctx, leader, fmt, item.x, next, &mut parts.items);
+                    }
+                }
+                _ => {}
+            }
+        }
+        parts
+    }
+}
+
+/// A picture in a line: x, index (`None` for one that is not stored),
+/// width, height and the share cut off each side.
+type LineImage = (f32, Option<usize>, f32, f32, [f32; 4]);
+
+/// What the atoms of a line hold, gathered before the line's height is
+/// known.
+#[derive(Default)]
+struct LineParts {
+    /// Tallest ascent of the text.
+    ascent: f32,
+    /// Deepest descent of the text.
+    descent: f32,
+    /// Largest leading of the text.
+    leading: f32,
+    /// Items, placed with y = 0 on the baseline.
+    items: Vec<Item>,
+    /// The notes the line refers to: (endnote, id).
+    notes: Vec<(bool, String)>,
+    /// Shapes in the line, with their x.
+    shapes: Vec<(f32, Shape)>,
+    /// Whether the line has text.
+    text_seen: bool,
+    /// Tallest picture or shape.
+    picture_ascent: f32,
+    /// Deepest descent of the pictures' formats.
+    picture_descent: f32,
+    /// Pictures in the line.
+    images: Vec<LineImage>,
+}
+
+impl LineParts {
+    /// Emits the pieces of a word at `x`, with `space_extra` added to each
+    /// space, and takes in their ascent, descent and leading.
+    fn emit_pieces(&mut self, pieces: &[Piece], x: f32, space_extra: f32) {
+        let mut x = x;
+        for piece in pieces {
+            self.ascent = self.ascent.max(piece.ascent);
+            self.descent = self.descent.max(piece.descent);
+            self.leading = self.leading.max(piece.leading);
+            x = emit_piece(piece, x, space_extra, &mut self.items);
+        }
+    }
+
+    /// The height and baseline of the line with line spacing `spacing`.
+    /// Pictures taller than the text raise the ascent (and, on a line
+    /// without text, clear the descent and leading).
+    fn height_and_baseline(&mut self, spacing: LineSpacing) -> (f32, f32) {
+        // Line spacing multiplies the height of the text, not that of
+        // pictures: a line of pictures alone is as tall as they are.
+        let text_height = self.ascent + self.descent + self.leading;
+        let picture_height = if self.text_seen {
+            self.picture_ascent + self.descent.max(self.picture_descent) + self.leading
+        } else {
+            self.picture_ascent
+        };
+        let auto_height = |multiple: f32| (text_height * multiple).max(picture_height);
+        if self.picture_ascent > self.ascent {
+            if self.text_seen {
+                self.descent = self.descent.max(self.picture_descent);
+            } else {
+                self.descent = 0.0;
+                self.leading = 0.0;
+            }
+            self.ascent = self.picture_ascent;
+        }
+        let (ascent, descent, leading) = (self.ascent, self.descent, self.leading);
+        let natural = ascent + descent + leading;
+        let height = match spacing {
+            LineSpacing::Auto(multiple) => auto_height(multiple),
+            LineSpacing::Exact(value) => value,
+            LineSpacing::AtLeast(value) => natural.max(value),
+        };
+        // Word puts the text at the top of a line made taller by multiple
+        // spacing (below its external leading), and its baseline at 80% of
+        // an exact height.
+        let baseline = match spacing {
+            LineSpacing::Auto(_) => leading + ascent,
+            LineSpacing::Exact(value) => value * EXACT_BASELINE_RATIO,
+            LineSpacing::AtLeast(value) if value > natural => atleast_baseline(value, ascent, descent, leading),
+            LineSpacing::AtLeast(_) => leading + ascent,
+        };
+        (height, baseline)
+    }
+}
+
+/// Widens (or, when `free` is negative, narrows) the spaces between the
+/// words after the last tab (from `last_tab`), not the trailing ones, so
+/// that the line takes `free` more width.
+fn justify_spaces(placed: &mut [Placed], last_tab: usize, free: f32) {
+    let mut spaces = 0usize;
+    let end_index = placed.len();
+    let mut last_word = None;
+    for (at, item) in placed.iter().enumerate().skip(last_tab) {
+        if let Atom::Word { body, .. } = &item.atom
+            && *body > 0.0
+        {
+            last_word = Some(at);
+        }
+    }
+    for item in placed[last_tab..last_word.unwrap_or(end_index)].iter() {
+        if let Atom::Word { pieces, .. } = &item.atom {
+            spaces += pieces.iter().map(|piece| piece.spaces).sum::<usize>();
+        }
+    }
+    if spaces > 0 {
+        let extra = free / spaces as f32;
+        let mut shift = 0.0;
+        for (at, item) in placed.iter_mut().enumerate().skip(last_tab) {
+            item.x += shift;
+            if Some(at) >= last_word {
+                continue;
+            }
+            if let Atom::Word { pieces, .. } = &item.atom {
+                let count: usize = pieces.iter().map(|piece| piece.spaces).sum();
+                item.space_extra = extra;
+                shift += extra * count as f32;
+            }
         }
     }
 }
@@ -1345,8 +1461,8 @@ fn emit_piece(piece: &Piece, x: f32, extra: f32, items: &mut Vec<Item>) -> f32 {
         items.push(Item::Rect {
             x,
             y: top + piece.rise.max(0.0),
-            w: width,
-            h: height - piece.rise.abs(),
+            width,
+            height: height - piece.rise.abs(),
             color,
         });
     }
@@ -1363,77 +1479,92 @@ fn emit_piece(piece: &Piece, x: f32, extra: f32, items: &mut Vec<Item>) -> f32 {
         fake_italic: piece.fake_italic,
         scale: piece.scale,
     }));
-    let (under_pos, thickness, strike_pos) = piece.lines;
     if let Some(underline) = fmt.underline {
-        let visible = underline != Underline::Words || !piece.text.trim().is_empty();
-        if visible {
-            let y = under_pos - piece.rise + thickness / 2.0;
-            let line_color = fmt.underline_color.unwrap_or(color);
-            let w = if underline == Underline::Thick {
-                thickness * 2.0
-            } else {
-                thickness
-            };
-            let dash = match underline {
-                Underline::Dotted => Some(w),
-                Underline::Dashed => Some(w * 4.0),
-                _ => None,
-            };
-            items.push(Item::Line {
-                x1: x,
-                y1: y,
-                x2: x + width,
-                y2: y,
-                width: w,
-                color: line_color,
-                dash,
-            });
-            if underline == Underline::Double {
-                items.push(Item::Line {
-                    x1: x,
-                    y1: y + w * 2.0,
-                    x2: x + width,
-                    y2: y + w * 2.0,
-                    width: w,
-                    color: line_color,
-                    dash: None,
-                });
-            }
-        }
+        emit_underline(piece, underline, x, width, color, items);
     }
     if fmt.strike || fmt.dstrike {
-        let y = -strike_pos - piece.rise;
-        items.push(Item::Line {
-            x1: x,
-            y1: y,
-            x2: x + width,
-            y2: y,
-            width: thickness,
-            color,
-            dash: None,
-        });
-        if fmt.dstrike {
-            items.push(Item::Line {
-                x1: x,
-                y1: y - thickness * 2.0,
-                x2: x + width,
-                y2: y - thickness * 2.0,
-                width: thickness,
-                color,
-                dash: None,
-            });
-        }
+        emit_strike(piece, x, width, color, items);
     }
     if let Some(href) = &fmt.href {
         items.push(Item::Link {
             x,
             y: top,
-            w: width,
-            h: height,
+            width,
+            height,
             target: href.clone(),
         });
     }
     x + width
+}
+
+/// Draws the underline of style `underline` under a piece drawn at `x`,
+/// `width` wide, in the underline colour or else in the text's `color`. A
+/// words-only underline is not drawn under spaces.
+fn emit_underline(piece: &Piece, underline: Underline, x: f32, width: f32, color: Rgb, items: &mut Vec<Item>) {
+    let (under_pos, thickness, _) = piece.lines;
+    let visible = underline != Underline::Words || !piece.text.trim().is_empty();
+    if !visible {
+        return;
+    }
+    let y = under_pos - piece.rise + thickness / 2.0;
+    let line_color = piece.fmt.underline_color.unwrap_or(color);
+    let line_width = if underline == Underline::Thick {
+        thickness * 2.0
+    } else {
+        thickness
+    };
+    let dash = match underline {
+        Underline::Dotted => Some(line_width),
+        Underline::Dashed => Some(line_width * 4.0),
+        _ => None,
+    };
+    items.push(Item::Line {
+        x1: x,
+        y1: y,
+        x2: x + width,
+        y2: y,
+        width: line_width,
+        color: line_color,
+        dash,
+    });
+    if underline == Underline::Double {
+        items.push(Item::Line {
+            x1: x,
+            y1: y + line_width * 2.0,
+            x2: x + width,
+            y2: y + line_width * 2.0,
+            width: line_width,
+            color: line_color,
+            dash: None,
+        });
+    }
+}
+
+/// Draws the strikethrough (single or double) of a piece drawn at `x`,
+/// `width` wide, in colour `color`.
+fn emit_strike(piece: &Piece, x: f32, width: f32, color: Rgb, items: &mut Vec<Item>) {
+    let (_, thickness, strike_pos) = piece.lines;
+    let y = -strike_pos - piece.rise;
+    items.push(Item::Line {
+        x1: x,
+        y1: y,
+        x2: x + width,
+        y2: y,
+        width: thickness,
+        color,
+        dash: None,
+    });
+    if piece.fmt.dstrike {
+        items.push(Item::Line {
+            x1: x,
+            y1: y - thickness * 2.0,
+            x2: x + width,
+            y2: y - thickness * 2.0,
+            width: thickness,
+            color,
+            dash: None,
+        });
+    }
 }
 
 /// Draws a tab leader from `from` to `to` on baseline 0.

@@ -6,6 +6,7 @@
 pub mod display;
 pub mod flow;
 pub mod fonts;
+pub mod html;
 pub mod lines;
 pub mod metrics;
 pub mod para;

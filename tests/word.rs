@@ -262,14 +262,27 @@ fn every_output_can_be_written_from_word() {
             !friendly.contains(" pages</span>"),
             "{name}: a Word document has no pages"
         );
-        // The page modes have no pages to show: the friendly page instead.
-        for mode in [Mode::Hard, Mode::Hard95, Mode::Medium] {
+        // The page modes show the document laid out as Word lays it out:
+        // its pages (hard, hard-95), or its formatting on one sheet (medium).
+        for mode in [Mode::Hard, Mode::Hard95] {
             let opts = HtmlOptions {
                 mode,
                 ..Default::default()
             };
-            assert_eq!(paper.to_html(&analysis, &opts).html, friendly, "{name} {mode:?}");
+            let html = paper.to_html(&analysis, &opts).html;
+            assert!(
+                html.contains(" pages</span>") || html.contains(" page</span>"),
+                "{name} {mode:?}: pages"
+            );
+            assert!(html.contains("Convergence of Gradient Descent"), "{name} {mode:?}");
         }
+        let medium = HtmlOptions {
+            mode: Mode::Medium,
+            ..Default::default()
+        };
+        let medium = paper.to_html(&analysis, &medium).html;
+        assert!(medium.contains("class=\"sheet\""), "{name}: medium is one sheet");
+        assert!(medium.contains("Convergence of Gradient Descent"), "{name}");
         let docx = paper.to_docx(&analysis, &DocxOptions::default());
         assert!(docx.starts_with(b"PK"));
         let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default());

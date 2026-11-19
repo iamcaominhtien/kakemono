@@ -412,18 +412,15 @@ fn write_file(path: &Path, data: &[u8]) -> Result<()> {
     std::fs::write(path, data).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The `convert` subcommand: analyses the paper once, then writes the HTML
-/// of each requested mode or the Word document and, with `--json`, the
-/// document as JSON.
+/// Checks the options of `convert` and returns the output format.
 ///
 /// # Errors
-/// When `--scale` is out of range, `--all` is given for a Word, Markdown or LaTeX document, `--images inline` for
-/// LaTeX, the input cannot be loaded or an output file cannot be written.
-fn convert(args: ConvertArgs) -> Result<()> {
+/// When options cannot be used together, or a value is out of range.
+fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     if !(args.scale > MIN_SCALE && args.scale <= MAX_SCALE) {
         bail!("--scale must be between 0.2 and 8");
     }
-    let format = output_format(&args);
+    let format = output_format(args);
     if format != FormatArg::Html && args.all {
         bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex, epub or json");
     }
@@ -441,24 +438,41 @@ fn convert(args: ConvertArgs) -> Result<()> {
     {
         bail!("--image-dir must be a relative folder inside the output directory");
     }
+    Ok(format)
+}
+
+/// Writes a Word document laid out in pages as a PDF.
+///
+/// # Errors
+/// When the input is not a Word document, or the file cannot be written.
+fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
+    let started = Instant::now();
+    let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
+    let data = paper.to_pdf()?;
+    write_file(&file, &data)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB, {:.2}s)",
+        "pdf",
+        file.display(),
+        data.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// The `convert` subcommand: analyses the paper once, then writes the HTML
+/// of each requested mode or the Word document and, with `--json`, the
+/// document as JSON.
+///
+/// # Errors
+/// When `--scale` is out of range, `--all` is given for a Word, Markdown or LaTeX document, `--images inline` for
+/// LaTeX, the input cannot be loaded or an output file cannot be written.
+fn convert(args: ConvertArgs) -> Result<()> {
+    let format = check_args(&args)?;
     let (paper, stem) = load(&args.input)?;
     let paper = paper.with_png_compression(args.png_compression.into());
     if format == FormatArg::Pdf {
-        let started = Instant::now();
-        let file = OutputPaths::new(args.output.as_ref(), false).single_file(&stem, "pdf");
-        let data = paper.to_pdf()?;
-        write_file(&file, &data)?;
-        eprintln!(
-            "{:<8} -> {} ({:.1} MB, {:.2}s)",
-            "pdf",
-            file.display(),
-            data.len() as f64 / BYTES_PER_MB,
-            started.elapsed().as_secs_f32()
-        );
-        return Ok(());
-    }
-    if !paper.format().has_pages() && format == FormatArg::Html && !args.all && args.mode != ModeArg::Friendly {
-        bail!("a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use --mode friendly");
+        return write_pdf(&paper, &args, &stem);
     }
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
@@ -579,10 +593,7 @@ fn write_html(
     paths: &OutputPaths,
     stem: &str,
 ) -> Result<()> {
-    let modes: Vec<Mode> = if args.all && !paper.format().has_pages() {
-        eprintln!("hard, hard-95 and medium skipped: a Word document has no pages");
-        vec![Mode::Friendly]
-    } else if args.all && args.content.is_some() {
+    let modes: Vec<Mode> = if args.all && args.content.is_some() {
         eprintln!("hard mode skipped: it cannot show edited text from --content");
         vec![Mode::Hard95, Mode::Medium, Mode::Friendly]
     } else if args.all {
