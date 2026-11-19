@@ -104,7 +104,7 @@ pub(crate) fn text_html(spans: &[Span], math: bool) -> String {
         .into_iter()
         .map(|piece| match piece {
             super::inline_math::Piece::Text(spans) => spans_html(&spans),
-            super::inline_math::Piece::Math(node, alt) => super::mathml::inline_math_html(&node, &alt),
+            super::inline_math::Piece::Math(node, alt, _) => super::mathml::inline_math_html(&node, &alt),
         })
         .collect()
 }

@@ -20,7 +20,7 @@ use crate::analysis::page::DocStats;
 use crate::backend::FontInfo;
 use crate::common::geom::median;
 use regex::Captures;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Deepest heading level in the output; deeper numbered sections
 /// ("1.2.3.4.5.6") are clamped to it.
@@ -41,6 +41,10 @@ pub struct BodyConfig {
     pub heading_max_chars_count: usize,
     /// Share of bold glyphs from which a block counts as bold.
     pub bold_min_ratio: f32,
+    /// A block with at least this share of bold glyphs counts as bold too
+    /// when its bold and italic glyphs together reach `bold_min_ratio` (a
+    /// bold heading with a word in italics).
+    pub bold_with_italic_min_ratio: f32,
     /// Share of italic glyphs from which a block counts as italic.
     pub italic_min_ratio: f32,
     /// Share of capitals from which a block counts as set in capitals.
@@ -104,6 +108,10 @@ pub struct BodyConfig {
     /// A sentence of a language course is mostly in CJK characters (at
     /// least this share), and its translation mostly in Latin letters.
     pub translated_min_script_ratio: f32,
+    /// A bibliography without a heading (Physical Review Letters) is a run
+    /// of at least this many paragraphs labelled `[1]`, `[2]`, ... in
+    /// increasing order.
+    pub unheaded_refs_min_entries_count: usize,
 }
 
 impl Default for BodyConfig {
@@ -113,6 +121,7 @@ impl Default for BodyConfig {
             heading_min_chars_count: 2,
             heading_max_chars_count: 160,
             bold_min_ratio: 0.9,
+            bold_with_italic_min_ratio: 0.5,
             italic_min_ratio: 0.7,
             caps_min_upper_ratio: 0.8,
             strong_min_size_above_body_pt: 0.7,
@@ -135,6 +144,7 @@ impl Default for BodyConfig {
             list_continuation_max_offset_em: 0.3,
             list_continuation_min_indent_em: 0.5,
             translated_min_script_ratio: 0.6,
+            unheaded_refs_min_entries_count: 5,
         }
     }
 }
@@ -356,6 +366,8 @@ fn find_heading_candidates(
 ) -> Vec<HeadingCandidate> {
     let mut candidates: Vec<HeadingCandidate> = Vec::new();
     let mut seen_refs = false;
+    // The numbers of the numbered headings found so far.
+    let mut numbers: HashSet<String> = HashSet::new();
     let page_body_sizes = page_body_sizes(nodes, stats);
     for (idx, node) in nodes.iter().enumerate() {
         if node.class != Class::Unknown {
@@ -371,7 +383,12 @@ fn find_heading_candidates(
             continue;
         }
         let sentence = is_list_sentence(&features, &cfg.body);
-        let number = heading_number(&features, seen_refs, &cfg.body).filter(|_| !sentence);
+        let number = heading_number(&features, seen_refs, &cfg.body)
+            .filter(|_| !sentence)
+            .or_else(|| child_number(&features, block.lines.len(), &numbers, &cfg.body));
+        if let Some(found) = &number {
+            numbers.insert(found.number.clone());
+        }
         let is_heading = number.is_some()
             || is_known_heading(&features, &cfg.body)
             || is_styled_heading(&features, block, &cfg.body);
@@ -404,7 +421,8 @@ fn find_heading_candidates(
 /// statement, what happens if you leave out one of the parentheses?"); a
 /// short one set only in italics ("2. Turn left 60 degrees."); and one so
 /// set that is long or stops on a lowercase word, cut by a formula or code
-/// after it ("3. Add methods to"). Headings in capitals ("4.2 COMPARISON
+/// after it ("3. Add methods to"), unless its number has several parts
+/// ("2.1. 2-point weak lensing model"). Headings in capitals ("4.2 COMPARISON
 /// TO STATE OF THE ART") and in bold ("1.1 What is a program?") stay.
 fn is_list_sentence(features: &HeadingFeatures<'_>, cfg: &BodyConfig) -> bool {
     let long = features.words > cfg.sentence_max_heading_words_count;
@@ -418,7 +436,15 @@ fn is_list_sentence(features: &HeadingFeatures<'_>, cfg: &BodyConfig) -> bool {
         .last()
         .is_some_and(|word| word.starts_with(|ch: char| ch.is_lowercase()));
     let only_italic = !features.strong && !features.caps;
-    !features.bold && ((ends_sentence && (long || only_italic)) || (only_italic && (long || unfinished)))
+    // "4.1. Simulation-based vs. analytical model: a comparison",
+    // "Appendix A.1: Emulation strategy": a heading in italics may be long
+    // or end on a lowercase word when its number has several parts or the
+    // word "Appendix".
+    let section = DOTTED_SECTION.is_match(features.text);
+    let appendix = features.text.starts_with("Appendix ") || features.text.starts_with("APPENDIX ");
+    !features.bold
+        && !appendix
+        && ((ends_sentence && (long || only_italic)) || (only_italic && !section && (long || unfinished)))
 }
 
 /// The body font size of each page: the size carrying most characters of
@@ -505,7 +531,12 @@ fn heading_features<'a>(
         return None;
     }
     let size = block_size(&block.lines);
-    let bold = text_frac(&block.lines, fonts, |font| font.bold) >= body.bold_min_ratio;
+    // A bold heading may have a word in italics ("Appendix A: The
+    // *cosmo*-SLICS Emulator").
+    let bold_frac = text_frac(&block.lines, fonts, |font| font.bold);
+    let bold = bold_frac >= body.bold_min_ratio
+        || (bold_frac >= body.bold_with_italic_min_ratio
+            && text_frac(&block.lines, fonts, |font| font.bold || font.italic) >= body.bold_min_ratio);
     let italic = text_frac(&block.lines, fonts, |font| font.italic) >= body.italic_min_ratio;
     let caps = upper_ratio(text, cfg) >= body.caps_min_upper_ratio || small_caps(&block.lines, cfg);
     let strong = bold || size >= body_size + body.strong_min_size_above_body_pt;
@@ -542,12 +573,37 @@ fn heading_number(features: &HeadingFeatures<'_>, seen_refs: bool, cfg: &BodyCon
 fn arabic_number_rule(captures: &Captures<'_>, features: &HeadingFeatures<'_>) -> Option<HeadingNumber> {
     let rest = &captures["rest"];
     // "2 layers" is not a heading; a heading title starts with a
-    // capital letter (or is all caps).
-    if rest.chars().next().is_some_and(|ch| ch.is_uppercase()) && (features.strong || features.weak) {
+    // capital letter (or is all caps), or with a number after a section
+    // number of several parts ("2.1. 2-point weak lensing model").
+    let multi_part = captures["num"].contains('.');
+    let title_start = rest
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_uppercase() || (multi_part && ch.is_ascii_digit()));
+    if title_start && (features.strong || features.weak) {
         Some(dotted_number(&captures["num"]))
     } else {
         None
     }
+}
+
+/// "4.1.1. Diagonal elements" set like the body text, under the heading
+/// "4.1": a block of one line (`lines_count`) numbered as a child of a
+/// heading found before, with a short title starting with a capital, is a
+/// heading too (A&A sets its third level in the plain sans-serif font).
+fn child_number(
+    features: &HeadingFeatures<'_>,
+    lines_count: usize,
+    numbers: &HashSet<String>,
+    cfg: &BodyConfig,
+) -> Option<HeadingNumber> {
+    let captures = HEADING_NUM.captures(features.text)?;
+    let (parent, _) = captures["num"].rsplit_once('.')?;
+    let short = features.words <= cfg.letter_heading_max_words_count;
+    let capital = captures["rest"].starts_with(char::is_uppercase);
+    let ends_sentence = features.text.ends_with(['.', ':']);
+    (lines_count == 1 && short && capital && !ends_sentence && numbers.contains(parent))
+        .then(|| dotted_number(&captures["num"]))
 }
 
 /// "IV. EXPERIMENTS": a Roman numeral, always level 1; the block must be in
@@ -563,12 +619,16 @@ fn roman_number_rule(features: &HeadingFeatures<'_>) -> Option<HeadingNumber> {
 }
 
 /// "Appendix A", "A.1 Proofs": an appendix letter, strong or in capitals
-/// (ICLR sets them in small capitals at the body size). A bare letter
-/// ("A Proofs") is only accepted after the bibliography heading.
+/// (ICLR sets them in small capitals at the body size), or in italics
+/// after the word "Appendix". A bare letter ("A Proofs") is only accepted
+/// after the bibliography heading.
 fn appendix_number_rule(features: &HeadingFeatures<'_>, seen_refs: bool) -> Option<HeadingNumber> {
     let captures = HEADING_APP.captures(features.text).filter(|captures| {
-        (seen_refs || captures.name("word").is_some() || captures["num"].contains('.'))
-            && (features.strong || features.caps)
+        let word = captures.name("word").is_some();
+        // With the word "Appendix", italics are a heading style too, as
+        // for "3.2 Attention" ("Appendix A.1: Emulation strategy").
+        (seen_refs || word || captures["num"].contains('.'))
+            && (features.strong || features.caps || (word && features.weak))
     })?;
     Some(dotted_number(&captures["num"]))
 }
@@ -754,6 +814,53 @@ fn classify_running_text(nodes: &mut [Node], cfg: &BodyConfig) {
         }
         node.class = state.classify(node, trimmed, cfg);
     }
+    unheaded_references(nodes, cfg);
+}
+
+/// Finds a bibliography without a heading: paragraphs that start with
+/// `[1]`, `[2]`, ... in increasing order, at least
+/// [`BodyConfig::unheaded_refs_min_entries_count`] of them in a row (floats
+/// and footnotes between them do not break the run), become references.
+fn unheaded_references(nodes: &mut [Node], cfg: &BodyConfig) {
+    let mut i = 0;
+    while i < nodes.len() {
+        if paragraph_label(&nodes[i]) != Some(1) {
+            i += 1;
+            continue;
+        }
+        let mut run = vec![i];
+        let mut last = 1;
+        for (j, node) in nodes.iter().enumerate().skip(i + 1) {
+            if !matches!(node.class, Class::Paragraph { .. }) {
+                continue;
+            }
+            match paragraph_label(node) {
+                Some(label) if label > last => {
+                    run.push(j);
+                    last = label;
+                }
+                _ => break,
+            }
+        }
+        if run.len() >= cfg.unheaded_refs_min_entries_count {
+            for &j in &run {
+                nodes[j].class = Class::Reference;
+            }
+        }
+        i = run.last().map_or(i, |&end| end) + 1;
+    }
+}
+
+/// The number of a paragraph that starts with a bracketed number (`[12]`).
+fn paragraph_label(node: &Node) -> Option<u32> {
+    if !matches!(node.class, Class::Paragraph { in_abstract: false }) {
+        return None;
+    }
+    let NodeKind::Text(block) = &node.kind else { return None };
+    let first = block.lines.first()?.text();
+    let rest = first.trim_start().strip_prefix('[')?;
+    let (number, _) = rest.split_once(']')?;
+    number.parse().ok()
 }
 
 impl FlowState {
@@ -929,6 +1036,38 @@ mod tests {
             drop_repeated_labels(candidates, &cfg).len(),
             2 * cfg.repeated_label_min_count
         );
+    }
+
+    #[test]
+    fn italic_section_headings_of_several_parts() {
+        let cfg = BodyConfig::default();
+        let number = |text: &str| {
+            let italic = features(text, false, false);
+            let sentence = is_list_sentence(&italic, &cfg);
+            heading_number(&italic, false, &cfg)
+                .filter(|_| !sentence)
+                .map(|found| found.number)
+        };
+        // A&A sets its second level in italics, in sentence case.
+        assert_eq!(number("2.1. 2-point weak lensing model").as_deref(), Some("2.1"));
+        assert_eq!(
+            number("4.1. Simulation-based vs. analytical model: a comparison").as_deref(),
+            Some("4.1")
+        );
+        assert_eq!(number("Appendix A.1: Emulation strategy").as_deref(), Some("A.1"));
+        // Items of a list stay items.
+        assert_eq!(number("3. Add methods to"), None);
+        assert_eq!(number("2 layers of attention"), None);
+    }
+
+    #[test]
+    fn children_of_numbered_headings() {
+        let cfg = BodyConfig::default();
+        let numbers: HashSet<String> = ["4.1".to_string()].into();
+        let child = |text: &str| child_number(&features(text, false, false), 1, &numbers, &cfg).map(|n| n.level);
+        assert_eq!(child("4.1.1. Diagonal elements"), Some(3));
+        assert_eq!(child("4.2.1. Diagonal elements"), None);
+        assert_eq!(child("4.1.1. the value is set to zero."), None);
     }
 
     #[test]

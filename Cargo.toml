@@ -47,6 +47,7 @@ resvg = { version = "0.45", default-features = false, features = ["raster-images
 mimalloc = { version = "0.1.52", features = ["v2"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 png = "0.18"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3
@@ -57,6 +58,3 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
-
-[dev-dependencies]
-sha2 = "0.10"

@@ -45,6 +45,6 @@ pub use backend::{PageRenderer, PngCompression};
 pub use config::{AnalyzeOptions, LayoutConfig};
 pub use paper::{Paper, convert};
 pub use render::{
-    DocxOptions, DocxOutput, EpubOptions, Equations, HtmlOptions, HtmlOutput, LatexOptions, LatexOutput,
-    MarkdownOptions, MarkdownOutput, Mode, PageImage,
+    ContentReport, DocxOptions, DocxOutput, EpubOptions, Equations, HtmlOptions, HtmlOutput, JsonOptions, JsonOutput,
+    LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, PageImage,
 };

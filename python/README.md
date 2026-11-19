@@ -1,7 +1,7 @@
 # kakemono for Python
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
-documents, Markdown, LaTeX or EPUB books, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
+documents, Markdown, LaTeX, EPUB books or editable JSON, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
 ```bash
@@ -18,6 +18,7 @@ kakemono.to_docx("paper.pdf", "paper.docx")               # a Word document (als
 text = kakemono.to_markdown("paper.pdf", "paper.md")       # Markdown, pictures in paper_assets/
 tex = kakemono.to_latex("paper.pdf", "paper.tex")          # LaTeX, pictures in paper_assets/
 book = kakemono.to_epub("paper.pdf", "paper.epub")         # an EPUB book (also returns its bytes)
+content = kakemono.to_json("paper.pdf", "paper.json")      # the editable JSON, as a dict
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 ```
 
@@ -56,6 +57,38 @@ formulas wider than this, in multiples of the text size, become pictures; defaul
 (the first page as the cover, on by default) and `modified` (the date recorded in the book, `YYYY-MM-DDThh:mm:ssZ`;
 by default, now). It returns an EPUB 3 book with one chapter per top-level section, a table of
 contents, MathML formulas and the pictures inside.
+
+`to_json` takes the options of `to_markdown` and returns the editable JSON as a dict: the blocks
+in reading order, each with its `type`, `section`, `layout` and `text`, a string whose tags
+(`<i>`, `<b>`, `<a href>`, ...) keep the styles and links and where `<m id="n">` stands for a
+formula. Every conversion function takes `content`: an edited copy of that JSON for the same
+PDF (the dict, its text or a path to it), whose text the output then shows. Translating a paper
+is editing the `text` fields:
+
+```python
+content = kakemono.to_json("paper.pdf")
+for block in content["blocks"]:
+    if "text" in block:
+        block["text"] = my_translate(block["text"])   # keep the tags
+html = kakemono.convert("paper.pdf", "hard-95", content=content)   # the pages, translated
+kakemono.to_docx("paper.pdf", "paper.vi.docx", content=content)
+```
+
+The JSON also has read-only fields for search and data extraction: `plain` on every block (the
+text without tags, formulas as `$LaTeX$`), `citation` on every reference (`authors`, `title`,
+`venue`, `year`, `volume`, `pages`, `doi`, `arxiv`, `url`, as far as they could be read) and, in
+`meta`, the `authors` (with indices into `affiliations` and `author_notes`, and their `emails`),
+`arxiv_category`, `date`, `doi`, `keywords` and `abstract`:
+
+```python
+content = kakemono.to_json("1706.03762")
+print([a["name"] for a in content["meta"]["authors"]])
+refs = [b["citation"] for b in content["blocks"] if b.get("citation")]
+print(refs[0]["title"], refs[0]["year"])
+```
+
+Blocks left unchanged keep their text; a block whose edited text cannot be read (an unknown tag)
+keeps its own, with a `UserWarning`. The `hard` mode cannot show edited text.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 

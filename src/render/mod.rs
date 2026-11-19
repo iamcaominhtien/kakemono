@@ -1,6 +1,8 @@
 //! HTML output in four fidelity modes (see [`Mode`]), Word output
 //! ([`render_docx`]), Markdown output ([`render_markdown`]), LaTeX output
-//! ([`render_latex`]) and EPUB output ([`render_epub`]).
+//! ([`render_latex`]), EPUB output ([`render_epub`]) and JSON output
+//! (`render_json`), which can also be edited and applied back
+//! (`apply_content`).
 
 mod assets;
 mod code;
@@ -12,6 +14,7 @@ mod friendly;
 mod hard;
 mod hard95;
 mod inline_math;
+mod json;
 mod latex;
 mod markdown;
 mod mathml;
@@ -25,6 +28,10 @@ pub use docx::{DocxOptions, DocxOutput, render_docx, render_docx_with_images};
 pub use epub::{EpubOptions, render_epub};
 pub(crate) use escape::*;
 pub(crate) use flow::*;
+pub use json::apply::ContentReport;
+pub(crate) use json::apply::apply_content;
+pub use json::{JsonOptions, JsonOutput};
+pub(crate) use json::{SourceInfo, render_json};
 pub use latex::{LatexOptions, LatexOutput, render_latex};
 pub use markdown::{MarkdownOptions, MarkdownOutput, render_markdown};
 pub(crate) use mathml::math_css;

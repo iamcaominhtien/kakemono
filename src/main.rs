@@ -14,8 +14,8 @@ use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
-    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, LatexOptions, MarkdownOptions, Mode, PageImage,
-    Paper, PngCompression,
+    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
+    PageImage, Paper, PngCompression,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,7 @@ enum Command {
 }
 
 /// Values of `--mode`; the doc comments are the help texts.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
 enum ModeArg {
     /// Facsimile of every page with a selectable text layer
     Hard,
@@ -144,6 +144,8 @@ enum FormatArg {
     Latex,
     /// An EPUB 3 book (.epub) for e-readers: reflowing text, MathML formulas, tables, contents
     Epub,
+    /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
+    Json,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -234,13 +236,13 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md, .tex or .epub; html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub or .json; html otherwise); --mode applies to html only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx, .md, .tex or .epub file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md, .tex, .epub or .json file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored [default: inline for HTML and Word, files for Markdown and LaTeX; EPUB books always hold theirs]
+    /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX and JSON; EPUB books always hold theirs]
     #[arg(long, value_enum)]
     images: Option<ImagesArg>,
     /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
@@ -264,9 +266,12 @@ struct ConvertArgs {
     /// How medium and friendly modes (and Word, Markdown, LaTeX and EPUB documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
-    /// Also write the structured document as JSON (for translation tools)
+    /// Also write the structured document as JSON, with every field of the analysis (to edit the text and apply it back, use --format json)
     #[arg(long)]
     json: bool,
+    /// Use the text of this edited JSON file (written by --format json for the same PDF) in the output: any format, except hard mode
+    #[arg(long, value_name = "FILE.json")]
+    content: Option<PathBuf>,
     /// Number of worker threads: 0 = one per CPU core, 1 = no parallelism
     #[arg(short, long, default_value_t = 0, value_name = "N")]
     jobs: usize,
@@ -399,7 +404,10 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let format = output_format(&args);
     if format != FormatArg::Html && args.all {
-        bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex or epub");
+        bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex, epub or json");
+    }
+    if args.content.is_some() && format == FormatArg::Html && !args.all && args.mode == ModeArg::Hard {
+        bail!("hard mode shows the pages of the PDF: it cannot show edited text from --content (hard-95 can)");
     }
     if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
         bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
@@ -416,7 +424,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
     let paper = paper.with_png_compression(args.png_compression.into());
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
-    let analysis = paper.analyze_with(AnalyzeOptions {
+    let mut analysis = paper.analyze_with(AnalyzeOptions {
         tables: args.tables == TablesArg::Auto,
         jobs,
         ..Default::default()
@@ -428,6 +436,9 @@ fn convert(args: ConvertArgs) -> Result<()> {
         analysis.doc.blocks.len(),
         started.elapsed().as_secs_f32()
     );
+    if let Some(content) = &args.content {
+        apply_content(&paper, &mut analysis, content)?;
+    }
 
     let paths = OutputPaths::new(args.output.as_ref(), args.all);
     match format {
@@ -435,6 +446,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
         FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
+        FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
     }
 
@@ -449,7 +461,8 @@ fn convert(args: ConvertArgs) -> Result<()> {
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
 /// file, Markdown when it names a `.md` file, LaTeX when it names a `.tex`
-/// file, EPUB when it names an `.epub` file, HTML otherwise.
+/// file, EPUB when it names an `.epub` file, JSON when it names a `.json`
+/// file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
         let ext = args
@@ -464,6 +477,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "md" | "markdown" => FormatArg::Markdown,
             "tex" | "latex" => FormatArg::Latex,
             "epub" => FormatArg::Epub,
+            "json" => FormatArg::Json,
             _ => FormatArg::Html,
         }
     })
@@ -517,7 +531,10 @@ fn write_html(
     paths: &OutputPaths,
     stem: &str,
 ) -> Result<()> {
-    let modes: Vec<Mode> = if args.all {
+    let modes: Vec<Mode> = if args.all && args.content.is_some() {
+        eprintln!("hard mode skipped: it cannot show edited text from --content");
+        vec![Mode::Hard95, Mode::Medium, Mode::Friendly]
+    } else if args.all {
         vec![Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly]
     } else {
         vec![args.mode.into()]
@@ -609,6 +626,56 @@ fn write_latex(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usi
         file.display(),
         out.latex.len() as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Writes `analysis` as JSON to `file`, with the image files next to it
+/// unless `--images inline`, and reports the result on stderr.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_json(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = JsonOptions {
+        inline_images: args.images == Some(ImagesArg::Inline),
+        asset_dir: image_dir(args, file, None),
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+    };
+    let started = Instant::now();
+    let out = paper.to_json(analysis, &opts);
+    write_file(file, out.json.as_bytes())?;
+    let report = write_images(file, &out.files)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
+        "json",
+        file.display(),
+        out.json.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Applies the edited JSON file `path` to `analysis` and reports how many
+/// blocks changed, with the warnings, on stderr.
+///
+/// # Errors
+/// When the file cannot be read or does not fit this PDF (see
+/// [`Paper::apply_content`]).
+fn apply_content(paper: &Paper, analysis: &mut Analysis, path: &Path) -> Result<()> {
+    let json = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let report = paper
+        .apply_content(analysis, &json)
+        .with_context(|| format!("applying {}", path.display()))?;
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    eprintln!(
+        "content  <- {} ({} blocks edited, {} warnings)",
+        path.display(),
+        report.edited_blocks,
+        report.warnings.len()
     );
     Ok(())
 }

@@ -253,7 +253,7 @@ impl PageLayer<'_> {
         }
         match &block.kind {
             BlockKind::Equation { .. } => self.equation(block),
-            BlockKind::Authors => self.authors(block),
+            BlockKind::Authors => self.authors(doc, block),
             _ => {
                 // Caption or text block.
                 self.text_block(doc, block);
@@ -273,8 +273,13 @@ impl PageLayer<'_> {
         }
     }
 
-    /// Adds the author lines on this page, each placed on its own.
-    fn authors(&mut self, block: &Block) {
+    /// Adds the author lines on this page, each placed on its own (edited
+    /// ones flow in the box of the group, see [`is_edited`]).
+    fn authors(&mut self, doc: &Document, block: &Block) {
+        if is_edited(block) {
+            self.text_block(doc, block);
+            return;
+        }
         let mut html = String::new();
         for (line, hline) in block
             .lines
@@ -298,11 +303,16 @@ impl PageLayer<'_> {
         let html = flow_block(doc, block, self.page_idx, self.units);
         if !html.is_empty() {
             self.html.push_str(&html);
-            block
-                .lines
-                .iter()
-                .filter(|line| line.page == self.page_idx)
-                .for_each(|line| add_origins(&mut self.drawn, line, true));
+            // The edited text flows elsewhere than the glyphs it replaces:
+            // none of them may stay in the picture.
+            let edited = is_edited(block);
+            for line in block.lines.iter().filter(|line| line.page == self.page_idx) {
+                if edited {
+                    add_all_origins(&mut self.drawn, line);
+                } else {
+                    add_origins(&mut self.drawn, line, true);
+                }
+            }
         }
     }
 
@@ -314,7 +324,8 @@ impl PageLayer<'_> {
         }
         match block.table.as_ref().filter(|table| table_fits(table)) {
             Some(table) => {
-                self.html.push_str(&table_box(table, self.units));
+                self.html
+                    .push_str(&table_box(table, is_edited_table(block), self.units));
                 block
                     .inner_lines
                     .iter()
@@ -556,18 +567,6 @@ fn gaps_of(line: &Line) -> Vec<f32> {
 /// each character of [`PICTURE_CHARS`] in it becomes a gap whose width is
 /// taken from `gaps`.
 fn span_html(span: &Span, text: &str, gaps: &mut std::slice::Iter<'_, f32>) -> String {
-    let mut classes: Vec<&str> = Vec::new();
-    if span.style & MONO != 0 {
-        classes.push("m");
-    } else if span.style & SANS != 0 {
-        classes.push("s");
-    }
-    if span.style & MATH != 0 {
-        classes.push("x");
-    }
-    if span.style & SMALL_CAPS != 0 {
-        classes.push("sc");
-    }
     let mut out = String::new();
     let mut piece = String::new();
     for ch in text.chars() {
@@ -589,6 +588,25 @@ fn span_html(span: &Span, text: &str, gaps: &mut std::slice::Iter<'_, f32>) -> S
         ));
     }
     out.push_str(&esc(&piece));
+    wrap_span(span, out)
+}
+
+/// The HTML `inner` of a span's text wrapped in the elements of its style,
+/// colour and link.
+fn wrap_span(span: &Span, inner: String) -> String {
+    let mut out = inner;
+    let mut classes: Vec<&str> = Vec::new();
+    if span.style & MONO != 0 {
+        classes.push("m");
+    } else if span.style & SANS != 0 {
+        classes.push("s");
+    }
+    if span.style & MATH != 0 {
+        classes.push("x");
+    }
+    if span.style & SMALL_CAPS != 0 {
+        classes.push("sc");
+    }
     if span.style & SUP != 0 {
         out = format!("<sup>{out}</sup>");
     }
@@ -690,7 +708,8 @@ fn fragments(lines: &[Line]) -> Vec<Fragment> {
 /// starts, clipped copies where it continues. Returns an empty string when
 /// the block has no line on the page, or no line text to show.
 fn flow_block(doc: &Document, block: &Block, page_idx: usize, units: &Units) -> String {
-    if block.lines.is_empty() || block.hlines.len() != block.lines.len() {
+    let edited = is_edited(block);
+    if block.lines.is_empty() || (!edited && block.hlines.len() != block.lines.len()) {
         return String::new();
     }
     let frags = fragments(&block.lines);
@@ -705,8 +724,53 @@ fn flow_block(doc: &Document, block: &Block, page_idx: usize, units: &Units) -> 
     let width = frags.iter().map(|frag| frag.x1 - frag.x0).fold(0.0, f32::max);
     let placement = line_placement(block, &frags, lead);
     let style = box_style(block, &frags, size, lead, width);
-    let inner = flow_lines(block, &frags, size, &placement.shifts, style.align == "justify", units);
-    fragment_boxes(block, &frags, page_idx, &style, &placement.extra, &inner, units)
+    let inner = if edited {
+        edited_html(block)
+    } else {
+        flow_lines(block, &frags, size, &placement.shifts, style.align == "justify", units)
+    };
+    fragment_boxes(block, &frags, page_idx, &style, &placement.extra, &inner, edited, units)
+}
+
+/// Whether the text of `block` was edited after the analysis (see
+/// `render::json::apply`): its per-line text is gone, so it flows inside
+/// the box of its lines instead of keeping them.
+fn is_edited(block: &Block) -> bool {
+    !matches!(block.kind, BlockKind::Equation { .. })
+        && !block.lines.is_empty()
+        && block.hlines.is_empty()
+        && !block.spans.is_empty()
+}
+
+/// Whether the cells of the table of `block` were edited after the
+/// analysis: the per-line text of the float is gone then.
+fn is_edited_table(block: &Block) -> bool {
+    !block.inner_lines.is_empty() && block.inner_spans.is_empty()
+}
+
+/// The edited text of a block as one flowing line (the rows of an author
+/// group separated by line breaks). Glyphs left in the picture for
+/// unedited text are written as text here, since the picture no longer
+/// holds them where the text goes (see [`add_all_origins`]); glyphs without
+/// Unicode value are left out.
+fn edited_html(block: &Block) -> String {
+    let spans_html = |spans: &[Span]| -> String {
+        spans
+            .iter()
+            .map(|span| wrap_span(span, esc(&span.text.replace('\u{FFFD}', ""))))
+            .collect()
+    };
+    let html = if matches!(block.kind, BlockKind::Authors) && !block.rows.is_empty() {
+        block
+            .rows
+            .iter()
+            .map(|row| spans_html(row))
+            .collect::<Vec<_>>()
+            .join("<br>")
+    } else {
+        spans_html(&block.spans)
+    };
+    format!("<span class=\"ln end\">{html}</span>")
 }
 
 /// Line pitch of a block of font size `size`: the median distance between
@@ -841,7 +905,13 @@ fn box_style(block: &Block, frags: &[Fragment], size: f32, lead: f32, width: f32
 /// showing `inner` (the lines of the whole block). The first fragment holds
 /// the text; the others are clipped copies shifted up by the lines shown
 /// before them, hidden from assistive technology and translation. `extra`
-/// is the height added to each fragment box (see [`line_placement`]).
+/// is the height added to each fragment box (see [`line_placement`]). The
+/// boxes of an `edited` block start in reflow mode, and the script fits
+/// their text into them.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the parts of one flowing block, computed by flow_block"
+)]
 fn fragment_boxes(
     block: &Block,
     frags: &[Fragment],
@@ -849,6 +919,7 @@ fn fragment_boxes(
     style: &BoxStyle,
     extra: &[f32],
     inner: &str,
+    edited: bool,
     units: &Units,
 ) -> String {
     let BoxStyle {
@@ -879,8 +950,9 @@ fn fragment_boxes(
             );
             if frag_idx == 0 {
                 out.push_str(&format!(
-                    "<div class=\"fb{}\" data-kind=\"{}\" data-block=\"{}\" data-align=\"{align}\" data-parts=\"{}\" style=\"{geometry}\"><div class=\"in\">{inner}</div></div>\n",
+                    "<div class=\"fb{}{}\" data-kind=\"{}\" data-block=\"{}\" data-align=\"{align}\" data-parts=\"{}\" style=\"{geometry}\"><div class=\"in\">{inner}</div></div>\n",
                     if frags.len() == 1 { " one" } else { "" },
+                    if edited { " rf ed" } else { "" },
                     kind_name(&block.kind),
                     block.id,
                     frags.len(),
@@ -888,8 +960,9 @@ fn fragment_boxes(
             } else {
                 // The same text, shifted up by the lines shown before.
                 out.push_str(&format!(
-                    "<div class=\"fb cont{}\" data-of=\"{}\" data-skip=\"{lines_before}\" data-align=\"{align}\" translate=\"no\" aria-hidden=\"true\" style=\"{geometry}\"><div class=\"in\" style=\"margin-top:-{}\">{inner}</div></div>\n",
+                    "<div class=\"fb cont{}{}\" data-of=\"{}\" data-skip=\"{lines_before}\" data-align=\"{align}\" translate=\"no\" aria-hidden=\"true\" style=\"{geometry}\"><div class=\"in\" style=\"margin-top:-{}\">{inner}</div></div>\n",
                     if frag_idx + 1 == frags.len() { " tail" } else { "" },
+                    if edited { " rf" } else { "" },
                     block.id,
                     units.len(lines_before as f32 * lead + extra_before),
                 ));
@@ -917,12 +990,14 @@ fn table_fits(table: &Table) -> bool {
     growth <= TABLE_MAX_GROWTH_RATIO * geom.bbox.height().max(1.0)
 }
 
-/// A reconstructed table laid out on its original grid.
-fn table_box(table: &Table, units: &Units) -> String {
+/// A reconstructed table laid out on its original grid. The text of an
+/// `edited` table wraps inside its cells.
+fn table_box(table: &Table, edited: bool, units: &Units) -> String {
     let geom = &table.geom;
     let (box_width, box_height) = (geom.bbox.width().max(1.0), geom.bbox.height().max(1.0));
     let mut out = format!(
-        "<div class=\"tb\" data-kind=\"table\" style=\"left:{};top:{};width:{};height:{};font-size:{}\"><table><colgroup>",
+        "<div class=\"tb{}\" data-kind=\"table\" style=\"left:{};top:{};width:{};height:{};font-size:{}\"><table><colgroup>",
+        if edited { " rf" } else { "" },
         units.x(geom.bbox.x0),
         units.y(geom.bbox.y0),
         units.x(box_width),
@@ -1051,9 +1126,23 @@ fn equation(block: &Block, units: &Units) -> String {
 /// stay in the picture, and so do tall glyphs when `tall_in_picture`: in
 /// text and formulas, not in tables, whose cells write them as text).
 fn add_origins(set: &mut HashSet<(i32, i32)>, line: &Line, tall_in_picture: bool) {
+    add_glyph_origins(set, line, |glyph| {
+        glyph.text.contains(PICTURE_CHARS) || (tall_in_picture && is_tall(glyph))
+    });
+}
+
+/// Adds the origins of every glyph of `line`, those of [`add_origins`]
+/// leaves in the picture included: the text of an edited block.
+fn add_all_origins(set: &mut HashSet<(i32, i32)>, line: &Line) {
+    add_glyph_origins(set, line, |_| false);
+}
+
+/// Adds the origins of the glyphs of `line`, except those `keep` leaves in
+/// the picture.
+fn add_glyph_origins(set: &mut HashSet<(i32, i32)>, line: &Line, keep: impl Fn(&LineGlyph) -> bool) {
     for glyph in &line.glyphs {
         // Glyphs left in the picture (see `PICTURE_CHARS` and `is_tall`).
-        if glyph.text.contains(PICTURE_CHARS) || (tall_in_picture && is_tall(glyph)) {
+        if keep(glyph) {
             continue;
         }
         set.insert(origin_key(glyph.ox, glyph.oy));

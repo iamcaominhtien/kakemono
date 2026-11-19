@@ -336,7 +336,9 @@ fn find_arxiv_stamp(pages: &[PageData], out: &mut Furniture) {
             let compact: String = rotated.text.chars().filter(|ch| !ch.is_whitespace()).collect();
             if compact.starts_with("arXiv:") && out.arxiv_stamp.is_none() {
                 out.arxiv_stamp = Some(rotated.text.clone());
-                if let Some(caps) = ARXIV_ID.captures(&compact) {
+                // The text as printed first: without its spaces, the
+                // version runs into the date ("v1 3 Dec" would be "v13").
+                if let Some(caps) = ARXIV_ID.captures(&rotated.text).or_else(|| ARXIV_ID.captures(&compact)) {
                     out.arxiv_id = Some(format!(
                         "{}{}",
                         &caps[1],

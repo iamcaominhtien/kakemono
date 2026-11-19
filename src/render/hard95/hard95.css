@@ -65,6 +65,7 @@ body.fit .page{width:min(100%,calc(var(--pw)*var(--zoom)*1px))}
 .fb.rf[data-align="center"] .in{text-align:center}
 .fb.rf .ln{white-space:normal;margin-left:0!important;top:0!important;word-spacing:normal!important;letter-spacing:normal!important}
 .fb.rf .ln::after{content:none!important}
+.fb.rf.nw .ln{white-space:nowrap}
 .fb.rf .ln.sq{display:inline}
 .fb.rf br.sqbr{display:none}
 /* Tables on their original grid. */

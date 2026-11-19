@@ -157,6 +157,8 @@
 
   function fitBlock(fb){
     if(done.has(fb))return;done.add(fb);
+    // Text edited before the page was written flows in its boxes already.
+    if(fb.classList.contains('ed')){reflow(fb);original.set(fb,fb.textContent);return;}
     var page=fb.closest('.page'),w=page.getBoundingClientRect().width,lines=fb.querySelectorAll('.ln');
     fitAll(lines,w);
     clonesOf(fb).forEach(function(c){
@@ -189,8 +191,13 @@
     fb.querySelectorAll('.ln[data-fs0]').forEach(function(l){l.style.fontSize=l.dataset.fs0;});
     boxes.forEach(function(b){b.querySelectorAll('.ln.sq').forEach(function(l){l.style.transform='';});});
     var lh=Number.parseFloat(getComputedStyle(fb).lineHeight)||0,scale=1;
+    // A block of one line stays on one line ("or" between two formulas):
+    // its type is made smaller to fit the width instead.
+    var one=boxes.length===1&&total<lh*1.5;
+    boxes.forEach(function(b){b.classList.toggle('nw',one);});
+    var over=one?function(){return inner.scrollWidth>inner.clientWidth+1;}:function(){return inner.scrollHeight>total+lh*0.3;};
     inner.style.fontSize='';
-    while(scale>0.62&&inner.scrollHeight>total+lh*0.3){scale-=0.03;inner.style.fontSize=Math.round(scale*100)+'%';}
+    while(scale>0.62&&over()){scale-=0.03;inner.style.fontSize=Math.round(scale*100)+'%';}
     boxes.slice(1).forEach(function(b){var ci=b.firstElementChild;ci.innerHTML=inner.innerHTML;ci.style.fontSize=inner.style.fontSize;});
     setTimeout(function(){busy=false;},0);
   }
