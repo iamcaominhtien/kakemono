@@ -11,6 +11,7 @@ pub(crate) mod doc;
 mod docx;
 pub mod fmt;
 mod ir;
+pub(crate) mod metafile;
 pub(crate) mod omml;
 mod pictures;
 mod styles;

@@ -22,6 +22,18 @@ const BLIP_JPEG: u16 = 0xF01D;
 const BLIP_PNG: u16 = 0xF01E;
 /// OfficeArt record type: a device-independent bitmap.
 const BLIP_DIB: u16 = 0xF01F;
+/// OfficeArt record type: an EMF metafile.
+const BLIP_EMF: u16 = 0xF01A;
+/// OfficeArt record type: a WMF metafile.
+const BLIP_WMF: u16 = 0xF01B;
+/// OfficeArt record type: a Macintosh PICT.
+const BLIP_PICT: u16 = 0xF01C;
+/// Size of the header of a metafile record after its identifiers.
+const METAFILE_HEADER_LEN: usize = 34;
+/// Compression of a metafile record: none (else deflate).
+const METAFILE_UNCOMPRESSED: u8 = 0xFE;
+/// Picture storage mode: OfficeArt records follow the header.
+const MM_SHAPE: i16 = 0x64;
 /// OfficeArt record type: a CMYK JPEG.
 const BLIP_JPEG_CMYK: u16 = 0xF02A;
 /// Instances of the bitmap records that have a second identifier.
@@ -37,7 +49,7 @@ const SCALE_UNIT: f32 = 1000.0;
 const BMP_FILE_HEADER_LEN: u32 = 14;
 
 /// The picture at offset `location` of the `Data` stream: its file (a PNG,
-/// a JPEG or a BMP; `None` for a metafile or damaged data) and its size in
+/// a JPEG, a BMP or a metafile; `None` for damaged data) and its size in
 /// the document, in points.
 pub(crate) fn picture(data: &[u8], location: u32) -> (Option<Vec<u8>>, (f32, f32)) {
     let start = location as usize;
@@ -58,6 +70,15 @@ pub(crate) fn picture(data: &[u8], location: u32) -> (Option<Vec<u8>>, (f32, f32
         pos += 1 + usize::from(picf.get(pos).copied().unwrap_or(0));
     }
     let end = total.min(picf.len());
+    // Older files store a Windows metafile right after the header.
+    if mode != MM_SHAPE && mode != MM_SHAPEFILE {
+        let file = picf
+            .get(header_len..end)
+            .filter(|file| crate::word::metafile::is_metafile(file));
+        if let Some(file) = file {
+            return (Some(file.to_vec()), size);
+        }
+    }
     (find_blip(picf, pos, end), size)
 }
 
@@ -89,6 +110,18 @@ fn find_blip(bytes: &[u8], mut pos: usize, end: usize) -> Option<Vec<u8>> {
                 } else {
                     file.to_vec()
                 });
+            }
+            BLIP_EMF | BLIP_WMF | BLIP_PICT => {
+                let instance = version_instance >> 4;
+                let uids = if instance & 1 == 1 { 2 } else { 1 };
+                let header = body + uids * UID_LEN;
+                let file = bytes.get(header + METAFILE_HEADER_LEN..(body + len).min(bytes.len()))?;
+                if bytes.get(header + 32) == Some(&METAFILE_UNCOMPRESSED) {
+                    return Some(file.to_vec());
+                }
+                let mut out = Vec::new();
+                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(file), &mut out).ok()?;
+                return Some(out);
             }
             _ => pos = body + len,
         }

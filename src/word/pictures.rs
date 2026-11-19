@@ -1,6 +1,6 @@
 //! The picture files of a Word document, made ready for every output:
-//! PNG and JPEG as they are, other bitmaps and SVG drawings turned into
-//! PNG. Windows metafiles (EMF, WMF) cannot be drawn here.
+//! PNG and JPEG as they are, other bitmaps, SVG drawings and Windows
+//! metafiles (EMF, WMF, through SVG) turned into PNG.
 
 use crate::model::Picture;
 
@@ -18,7 +18,7 @@ const BMP_MAGIC: &[u8] = b"BM";
 const SVG_SNIFF_BYTES: usize = 512;
 
 /// The picture `data` as a PNG or JPEG, or `None` when its format cannot
-/// be drawn (a Windows metafile, TIFF, or damaged data).
+/// be drawn (TIFF, a metafile that draws nothing, or damaged data).
 pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
     if data.starts_with(PNG_MAGIC) {
         return Some(Picture { data, jpeg: false });
@@ -28,6 +28,11 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
     }
     if data.starts_with(GIF_MAGIC) || data.starts_with(BMP_MAGIC) {
         return to_png(&data);
+    }
+    if super::metafile::is_metafile(&data) {
+        let svg = super::metafile::to_svg(&data)?;
+        let png = crate::backend::svg_to_png(&svg, SVG_SCALE)?;
+        return Some(Picture { data: png, jpeg: false });
     }
     if is_svg(&data) {
         let svg = String::from_utf8_lossy(&data);
@@ -57,7 +62,8 @@ fn is_svg(data: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    /// PNG and JPEG are kept, metafiles are refused, SVG becomes PNG.
+    /// PNG and JPEG are kept, SVG becomes PNG, a damaged metafile is
+    /// refused.
     #[test]
     fn formats() {
         let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
