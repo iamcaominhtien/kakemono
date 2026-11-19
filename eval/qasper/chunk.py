@@ -9,7 +9,11 @@ Pipelines:
                    the same, cut every 256 tokens: about the mean size of the
                    kakemono-struct chunks, to tell structure from size
   kakemono-struct  kakemono's blocks grouped by section, never cut inside a block
-                   unless it is too long, each chunk headed by its section path
+                   unless it is too long, each chunk headed by "paper title | section path"
+  kakemono-struct-notitle
+                   the same chunks with the paper title taken out of the heading (the
+                   section path stays): retrieval is within one paper, so a title
+                   repeated on every chunk only dilutes the embeddings
 """
 
 import json
@@ -129,6 +133,16 @@ def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
     return chunks
 
 
+def drop_title(chunk: str) -> str:
+    """Take the paper title out of a struct chunk's heading, keep the section path."""
+    head, sep, body = chunk.partition("\n\n")
+    if not sep:
+        return chunk
+    if " | " in head:
+        return head.split(" | ", 1)[1] + "\n\n" + body
+    return body  # the heading was the title alone (text before the first section)
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -143,6 +157,8 @@ def build(pipeline: str, pid: str) -> list[str]:
         return fixed_chunks("\n\n".join(t for t in map(block_text, doc["blocks"]) if t), size)
     if pipeline == "kakemono-struct":
         return struct_chunks(doc)
+    if pipeline == "kakemono-struct-notitle":
+        return [drop_title(c) for c in struct_chunks(doc)]
     raise SystemExit(f"unknown pipeline {pipeline}")
 
 
