@@ -77,28 +77,37 @@ pub struct FontBook {
 }
 
 /// Fonts with the same metrics as fonts Word documents often use: the
-/// first one found is taken in place of the original.
+/// first one found is taken in place of the original, with the same line
+/// breaks.
 const ALIASES: &[(&str, &[&str])] = &[
     ("calibri", &["carlito"]),
-    ("calibri light", &["carlito"]),
     ("cambria", &["caladea"]),
-    (
-        "times new roman",
-        &["liberation serif", "tinos", "times new roman", "freeserif"],
-    ),
-    ("times", &["liberation serif", "tinos", "freeserif"]),
-    ("arial", &["liberation sans", "arimo", "freesans"]),
-    ("helvetica", &["liberation sans", "arimo", "freesans"]),
+    ("times new roman", &["liberation serif", "tinos"]),
+    ("times", &["liberation serif", "tinos"]),
+    ("arial", &["liberation sans", "arimo"]),
+    ("helvetica", &["liberation sans", "arimo"]),
     ("arial narrow", &["liberation sans narrow"]),
-    ("courier new", &["liberation mono", "cousine", "freemono"]),
-    ("courier", &["liberation mono", "cousine", "freemono"]),
+    ("courier new", &["liberation mono", "cousine"]),
+    ("courier", &["liberation mono", "cousine"]),
     ("georgia", &["gelasio"]),
-    ("segoe ui", &["selawik", "open sans", "noto sans"]),
+    ("segoe ui", &["selawik"]),
+];
+
+/// Fonts that only look like the original (their widths differ): used to
+/// draw text measured with the original's metrics (`metrics`), or when
+/// nothing better is known.
+const LOOKALIKES: &[(&str, &[&str])] = &[
+    ("calibri light", &["carlito"]),
     ("verdana", &["dejavu sans"]),
     ("tahoma", &["dejavu sans"]),
+    ("segoe ui", &["open sans", "noto sans", "dejavu sans"]),
+    ("trebuchet ms", &["dejavu sans"]),
     ("symbol", &["dejavu sans", "freeserif"]),
     ("wingdings", &["dejavu sans", "freeserif"]),
     ("cambria math", &["dejavu serif", "freeserif"]),
+    ("times new roman", &["freeserif"]),
+    ("arial", &["freesans"]),
+    ("courier new", &["freemono"]),
 ];
 
 /// Families tried, in order, for characters the chosen font lacks.
@@ -195,10 +204,10 @@ impl FontBook {
             return found.unwrap_or_else(|| self.last_resort(bold, italic));
         }
         let mut names = vec![key.0.clone()];
-        if let Some((_, aliases)) = ALIASES.iter().find(|(name, _)| *name == key.0) {
-            // An installed original wins over its stand-in, except for
-            // symbol fonts, whose codes are not Unicode.
-            names.extend(aliases.iter().map(|alias| (*alias).to_string()));
+        for table in [ALIASES, LOOKALIKES] {
+            if let Some((_, aliases)) = table.iter().find(|(name, _)| *name == key.0) {
+                names.extend(aliases.iter().map(|alias| (*alias).to_string()));
+            }
         }
         let mut found = None;
         for name in &names {

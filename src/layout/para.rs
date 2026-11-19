@@ -41,6 +41,28 @@ const JUSTIFY_SHRINK_RATIO: f32 = 0.25;
 /// (rounding).
 const FIT_TOLERANCE_PT: f32 = 0.01;
 
+/// How a piece of text is set: face, faked bold and italic, size, small
+/// capitals, and the address of the metrics of a missing font.
+type PieceKey = (FaceId, bool, bool, f32, bool, Option<usize>);
+
+/// The face choice for a character: [`PieceKey`] without small capitals.
+type FaceChoice = (FaceId, bool, bool, f32, Option<usize>);
+
+/// Narrowest and widest a stand-in face's glyphs are drawn to fit the
+/// widths of the font they stand for.
+const MIN_STAND_IN_SCALE: f32 = 0.75;
+/// See [`MIN_STAND_IN_SCALE`].
+const MAX_STAND_IN_SCALE: f32 = 1.25;
+
+/// The metric face whose address is `address`, looked up again from the
+/// run's fonts (the address only tells pieces apart).
+fn metric_by_address(address: usize, fmt: &RunFmt) -> Option<&'static super::metrics::MetricFace> {
+    [&fmt.font, &fmt.font_hansi, &fmt.font_east_asia, &fmt.font_cs]
+        .into_iter()
+        .filter_map(|family| super::metrics::lookup(family, fmt.bold, fmt.italic))
+        .find(|metric| *metric as *const _ as usize == address)
+}
+
 /// What a paragraph's layout needs to know about its surroundings.
 pub struct Ctx<'a> {
     /// The fonts.
@@ -207,7 +229,18 @@ struct Placed {
 
 impl Ctx<'_> {
     /// The face and size used for `ch` in a run of format `fmt`.
-    fn face_for(&mut self, ch: char, fmt: &RunFmt) -> (FaceId, bool, bool, f32) {
+    fn face_for(&mut self, ch: char, fmt: &RunFmt) -> FaceChoice {
+        let (face, fake_bold, fake_italic, size, family) = self.face_and_family(ch, fmt);
+        // A missing font with known metrics: measured with them.
+        let metric = (!self.book.has_family(&family))
+            .then(|| super::metrics::lookup(&family, fmt.bold, fmt.italic))
+            .flatten()
+            .filter(|metric| ch.is_whitespace() || metric.advance(ch).is_some());
+        (face, fake_bold, fake_italic, size, metric.map(|metric| metric as *const _ as usize))
+    }
+
+    /// The face and size for `ch`, with the family the run asks for.
+    fn face_and_family(&mut self, ch: char, fmt: &RunFmt) -> (FaceId, bool, bool, f32, String) {
         let (family, size) = if is_east_asian(ch) {
             (&fmt.font_east_asia, fmt.size)
         } else if fmt.cs || fmt.rtl || is_complex(ch) {
@@ -217,16 +250,17 @@ impl Ctx<'_> {
         } else {
             (&fmt.font_hansi, fmt.size)
         };
-        let (face, fake_bold, fake_italic) = self.book.face(family, fmt.bold, fmt.italic);
+        let family = family.clone();
+        let (face, fake_bold, fake_italic) = self.book.face(&family, fmt.bold, fmt.italic);
         if ch.is_whitespace() || ch.is_control() || self.covered(face, ch) {
-            return (face, fake_bold, fake_italic, size);
+            return (face, fake_bold, fake_italic, size, family);
         }
         for fallback in self.book.fallbacks() {
             if self.covered(fallback, ch) {
-                return (fallback, fmt.bold, fmt.italic, size);
+                return (fallback, fmt.bold, fmt.italic, size, family);
             }
         }
-        (face, fake_bold, fake_italic, size)
+        (face, fake_bold, fake_italic, size, family)
     }
 
     /// Whether face `face` covers `ch`, cached.
@@ -244,11 +278,11 @@ impl Ctx<'_> {
         let text = transform_case(text, fmt);
         let mut pieces = Vec::new();
         let mut start = 0;
-        let mut current: Option<(FaceId, bool, bool, f32, bool)> = None;
+        let mut current: Option<PieceKey> = None;
         for (at, ch) in text.char_indices() {
             let small = fmt.small_caps && !fmt.caps && ch.is_lowercase();
-            let (face, fake_bold, fake_italic, size) = self.face_for(ch, fmt);
-            let key = (face, fake_bold, fake_italic, size, small);
+            let (face, fake_bold, fake_italic, size, metric) = self.face_for(ch, fmt);
+            let key = (face, fake_bold, fake_italic, size, small, metric);
             match current {
                 Some(old) if old == key => {}
                 Some(old) => {
@@ -266,8 +300,9 @@ impl Ctx<'_> {
     }
 
     /// One piece: text in one face.
-    fn piece(&mut self, text: &str, fmt: &RunFmt, key: (FaceId, bool, bool, f32, bool)) -> Piece {
-        let (face, fake_bold, fake_italic, base_size, small) = key;
+    fn piece(&mut self, text: &str, fmt: &RunFmt, key: PieceKey) -> Piece {
+        let (face, fake_bold, fake_italic, base_size, small, metric) = key;
+        let metric = metric.and_then(|address| metric_by_address(address, fmt));
         let (shown, mut size) = if small {
             (text.to_uppercase(), base_size * SMALL_CAPS_RATIO)
         } else {
@@ -292,9 +327,17 @@ impl Ctx<'_> {
         let mut x = 0.0;
         let mut spaces = 0;
         let clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+        let mut drawn_width = 0.0;
         for (at, glyph) in shaped.glyphs.iter().enumerate() {
-            let advance = glyph.advance * size * scale + fmt.spacing;
             let start = glyph.cluster;
+            // The width of the font Word used, when it is known.
+            let first_of_cluster = at == 0 || shaped.glyphs[at - 1].cluster != start;
+            let measured = metric.and_then(|metric| {
+                let ch = shown[start..].chars().next()?;
+                if first_of_cluster { metric.advance(ch) } else { Some(0.0) }
+            });
+            drawn_width += glyph.advance;
+            let advance = measured.unwrap_or(glyph.advance) * size * scale + fmt.spacing;
             let end = clusters
                 .iter()
                 .copied()
@@ -315,13 +358,24 @@ impl Ctx<'_> {
             let _ = at;
             x += advance;
         }
-        let metrics = self.book.get(face).metrics;
+        let mut metrics = self.book.get(face).metrics;
+        let mut draw_scale = scale;
+        if let Some(metric) = metric {
+            metrics.ascent = metric.ascent;
+            metrics.descent = metric.descent;
+            metrics.leading = metric.leading;
+            // The stand-in's glyphs are narrowed or widened to the widths.
+            let measured_width = (x - fmt.spacing * glyphs.len() as f32) / (size * scale);
+            if drawn_width > 0.0 && measured_width > 0.0 {
+                draw_scale = scale * (measured_width / drawn_width).clamp(MIN_STAND_IN_SCALE, MAX_STAND_IN_SCALE);
+            }
+        }
         Piece {
             face,
             size,
             fake_bold,
             fake_italic,
-            scale,
+            scale: draw_scale,
             fmt: fmt.clone(),
             glyphs,
             text: shown,
@@ -343,7 +397,10 @@ impl Ctx<'_> {
     /// `fmt`, for empty lines and line heights.
     fn line_metrics(&mut self, fmt: &RunFmt) -> (f32, f32, f32) {
         let ch = 'x';
-        let (face, _, _, size) = self.face_for(ch, fmt);
+        let (face, _, _, size, metric) = self.face_for(ch, fmt);
+        if let Some(metric) = metric.and_then(|address| metric_by_address(address, fmt)) {
+            return (metric.ascent * size, metric.descent * size, metric.leading * size);
+        }
         let metrics = self.book.get(face).metrics;
         (metrics.ascent * size, metrics.descent * size, metrics.leading * size)
     }
