@@ -95,6 +95,7 @@ impl Writer<'_> {
             shaper: self.shaper,
             doc: self.doc,
             notes: self.notes,
+            page_refs: None,
             own_note: None,
             page: None,
             page_count: None,

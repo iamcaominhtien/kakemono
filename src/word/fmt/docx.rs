@@ -1505,6 +1505,7 @@ pub(super) fn layout_field(instr: &str) -> Option<(FieldKind, Option<NumFormat>)
         "PAGE" => FieldKind::Page,
         "NUMPAGES" => FieldKind::NumPages,
         "SECTIONPAGES" => FieldKind::SectionPages,
+        "PAGEREF" => FieldKind::PageRef(args.iter().find(|arg| !arg.starts_with('\\'))?.clone()),
         _ => return None,
     };
     let mut format = None;

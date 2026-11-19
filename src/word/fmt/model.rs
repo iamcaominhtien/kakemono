@@ -599,8 +599,10 @@ pub enum BreakKind {
 }
 
 /// A field whose result depends on the layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
+    /// The number of the page a bookmark is on (`PAGEREF`).
+    PageRef(String),
     /// The page number.
     Page,
     /// The number of pages.

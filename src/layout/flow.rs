@@ -39,10 +39,42 @@ pub struct Layout {
     pub pages: Vec<Page>,
     /// Where the bookmarks land.
     pub destinations: Vec<Destination>,
+    /// The page number shown on each bookmark's page, by bookmark (for
+    /// `PAGEREF` fields).
+    pub page_refs: HashMap<String, String>,
 }
 
-/// Lays out a whole document.
+/// Lays out a whole document: once, then again with the page numbers of
+/// its bookmarks when it refers to them.
 pub fn layout(doc: &FDoc, book: &mut FontBook) -> Layout {
+    let first = layout_pass(doc, book, None);
+    if !refers_to_pages(doc) {
+        return first;
+    }
+    let refs = first.page_refs.clone();
+    layout_pass(doc, book, Some(&refs))
+}
+
+/// Whether the document has a `PAGEREF` field.
+fn refers_to_pages(doc: &FDoc) -> bool {
+    let mut found = false;
+    for section in &doc.sections {
+        walk_inlines(&section.blocks, &mut |inline| {
+            found |= matches!(
+                inline,
+                Inline::Field {
+                    kind: crate::word::fmt::model::FieldKind::PageRef(_),
+                    ..
+                }
+            );
+        });
+    }
+    found
+}
+
+/// Lays out a whole document once, with the page numbers of bookmarks
+/// from an earlier pass.
+fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<String, String>>) -> Layout {
     let notes = number_notes(doc);
     let mut shaper = Shaper::default();
     let mut coverage = HashMap::new();
@@ -52,6 +84,7 @@ pub fn layout(doc: &FDoc, book: &mut FontBook) -> Layout {
         shaper: &mut shaper,
         coverage: &mut coverage,
         notes: &notes,
+        page_refs,
         pages: Vec::new(),
         page_info: Vec::new(),
         destinations: Vec::new(),
@@ -63,9 +96,18 @@ pub fn layout(doc: &FDoc, book: &mut FontBook) -> Layout {
     flow.endnotes();
     flow.finish_page();
     flow.headers_and_footers();
+    let mut refs = HashMap::new();
+    for destination in &flow.destinations {
+        if let Some(info) = flow.page_info.get(destination.page) {
+            let format = &doc.sections[info.section].page_number_format;
+            refs.entry(destination.name.clone())
+                .or_insert_with(|| crate::word::fmt::model::format_page(info.number, format));
+        }
+    }
     Layout {
         pages: flow.pages,
         destinations: flow.destinations,
+        page_refs: refs,
     }
 }
 
@@ -183,6 +225,7 @@ struct Flow<'a> {
     shaper: &'a mut Shaper,
     coverage: &'a mut HashMap<(super::fonts::FaceId, char), bool>,
     notes: &'a HashMap<(bool, String), String>,
+    page_refs: Option<&'a HashMap<String, String>>,
     pages: Vec<Page>,
     page_info: Vec<PageInfo>,
     destinations: Vec<Destination>,
@@ -198,6 +241,7 @@ impl Flow<'_> {
             shaper: self.shaper,
             doc: self.doc,
             notes: self.notes,
+            page_refs: self.page_refs,
             own_note: None,
             page: None,
             page_count: None,

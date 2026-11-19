@@ -25,6 +25,8 @@ const SMALL_CAPS_RATIO: f32 = 0.8;
 /// A tab that reaches no stop before the end of the line moves to the next
 /// line; this much past the end is still accepted, in points.
 const TAB_OVERFLOW_PT: f32 = 0.5;
+/// What Word shows for a reference to a bookmark that does not exist.
+const MISSING_BOOKMARK: &str = "Error! Bookmark not defined.";
 /// Resolution at which Word measures the cells of leader characters, in
 /// dots per inch.
 const LAYOUT_DPI: f32 = 600.0;
@@ -89,6 +91,9 @@ pub struct Ctx<'a> {
     pub section_pages: Option<u32>,
     /// Faces that cover each character, cached.
     pub coverage: &'a mut HashMap<(FaceId, char), bool>,
+    /// The page number of each bookmark, once the document has been laid
+    /// out (`None` on the first pass).
+    pub page_refs: Option<&'a HashMap<String, String>>,
     /// Distance from the left edge of the page to the start of the lines
     /// (leader characters are placed on a grid that starts at the page's
     /// edge).
@@ -654,7 +659,7 @@ fn atoms(ctx: &mut Ctx<'_>, para: &Para) -> Vec<Atom> {
                 continue;
             }
             Inline::Field { kind, fmt, format } => {
-                stretch.push((field_value(ctx, *kind, format.as_ref()), fmt.clone()));
+                stretch.push((field_value(ctx, kind, format.as_ref()), fmt.clone()));
                 continue;
             }
             _ => {}
@@ -701,8 +706,11 @@ fn atoms(ctx: &mut Ctx<'_>, para: &Para) -> Vec<Atom> {
 /// The text a field shows: the page number (in `format`, or else the
 /// section's), the number of pages or of the section's pages; "1" when it
 /// is not known.
-fn field_value(ctx: &Ctx<'_>, kind: FieldKind, format: Option<&NumFormat>) -> String {
+fn field_value(ctx: &Ctx<'_>, kind: &FieldKind, format: Option<&NumFormat>) -> String {
     let value = match kind {
+        FieldKind::PageRef(name) => ctx
+            .page_refs
+            .map(|refs| refs.get(name).cloned().unwrap_or_else(|| MISSING_BOOKMARK.to_string())),
         FieldKind::Page => ctx.page.clone().map(|(number, section_format)| {
             crate::word::fmt::model::format_page(number, format.unwrap_or(&section_format))
         }),
