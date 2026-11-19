@@ -11,8 +11,8 @@ use super::para::{self, Ctx};
 use super::shape::Shaper;
 use crate::render::escape::esc;
 use crate::word::fmt::model::{
-    Align, Anchor, AnchorAlign, Block, Border, BorderStyle, FDoc, FieldKind, Inline, LineSpacing, NumberSuffix, Para,
-    RunFmt, Shape, Table, Underline, VAlign, VMerge, VertAlign, Wrap, format_page,
+    Align, Anchor, AnchorAlign, Block, Border, BorderStyle, FDoc, FImage, FieldKind, Inline, LineSpacing, NumberSuffix,
+    Para, RunFmt, Shape, Table, Underline, VAlign, VMerge, VertAlign, Wrap, format_page,
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -50,7 +50,79 @@ pub fn to_html(doc: &FDoc) -> String {
         last_style: None,
     };
     writer.document();
-    writer.out
+    resolve_images(&writer.out, &doc.images)
+}
+
+/// Starts and ends the mark of a picture in the HTML being written.
+const IMAGE_MARK: char = '\u{1}';
+/// Separates the parts of a picture mark: index, alt text, style.
+const IMAGE_SEP: char = '\u{2}';
+
+/// The HTML `html` with its picture marks replaced: a picture used once
+/// becomes an `<img>` holding its data; one used more than once is defined
+/// once, in an SVG at the end, and each use refers to it.
+fn resolve_images(html: &str, images: &[FImage]) -> String {
+    let parts: Vec<&str> = html.split(IMAGE_MARK).collect();
+    let mark = |part: &str| -> Option<(usize, String, String)> {
+        let mut fields = part.split(IMAGE_SEP);
+        let index = fields.next()?.parse().ok()?;
+        Some((index, fields.next()?.to_string(), fields.next()?.to_string()))
+    };
+    let mut uses: HashMap<usize, usize> = HashMap::new();
+    for part in parts.iter().skip(1).step_by(2) {
+        if let Some((index, _, _)) = mark(part) {
+            *uses.entry(index).or_default() += 1;
+        }
+    }
+    let data_uri = |index: usize| {
+        let image = &images[index];
+        let kind = if image.jpeg { "jpeg" } else { "png" };
+        format!(
+            "data:image/{kind};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&image.data)
+        )
+    };
+    let mut out = String::with_capacity(html.len());
+    for (at, part) in parts.iter().enumerate() {
+        if at % 2 == 0 {
+            out.push_str(part);
+            continue;
+        }
+        let Some((index, alt, style)) = mark(part) else {
+            continue;
+        };
+        if uses.get(&index).copied().unwrap_or(0) > 1 {
+            let _ = write!(
+                out,
+                "<svg role=\"img\" aria-label=\"{alt}\" viewBox=\"0 0 1 1\" preserveAspectRatio=\"none\" style=\"{style}\"><use href=\"#kimg{index}\"/></svg>"
+            );
+        } else {
+            let _ = write!(out, "<img src=\"{}\" alt=\"{alt}\" style=\"{style}\">", data_uri(index));
+        }
+    }
+    let mut shared: Vec<usize> = uses
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .map(|(index, _)| index)
+        .collect();
+    if !shared.is_empty() {
+        shared.sort_unstable();
+        let mut defs =
+            String::from("<svg width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\"><defs>");
+        for index in shared {
+            let _ = write!(
+                defs,
+                "<image id=\"kimg{index}\" width=\"1\" height=\"1\" preserveAspectRatio=\"none\" href=\"{}\"/>",
+                data_uri(index)
+            );
+        }
+        defs.push_str("</defs></svg>");
+        match out.rfind("</body>") {
+            Some(at) => out.insert_str(at, &defs),
+            None => out.push_str(&defs),
+        }
+    }
+    out
 }
 
 /// The number shown for each note, by (endnote, id).
@@ -385,14 +457,13 @@ impl Writer<'_> {
 
     /// A picture, in the line or floating.
     fn image(&mut self, index: Option<usize>, width: f32, height: f32, anchor: Option<&Anchor>, alt: &str) {
-        let Some(image) = index.and_then(|index| self.doc.images.get(index)) else {
+        let Some(index) = index.filter(|&index| index < self.doc.images.len()) else {
             return;
         };
-        let kind = if image.jpeg { "jpeg" } else { "png" };
-        let data = base64::engine::general_purpose::STANDARD.encode(&image.data);
+        // A mark that `resolve_images` turns into the picture.
         let _ = write!(
             self.out,
-            "<img src=\"data:image/{kind};base64,{data}\" alt=\"{}\" style=\"width:{}pt;height:{}pt{}\">",
+            "{IMAGE_MARK}{index}{IMAGE_SEP}{}{IMAGE_SEP}width:{}pt;height:{}pt{}{IMAGE_MARK}",
             esc(alt),
             num(width),
             num(height),

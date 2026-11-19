@@ -286,6 +286,16 @@ fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
                     fonts.load_fonts_dir(dir);
                 }
             }
+            // Map each font file once: otherwise it is read again for every
+            // piece of text drawn.
+            let ids: Vec<_> = fonts.faces().map(|face| face.id).collect();
+            for id in ids {
+                // SAFETY: font files are not changed while a document is
+                // converted; one that were could only give wrong glyphs.
+                unsafe {
+                    fonts.make_shared_face_data(id);
+                }
+            }
             fonts.set_serif_family("Liberation Serif");
             fonts.set_sans_serif_family("Liberation Sans");
             fonts.set_monospace_family("Liberation Mono");

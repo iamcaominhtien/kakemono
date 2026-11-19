@@ -268,6 +268,7 @@ impl ImageStore<'_> {
             out,
             file,
             files: 0,
+            written: HashMap::new(),
             base64: String::new(),
         };
         let mut rest = html;
@@ -344,6 +345,9 @@ struct SourceWriter<'a, 'r> {
     file: &'a mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
     /// Picture files written so far (they are numbered).
     files: usize,
+    /// The files written, by the hash and length of their contents: a
+    /// picture used again refers to its file.
+    written: HashMap<(u64, usize), String>,
     /// Buffer for the base64 text of an inlined picture.
     base64: String,
 }
@@ -365,12 +369,25 @@ impl SourceWriter<'_, '_> {
             base64::engine::general_purpose::STANDARD.encode_string(&data, &mut self.base64);
             self.out.write_all(self.base64.as_bytes())
         } else {
+            let key = (content_hash(&data), data.len());
+            if let Some(name) = self.written.get(&key) {
+                return self.out.write_all(name.as_bytes());
+            }
             self.files += 1;
             let name = format!("{}/{:03}-{}.{}", opts.asset_dir, self.files, hint, ext);
             self.out.write_all(name.as_bytes())?;
+            self.written.insert(key, name.clone());
             (self.file)(name, data)
         }
     }
+}
+
+/// A hash of the bytes `data`.
+fn content_hash(data: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Replaces the pictures of a single pixel stretched over an area, which
