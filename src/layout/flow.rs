@@ -1281,6 +1281,10 @@ impl Flow<'_> {
                 cells.push(laid);
                 column += span;
             }
+            let border = top_border(&cells);
+            for cell in &mut cells {
+                shift_cell(cell, border);
+            }
             let height = laid_row_height(row, &cells);
             rows.push(LaidRow { height, cells });
         }
@@ -1710,28 +1714,54 @@ fn item_top(item: &Item) -> f32 {
     }
 }
 
-/// The height of a laid-out row: its cells' content plus the width of its
-/// top border (Word adds it), or the row's set height (exact, or at least).
+/// The height of a laid-out row: its cells' content (below the row's top
+/// border, which Word adds), or the row's set height (exact, or at least).
 fn laid_row_height(row: &Row, cells: &[LaidCell]) -> f32 {
-    let border = cells
-        .iter()
-        .filter(|cell| cell.draw_top)
-        .filter_map(|cell| cell.borders[0].map(|border| border.width))
-        .fold(0.0, f32::max);
-    let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max) + border;
+    let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max);
     match row.height {
         Some((value, true)) => value,
         // A minimum height is that of the cells' content, inside their
-        // margins and the row's border.
+        // margins and the row's border (in the top margins).
         Some((value, false)) => {
             let margins = cells
                 .iter()
                 .map(|cell| cell.top_margin + cell.bottom_margin)
                 .fold(0.0, f32::max);
-            content.max(value + margins + border)
+            content.max(value + margins)
         }
         None => content,
     }
+}
+
+/// The width of the top border of a row: the widest of its cells'.
+fn top_border(cells: &[LaidCell]) -> f32 {
+    cells
+        .iter()
+        .filter(|cell| cell.draw_top)
+        .filter_map(|cell| cell.borders[0].map(|border| border.width))
+        .fold(0.0, f32::max)
+}
+
+/// Moves the content of a cell down by `by` (the row's top border, which
+/// Word puts above the text).
+fn shift_cell(cell: &mut LaidCell, by: f32) {
+    if by <= 0.0 {
+        return;
+    }
+    let items = std::mem::take(&mut cell.items);
+    push_items(&mut cell.items, &items, 0.0, by);
+    for float in &mut cell.floats {
+        *float = float.moved(0.0, by);
+    }
+    for y in &mut cell.breaks {
+        *y += by;
+    }
+    for (_, y) in &mut cell.bookmarks {
+        *y += by;
+    }
+    cell.top_margin += by;
+    cell.content_height += by;
+    cell.height += by;
 }
 
 /// Grows the rows that vertically merged cells span so that they hold the

@@ -93,7 +93,57 @@ macro_rules! overlay {
     };
 }
 
+/// Overwrites each field of `$into` that `$over` sets, except those that
+/// `$style` sets to a value other than `$defaults`'.
+macro_rules! overlay_unchanged {
+    ($into:expr, $over:expr, $style:expr, $defaults:expr, $($field:ident),*) => {
+        $(if $over.$field.is_some()
+            && ($style.$field.is_none() || $style.$field == $defaults.$field)
+        {
+            $into.$field = $over.$field.clone();
+        })*
+    };
+}
+
 impl RawRun {
+    /// Lays `over` (a table style's) on these properties, except where
+    /// `style` (the default paragraph style's) differs from `defaults` (the
+    /// document's): Word lets a table style win over the default paragraph
+    /// style only there.
+    pub(crate) fn overlay_unchanged(&mut self, over: &RawRun, style: &RawRun, defaults: &RawRun) {
+        overlay_unchanged!(
+            self,
+            over,
+            style,
+            defaults,
+            font,
+            font_hansi,
+            font_ea,
+            font_cs,
+            size,
+            size_cs,
+            bold,
+            italic,
+            underline,
+            underline_color,
+            strike,
+            dstrike,
+            color,
+            highlight,
+            shading,
+            vert,
+            position,
+            caps,
+            small_caps,
+            spacing,
+            scale,
+            kern,
+            hidden,
+            rtl,
+            cs
+        );
+    }
+
     /// The properties set in a `w:rPr` element.
     pub(crate) fn parse(props: Node<'_, '_>, theme: &ThemeFonts) -> Self {
         let mut raw = RawRun::default();
@@ -114,7 +164,8 @@ impl RawRun {
         raw.bold = toggle(props, "b");
         raw.italic = toggle(props, "i");
         if let Some(under) = child(props, WORD_NS, "u") {
-            raw.underline = Some(match attr(under, WORD_NS, "val").unwrap_or("single") {
+            // Without a value, the element sets only the colour.
+            raw.underline = attr(under, WORD_NS, "val").map(|value| match value {
                 "none" => None,
                 "words" => Some(Underline::Words),
                 "double" => Some(Underline::Double),

@@ -468,11 +468,13 @@ impl Reader<'_> {
         match &self.cell {
             Some(cell) if is_default => {
                 // In a table, the table style wins over the default
-                // paragraph style.
+                // paragraph style, but not over the text properties that
+                // style changes from the document's defaults.
                 para.overlay(&style_para);
-                run.overlay(&style_run);
                 para.overlay(&cell.para);
-                run.overlay(&cell.run);
+                let defaults = run.clone();
+                run.overlay(&style_run);
+                run.overlay_unchanged(&cell.run, &style_run, &defaults);
             }
             Some(cell) => {
                 para.overlay(&cell.para);
