@@ -185,6 +185,12 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
     // the previous section's.
     let (hdd, _) = plc(fib.slice(&table, Pair::PlcfHdd), 0);
     let hdd_base = fib.ccp_text + fib.ccp_ftn;
+    // The first story is the footnote separator.
+    if let (Some(&from), Some(&to)) = (hdd.first(), hdd.get(1))
+        && to > from
+    {
+        doc.footnote_separator = Some(reader.story(hdd_base + from, hdd_base + to));
+    }
     let mut previous = [None; STORIES_PER_SECTION];
     for (at, (start, end, props)) in ranges.into_iter().enumerate() {
         let mut stories = previous;

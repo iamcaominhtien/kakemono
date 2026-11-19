@@ -18,6 +18,9 @@ pub struct FDoc {
     pub parts: Vec<Vec<Block>>,
     /// The footnotes, by their id in the file.
     pub footnotes: Vec<(String, Vec<Block>)>,
+    /// The line between the text and the footnotes of a page, when the file
+    /// sets it.
+    pub footnote_separator: Option<Vec<Block>>,
     /// The endnotes, by their id in the file.
     pub endnotes: Vec<(String, Vec<Block>)>,
     /// The pictures, as PNG or JPEG files.

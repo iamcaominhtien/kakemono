@@ -206,7 +206,12 @@ impl Flow<'_> {
 
     /// Places a section.
     fn section(&mut self, at: usize, section: &Section) {
-        let continuous = section.start == SectionStart::Continuous && self.state.open && at > 0;
+        // A continuous section on a page of another size starts a new page.
+        let same_size = at > 0 && {
+            let before = &self.doc.sections[self.state.section].page;
+            (before.width - section.page.width).abs() < EPS && (before.height - section.page.height).abs() < EPS
+        };
+        let continuous = section.start == SectionStart::Continuous && self.state.open && same_size;
         let previous_number = self.state.number;
         if !continuous {
             self.finish_page();
@@ -302,6 +307,9 @@ impl Flow<'_> {
 
     /// Height of the footnote separator: a single line of the normal font.
     fn separator_height(&mut self) -> f32 {
+        if let Some(blocks) = &self.doc.footnote_separator {
+            return self.blocks_height(blocks, 100.0, None);
+        }
         let fmt = self
             .doc
             .footnotes

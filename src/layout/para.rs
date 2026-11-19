@@ -1144,6 +1144,8 @@ impl Builder {
         let mut notes = Vec::new();
         let mut shapes = Vec::new();
         let mut text_seen = false;
+        let mut picture_ascent: f32 = 0.0;
+        let mut picture_descent: f32 = 0.0;
         let mut images = Vec::new();
         for item in &placed {
             match &item.atom {
@@ -1177,12 +1179,12 @@ impl Builder {
                     fmt,
                 } => {
                     let (_, fmt_descent, _) = ctx.line_metrics(fmt);
-                    ascent = ascent.max(*height);
-                    descent = descent.max(fmt_descent);
+                    picture_ascent = picture_ascent.max(*height);
+                    picture_descent = picture_descent.max(fmt_descent);
                     images.push((item.x, *index, *width, *height, *crop));
                 }
                 Atom::Shape(shape) => {
-                    ascent = ascent.max(shape.height);
+                    picture_ascent = picture_ascent.max(shape.height);
                     shapes.push((item.x, shape.as_ref().clone()));
                 }
                 Atom::Tab { fmt } => {
@@ -1211,9 +1213,27 @@ impl Builder {
             descent = descent.max(d);
             leading = leading.max(l);
         }
+        // Line spacing multiplies the height of the text, not that of
+        // pictures: a line of pictures alone is as tall as they are.
+        let text_height = ascent + descent + leading;
+        let picture_height = if text_seen {
+            picture_ascent + descent.max(picture_descent) + leading
+        } else {
+            picture_ascent
+        };
+        let auto_height = |multiple: f32| (text_height * multiple).max(picture_height);
+        if picture_ascent > ascent {
+            if text_seen {
+                descent = descent.max(picture_descent);
+            } else {
+                descent = 0.0;
+                leading = 0.0;
+            }
+            ascent = picture_ascent;
+        }
         let natural = ascent + descent + leading;
         let height = match para.props.line {
-            LineSpacing::Auto(multiple) => natural * multiple,
+            LineSpacing::Auto(multiple) => auto_height(multiple),
             LineSpacing::Exact(value) => value,
             LineSpacing::AtLeast(value) => natural.max(value),
         };

@@ -134,11 +134,13 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         reader.rels = rels_of(&zip, &part)?;
         let mut notes = Vec::new();
         for note in children(notes_doc.root_element(), WORD_NS, element) {
-            if matches!(
-                attr(note, WORD_NS, "type"),
-                Some("separator" | "continuationSeparator" | "continuationNotice")
-            ) {
-                continue;
+            match attr(note, WORD_NS, "type") {
+                Some("separator") if kind == "footnotes" => {
+                    doc.footnote_separator = Some(reader.blocks(note));
+                    continue;
+                }
+                Some("separator" | "continuationSeparator" | "continuationNotice") => continue,
+                _ => {}
             }
             let Some(id) = attr(note, WORD_NS, "id") else { continue };
             notes.push((id.to_string(), reader.blocks(note)));
