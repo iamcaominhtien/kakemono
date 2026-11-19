@@ -52,18 +52,20 @@ though.
 
 ## Recommendation
 
-Route B as the main path, route A only as an optional bridge.
+Route B as the main path, route A only as an optional bridge. Roadmap, one
+pull request per step:
 
-1. **Phase 1: `.docx`, flowing outputs.** A `docx` input module that builds a
-   `Document` directly. `friendly`, Word, Markdown, LaTeX, EPUB and JSON work;
-   `hard`, `hard-95` and `medium` refuse a Word input with a clear error (or
-   fall back to `friendly`, to be decided).
-2. **Phase 2: `.doc`.** Recognised by its signature (`D0 CF 11 E0`, a
-   compound file) and converted to `.docx` in Rust, then read by the phase 1
-   reader. See "`.doc` without LibreOffice" below: `rust-docx` does this
-   about as well as LibreOffice, behind an optional cargo feature.
-3. **Phase 3 (optional): page modes for Word.** `--via-pdf`: LibreOffice
-   writes a PDF and the existing pipeline runs on it, with the known losses.
+| Step | Content | Breaking | Size (rough) |
+| --- | --- | --- | --- |
+| **0. Pictures without a page** | `model`: a picture is a page region *or* an embedded file; an equation may have no picture. `Paper` keeps a private `enum` of sources; `Paper::renderer` becomes fallible. Caption above/below read from the block order, not from `bbox`. PDF output unchanged (snapshots identical) | Yes (`feat!:`, 0.12) | ~300 lines |
+| **1a. `.docx` reader: text** | ZIP reader (`flate2`), `roxmltree`; styles with `basedOn`, numbering, paragraphs and runs, links and bookmarks, tables, footnotes and endnotes, pictures (PNG/JPEG as they are, SVG through `resvg`, EMF/WMF: caption and a warning), title/authors/abstract/references from the styles plus the existing front-matter rules. CLI and Python accept `.docx`; `hard`, `hard-95`, `medium` refuse a Word input with a clear error | No | ~1,500–2,500 lines |
+| **1b. Office Math** | `m:oMath` → `MathNode` (the reverse of `render/docx/omml.rs`): display formulas as `Equation`, inline ones in the text | No | ~400–600 lines |
+| **1c. Tests** | Fixtures written for the tests; round trip of the LIGO paper (PDF → Word → Word input) against its PDF analysis; snapshots of every output | No | |
+| **2. `.doc`** | Recognised by `D0 CF 11 E0`, converted to `.docx` in Rust, then read by step 1. First choice `rust-docx` behind a cargo feature `doc`, pinned, *once it builds next to hayro* (see below); otherwise a reader of our own on `cfb`. Needs `.doc` files saved by Word itself to test | No | ~50 lines (`rust-docx`) or several thousand (own reader) |
+| 3. Optional | `--via-pdf` for the page modes (LibreOffice writes a PDF; formulas need `libreoffice-math`); EMF/WMF pictures drawn; MathType formulas in `.doc` | No | |
+
+Steps 0 and 1a–1c give Word input for every flowing output. Step 2 waits for
+`rust-docx` to build with kakemono; its upstream issue can be opened now.
 
 ### Where it fits
 
@@ -202,6 +204,27 @@ replacing it later (by a newer crate, or a reader of our own on `cfb`) changes
 nothing else. Writing that reader ourselves is possible ([MS-DOC] is public,
 Apache POI HWPF and antiword are references) but is several thousand lines.
 
+What `rust-docx` costs kakemono (measured by adding it to a copy of the
+crate, with a real call to the conversion so that its code is linked):
+
+| | Without | With | Difference |
+| --- | --- | --- | --- |
+| Release binary | 24.7 MB | 27.4 MB | +2.7 MB |
+| Stripped | 19.4 MB | 21.4 MB | +2.0 MB |
+| Stripped, gzip (about the download of a wheel or CLI) | 8.8 MB | 9.7 MB | +0.9 MB |
+| New crates in `Cargo.lock` | | | 37 |
+| Sources cargo downloads | | | 6.7 MB packed, 24.9 MB unpacked (fonts of `rust-office-art`, not linked) |
+| Clean release build, 4 cores | 196 s | 292 s | +96 s |
+
+And it **does not build** next to kakemono as it is: `rust-office-charts`
+asks for `svgtypes` with the `libm` feature, which imports
+`kurbo::common::FloatFuncs`; hayro enables `kurbo`'s `std` feature, under
+which that trait does not exist (`svgtypes` 0.16.1 and 0.16.2 alike). The
+measurements above used a locally patched `svgtypes`. A `[patch]` section is
+not a way out for the published crate (crates.io ignores it), so `rust-docx`
+needs a fix upstream (in `svgtypes`, or `rust-office-charts` made optional)
+first.
+
 Not covered by any of them, nor tested here: formulas in `.doc` files are
 OLE objects (Equation Editor 3.0 or MathType, MTEF data) with a WMF preview.
 No crate turns MTEF into Office Math; at best the preview picture is kept. The
@@ -212,5 +235,6 @@ test files were written by LibreOffice, not by Word: files saved by Word
 
 1. Page modes with a Word input: refuse, or fall back to `friendly`?
 2. The model change for pictures (breaking, 0.12) is acceptable?
-3. `.doc`: `rust-docx` behind a cargo feature (proposed), a reader of our
-   own on `cfb`, or leave `.doc` out and document "save as `.docx`"?
+3. `.doc`: `rust-docx` behind a cargo feature once it builds (proposed), a
+   reader of our own on `cfb`, or leave `.doc` out and document "save as
+   `.docx`"?
