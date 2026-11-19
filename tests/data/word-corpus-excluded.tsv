@@ -34,3 +34,4 @@ govuk2-0133	an RTF file named .doc (RTF is not a Word format kakemono reads)
 govuk2-0151	the PDF published with it is of another document (checked by eye)
 govuk2-0152	the PDF published with it is of another document (checked by eye)
 govuk2-0205	an RTF file named .doc (RTF is not a Word format kakemono reads)
+gh-0454	Word printed the comments in balloons beside the text, and comments are out of scope
