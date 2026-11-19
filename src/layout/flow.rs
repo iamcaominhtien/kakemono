@@ -497,8 +497,14 @@ impl Flow<'_> {
                     // A paragraph kept with the next: the chain must start on
                     // a page where it fits (checked again at each of its
                     // paragraphs, as long as it was not moved). One holding a
-                    // page break starts the new page itself.
-                    if para.props.keep_next && !chain_moved && !self.state.fresh && !breaks_page(para) {
+                    // page break, or with a page break before it, starts the
+                    // new page itself.
+                    if para.props.keep_next
+                        && !chain_moved
+                        && !self.state.fresh
+                        && !breaks_page(para)
+                        && !para.props.page_break_before
+                    {
                         let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
@@ -820,7 +826,10 @@ impl Flow<'_> {
                         .iter()
                         .map(|line| line.height)
                         .sum::<f32>();
-                self.place_float(float, x, start_y, line_y);
+                // A paragraph's top, for what is positioned from it, is above
+                // its space before.
+                let para_top = if at == 0 { start_y - gap } else { start_y };
+                self.place_float(float, x, para_top, line_y);
             }
             // Borders and shading around the placed lines.
             self.para_frame(para, borders, shading, x, start_y, y, at == 0, at + take == count);

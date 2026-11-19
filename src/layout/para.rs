@@ -506,13 +506,15 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
             atom => place_atom(ctx, para, &mut builder, atom, &mut first_line),
         }
     }
-    // Since Word 2013, the mark of a paragraph that ends with a page or
-    // column break stays on the break's line.
+    // The mark of a paragraph that ends with a page or column break stays
+    // on the break's line, unless the document splits them (Word 97-2003
+    // files, `w:splitPgBreakAndParaMark`).
     let ends_with_break = builder
         .lines
         .last()
-        .is_some_and(|line| line.page_break || line.column_break);
-    if !(ends_with_break && !builder.has_content() && ctx.doc.compat_mode >= 15) {
+        .is_some_and(|line| line.page_break || line.column_break)
+        && !builder.has_content();
+    if !ends_with_break || ctx.doc.split_break_and_mark {
         builder.finish_line(ctx, para, first_line, LineEnd::Last);
     }
     ParaLayout {

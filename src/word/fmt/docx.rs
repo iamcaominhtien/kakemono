@@ -183,6 +183,7 @@ fn read_settings(zip: &ZipArchive<'_>, main: &str, doc: &mut FDoc) -> Result<()>
     if let Some(compat) = child(root, WORD_NS, "compat") {
         doc.no_expand_shift_return = toggle(compat, "doNotExpandShiftReturn").unwrap_or(false);
         doc.add_paragraph_spacing = toggle(compat, "doNotUseHTMLParagraphAutoSpacing").unwrap_or(false);
+        doc.split_break_and_mark = toggle(compat, "splitPgBreakAndParaMark").unwrap_or(false);
         for setting in children(compat, WORD_NS, "compatSetting") {
             if attr(setting, WORD_NS, "name") == Some("compatibilityMode")
                 && let Some(mode) = attr(setting, WORD_NS, "val").and_then(|mode| mode.parse().ok())

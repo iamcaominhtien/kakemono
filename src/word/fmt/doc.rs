@@ -122,6 +122,21 @@ struct Reader<'a> {
     pending_shapes: Vec<(usize, Shape)>,
 }
 
+/// The document-wide settings of a `.doc`, from its DOP.
+fn settings(dop: &[u8]) -> FDoc {
+    FDoc {
+        default_tab: u16_at(dop, 10)
+            .map(|twips| f32::from(twips) / TWIPS_PER_PT)
+            .filter(|tab| (1.0..=288.0).contains(tab))
+            .unwrap_or(36.0),
+        even_and_odd_headers: dop.first().is_some_and(|flags| flags & 1 != 0),
+        endnote_format: NumFormat::LowerRoman,
+        compat_mode: 11,
+        split_break_and_mark: true,
+        ..Default::default()
+    }
+}
+
 /// Reads a `.doc` file with its formatting.
 ///
 /// # Errors
@@ -181,17 +196,7 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
             reader.note_refs.insert(*cp, (endnote, index.to_string()));
         }
     }
-    let dop = fib.slice(&table, Pair::Dop);
-    let mut doc = FDoc {
-        default_tab: u16_at(dop, 10)
-            .map(|twips| f32::from(twips) / TWIPS_PER_PT)
-            .filter(|tab| (1.0..=288.0).contains(tab))
-            .unwrap_or(36.0),
-        even_and_odd_headers: dop.first().is_some_and(|flags| flags & 1 != 0),
-        endnote_format: NumFormat::LowerRoman,
-        compat_mode: 11,
-        ..Default::default()
-    };
+    let mut doc = settings(fib.slice(&table, Pair::Dop));
     let ranges = section_ranges(&fib, &table, &word);
     doc.sections = reader.sections(&mut doc, &fib, &table, ranges);
     for (endnote, ranges) in [(false, footnotes), (true, endnotes)] {

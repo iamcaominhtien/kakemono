@@ -52,6 +52,10 @@ pub struct FDoc {
     /// The space after a paragraph and the space before the next are added
     /// (`w:doNotUseHTMLParagraphAutoSpacing`); otherwise the larger is used.
     pub add_paragraph_spacing: bool,
+    /// The mark of a paragraph that ends with a page or column break goes
+    /// to the next page, after the break (`w:splitPgBreakAndParaMark`, and
+    /// Word 97-2003 files); otherwise it stays on the break's line.
+    pub split_break_and_mark: bool,
 }
 
 /// The kind of a font, for choosing a stand-in.
