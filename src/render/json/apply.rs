@@ -7,7 +7,8 @@
 //! the blocks. What can be edited: the `text` of every block that has one
 //! (formulas keep their own text, see [`super::markup`]), the `rows` of an
 //! author group and the `text` of table cells. Other fields (code
-//! listings, formulas, labels, geometry) are read-only.
+//! listings, formulas, labels, geometry, `plain` and the fields derived
+//! from the text, such as `citation`) are read-only.
 //!
 //! Edited text no longer matches the lines of the PDF, so its per-line
 //! text is dropped (`hlines`, `line_texts` of the block, `inner_spans` of
@@ -16,6 +17,7 @@
 //! line by line) has no text for it.
 
 use super::markup::{Parsed, from_markup, to_markup};
+use super::plain_text::block_plain;
 use super::{FORMAT_NAME, FORMAT_VERSION, SourceInfo, kind_name};
 use crate::analysis::pipeline::Analysis;
 use crate::model::{Block, BlockKind, Span};
@@ -70,6 +72,10 @@ struct BlockIn {
     /// Its text with markup.
     #[serde(default)]
     text: Option<String>,
+    /// Its text without markup, which is not read back: only compared, to
+    /// warn when it alone was edited.
+    #[serde(default)]
+    plain: Option<String>,
     /// The lines of an author group, with markup.
     #[serde(default)]
     rows: Option<Vec<String>>,
@@ -179,6 +185,10 @@ fn check_header(file: &FileIn, source: &SourceInfo) -> Result<()> {
 /// Applies the edited fields of one block. Returns whether its text changed.
 fn apply_block(block: &mut Block, block_in: &BlockIn, report: &mut ContentReport) -> bool {
     let id = block.id;
+    let plain_edited = block_in
+        .plain
+        .as_ref()
+        .is_some_and(|plain| Some(plain) != block_plain(block).as_ref());
     let mut changed = false;
     match &block.kind {
         BlockKind::Equation { .. } | BlockKind::Code => return false,
@@ -203,6 +213,10 @@ fn apply_block(block: &mut Block, block_in: &BlockIn, report: &mut ContentReport
     if changed {
         block.hlines.clear();
         block.line_texts.clear();
+    } else if plain_edited {
+        report.warnings.push(format!(
+            "block {id}: `plain` is not read back; edit `text` (or `rows`) instead"
+        ));
     }
     if let Some(table_in) = &block_in.table
         && apply_table(block, table_in, report)

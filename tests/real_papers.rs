@@ -1949,9 +1949,26 @@ fn content_json_round_trips() {
         {
             assert_eq!(old["text"], new["text"], "{id}: block {}", old["id"]);
             assert_eq!(old["rows"], new["rows"], "{id}: block {}", old["id"]);
-            assert_eq!(old["table"], new["table"], "{id}: block {}", old["id"]);
+            assert_eq!(
+                without_plain(&old["table"]),
+                without_plain(&new["table"]),
+                "{id}: block {}",
+                old["id"]
+            );
         }
     }
+}
+
+/// A table of the JSON output without the plain text of its cells, which
+/// an edit of `text` leaves behind.
+fn without_plain(table: &serde_json::Value) -> serde_json::Value {
+    let mut table = table.clone();
+    if let Some(rows) = table["rows"].as_array_mut() {
+        for cell in rows.iter_mut().flat_map(|row| row.as_array_mut().unwrap()) {
+            cell.as_object_mut().unwrap().remove("plain");
+        }
+    }
+    table
 }
 
 /// Edited text reaches every output, formulas and links stay where they
@@ -2056,4 +2073,159 @@ fn edited_content_reaches_every_output() {
             "{id}: edited blocks do not flow in hard-95"
         );
     }
+}
+
+/// The JSON output of `id`, parsed.
+fn content_json(id: &str) -> Option<serde_json::Value> {
+    let paper = load(id)?;
+    let analysis = paper.analyze();
+    Some(serde_json::from_str(&paper.to_json(&analysis, &JsonOptions::default()).json).unwrap())
+}
+
+/// The front matter gives the authors with their affiliations, addresses
+/// and notes, the arXiv category and date, the DOI and the keywords.
+#[test]
+fn json_meta_reads_the_front_matter() {
+    if let Some(json) = content_json("1706.03762v7") {
+        let meta = &json["meta"];
+        assert_eq!(meta["arxiv_category"], "cs.CL");
+        assert_eq!(meta["date"], "2023-08-02");
+        let authors = meta["authors"].as_array().unwrap();
+        let names: Vec<&str> = authors.iter().map(|a| a["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                "Ashish Vaswani",
+                "Noam Shazeer",
+                "Niki Parmar",
+                "Jakob Uszkoreit",
+                "Llion Jones",
+                "Aidan N. Gomez",
+                "Łukasz Kaiser",
+                "Illia Polosukhin"
+            ]
+        );
+        assert_eq!(authors[0]["emails"][0], "avaswani@google.com");
+        let affiliation = authors[0]["affiliations"][0].as_u64().unwrap() as usize;
+        assert_eq!(meta["affiliations"][affiliation], "Google Brain");
+        // Every author has the "Equal contribution" note (∗).
+        assert!(
+            authors
+                .iter()
+                .all(|a| a["notes"].as_array().is_some_and(|n| !n.is_empty()))
+        );
+        assert!(
+            meta["abstract"]
+                .as_str()
+                .unwrap()
+                .starts_with("The dominant sequence transduction")
+        );
+    }
+    if let Some(json) = content_json("1512.03385v1") {
+        // Names side by side without commas, and addresses in braces.
+        let authors = json["meta"]["authors"].as_array().unwrap();
+        let emails: Vec<&str> = authors.iter().map(|a| a["emails"][0].as_str().unwrap()).collect();
+        assert_eq!(
+            emails,
+            [
+                "kahe@microsoft.com",
+                "v-xiangz@microsoft.com",
+                "v-shren@microsoft.com",
+                "jiansun@microsoft.com"
+            ]
+        );
+    }
+    if let Some(json) = content_json("1602.03837v1") {
+        assert_eq!(json["meta"]["doi"], "10.1103/PhysRevLett.116.061102");
+        assert_eq!(json["meta"]["date"], "2016-02-11");
+        assert_eq!(json["meta"]["authors"][0]["name"], "B. P. Abbott");
+    }
+    if let Some(json) = content_json("1506.01497v3") {
+        assert_eq!(
+            json["meta"]["keywords"],
+            serde_json::json!(["Object Detection", "Region Proposal", "Convolutional Neural Network"])
+        );
+    }
+}
+
+/// Almost every reference of the papers with a usual reference list gives
+/// its authors, title and year.
+#[test]
+fn json_references_have_citations() {
+    for (id, min_ratio) in [
+        ("1412.6980v9", 1.0),
+        ("1506.01497v3", 1.0),
+        ("1512.03385v1", 1.0),
+        ("1706.03762v7", 1.0),
+        ("2010.11929v2", 1.0),
+        ("2303.08774v6", 0.9),
+    ] {
+        let Some(json) = content_json(id) else { continue };
+        let refs: Vec<&serde_json::Value> = json["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["type"] == "reference")
+            .collect();
+        let full = refs
+            .iter()
+            .filter(|b| {
+                let c = &b["citation"];
+                c["authors"].is_array() && c["title"].is_string() && c["year"].is_u64()
+            })
+            .count();
+        let ratio = full as f64 / refs.len() as f64;
+        assert!(
+            ratio >= min_ratio,
+            "{id}: {full} of {} references are whole",
+            refs.len()
+        );
+    }
+    if let Some(json) = content_json("1706.03762v7") {
+        let shazeer = json["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "reference" && b["label"] == "32")
+            .unwrap();
+        assert_eq!(
+            shazeer["citation"],
+            serde_json::json!({
+                "authors": ["Noam Shazeer", "Azalia Mirhoseini", "Krzysztof Maziarz", "Andy Davis", "Quoc Le",
+                            "Geoffrey Hinton", "Jeff Dean"],
+                "title": "Outrageously large neural networks: The sparsely-gated mixture-of-experts layer",
+                "venue": "arXiv",
+                "year": 2017,
+                "arxiv": "1701.06538"
+            })
+        );
+    }
+}
+
+/// Every block with text has it as plain text too, formulas as LaTeX; the
+/// plain text is not read back, and editing it alone gives a warning.
+#[test]
+fn json_plain_text_is_read_only() {
+    let Some(paper) = load("1412.6980v9") else { return };
+    let mut analysis = paper.analyze();
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let blocks = value["blocks"].as_array_mut().unwrap();
+    assert!(
+        blocks
+            .iter()
+            .filter(|b| b["text"].is_string())
+            .all(|b| b["plain"].is_string())
+    );
+    let with_math = blocks
+        .iter_mut()
+        .find(|b| b["type"] == "paragraph" && b["text"].as_str().unwrap().contains("<m "))
+        .unwrap();
+    assert!(with_math["plain"].as_str().unwrap().contains('$'));
+    assert!(!with_math["plain"].as_str().unwrap().contains('<'));
+    with_math["plain"] = "Đã sửa".into();
+    let report = paper.apply_content(&mut analysis, &value.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 0);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(report.warnings[0].contains("`plain`"));
 }

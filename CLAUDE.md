@@ -73,6 +73,10 @@ committing.
 - The editable JSON (`src/render/json/`) is a published format: a field that changes meaning or
   goes away needs a new `FORMAT_VERSION` and a breaking-change commit (`feat!:`); new fields
   do not.
+  - Its read-only fields `citation` (references) and `meta.authors` (front matter) are read from
+    the text by heuristics (`citation.rs`, `front.rs`): like a rule of the analysis, a change
+    that fixes one citation style easily breaks another, so compare them on many papers
+    (`json_references_have_citations` holds the lower bounds).
 - The LaTeX output must compile: after a change to `src/render/latex/`, compile a few papers with
   `pdflatex` (and `xelatex` or `lualatex`) when TeX is installed; `tests/cli.rs` compiles the LIGO
   paper when `pdflatex` is on the `PATH`.

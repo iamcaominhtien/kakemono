@@ -74,6 +74,19 @@ html = kakemono.convert("paper.pdf", "hard-95", content=content)   # the pages, 
 kakemono.to_docx("paper.pdf", "paper.vi.docx", content=content)
 ```
 
+The JSON also has read-only fields for search and data extraction: `plain` on every block (the
+text without tags, formulas as `$LaTeX$`), `citation` on every reference (`authors`, `title`,
+`venue`, `year`, `volume`, `pages`, `doi`, `arxiv`, `url`, as far as they could be read) and, in
+`meta`, the `authors` (with indices into `affiliations` and `author_notes`, and their `emails`),
+`arxiv_category`, `date`, `doi`, `keywords` and `abstract`:
+
+```python
+content = kakemono.to_json("1706.03762")
+print([a["name"] for a in content["meta"]["authors"]])
+refs = [b["citation"] for b in content["blocks"] if b.get("citation")]
+print(refs[0]["title"], refs[0]["year"])
+```
+
 Blocks left unchanged keep their text; a block whose edited text cannot be read (an unknown tag)
 keeps its own, with a `UserWarning`. The `hard` mode cannot show edited text.
 

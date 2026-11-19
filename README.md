@@ -186,6 +186,42 @@ other formulas as pictures in `paper_assets/`:
   `<code>`, `<sup>`, `<sub>`, `<sf>` (sans-serif), `<sc>` (small capitals), `<mf>` (math font),
   `<a href>` and `<font color>` keep the styles and links; `<m id="n">…</m>` stands for the n-th
   formula of the block, with its LaTeX inside.
+- `plain` is the same text without tags, formulas as `$LaTeX$` (`$$…$$` for a displayed formula),
+  for search indexes and language models; table cells have one too.
+
+**Bibliographic fields.** For data extraction the file also has what could be read with
+confidence from the front matter and the reference list (a field that could not be read is left
+out):
+
+```json
+"meta": {
+  "title": "Attention Is All You Need", "arxiv_id": "1706.03762v7",
+  "arxiv_category": "cs.CL", "date": "2023-08-02", "doi": "…", "keywords": ["…"],
+  "authors": [{ "name": "Ashish Vaswani", "affiliations": [0], "emails": ["avaswani@google.com"], "notes": [0] }, …],
+  "affiliations": ["Google Brain", "Google Research", "University of Toronto"],
+  "author_notes": ["Equal contribution. Listing order is random. …", …],
+  "abstract": "The dominant sequence transduction models are …"
+}
+```
+
+```json
+{ "id": 160, "type": "reference", "label": "32", "text": "[32] Noam Shazeer, … <i>arXiv preprint </i>…",
+  "citation": { "authors": ["Noam Shazeer", "Azalia Mirhoseini", …, "Jeff Dean"],
+                "title": "Outrageously large neural networks: The sparsely-gated mixture-of-experts layer",
+                "venue": "arXiv", "year": 2017, "arxiv": "1701.06538" } }
+```
+
+- `authors` come from the author block: names (told apart by commas, "and", or the gaps between
+  names printed side by side), the affiliations below them or pointed to by a raised mark
+  (`Jane Doe¹`), the e-mail addresses (`{a, b}@example.com` gives two) and notes (`∗` Equal
+  contribution). `date` is that of the arXiv version (from its stamp), else the date printed with
+  the authors.
+- `citation` gives `authors` (given names first, `et_al` when the list is cut), `title`, `venue`,
+  `year`, `volume`, `pages`, `doi`, `arxiv` and `url`. It knows the usual styles (IEEE with a quoted
+  title, ACL/APA with the year after the authors, the astronomy and physics styles without titles,
+  books in italics); on the papers of the test suite most references give authors, title and year.
+  A reference with no year written gets the year of its arXiv identifier.
+- These fields, like `plain`, are read-only: they are derived from the text and not read back.
 
 **Applying an edited file.** `--content` writes any output with the text of an edited JSON file:
 

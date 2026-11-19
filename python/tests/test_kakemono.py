@@ -135,6 +135,10 @@ def test_to_json_gives_editable_content(tmp_path):
     abstract = next(block for block in content["blocks"] if block.get("abstract"))
     assert '<m id="1">' in abstract["text"]
     assert (tmp_path / "json" / "ligo_assets" / "001-fig.png").is_file()
+    # Read-only fields for search and data extraction.
+    assert "<" not in abstract["plain"] and "$" in abstract["plain"]
+    assert content["meta"]["doi"] == "10.1103/PhysRevLett.116.061102"
+    assert content["meta"]["authors"][0]["name"] == "B. P. Abbott"
 
 
 def test_edited_content_reaches_every_output(tmp_path):

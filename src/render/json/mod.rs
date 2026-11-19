@@ -15,7 +15,10 @@
 //! `layout` object of its own, which sources without pages leave out.
 
 pub(crate) mod apply;
+pub(crate) mod citation;
+pub(crate) mod front;
 pub(crate) mod markup;
+pub(crate) mod plain_text;
 
 use super::latex::math::latex;
 use super::{Equations, HtmlOptions, ImageStore, Mode, PageImage, float_class, math_html, plain};
@@ -119,6 +122,10 @@ struct MetaOut<'a> {
     /// arXiv identifier.
     #[serde(skip_serializing_if = "Option::is_none")]
     arxiv_id: Option<&'a str>,
+    /// Authors, date, keywords and the rest of the front matter (read-only;
+    /// see [`front`]).
+    #[serde(flatten)]
+    front: front::Front,
 }
 
 /// One block. Fields that do not apply to its type are left out.
@@ -163,6 +170,14 @@ struct BlockOut {
     /// The text, with markup (editable).
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// The text without markup, formulas as `$LaTeX$` (read-only; see
+    /// [`plain_text`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plain: Option<String>,
+    /// What a reference cites, read from its text (read-only; see
+    /// [`citation`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    citation: Option<citation::Citation>,
     /// The lines of an author group, with markup (editable).
     #[serde(skip_serializing_if = "Option::is_none")]
     rows: Option<Vec<String>>,
@@ -218,6 +233,8 @@ struct CellOut {
     rowspan: usize,
     /// The text, with markup (editable).
     text: String,
+    /// The text without markup (read-only).
+    plain: String,
 }
 
 /// Where a block is on its page.
@@ -258,6 +275,7 @@ pub(crate) fn render_json(analysis: &Analysis, pdf: &PdfFile, opts: &JsonOptions
         meta: MetaOut {
             title: doc.meta.title.as_deref(),
             arxiv_id: doc.meta.arxiv_id.as_deref(),
+            front: front::front_matter(doc),
         },
         pages: doc
             .pages
@@ -311,6 +329,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
             page: block.page,
             bbox: bbox(&block.bbox),
         }),
+        plain: plain_text::block_plain(block),
         ..Default::default()
     };
     match &block.kind {
@@ -337,6 +356,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
         BlockKind::Reference { label } => {
             json.label = label.clone();
             json.text = Some(text_of(&block.spans));
+            json.citation = citation::parse(&block.spans);
         }
         BlockKind::ContentsEntry { level, page } => {
             json.level = Some(*level);
@@ -398,6 +418,7 @@ fn table_out(table: &Table) -> TableOut {
                         colspan: cell.colspan,
                         rowspan: cell.rowspan,
                         text: text_of(&cell.spans),
+                        plain: plain_text::plain_of(&cell.spans),
                     })
                     .collect()
             })

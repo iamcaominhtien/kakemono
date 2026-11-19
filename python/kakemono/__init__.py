@@ -275,6 +275,13 @@ def to_json(
     edited dict, its text or its path as ``content`` to any converter of this
     module to get that output with the edited text.
 
+    Each block also has its ``plain`` text (no tags, formulas as
+    ``$LaTeX$``), each reference its ``citation`` (authors, title, venue,
+    year, DOI, arXiv id), and ``meta`` holds the authors with their
+    affiliations and e-mail addresses, the date, the DOI, the keywords and
+    the abstract: these are read-only, only ``text`` (and the ``rows`` of
+    authors and the cells of tables) is read back.
+
     Formulas whose structure is clear also come as LaTeX and MathML; figures
     and the other formulas are pictures. When `path` is given, the JSON is
     written there and its pictures to `image_dir` (default
