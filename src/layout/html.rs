@@ -474,7 +474,7 @@ impl Writer<'_> {
     /// A text box or drawn shape.
     fn shape(&mut self, shape: &Shape) {
         let mut style = format!(
-            "display:inline-block;vertical-align:top;box-sizing:border-box;width:{}pt",
+            "display:inline-block;vertical-align:top;box-sizing:border-box;max-width:100%;width:{}pt",
             num(shape.width.max(1.0))
         );
         if shape.width <= 0.0 {

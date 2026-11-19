@@ -59,10 +59,16 @@ pub(crate) enum Pair {
     Dop = 31,
     /// The piece table.
     Clx = 33,
+    /// Floating shapes anchored in the main text (`PlcfSpa`).
+    PlcSpaMom = 40,
     /// Endnote reference positions.
     PlcfendRef = 46,
     /// Endnote text positions.
     PlcfendTxt = 47,
+    /// The drawings (`OfficeArtContent`).
+    DggInfo = 50,
+    /// Text box stories of the main text.
+    PlcftxbxTxt = 56,
     /// The list definitions.
     PlfLst = 73,
     /// The list overrides, which paragraphs name.
@@ -82,6 +88,8 @@ pub(crate) struct Fib {
     pub(crate) ccp_hdd: u32,
     /// Characters of the comments.
     pub(crate) ccp_atn: u32,
+    /// Characters of the endnotes.
+    pub(crate) ccp_edn: u32,
     /// The `fc`/`lcb` pairs: where each structure is in the table stream.
     pairs: Vec<(u32, u32)>,
 }
@@ -128,6 +136,7 @@ impl Fib {
             ccp_ftn: long(4),
             ccp_hdd: long(5),
             ccp_atn: long(7),
+            ccp_edn: long(8),
             pairs,
         })
     }

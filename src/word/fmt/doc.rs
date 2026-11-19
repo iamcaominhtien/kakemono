@@ -3,9 +3,10 @@
 //! from their property modifiers (sprms), lists, tables, notes, fields and
 //! pictures, into the same form as a `.docx` ([`FDoc`]).
 
+use super::drawing;
 use super::model::{
     Block, BreakKind, Cell, FDoc, FImage, FieldKind, HeaderSet, Inline, NumFormat, NumberMark, NumberSuffix, Para, Row,
-    RunFmt, Section, Table, TableProps, VMerge, Width,
+    RunFmt, Section, Shape, Table, TableProps, VMerge, Width,
 };
 use super::props::{RawPara, RawRun};
 use super::sprm::{RowProps, SectionProps, apply_chars, apply_para, char_extras, char_style, row_props, section_props};
@@ -40,6 +41,8 @@ const FIELD_END: u16 = 0x15;
 const PICTURE: u16 = 0x01;
 /// The mark of a note (special character).
 const NOTE_MARK: u16 = 0x02;
+/// Character marking where a floating shape is anchored.
+const SHAPE_ANCHOR: u16 = 0x08;
 /// A symbol (special character, with its font and code).
 const SYMBOL: u16 = 0x28;
 /// Non-breaking hyphen.
@@ -105,6 +108,14 @@ struct Reader<'a> {
     images: Vec<FImage>,
     fields: Vec<FieldState>,
     defaults: RawRun,
+    /// The floating shapes of the main text, by the position of their
+    /// anchor.
+    floats: HashMap<u32, drawing::Float>,
+    /// The text of the text boxes, by shape id.
+    text_boxes: HashMap<u32, Vec<Block>>,
+    /// Floating shapes anchored next to each other, waiting to be put in
+    /// their drawing order.
+    pending_shapes: Vec<(usize, Shape)>,
 }
 
 /// Reads a `.doc` file with its formatting.
@@ -145,8 +156,16 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         images: Vec::new(),
         fields: Vec::new(),
         defaults,
+        floats: drawing::floats(
+            fib.slice(&table, Pair::PlcSpaMom),
+            fib.slice(&table, Pair::DggInfo),
+            &word,
+        ),
+        text_boxes: HashMap::new(),
+        pending_shapes: Vec::new(),
     };
     reader.resolve_styles(&kinds);
+    reader.read_text_boxes(&fib, &table);
     for (cp, name) in bookmarks(fib.slice(&table, Pair::SttbfBkmk), fib.slice(&table, Pair::PlcfBkf)) {
         reader.bookmarks.entry(cp).or_default().push(name);
     }
@@ -714,6 +733,7 @@ impl Reader<'_> {
             self.character(cp, unit, &chpx, &mut text, &fmt, &mut para);
         }
         flush(&mut text, current.as_ref(), &mut para);
+        self.put_shapes(&mut para);
         para
     }
 
@@ -808,6 +828,15 @@ impl Reader<'_> {
     /// Adds the character `unit` at `cp` to the paragraph.
     fn character(&mut self, cp: u32, unit: u16, chpx: &[u8], text: &mut Vec<u16>, fmt: &RunFmt, para: &mut Para) {
         let (special, picture_at, symbol) = char_extras(chpx);
+        if unit == SHAPE_ANCHOR && special {
+            // Shapes anchored together wait to be put in drawing order.
+            if let Some(shape) = self.float_shape(cp) {
+                flush(text, Some(fmt), para);
+                self.pending_shapes.push(shape);
+            }
+            return;
+        }
+        self.put_shapes(para);
         let push = |inline: Inline, text: &mut Vec<u16>, para: &mut Para| {
             flush(text, Some(fmt), para);
             para.inlines.push(inline);
@@ -835,22 +864,8 @@ impl Reader<'_> {
                 }
             }
             SYMBOL if special => {
-                if let Some((font, code)) = symbol {
-                    let mut sym_fmt = fmt.clone();
-                    if let Some(name) = self.fonts.get(usize::from(font)) {
-                        sym_fmt.font = name.clone();
-                        sym_fmt.font_hansi = name.clone();
-                    }
-                    let raw: String = char::from_u32(u32::from(code)).into_iter().collect();
-                    let shown = super::docx::symbol_text(&raw, &mut sym_fmt);
-                    push(
-                        Inline::Text {
-                            text: shown,
-                            fmt: sym_fmt,
-                        },
-                        text,
-                        para,
-                    );
+                if let Some(inline) = self.symbol(symbol, fmt) {
+                    push(inline, text, para);
                 }
             }
             LINE_BREAK => push(
@@ -883,6 +898,87 @@ impl Reader<'_> {
             unit if unit < 0x20 => {}
             unit => text.push(unit),
         }
+    }
+
+    /// Reads the text of the text boxes of the main text.
+    fn read_text_boxes(&mut self, fib: &Fib, table: &[u8]) {
+        let story = fib.ccp_text + fib.ccp_ftn + fib.ccp_hdd + fib.ccp_atn + fib.ccp_edn;
+        for (spid, start, end) in drawing::text_boxes(fib.slice(table, Pair::PlcftxbxTxt)) {
+            if start >= end || !self.floats.values().any(|float| float.spid == spid) {
+                continue;
+            }
+            let mut blocks = self.blocks(story + start, story + end);
+            // The paragraph mark ending the story is not a paragraph of
+            // the text box.
+            if blocks.len() > 1
+                && let Some(Block::Para(last)) = blocks.last()
+                && last.inlines.is_empty()
+            {
+                blocks.pop();
+            }
+            self.text_boxes.insert(spid, blocks);
+        }
+    }
+
+    /// The character of a symbol font (`sprmCSymbol`): its font and code.
+    fn symbol(&self, symbol: Option<(u16, u16)>, fmt: &RunFmt) -> Option<Inline> {
+        let (font, code) = symbol?;
+        let mut sym_fmt = fmt.clone();
+        if let Some(name) = self.fonts.get(usize::from(font)) {
+            sym_fmt.font = name.clone();
+            sym_fmt.font_hansi = name.clone();
+        }
+        let raw: String = char::from_u32(u32::from(code)).into_iter().collect();
+        let shown = super::docx::symbol_text(&raw, &mut sym_fmt);
+        Some(Inline::Text {
+            text: shown,
+            fmt: sym_fmt,
+        })
+    }
+
+    /// Puts the waiting floating shapes in the paragraph, in their drawing
+    /// order.
+    fn put_shapes(&mut self, para: &mut Para) {
+        if self.pending_shapes.is_empty() {
+            return;
+        }
+        let mut shapes = std::mem::take(&mut self.pending_shapes);
+        shapes.sort_by_key(|(order, _)| *order);
+        para.inlines
+            .extend(shapes.into_iter().map(|(_, shape)| Inline::Shape(Box::new(shape))));
+    }
+
+    /// The floating shape anchored at `cp`, with its text or picture, and
+    /// its place in the drawing order.
+    fn float_shape(&mut self, cp: u32) -> Option<(usize, Shape)> {
+        let float = self.floats.get(&cp)?.clone();
+        let blocks = self.text_boxes.get(&float.spid).cloned().unwrap_or_default();
+        let (width, height) = float.size;
+        let mut shape = Shape {
+            width,
+            height,
+            anchor: Some(float.anchor),
+            fill: float.fill,
+            line: float.line,
+            blocks,
+            insets: float.insets,
+            pictures: Vec::new(),
+            auto_height: false,
+            fmt: RunFmt::default(),
+        };
+        if let Some(picture) = float.picture.and_then(normalize) {
+            self.images.push(FImage {
+                data: picture.data,
+                jpeg: picture.jpeg,
+            });
+            shape.pictures.push((self.images.len() - 1, 0.0, 0.0, width, height));
+            // A picture has no fill, nor an outline unless one is set.
+            shape.fill = None;
+            if !float.line_set {
+                shape.line = None;
+            }
+        }
+        Some((float.order, shape))
     }
 
     /// The picture at `location` of the `Data` stream.

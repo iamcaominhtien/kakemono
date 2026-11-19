@@ -5,6 +5,7 @@
 mod contrast;
 mod doc;
 mod docx;
+mod drawing;
 mod frames;
 pub mod model;
 mod props;

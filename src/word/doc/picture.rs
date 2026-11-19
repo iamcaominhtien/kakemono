@@ -84,7 +84,7 @@ pub(crate) fn picture(data: &[u8], location: u32) -> (Option<Vec<u8>>, (f32, f32
 
 /// The picture file of the first bitmap record found between `pos` and
 /// `end`, looking into containers and picture store entries.
-fn find_blip(bytes: &[u8], mut pos: usize, end: usize) -> Option<Vec<u8>> {
+pub(crate) fn find_blip(bytes: &[u8], mut pos: usize, end: usize) -> Option<Vec<u8>> {
     while pos + RECORD_HEADER_LEN <= end {
         let version_instance = u16_at(bytes, pos)?;
         let kind = u16_at(bytes, pos + 2)?;

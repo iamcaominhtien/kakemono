@@ -88,6 +88,7 @@ fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<Strin
         pages: Vec::new(),
         page_info: Vec::new(),
         destinations: Vec::new(),
+        behind: HashMap::new(),
         state: State::default(),
     };
     for (at, section) in doc.sections.iter().enumerate() {
@@ -232,6 +233,9 @@ struct Flow<'a> {
     pages: Vec<Page>,
     page_info: Vec<PageInfo>,
     destinations: Vec<Destination>,
+    /// The number of items drawn behind the text at the start of each page,
+    /// by page.
+    behind: HashMap<usize, usize>,
     state: State,
 }
 
@@ -1025,14 +1029,20 @@ impl Flow<'_> {
                         height: float.height,
                         crop: *crop,
                     };
+                    let start = self.pages[page_at].items.len();
+                    self.pages[page_at].items.push(item);
                     if anchor.behind {
-                        self.pages[page_at].items.insert(0, item);
-                    } else {
-                        self.pages[page_at].items.push(item);
+                        self.move_behind(page_at, start);
                     }
                 }
             }
-            FloatKind::Shape(shape) => self.draw_shape(shape, page_at, x, y, float_width),
+            FloatKind::Shape(shape) => {
+                let start = self.pages[page_at].items.len();
+                self.draw_shape(shape, page_at, x, y, float_width);
+                if anchor.behind {
+                    self.move_behind(page_at, start);
+                }
+            }
         }
         if wrap && matches!(anchor.wrap, Wrap::Square | Wrap::Tight | Wrap::TopBottom) {
             let [top, bottom, left, right] = anchor.dist;
@@ -1108,6 +1118,17 @@ impl Flow<'_> {
             y + shape.insets[1],
             inner_width,
         );
+    }
+
+    /// Moves the items of page `page` from `start` on behind the text,
+    /// above what is already behind it.
+    fn move_behind(&mut self, page: usize, start: usize) {
+        let items = &mut self.pages[page].items;
+        let moved: Vec<Item> = items.drain(start..).collect();
+        let at = self.behind.entry(page).or_default();
+        let count = moved.len();
+        items.splice(*at..*at, moved);
+        *at += count;
     }
 
     /// The number of page `page`.
