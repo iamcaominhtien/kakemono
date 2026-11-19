@@ -281,7 +281,7 @@ impl Assembler<'_> {
                     let text = spans_text(&built.spans);
                     LIST_LABEL.find(&text).map(|label| label.as_str().trim().to_string())
                 };
-                (BlockKind::ListItem { marker }, built)
+                (BlockKind::ListItem { marker, level: 0 }, built)
             }
             Class::ListContinuation => (BlockKind::ListContinuation, self.text.build(lines, 0, 0)),
             Class::Reference => {

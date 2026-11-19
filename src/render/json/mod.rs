@@ -351,8 +351,9 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
             json.level = Some(*level);
             json.text = Some(text_of(&block.spans));
         }
-        BlockKind::ListItem { marker } => {
+        BlockKind::ListItem { marker, level } => {
             json.marker = marker.clone();
+            json.level = (*level > 0).then_some(*level);
             json.text = Some(text_of(&block.spans));
         }
         BlockKind::Footnote { marker } => {

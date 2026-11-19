@@ -23,6 +23,9 @@ use std::collections::HashSet;
 
 /// Code fences are at least this many backticks long.
 const MIN_FENCE: usize = 3;
+/// Spaces that nest a list item one level deeper (past a parent marker
+/// such as `10. `).
+const MD_NEST_INDENT: usize = 4;
 /// Spaces of indentation per level of a table of contents.
 const CONTENTS_INDENT: usize = 2;
 
@@ -217,7 +220,7 @@ impl Writer<'_, '_> {
             }
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => self.paragraph("* * *"),
             BlockKind::Paragraph { .. } => self.text_paragraph(&block.spans),
-            BlockKind::ListItem { marker } => self.list_item(block, marker.as_deref()),
+            BlockKind::ListItem { marker, level } => self.list_item(block, marker.as_deref(), *level),
             BlockKind::ListContinuation => {
                 let text = escape_line_start(&self.inline.spans(&block.spans));
                 self.paragraph(&format!("{}{text}", " ".repeat(self.list_indent.max(2))));
@@ -360,7 +363,7 @@ impl Writer<'_, '_> {
     /// Writes a list item: a numbered one (`3.`) when its marker is a
     /// number, a bullet item otherwise, with any other marker kept as its
     /// first word.
-    fn list_item(&mut self, block: &Block, marker: Option<&str>) {
+    fn list_item(&mut self, block: &Block, marker: Option<&str>, level: u8) {
         let number = marker
             .map(|marker| marker.trim_end_matches(['.', ')']))
             .filter(|digits| !digits.is_empty() && digits.len() <= 9 && digits.bytes().all(|b| b.is_ascii_digit()));
@@ -371,8 +374,10 @@ impl Writer<'_, '_> {
             _ => "- ".to_string(),
         };
         let text = self.inline.spans(rest.as_deref().unwrap_or(&block.spans));
-        self.list_indent = if number.is_some() { prefix.len() } else { 2 };
-        self.paragraph(&format!("{prefix}{text}"));
+        // A nested item is indented past the marker of its parent.
+        let nest = " ".repeat(usize::from(level) * MD_NEST_INDENT);
+        self.list_indent = nest.len() + if number.is_some() { prefix.len() } else { 2 };
+        self.paragraph(&format!("{nest}{prefix}{text}"));
     }
 
     /// Writes code lines as a fenced code block.

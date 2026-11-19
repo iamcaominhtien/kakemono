@@ -243,6 +243,9 @@ pub enum BlockKind {
     ListItem {
         /// `None` for bullet lists.
         marker: Option<String>,
+        /// Nesting level: 0 for an item of the outermost list, 1 for one
+        /// of a list inside it, ...
+        level: u8,
     },
     /// A further paragraph of the list item before it.
     ListContinuation,

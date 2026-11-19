@@ -14,6 +14,8 @@ static SECTION_NUMBER: LazyLock<Regex> =
 /// (a phone, a book page): text in it stays readable, and the picture
 /// scrolls sideways instead.
 const LEGIBLE_MIN_SCALE: f32 = 0.7;
+/// Indent of each level of a nested list item, in em.
+const HTML_NEST_EM: f32 = 1.5;
 /// A picture on the first page that covers at least this fraction of it is
 /// the cover of a book.
 const COVER_MIN_AREA_RATIO: f32 = 0.8;
@@ -432,13 +434,19 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
             ));
         }
         BlockKind::Paragraph { .. } => out.push_str(&format!("<p{id}>{}</p>\n", text_html(&block.spans, ctx.math))),
-        BlockKind::ListItem { marker } => {
+        BlockKind::ListItem { marker, level } => {
             let cls = if marker.is_some() { " class=\"labeled\"" } else { "" };
+            // A nested item is indented by one step per level.
+            let nest = if *level > 0 {
+                format!(" style=\"margin-left:{}em\"", f32::from(*level) * HTML_NEST_EM)
+            } else {
+                String::new()
+            };
             let body = match marker.as_deref().filter(|_| ctx.offprint) {
                 Some(marker) => labelled_html(&block.spans, marker, "lbl", ctx.math),
                 None => text_html(&block.spans, ctx.math),
             };
-            out.push_str(&format!("<li{id}{cls}>{body}</li>\n"));
+            out.push_str(&format!("<li{id}{cls}{nest}>{body}</li>\n"));
         }
         BlockKind::ListContinuation => out.push_str(&format!(
             "<li{id} class=\"more\">{}</li>\n",

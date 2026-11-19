@@ -29,6 +29,8 @@ use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
 /// The packages and commands that every document uses.
 const PREAMBLE: &str = include_str!("preamble.tex");
+/// Lists LaTeX can nest inside a list (it allows four levels in all).
+const MAX_LIST_NESTING: u8 = 3;
 /// The encoding of pdfLaTeX's fonts, in [`PREAMBLE`].
 const T1_FONTENC: &str = "\\usepackage[T1]{fontenc}";
 /// The encodings of a document with Vietnamese letters (see
@@ -123,6 +125,7 @@ pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOpti
         out: String::new(),
         group: Group::None,
         item_open: false,
+        nested: 0,
         after_text: false,
     };
     writer.write(doc);
@@ -256,6 +259,8 @@ struct Writer<'a, 'r> {
     group: Group,
     /// An `\item` of the open list has been written.
     item_open: bool,
+    /// Lists open inside the open list.
+    nested: u8,
     /// The block written last is a paragraph of text: a displayed formula
     /// after it continues it (no blank line, which would start a new
     /// paragraph above the formula).
@@ -329,6 +334,7 @@ impl Writer<'_, '_> {
         if group == self.group {
             return;
         }
+        self.nest(0);
         if let Some(env) = self.group.environment() {
             self.paragraph(&format!("\\end{{{env}}}"));
         }
@@ -358,7 +364,7 @@ impl Writer<'_, '_> {
                 self.paragraph("\\begin{center}\n* * *\n\\end{center}");
             }
             BlockKind::Paragraph { .. } => self.text_paragraph(&block.spans),
-            BlockKind::ListItem { marker } => self.list_item(block, marker.as_deref()),
+            BlockKind::ListItem { marker, level } => self.list_item(block, marker.as_deref(), *level),
             BlockKind::ListContinuation => self.list_continuation(block),
             BlockKind::Reference { .. } => {
                 let text = self.text.spans(&block.spans);
@@ -548,7 +554,8 @@ impl Writer<'_, '_> {
 
     /// Writes a list item: `\item[3.]` with the marker of the paper, its
     /// text after it.
-    fn list_item(&mut self, block: &Block, marker: Option<&str>) {
+    fn list_item(&mut self, block: &Block, marker: Option<&str>, level: u8) {
+        self.nest(level.min(MAX_LIST_NESTING));
         let rest = marker.and_then(|marker| strip_label(&block.spans, marker));
         let item = match (marker, &rest) {
             (Some(marker), Some(_)) => format!("\\item[{{{}}}]", escape(marker)),
@@ -559,6 +566,23 @@ impl Writer<'_, '_> {
         let label = self.anchor_label(block);
         self.paragraph(format!("{item} {label}{text}").trim_end());
         self.item_open = true;
+    }
+
+    /// Opens or closes lists inside the open list until `level` are open.
+    fn nest(&mut self, level: u8) {
+        while self.nested > level {
+            self.paragraph("\\end{itemize}");
+            self.nested -= 1;
+            self.item_open = true;
+        }
+        while self.nested < level {
+            if !self.item_open {
+                self.out.push_str("\\item[]\n");
+            }
+            self.paragraph("\\begin{itemize}");
+            self.nested += 1;
+            self.item_open = false;
+        }
     }
 
     /// Writes a paragraph that continues a list item.
@@ -906,6 +930,7 @@ mod tests {
             out: String::new(),
             group: Group::None,
             item_open: false,
+            nested: 0,
             after_text: false,
         };
         assert_eq!(

@@ -371,7 +371,10 @@ impl Builder<'_> {
                 if let Some(marker) = &marker {
                     spans.insert(0, Span::plain(format!("{marker} ")));
                 }
-                BlockKind::ListItem { marker }
+                BlockKind::ListItem {
+                    marker,
+                    level: para.list.as_ref().map_or(0, |list| list.level),
+                }
             }
             Role::Paragraph | Role::Caption | Role::Code => BlockKind::Paragraph {
                 in_abstract: self.in_abstract,

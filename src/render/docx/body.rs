@@ -20,6 +20,9 @@ use std::collections::{HashMap, HashSet};
 /// scaled by this over the body size of the paper, so that they match the
 /// text around them.
 const BODY_SIZE_PT: f32 = 11.0;
+/// Indent of a list item, in twips (the `ListItem` style's), and of each
+/// level of nesting.
+const LIST_INDENT_TWIPS: u32 = 425;
 /// Tallest picture, in points: a little less than the text height of a
 /// page, so that a picture and a line of caption fit on one page.
 const MAX_IMAGE_HEIGHT_PT: f32 = 600.0;
@@ -148,7 +151,7 @@ impl<'a> Body<'a> {
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => self.simple("SceneBreak", block),
             BlockKind::Paragraph { in_abstract: true } => self.simple("Abstract", block),
             BlockKind::Paragraph { .. } => self.simple("Normal", block),
-            BlockKind::ListItem { marker } => self.list_item(block, marker.as_deref()),
+            BlockKind::ListItem { marker, level } => self.list_item(block, marker.as_deref(), *level),
             BlockKind::ListContinuation => self.simple("ListContinue", block),
             BlockKind::Reference { label } => self.reference(block, label.as_deref()),
             BlockKind::Footnote { marker } => {
@@ -330,7 +333,7 @@ impl<'a> Body<'a> {
 
     /// Writes a list item with its marker (a bullet when it has none)
     /// hanging in the margin.
-    fn list_item(&mut self, block: &Block, marker: Option<&str>) {
+    fn list_item(&mut self, block: &Block, marker: Option<&str>, level: u8) {
         let content = match marker {
             Some(marker) => match strip_label(&block.spans, marker) {
                 Some(rest) => text_runs(marker, "") + TAB_RUN + &self.runs(&rest),
@@ -338,7 +341,14 @@ impl<'a> Body<'a> {
             },
             None => text_runs(BULLET, "") + TAB_RUN + &self.runs(&block.spans),
         };
-        self.paragraph("ListItem", "", block.anchor.as_deref(), &content);
+        // A nested item is indented by one more step per level.
+        let props = if level > 0 {
+            let left = LIST_INDENT_TWIPS * (u32::from(level) + 1);
+            format!("<w:ind w:left=\"{left}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>")
+        } else {
+            String::new()
+        };
+        self.paragraph("ListItem", &props, block.anchor.as_deref(), &content);
     }
 
     /// Writes a bibliography entry with its label ("[12]", "12.") hanging

@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 const SAMPLE_DOCX: &str = "word/sample.docx";
 /// The same document saved as a Word 97–2003 file.
 const SAMPLE_DOC: &str = "word/sample.doc";
+/// Lists inside lists, written by pandoc from `lists.md`.
+const LISTS_DOCX: &str = "word/lists.docx";
 /// The LIGO paper, the one test PDF in the repository.
 const LIGO: &str = "1602.03837v1.pdf";
 
@@ -82,7 +84,7 @@ fn docx_sample_has_its_structure() {
     assert!(equation.math.is_some());
     // A formula in running text is one span with its structure.
     let item = block(doc, "1. A tight bound");
-    assert!(matches!(&item.kind, BlockKind::ListItem { marker: Some(marker) } if marker == "1."));
+    assert!(matches!(&item.kind, BlockKind::ListItem { marker: Some(marker), level: 0 } if marker == "1."));
     assert!(item.spans.iter().any(|span| span.math.is_some()));
 
     // Links: a citation, a note mark, a link inside the document, a web
@@ -178,7 +180,7 @@ fn doc_sample_reads_like_the_docx() {
                 // LibreOffice saves the two items of the numbered list as
                 // two lists, numbered "1." each: the numbers are left out.
                 let (kind, text) = match &block.kind {
-                    BlockKind::ListItem { marker } => {
+                    BlockKind::ListItem { marker, .. } => {
                         let text = block.text();
                         let text = marker.as_ref().map_or(text.clone(), |marker| {
                             text.strip_prefix(marker.as_str()).unwrap_or(&text).trim().to_string()
@@ -362,5 +364,29 @@ fn word_outputs_match_their_snapshot() {
         old, text,
         "the output of the Word samples changed; if this is intended, run \
          KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test word"
+    );
+}
+
+/// Items of lists inside lists keep their nesting level.
+#[test]
+fn nested_list_items_keep_their_level() {
+    let (_, analysis) = load(LISTS_DOCX);
+    let levels: Vec<(String, u8)> = analysis
+        .doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::ListItem { level, .. } => Some((block.text(), *level)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            ("1. First item".to_string(), 0),
+            ("A bullet inside it".to_string(), 1),
+            ("A bullet two levels in".to_string(), 2),
+            ("2. Second item".to_string(), 0),
+        ]
     );
 }
