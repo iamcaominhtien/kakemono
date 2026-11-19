@@ -640,6 +640,9 @@ impl Reader<'_> {
                 .map(|run| run.grpprl.clone())
                 .unwrap_or_default();
             let fmt = self.run_fmt(&base_run, &chpx);
+            if unit == PAGE_BREAK && std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
+                eprintln!("BREAK hidden={} fields={:?} chpx={}", fmt.hidden, self.fields, debug_sprms(&chpx));
+            }
             if self.field_char(unit, &mut text, current.as_ref(), &fmt, &mut para) {
                 continue;
             }

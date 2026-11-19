@@ -584,7 +584,12 @@ impl Flow<'_> {
             let mut y = self.state.y + gap;
             let mut fit = 0;
             let mut notes_extra = 0.0;
-            for line in &lines[at..] {
+            // A page or column break ends what can go here.
+            let chunk_end = lines[at..]
+                .iter()
+                .position(|line| line.page_break || line.column_break)
+                .map_or(count, |offset| at + offset + 1);
+            for line in &lines[at..chunk_end] {
                 let extra = self.notes_height_for(line);
                 if y + line.fit_height > room_bottom - notes_extra - extra + EPS {
                     break;
@@ -593,7 +598,7 @@ impl Flow<'_> {
                 y += line.height;
                 fit += 1;
             }
-            let remaining = count - at;
+            let remaining = chunk_end - at;
             let mut take = fit;
             if take < remaining {
                 if para.props.keep_lines && at == 0 && !self.state.fresh {
@@ -683,15 +688,11 @@ impl Flow<'_> {
             self.state.fresh = false;
             at += take;
             gap = 0.0;
-            if let Some(last) = lines.get(at - 1) {
-                if last.page_break {
-                    self.next_page();
-                } else if last.column_break {
-                    self.next_column();
-                }
-            }
-            if at < count {
-                self.next_column();
+            match lines.get(at - 1) {
+                Some(last) if last.page_break => self.next_page(),
+                Some(last) if last.column_break => self.next_column(),
+                _ if at < count => self.next_column(),
+                _ => {}
             }
         }
     }
