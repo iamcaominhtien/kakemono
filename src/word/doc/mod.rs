@@ -7,9 +7,9 @@
 //! and paragraphs are found by the byte each character is stored at
 //! (`props`).
 
-mod fib;
-mod picture;
-mod props;
+pub(crate) mod fib;
+pub(crate) mod picture;
+pub(crate) mod props;
 
 use super::docx::field_link;
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 /// Signature of a compound file (OLE2), the container of a `.doc`.
-const COMPOUND_FILE_MAGIC: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+pub(crate) const COMPOUND_FILE_MAGIC: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 /// Paragraph mark.
 const PARAGRAPH_END: u16 = 0x0D;
 /// Cell mark (also the end of a table row).
@@ -122,7 +122,7 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
 }
 
 /// The contents of the stream `name`, or `None` when the file has none.
-fn stream(file: &mut cfb::CompoundFile<Cursor<&[u8]>>, name: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn stream(file: &mut cfb::CompoundFile<Cursor<&[u8]>>, name: &str) -> Result<Option<Vec<u8>>> {
     if !file.is_stream(name) {
         return Ok(None);
     }
@@ -135,7 +135,7 @@ fn stream(file: &mut cfb::CompoundFile<Cursor<&[u8]>>, name: &str) -> Result<Opt
 
 /// The notes of a kind: for each, the position of its mark in the main
 /// text and the range of its text.
-fn note_ranges(fib: &Fib, table: &[u8], endnote: bool) -> Vec<(u32, (u32, u32))> {
+pub(crate) fn note_ranges(fib: &Fib, table: &[u8], endnote: bool) -> Vec<(u32, (u32, u32))> {
     let (refs, texts, base) = if endnote {
         (
             fib.slice(table, Pair::PlcfendRef),

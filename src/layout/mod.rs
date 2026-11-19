@@ -20,6 +20,10 @@ use anyhow::Result;
 /// # Errors
 /// When the PDF cannot be written.
 pub fn to_pdf(doc: &FDoc) -> Result<Vec<u8>> {
+    // For debugging: the formatted document as read.
+    if std::env::var_os("KAKEMONO_DUMP_FORMAT").is_some() {
+        eprintln!("{doc:#?}");
+    }
     let mut book = fonts::FontBook::new(&doc.fonts, &doc.font_kinds);
     let laid = flow::layout(doc, &mut book);
     pdf::write(

@@ -238,6 +238,26 @@ pub(crate) struct RawTab {
     leader: Option<char>,
 }
 
+impl RawTab {
+    /// A tab stop at `pos`.
+    pub(crate) fn new(pos: f32, kind: TabKind, leader: Option<char>) -> Self {
+        RawTab {
+            pos,
+            kind: Some(kind),
+            leader,
+        }
+    }
+
+    /// The removal of the tab stop at `pos`.
+    pub(crate) fn cleared(pos: f32) -> Self {
+        RawTab {
+            pos,
+            kind: None,
+            leader: None,
+        }
+    }
+}
+
 /// Paragraph properties, each `None` when not set at this level.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawPara {

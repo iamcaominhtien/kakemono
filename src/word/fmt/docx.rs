@@ -537,11 +537,20 @@ impl Reader<'_> {
             let id = if id.is_empty() { old_id } else { id.clone() };
             numbering = Some((id, level.or(old_level)));
         }
+        let from_style = direct.numbering.is_none();
         let mut number = None;
         if let Some((num_id, level)) = numbering.filter(|(id, _)| !id.is_empty() && id != "0") {
             let level = level.unwrap_or(0);
             if let Some(def) = self.numbering.level(&num_id, level, self.styles) {
-                para_raw.overlay(&def.para);
+                // A list set by the paragraph's style is beneath the style:
+                // the style's own indents win over the level's.
+                if from_style {
+                    let mut under = def.para.clone();
+                    under.overlay(&para_raw);
+                    para_raw = under;
+                } else {
+                    para_raw.overlay(&def.para);
+                }
                 let hidden = mark_raw.hidden == Some(true);
                 if !hidden && let Some((def, text)) = self.numbering.next(&num_id, level, self.styles) {
                     let mut fmt_raw = mark_raw.clone();
@@ -1387,7 +1396,7 @@ fn flush(text: &mut String, fmt: &RunFmt, para: &mut Para) {
 
 /// Text in a symbol font (Symbol, Wingdings), whose codes are not
 /// Unicode, mapped to the Unicode characters they draw.
-fn symbol_text(text: &str, fmt: &mut RunFmt) -> String {
+pub(super) fn symbol_text(text: &str, fmt: &mut RunFmt) -> String {
     let font = fmt.font.to_ascii_lowercase();
     let is_symbol = font == "symbol";
     let is_wingdings = font.starts_with("wingdings");
@@ -1438,7 +1447,7 @@ fn wingdings_char(code: u8) -> Option<char> {
 
 /// The layout field of an instruction (page number, page count) and its
 /// number format switch.
-fn layout_field(instr: &str) -> Option<(FieldKind, Option<NumFormat>)> {
+pub(super) fn layout_field(instr: &str) -> Option<(FieldKind, Option<NumFormat>)> {
     let words = field_words(instr);
     let (name, args) = words.split_first()?;
     let kind = match name.to_ascii_uppercase().as_str() {

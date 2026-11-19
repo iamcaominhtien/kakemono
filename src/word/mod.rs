@@ -7,7 +7,7 @@
 //! stored in the [`Document`] ([`Document::pictures`]).
 
 mod build;
-mod doc;
+pub(crate) mod doc;
 mod docx;
 pub mod fmt;
 mod ir;

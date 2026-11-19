@@ -127,6 +127,21 @@ impl Styles {
         styles
     }
 
+    /// Adds a style (a `.doc` file); `default` makes it the default style of
+    /// its kind.
+    pub(crate) fn insert(&mut self, id: String, style: Style, default: bool) {
+        if default {
+            let slot = match style.kind {
+                StyleKind::Paragraph => &mut self.default_para_style,
+                StyleKind::Character => &mut self.default_char_style,
+                StyleKind::Table => &mut self.default_table_style,
+                StyleKind::Numbering => return,
+            };
+            *slot = Some(id.clone());
+        }
+        self.by_id.insert(id, style);
+    }
+
     /// The style `id`, or the default paragraph style when `id` is unknown.
     fn chain(&self, id: Option<&str>, fallback: Option<&str>) -> Vec<&Style> {
         let mut chain = Vec::new();
@@ -285,6 +300,20 @@ impl Numbering {
                 .insert(id.to_string(), (abstract_id.to_string(), overrides));
         }
         numbering
+    }
+
+    /// Adds a list definition `abstract_id` and the list `num_id` that uses
+    /// it, with the levels it overrides (a `.doc` file).
+    pub(crate) fn insert(
+        &mut self,
+        num_id: String,
+        abstract_id: String,
+        mut levels: Vec<Level>,
+        overrides: HashMap<u8, (Option<u32>, Option<Level>)>,
+    ) {
+        levels.resize(LIST_LEVELS, Level::default());
+        self.abstracts.insert(abstract_id.clone(), levels);
+        self.lists.insert(num_id, (abstract_id, overrides));
     }
 
     /// The levels of list `num_id`, following a numbering style link.

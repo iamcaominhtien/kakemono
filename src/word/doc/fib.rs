@@ -41,6 +41,10 @@ pub(crate) enum Pair {
     PlcffndRef = 2,
     /// Footnote text positions.
     PlcffndTxt = 3,
+    /// Section descriptors.
+    PlcfSed = 6,
+    /// Header and footer story positions.
+    PlcfHdd = 11,
     /// Character property pages.
     PlcfBteChpx = 12,
     /// Paragraph property pages.
@@ -51,6 +55,8 @@ pub(crate) enum Pair {
     SttbfBkmk = 21,
     /// Bookmark start positions.
     PlcfBkf = 22,
+    /// Document properties (`DOP`).
+    Dop = 31,
     /// The piece table.
     Clx = 33,
     /// Endnote reference positions.

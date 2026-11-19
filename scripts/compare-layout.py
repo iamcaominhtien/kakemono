@@ -15,9 +15,16 @@ import collections, html, json, os, re, subprocess, sys, unicodedata
 QUOTES = str.maketrans({'’': "'", '‘': "'", '“': '"', '”': '"', ' ': ' '})
 
 
+BULLETS = set('•·▪■●◆○□◦‣➢➤✓✔')
+
+
 def norm(text):
-    """A word as compared: NFKC, plain quotes."""
-    return unicodedata.normalize('NFKC', html.unescape(text)).translate(QUOTES)
+    """A word as compared: NFKC, plain quotes; a lone symbol (a bullet,
+    which Word's PDFs often draw with no Unicode for it) is one mark."""
+    text = unicodedata.normalize('NFKC', html.unescape(text)).translate(QUOTES)
+    if len(text) == 1 and (text in BULLETS or text == '\ufffd' or unicodedata.category(text) in ('So', 'Co')):
+        return '•'
+    return text
 
 
 KAKEMONO = os.environ.get('KAKEMONO', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'target', 'release', 'kakemono'))
@@ -54,7 +61,10 @@ def compare(ref_pdf, our_pdf, detail=False):
             same_page += our_page == page
         else:
             missing.append((page, text))
+    ref_words = collections.Counter(word for *_, text in ref for word in text.split())
+    our_words = collections.Counter(word for *_, text in ours for word in text.split())
     result = {
+        'word_ratio': sum((ref_words & our_words).values()) / max(1, sum(ref_words.values())),
         'ref_pages': ref_pages, 'our_pages': our_pages,
         'ref_lines': len(ref), 'our_lines': len(ours), 'lines_matched': matched,
         'line_ratio': matched / max(1, len(ref)),
