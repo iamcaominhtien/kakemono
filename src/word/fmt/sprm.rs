@@ -420,14 +420,14 @@ pub(crate) fn row_props(grpprl: &[u8]) -> RowProps {
             }
             0xD605 => {
                 let body = operand.get(1..).unwrap_or(&[]);
-                for at in 0..6 {
-                    row.table_borders[at] = body.get(at * 4..at * 4 + 4).and_then(brc80).flatten();
+                for (at, border) in row.table_borders.iter_mut().enumerate() {
+                    *border = body.get(at * 4..at * 4 + 4).and_then(brc80).flatten();
                 }
             }
             0xD613 => {
                 let body = operand.get(1..).unwrap_or(&[]);
-                for at in 0..6 {
-                    row.table_borders[at] = body.get(at * 8..at * 8 + 8).and_then(brc).flatten();
+                for (at, border) in row.table_borders.iter_mut().enumerate() {
+                    *border = body.get(at * 8..at * 8 + 8).and_then(brc).flatten();
                 }
             }
             0xD609 => {
