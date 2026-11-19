@@ -30,6 +30,11 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
     │  word/          DOCX/DOC bytes → the same Document: docx.rs (OOXML) or doc/ (Word 97–2003)
     │                 → ir.rs (paragraphs, runs, tables, notes) → build.rs (styles → block kinds)
     │
+    │  word/fmt/      DOCX/DOC bytes → FDoc, every formatting property resolved
+    │   └► layout/    FDoc laid out in pages as Word does → a PDF (`-f pdf`); for the hard and
+    │                 hard-95 modes that PDF goes through the PDF pipeline above; medium is
+    │                 layout/html.rs (Word's formatting in one continuous page)
+    │
     ▼  render/        trait Renderer: one implementation per mode
  hard │ hard-95 │ medium │ friendly        shared: assets, escape, flow, mathml, table
     │
@@ -52,6 +57,10 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
+| `word/fmt/` | A Word document with all its formatting, for the layout engine (`FDoc`, `model`): `docx` and `doc` read sections, headers and footers, resolved paragraph, run, table and cell properties (`props`, `styles`; `sprm` for `.doc`), lists, notes, fields, pictures, shapes and embedded fonts; `drawing` the floating shapes and text boxes of a `.doc` (OfficeArt), `frames` frames placed like text boxes, `contrast` automatic text colour |
+| `word/metafile/` | EMF and WMF pictures replayed on a small model of a Windows device context (`dc`) and written as SVG |
+| `word/mtef.rs` | MathType and Equation Editor formulas (MTEF 3 and 5, the `Equation Native` stream of an OLE object) → `MathNode` |
+| `layout/` | The Word layout engine: `fonts` (embedded, installed, metric-compatible open fonts, and the built-in metrics of `metrics.txt` for fonts with no open match), `shape` (glyphs with Word's defaults), `para` (line breaking, tabs, justification, line heights), `flow` (sections, columns, pages: spacing, widows and orphans, keep-with-next, tables, headers and footers, footnotes, floating objects), `display` (what is drawn where), `pdf` (written with krilla), `html` (the medium mode for Word), `lines` (text lines of a PDF with their baselines, to compare a layout with Word's) |
 | `backend/` | Adapter around hayro: reads pages (`extract`), recognizes fonts (`fonts`), draws pages/regions (`render`; resvg turns a very large SVG page into a PNG; a photograph is cut out as a JPEG) |
 | `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution |
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
@@ -71,6 +80,7 @@ Dependencies run in one direction only:
 ```
 main → paper → analysis → backend → common
               → word    → analysis (the linking of `semantics`)
+              → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping)
               → render  → model   → common
 ```
 

@@ -39,6 +39,7 @@ kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
 kakemono convert 1706.03762 -o attention.json   # the content as editable JSON
 kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages, with the edited text
 kakemono convert report.docx -o report.md       # a Word document (.docx or .doc) as input
+kakemono convert report.docx -o report.pdf      # a Word document as a PDF, laid out as Word lays it out
 ```
 
 ## Features
@@ -84,12 +85,32 @@ read directly, without the layout analysis a PDF needs, and turned into the same
 - tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, SVG) figures,
   with the caption before or after them; footnotes and endnotes follow their paragraph;
 - hyperlinks, cross-references to bookmarks, citations and references to figures and tables become
-  links, as for a PDF.
+  links, as for a PDF;
+- pictures stored as Windows metafiles (EMF, WMF: charts, older drawings) are drawn by kakemono
+  (as SVG), formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and
+  `.docx` files) become real formulas, floating shapes and text boxes of `.doc` files are read,
+  and nested lists keep their level.
 
-A Word document has no pages: only the `friendly` HTML mode (`hard`, `hard-95` and `medium` are
-refused; `--all` writes the friendly page), and every other format. `.doc` files (Word 97–2003)
-are read by kakemono itself, without Word or LibreOffice; Word 6/95 files and password-protected
-files are not. The editable JSON and `--content` work the same way. See
+**Pages as Word lays them out.** kakemono also lays a Word document out in pages itself, the way
+Word does: fonts with Word's metrics (a table of metrics for the usual Office fonts is built in),
+line breaking, line spacing, widow and orphan control, keep-with-next, tables (row heights, merged
+cells, borders, shading, repeated header rows), headers and footers, footnotes, sections and
+columns, frames, floating pictures, shapes and text boxes. No Word, LibreOffice or other program is
+used. That layout gives:
+
+- `-o report.pdf` (or `-f pdf`): a PDF of the document, with selectable text and links;
+- `hard` and `hard-95`: its pages, as for a PDF;
+- `medium`: Word's formatting (fonts, colours, indents, spacing, tables, pictures) in one
+  continuous page, without page breaks;
+- `friendly` stays the single-column article, from the document's structure.
+
+How close it is to Word is measured in CI on 527 documents with the PDF Word made of them (government
+reports, forms, letters, guidance, templates; `.docx` and `.doc`; see
+[Testing](#testing)): about 93% of lines break at the same words as in Word, and 80% of documents
+have the same number of pages. Text edited with `--content` reaches every output except the page
+layout (PDF, `hard`, `hard-95`, `medium`). `.doc` files (Word 97–2003) are read by kakemono
+itself; Word 6/95 files, RTF files and password-protected files are not. Comments, tracked
+changes (read as accepted), macros and form fields are not shown. See
 [docs/WORD-INPUT.md](docs/WORD-INPUT.md) for the design.
 
 ## Word documents
@@ -328,7 +349,7 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|epub\|json>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book or editable JSON; chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub` or `.json` |
+| `-f, --format <html\|docx\|md\|tex\|epub\|json\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json` or `.pdf` |
 | `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub` or `.json` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but the `hard` mode |
 | `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX; Word keeps them embedded too; never for EPUB) |
@@ -464,9 +485,10 @@ All the numbers, and leads for making it faster, are in
 - Author–year citations are not linked yet; scanned and encrypted PDFs are not supported.
 - Word documents are one column (the page and column layout of the PDF is not kept), and figures
   are pictures.
-- Word input: pictures stored as Windows metafiles (EMF, WMF: charts, older drawings) and formulas
-  made with the old Equation Editor or MathType (in `.doc` files) are left out; floating shapes and
-  text boxes are read where they are anchored.
+- Word input: formulas made with MathType 2 (MTEF 2, in very old `.doc` files) stay pictures;
+  floating shapes and text boxes are read where they are anchored in the flowing outputs; the page
+  layout has no true transparency (a transparent fill is blended over white) and draws rounded
+  and freeform shapes as their bounding rectangle.
 - Unusual layouts may be read wrongly: `inspect` shows what was detected.
 
 ## Testing
@@ -490,10 +512,19 @@ cargo test --release
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 
 - **Word input** (`tests/word.rs`): `tests/data/word/sample.docx`, written by pandoc from
-  `sample.md`, and `sample.doc`, the same saved by LibreOffice, are read and written to every
-  format (snapshot in `tests/data/snapshots/word-sample.txt`); the LIGO paper goes through a round
-  trip PDF → Word → kakemono. To make the samples again:
+  `sample.md`, `sample.doc`, the same saved by LibreOffice, and `lists.docx` (nested lists) are
+  read and written to every format (snapshot in `tests/data/snapshots/word-sample.txt`); the LIGO
+  paper goes through a round trip PDF → Word → kakemono. To make the samples again:
   `cd tests/data/word && pandoc sample.md -o sample.docx && soffice --headless --convert-to doc sample.docx`.
+- **Word layout fidelity** (CI job "Word layout fidelity"): `scripts/fetch-word-corpus.sh`
+  downloads the Word documents of `tests/data/word-corpus.tsv` with the PDF Word made of each
+  (public documents: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories; not committed);
+  `scripts/word-fidelity.py` lays each out and compares it with Word's PDF line by line
+  (`scripts/compare-layout.py`): the share of lines broken at the same words, and of documents
+  with the same page count. The job fails below its minimums. Pairs left out, and why, are in
+  `tests/data/word-corpus-excluded.tsv`.
+- **Crash test**: `scripts/word-crash-test.py DIR...` converts every Word file found to every
+  output and reports panics and timeouts (run on 4,300 public Word files: none).
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):

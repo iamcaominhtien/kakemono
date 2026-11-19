@@ -1,21 +1,106 @@
 # Word input (`.docx`, `.doc`): research
 
-Status: implemented (steps 0 to 2 below, in one pull request). This note is
-the research behind it: how kakemono could read Word documents next to PDFs,
-what was measured, and what was chosen.
+Status: implemented. This note began as the research behind Word input (how
+kakemono could read Word documents next to PDFs, what was measured, what was
+chosen: the sections from "The question" on, kept as written). Since then a
+page layout of our own was added, so that the PDF and page modes look like
+Word's own output without Word or LibreOffice; it is described first.
 
 What was built, in short:
 
 - `src/word/`: a `.docx` reader and a `.doc` reader of our own (on `cfb`), both
-  into one intermediate form, turned into a `Document` by `build.rs`.
+  into one intermediate form, turned into a `Document` by `build.rs`: the
+  structure every flowing output uses (friendly HTML, Word, Markdown, LaTeX,
+  EPUB, JSON).
+- `src/word/fmt/` and `src/layout/`: the same file read again with all its
+  formatting (`FDoc`) and laid out in pages as Word lays it out, written as a
+  PDF (`-f pdf`, `Paper::to_pdf`). The `hard` and `hard-95` modes are that PDF
+  through the PDF pipeline; `medium` is `layout/html.rs`, Word's formatting
+  in one continuous page.
+- `src/word/metafile/` (EMF, WMF → SVG), `src/word/mtef.rs` (MathType and
+  Equation Editor formulas → `MathNode`), floating shapes and text boxes of a
+  `.doc` (`fmt/drawing.rs`), list levels (`ListItem::level`).
 - `model`: `ImageSpec::embedded` and `Document::pictures` (pictures stored in
   the document), `BlockKind::Equation::image` optional, `Span::math` (a formula
   in running text with its structure), `Block::caption_above`.
-- `Paper::from_bytes` recognises the format; `Paper::format`, `InputFormat`;
-  `Paper::renderer` returns an `Option`. The page modes give the friendly page
-  for a Word document in the library, and are refused by the CLI and Python.
-- `.doc` is read by kakemono itself: `rust-docx` does not build next to hayro
-  (see below), so step 2 took the "reader of our own on `cfb`" branch.
+
+## The page layout
+
+### Reading every property
+
+The semantic reading (`ir`, `build`) keeps what a paragraph *is*; the layout
+needs how it *looks*. `word/fmt/` keeps every property unset until a level of
+the style hierarchy sets it (`props`), and resolves them in Word's order:
+document defaults, table style (only where the paragraph style keeps the
+defaults), paragraph style, list level, character style, direct formatting. A
+`.doc` gives the same properties through its sprms (`sprm.rs`), so the layout
+does not know which format it reads.
+
+### Laying out
+
+- **Fonts** (`layout/fonts.rs`, `metrics.rs`): the fonts embedded in the
+  document first, then installed ones, then open fonts with the same metrics
+  (Carlito for Calibri, Liberation for Times New Roman, Arial and Courier
+  New, Caladea for Cambria). For the fonts Word documents often use that no
+  open font matches (Tahoma, Verdana, Segoe UI, Georgia, …), the advance
+  widths and vertical metrics are built in (`metrics.txt`, harvested from
+  the subsets Word embeds in its PDFs by `scripts/harvest-font-metrics.py`):
+  the text is drawn in a stand-in face but measured, and so broken, as Word
+  measures it.
+- **Lines** (`para.rs`): words placed until one does not fit, tabs to their
+  stops (with leaders), justification by widening spaces, line height from
+  the Windows ascent and descent of the line's fonts (a tab's font counts only
+  on a line without text), exact, at-least and multiple line spacing.
+- **Pages** (`flow.rs`): space before and after (collapsed as Word does),
+  widows and orphans, keep-with-next and keep-together, page and column
+  breaks, sections with their own page size, margins and columns, headers and
+  footers (first page, even pages), footnotes at the foot of their page,
+  frames and floating objects with their wrapping.
+- **Tables**: the grid from the column widths, row heights (an at-least row is
+  the larger of its content and its value plus cell margins and border),
+  merged cells (grown by the row where the merge ends), borders and shading
+  from the table style's conditional formats, repeated header rows, rows that
+  may or may not break across pages, nested tables.
+
+Rules like these were found by comparing with Word's PDFs, not from the
+specification alone: [MS-DOC] and ECMA-376 say what a property means, not
+where Word puts the line.
+
+### Measuring
+
+`tests/data/word-corpus.tsv` lists 527 public Word documents (`.docx` and
+`.doc`: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories) each
+with the PDF Word made of it. `scripts/word-fidelity.py` lays each out,
+reads the lines of both PDFs (`kakemono lines`: glyph baselines) and counts
+the lines of Word's PDF that ours breaks at the same words, and the documents
+with the same page count. CI runs it and fails below its minimums.
+
+| | Result (2026-11) |
+| --- | --- |
+| Lines broken at the same words as Word | 92.8% |
+| Documents with Word's page count | 79.7% (420 of 527) |
+| Conversion errors | 0 |
+
+Pairs left out of the corpus, and why, are in
+`tests/data/word-corpus-excluded.tsv`: PDFs published next to a Word file
+that turned out to be of another document, RTF files named `.doc`, a Welsh
+document with its English PDF.
+
+What still differs, roughly by weight:
+
+- a page that holds one line more or less than Word's (rounding of line
+  heights accumulates over a page), which moves every later page break;
+- row heights in long tables, where the same rounding adds up;
+- text boxes that do not wrap, and shapes kakemono draws as rectangles
+  (rounded and freeform shapes) or blends over white (transparency);
+- fonts with neither an open equivalent nor built-in metrics.
+
+### Robustness
+
+`scripts/word-crash-test.py` converts every Word file of the given folders to
+every output (4 HTML modes, PDF, Word, Markdown, LaTeX, EPUB, JSON). On 4,300
+public Word files: no panic and no timeout; damaged and password-protected
+files give a clean error.
 
 ## The question
 
