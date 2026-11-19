@@ -47,6 +47,14 @@ const FIELD_END: u16 = 0x15;
 const PICTURE: u16 = 0x01;
 /// The mark of a footnote or endnote (special character).
 const NOTE_MARK: u16 = 0x02;
+/// Where a floating shape is anchored (special character).
+const SHAPE_ANCHOR: u16 = 0x08;
+/// Size of an `FSPA` (a floating shape of `PlcSpaMom`).
+const FSPA_LEN: usize = 26;
+/// Size of an `FTXBXS` (a text box of `PlcftxbxTxt`).
+const FTXBXS_LEN: usize = 22;
+/// Offset of the shape id in an `FTXBXS`.
+const FTXBXS_LID: usize = 14;
 /// A symbol character (special character `(`, with its font and code).
 const SYMBOL: u16 = 0x28;
 /// Non-breaking hyphen.
@@ -92,7 +100,11 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         note_refs: HashMap::new(),
         pictures: Vec::new(),
         fields: Vec::new(),
+        anchors: HashMap::new(),
+        text_boxes: HashMap::new(),
+        boxes: Vec::new(),
     };
+    reader.read_text_boxes(&fib, &table);
     for (cp, name) in props::bookmarks(fib.slice(&table, Pair::SttbfBkmk), fib.slice(&table, Pair::PlcfBkf)) {
         reader.bookmarks.entry(cp).or_default().push(name);
     }
@@ -213,9 +225,39 @@ struct Reader<'a> {
     pictures: Vec<crate::model::Picture>,
     /// The fields open at this point.
     fields: Vec<Field>,
+    /// The shape anchored at each character position of the main text.
+    anchors: HashMap<u32, u32>,
+    /// The text of each text box, by shape id.
+    text_boxes: HashMap<u32, Vec<Item>>,
+    /// Text box contents anchored in the paragraph being read: they come
+    /// after it.
+    boxes: Vec<Item>,
 }
 
 impl Reader<'_> {
+    /// Reads the floating shapes of the main text and the text of its text
+    /// boxes.
+    fn read_text_boxes(&mut self, fib: &Fib, table: &[u8]) {
+        let (cps, entries) = plc(fib.slice(table, Pair::PlcSpaMom), FSPA_LEN);
+        for (cp, entry) in cps.iter().zip(entries) {
+            if let Some(spid) = fib::u32_at(entry, 0) {
+                self.anchors.insert(*cp, spid);
+            }
+        }
+        let story = fib.ccp_text + fib.ccp_ftn + fib.ccp_hdd + fib.ccp_atn + fib.ccp_edn;
+        let (cps, entries) = plc(fib.slice(table, Pair::PlcftxbxTxt), FTXBXS_LEN);
+        for (at, entry) in entries.iter().enumerate() {
+            let (Some(lid), Some(&start), Some(&end)) = (fib::u32_at(entry, FTXBXS_LID), cps.get(at), cps.get(at + 1))
+            else {
+                continue;
+            };
+            if start < end && self.anchors.values().any(|&spid| spid == lid) {
+                let items = self.items(story + start, story + end);
+                self.text_boxes.insert(lid, items);
+            }
+        }
+    }
+
     /// The paragraphs and tables of the characters `start..end`.
     fn items(&mut self, start: u32, end: u32) -> Vec<Item> {
         let end = end.min(self.text.units.len() as u32);
@@ -236,6 +278,7 @@ impl Reader<'_> {
                     items.push(Item::Table(finish_table(done)));
                 }
                 items.push(Item::Para(para));
+                items.append(&mut self.boxes);
                 continue;
             }
             let build = table.get_or_insert_with(TableBuild::default);
@@ -249,6 +292,7 @@ impl Reader<'_> {
                 continue;
             }
             build.items.push(Item::Para(para));
+            build.items.append(&mut self.boxes);
             if terminator == CELL_END && props.table_depth == 1 {
                 let body = std::mem::take(&mut build.items);
                 build.cells.push(Cell {
@@ -362,6 +406,11 @@ impl Reader<'_> {
         para: &mut Para,
     ) {
         match unit {
+            SHAPE_ANCHOR if extras.special => {
+                if let Some(items) = self.anchors.get(&cp).and_then(|spid| self.text_boxes.remove(spid)) {
+                    self.boxes.extend(items);
+                }
+            }
             PICTURE if extras.special => {
                 flush(units, current, self.field_href(), para);
                 if let Some(location) = extras.picture {
