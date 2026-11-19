@@ -901,10 +901,13 @@ fn section_number(text: &str) -> Option<String> {
 fn is_code(para: &Para, key: &str) -> bool {
     if matches!(
         key,
-        "sourcecode" | "code" | "htmlpreformatted" | "plaintext" | "verbatim" | "codeblock"
+        "sourcecode" | "code" | "htmlpreformatted" | "verbatim" | "codeblock"
     ) {
         return true;
     }
+    // "Plain Text" is monospaced unless a document changes its font (some
+    // templates use it for their body text): it is code only when its text
+    // is monospaced, like any other paragraph.
     let mut any = false;
     for inline in &para.inlines {
         match inline {
