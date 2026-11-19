@@ -143,6 +143,10 @@ struct State {
     y: f32,
     /// Nothing has been placed in the column yet.
     fresh: bool,
+    /// The column was started because the paragraph placed next did not
+    /// fit in the previous one (not by a break): Word drops its space
+    /// before.
+    pushed: bool,
     /// Space after the last paragraph, with its style and whether it is
     /// contextual.
     pending_after: Option<(f32, String, bool)>,
@@ -255,6 +259,7 @@ impl Flow<'_> {
         self.state.bottom = (page.height - page.bottom.abs()).min(footer_top);
         self.state.y = self.state.top;
         self.state.fresh = true;
+        self.state.pushed = false;
         self.state.pending_after = None;
         self.state.page_notes.clear();
         self.state.notes_height = 0.0;
@@ -410,6 +415,7 @@ impl Flow<'_> {
                         let page_room = self.state.bottom - self.state.top;
                         if need > room + EPS && need <= page_room {
                             self.next_column();
+                            self.state.pushed = true;
                         }
                     }
                     self.paragraph(para);
@@ -471,6 +477,7 @@ impl Flow<'_> {
             self.state.column += 1;
             self.state.y = self.state.top;
             self.state.fresh = true;
+            self.state.pushed = false;
             self.state.pending_after = None;
             return;
         }
@@ -515,7 +522,7 @@ impl Flow<'_> {
         } else {
             para.props.before
         };
-        let before = if para.props.contextual && self.state_style_matches(para) {
+        let before = if para.props.contextual && self.state_style_matches(para) || self.state.fresh && self.state.pushed {
             0.0
         } else {
             before
@@ -686,6 +693,7 @@ impl Flow<'_> {
             self.para_frame(para, borders, shading, x, start_y, y, at == 0, at + take == count);
             self.state.y = y;
             self.state.fresh = false;
+            self.state.pushed = false;
             at += take;
             gap = 0.0;
             match lines.get(at - 1) {
@@ -697,13 +705,10 @@ impl Flow<'_> {
         }
     }
 
-    /// The gap above a paragraph that starts a new column or page.
-    fn top_gap(&self, para: &Para) -> f32 {
-        if para.props.before_auto {
-            AUTO_SPACING_PT
-        } else {
-            para.props.before
-        }
+    /// The gap above a paragraph pushed to a new column or page: Word drops
+    /// its space before.
+    fn top_gap(&self, _: &Para) -> f32 {
+        0.0
     }
 
     /// Extra footnote height a line needs on this page.
@@ -1160,7 +1165,13 @@ impl Flow<'_> {
                 cells.push(laid);
                 column += span;
             }
-            let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max);
+            // Word adds the width of the row's top border to its content.
+            let border = cells
+                .iter()
+                .filter(|cell| cell.draw_top)
+                .filter_map(|cell| cell.borders[0].map(|border| border.width))
+                .fold(0.0, f32::max);
+            let content: f32 = cells.iter().map(|cell| cell.height).fold(0.0, f32::max) + border;
             let height = match row.height {
                 Some((value, true)) => value,
                 Some((value, false)) => content.max(value),

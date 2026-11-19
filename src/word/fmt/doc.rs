@@ -576,6 +576,9 @@ impl Reader<'_> {
         let mark_chpx = run_at(&self.chars, mark_fc)
             .map(|run| run.grpprl.clone())
             .unwrap_or_default();
+        if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
+            eprintln!("MARK {istd} {}", debug_sprms(&mark_chpx));
+        }
         let mut mark_raw = base_run.clone();
         let mark_base = mark_raw.clone();
         apply_chars(&mark_chpx, &mut mark_raw, &mark_base, self.fonts);

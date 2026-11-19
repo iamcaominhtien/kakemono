@@ -1204,20 +1204,12 @@ impl Builder {
                 _ => {}
             }
         }
-        // The paragraph mark's font counts on the last line, and alone on an
-        // empty one.
-        let is_last_line = end == LineEnd::Last;
-        if is_last_line || !text_seen && images.is_empty() {
+        // The paragraph mark's font counts only on a line with nothing else.
+        if !text_seen && images.is_empty() && shapes.is_empty() {
             let (a, d, l) = ctx.line_metrics(&para.mark);
-            if !text_seen && images.is_empty() && shapes.is_empty() {
-                ascent = ascent.max(a);
-                descent = descent.max(d);
-                leading = leading.max(l);
-            } else if is_last_line {
-                ascent = ascent.max(a);
-                descent = descent.max(d);
-                leading = leading.max(l);
-            }
+            ascent = ascent.max(a);
+            descent = descent.max(d);
+            leading = leading.max(l);
         }
         let natural = ascent + descent + leading;
         let height = match para.props.line {
@@ -1253,7 +1245,11 @@ impl Builder {
         }
         let shapes = shapes.into_iter().map(|(x, shape)| (x, shape)).collect::<Vec<_>>();
         let only_pictures = !text_seen && (has_images || !shapes.is_empty());
+        let break_only = !text_seen && !has_images && shapes.is_empty() && matches!(end, LineEnd::Break(BreakKind::Page | BreakKind::Column));
         let fit_height = match para.props.line {
+            // A line holding only a page break stays on its page below the
+            // margin rather than leaving a blank page.
+            _ if break_only => 0.0,
             LineSpacing::Auto(_) if only_pictures => baseline,
             LineSpacing::Auto(_) => (baseline + descent).min(height),
             _ => height,
