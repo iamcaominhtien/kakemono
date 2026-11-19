@@ -3,7 +3,7 @@
 made of them, on the corpus of tests/data/word-corpus.tsv (downloaded by
 scripts/fetch-word-corpus.sh), and fails below the thresholds.
 
-Usage: word-fidelity.py [--corpus DIR] [--kakemono PATH] [--json FILE]
+Usage: word-fidelity.py [--corpus DIR] [--kakemono PATH] [--json FILE]  (FILE: in the current directory)
                         [--min-lines RATIO] [--min-pages RATIO]
 
 For each document: the share of Word's lines that break at the same words
@@ -22,7 +22,7 @@ spec.loader.exec_module(compare)
 parser = argparse.ArgumentParser()
 parser.add_argument('--corpus', default=os.path.join(here, '..', 'tests', 'data', 'word-corpus'))
 parser.add_argument('--kakemono', default=os.path.join(here, '..', 'target', 'release', 'kakemono'))
-parser.add_argument('--json')
+parser.add_argument('--json', help='file written in the current directory')
 parser.add_argument('--min-lines', type=float, default=0.0)
 parser.add_argument('--min-pages', type=float, default=0.0)
 args = parser.parse_args()
@@ -40,8 +40,6 @@ def confined(path):
 
 
 args.corpus = confined(args.corpus)
-if args.json:
-    args.json = confined(args.json)
 compare.KAKEMONO = args.kakemono
 out_dir = tempfile.mkdtemp(prefix='word-fidelity-')
 docs = sorted(name for name in os.listdir(args.corpus)
@@ -87,7 +85,8 @@ print(f"lines broken as Word: {lines}/{total} = {line_ratio:.3f} (minimum {args.
 print(f"same page count: {same_pages}/{len(ok)} = {page_ratio:.3f} (minimum {args.min_pages})")
 print(f"lines on the same page as Word: {on_page:.3f}")
 if args.json:
-    json.dump({'summary': summary, 'documents': results}, open(args.json, 'w'), indent=1)
+    with open(os.path.basename(args.json), 'w') as report:
+        json.dump({'summary': summary, 'documents': results}, report, indent=1)
 if os.environ.get('GITHUB_STEP_SUMMARY'):
     with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
         f.write('## Word layout fidelity\n\n| measure | value | minimum |\n| --- | --- | --- |\n')

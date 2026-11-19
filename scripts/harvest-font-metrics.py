@@ -98,15 +98,24 @@ def widths_of(font, tt, upem):
     except Exception:
         pass
     if font.get('/Subtype') == '/TrueType':
-        first = int(font.get('/FirstChar', 0))
-        ws = font.get('/Widths')
-        if ws is not None:
-            values = ws.get_object() if hasattr(ws, 'get_object') else ws
-            for i, w in enumerate(values):
-                ch = WIN_ANSI.get(first + i)
-                w = float(w)
-                if ch and w > 0:
-                    widths.setdefault(ord(ch), round(w * upem / 1000.0))
+        for code, w in encoded_widths(font, upem).items():
+            widths.setdefault(code, w)
+    return widths
+
+
+def encoded_widths(font, upem):
+    """Character to advance width from a simple font's `/Widths`, read
+    with the Windows encoding."""
+    widths = {}
+    ws = font.get('/Widths')
+    if ws is None:
+        return widths
+    first = int(font.get('/FirstChar', 0))
+    values = ws.get_object() if hasattr(ws, 'get_object') else ws
+    for i, w in enumerate(values):
+        ch = WIN_ANSI.get(first + i)
+        if ch and float(w) > 0:
+            widths[ord(ch)] = round(float(w) * upem / 1000.0)
     return widths
 
 

@@ -99,11 +99,19 @@ def diff(ref_pdf, our_pdf, limit=60):
             break
 
 
+# A path as given on the command line: letters, digits and `_ . / + -`, not
+# starting with `-` (which `kakemono lines` would read as an option).
+SAFE_PATH = re.compile(r'[\w./+][\w./+-]*')
+
+
 if __name__ == '__main__':
+    ref_pdf, our_pdf = sys.argv[1], sys.argv[2]
+    if not (SAFE_PATH.fullmatch(ref_pdf) and SAFE_PATH.fullmatch(our_pdf)):
+        sys.exit('compare-layout.py: unexpected characters in a path')
     if '--diff' in sys.argv:
-        diff(sys.argv[1], sys.argv[2])
+        diff(ref_pdf, our_pdf)
         sys.exit()
-    result = compare(sys.argv[1], sys.argv[2])
+    result = compare(ref_pdf, our_pdf)
     if '--json' in sys.argv:
         print(json.dumps(result))
     else:
