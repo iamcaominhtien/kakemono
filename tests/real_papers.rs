@@ -898,6 +898,66 @@ fn caption_below_table_takes_the_table_above() {
     );
 }
 
+paper_test!(
+    luong,
+    "1508.04025v5",
+    "Effective Approaches to Attention-based Neural Machine Translation",
+    tables >= 6,
+    broken <= 0,
+    split <= 0,
+    glyphs <= 0,
+    hyphenated <= 60,
+    math >= 10
+);
+paper_test!(
+    bahdanau,
+    "1409.0473v7",
+    "NEURAL MACHINE TRANSLATION",
+    tables >= 3,
+    broken <= 19,
+    split <= 0,
+    glyphs <= 0,
+    hyphenated <= 59,
+    math >= 29
+);
+
+/// Table 5 of Luong et al. sits above its caption, with a rule between its
+/// two columns that runs down past the last horizontal rule, beside the last
+/// row. That rule makes the table reach its caption: the caption takes the
+/// whole table, with the header row over the first rule ("English-German
+/// translations") and the last row ("base Because of the pressure ...").
+#[test]
+fn column_rule_joins_the_last_row_to_the_table() {
+    let Some(rows) = table("1508.04025v5", "Table 5") else {
+        return;
+    };
+    let text: Vec<String> = rows.iter().map(|r| r.join(" | ")).collect();
+    assert!(
+        text[0].contains("English-German translations"),
+        "Table 5 first row: {:?}",
+        text[0]
+    );
+    assert!(
+        text.iter().any(|r| r.starts_with("base | Because of the pressure")),
+        "Table 5 lacks its last row: {:?}",
+        &text[text.len().saturating_sub(3)..]
+    );
+}
+
+/// Table 1 of Bahdanau et al. has its caption beside it, to its right, and
+/// wider than a margin caption: the caption takes the table next to it.
+#[test]
+fn side_caption_takes_the_table_beside_it() {
+    let Some(rows) = table("1409.0473v7", "Table 1") else {
+        return;
+    };
+    let first_cells: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+    assert!(
+        first_cells.contains(&"Model") && first_cells.contains(&"Moses"),
+        "Table 1 rows: {first_cells:?}"
+    );
+}
+
 /// Table 2 of the Transformer paper: "EN-DE" and "EN-FR" are two columns
 /// under a shared header ("BLEU"), not one merged cell.
 #[test]

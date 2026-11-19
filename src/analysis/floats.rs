@@ -196,6 +196,12 @@ pub struct FloatsConfig {
     /// ... starting at most this many font sizes to its right is the bar
     /// that marks a box of text (an example), not a drawing: it is ignored.
     pub side_rule_max_gap_em: f32,
+    /// ... unless one of its ends is within this of a horizontal rule that
+    /// goes on past it by at least `grid_joint_min_overhang_pt` on both
+    /// sides: then it is a column rule of a table.
+    pub grid_joint_tol_pt: f32,
+    /// See `grid_joint_tol_pt`.
+    pub grid_joint_min_overhang_pt: f32,
     /// Paths with an alpha value below this are invisible and ignored.
     pub min_path_alpha: u8,
     /// A component needs at least this many paths to be a ruled table.
@@ -261,6 +267,12 @@ pub struct FloatsConfig {
     /// A prose line lies between a caption and a component when it overlaps
     /// the caption by more than this fraction of its own width.
     pub body_between_overlap_ratio: f32,
+    /// A table caption left without a component takes an unclaimed ruled
+    /// table beside it, at most this far to its left or right ...
+    pub side_table_max_gap_pt: f32,
+    /// ... that overlaps it vertically by at least this fraction of the
+    /// lower of the two.
+    pub side_table_min_overlap_ratio: f32,
     /// Score penalty for a figure below its caption (figure captions are
     /// usually set below the figure).
     pub penalty_figure_below_pt: f32,
@@ -403,10 +415,8 @@ pub struct FloatsConfig {
     /// caption when the row is at most this far from it (and within its
     /// width, give or take this) ...
     pub far_row_max_gap_pt: f32,
-    /// ... its cells share a baseline, give or take this ...
+    /// ... and its cells share a baseline, give or take this.
     pub far_row_baseline_tol_pt: f32,
-    /// ... and there are at least this many of them.
-    pub far_row_min_cells_count: usize,
     /// A touching line overlaps the probe vertically by at least this
     /// fraction of its height...
     pub absorb_touch_y_ratio: f32,
@@ -537,6 +547,8 @@ impl Default for FloatsConfig {
             shaded_box_min_captions_count: 2,
             side_rule_min_lines_count: 3,
             side_rule_max_gap_em: 3.0,
+            grid_joint_tol_pt: 1.0,
+            grid_joint_min_overhang_pt: 3.0,
             min_path_alpha: 8,
             ruled_min_paths_count: 3,
             ruled_rule_tenths: 9,
@@ -559,6 +571,8 @@ impl Default for FloatsConfig {
             pair_max_dist_pt: 48.0,
             body_between_overlap_ratio: 0.5,
             penalty_figure_below_pt: 14.0,
+            side_table_max_gap_pt: 30.0,
+            side_table_min_overlap_ratio: 0.5,
             penalty_table_against_convention_pt: 30.0,
             penalty_table_above_pt: 3.0,
             penalty_algorithm_above_pt: 3.0,
@@ -605,7 +619,6 @@ impl Default for FloatsConfig {
             absorb_probe_pt: 5.0,
             far_row_max_gap_pt: 3.0,
             far_row_baseline_tol_pt: 1.0,
-            far_row_min_cells_count: 3,
             absorb_inside_tol_pt: 1.0,
             absorb_touch_y_ratio: 0.4,
             absorb_touch_x_ratio: 0.5,
@@ -985,6 +998,7 @@ pub fn detect_floats(
         };
         let mut comps = candidate_components(page, &captions, cfg);
         let mut cap_region = pair_captions(&ctx, &mut comps);
+        pair_side_tables(&ctx, &mut comps, &mut cap_region);
         grow_caption_regions(&ctx, &mut comps, &mut cap_region);
         claim_paneled_figures(&ctx, &mut comps, &mut cap_region);
         let graphic_regions = uncaptioned_regions(&comps, cfg);
@@ -1457,7 +1471,7 @@ fn path_is_drawing(page: &PageData, path: &PathBox, captioned: bool, cfg: &Float
     if path.is_hrule() && (inline_rule(page, &path.bbox, cfg) || underline(page, &path.bbox, cfg)) {
         return false;
     }
-    !(path.is_vrule() && marks_text(page, &path.bbox, cfg))
+    !(path.is_vrule() && marks_text(page, &path.bbox, cfg) && !meets_hrule(page, &path.bbox, cfg))
 }
 
 /// Whether the area `bbox` holds lines of running text, or the captions of
@@ -1546,6 +1560,19 @@ fn marks_text(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
         .take(cfg.side_rule_min_lines_count)
         .count()
         >= cfg.side_rule_min_lines_count
+}
+
+/// Whether an end of the vertical `rule` joins a horizontal rule that
+/// goes on past it on both sides (see [`FloatsConfig::grid_joint_tol_pt`]):
+/// the rule between two columns of a ruled table. The side of a box of text
+/// meets its top and bottom rules only at their ends, in a corner.
+fn meets_hrule(page: &PageData, rule: &Rect, cfg: &FloatsConfig) -> bool {
+    let (tol, overhang) = (cfg.grid_joint_tol_pt, cfg.grid_joint_min_overhang_pt);
+    page.paths.iter().filter(|path| path.is_hrule()).any(|path| {
+        let crosses = path.bbox.x0 <= rule.x0 - overhang && path.bbox.x1 >= rule.x1 + overhang;
+        let at = |y: f32| y >= path.bbox.y0 - tol && y <= path.bbox.y1 + tol;
+        crosses && (at(rule.y0) || at(rule.y1))
+    })
 }
 
 /// Whether a horizontal rule underlines text: it lies just below the
@@ -1868,6 +1895,55 @@ fn pair_captions(ctx: &PageContext, comps: &mut [Component]) -> Vec<Option<(Rect
     }
     pair_left_captions(&pairs, comps, &mut cap_region);
     cap_region
+}
+
+/// Gives a table caption left without a component the ruled table set
+/// beside it, whatever the caption's width (a side caption next to a
+/// small table, see [`FloatsConfig::side_table_max_gap_pt`]): the nearest
+/// unclaimed table-like component level with the caption, with no text
+/// between them. Narrow captions in the margin are paired by
+/// [`beside_score`] already.
+fn pair_side_tables(ctx: &PageContext, comps: &mut [Component], cap_region: &mut [Option<(Rect, bool)>]) {
+    let cfg = ctx.cfg;
+    for (cap_idx, caption) in ctx.captions.iter().enumerate() {
+        if caption.kind != FloatKind::Table || cap_region[cap_idx].is_some() {
+            continue;
+        }
+        let cap_box = caption.bbox;
+        let gap_to = |comp: &Component| (cap_box.x0 - comp.bbox.x1).max(comp.bbox.x0 - cap_box.x1);
+        let side_table = comps
+            .iter()
+            .enumerate()
+            .filter(|(_, comp)| {
+                let level = cap_box.y_overlap(&comp.bbox)
+                    >= cfg.side_table_min_overlap_ratio * cap_box.height().min(comp.bbox.height());
+                comp.owner.is_none()
+                    && comp.table_like
+                    && level
+                    && (0.0..=cfg.side_table_max_gap_pt).contains(&gap_to(comp))
+                    && !text_between_sides(ctx, &cap_box, &comp.bbox)
+            })
+            .min_by(|(_, a), (_, b)| gap_to(a).total_cmp(&gap_to(b)))
+            .map(|(comp_idx, _)| comp_idx);
+        if let Some(comp_idx) = side_table {
+            comps[comp_idx].owner = Some(cap_idx);
+            cap_region[cap_idx] = Some((comps[comp_idx].bbox, comps[comp_idx].bbox.cy() < cap_box.cy()));
+        }
+    }
+}
+
+/// Whether a line other than a caption line lies in the horizontal gap
+/// between the boxes `a` and `b`, set side by side, and level with them.
+fn text_between_sides(ctx: &PageContext, a: &Rect, b: &Rect) -> bool {
+    let (left, right) = if a.x1 <= b.x0 { (a, b) } else { (b, a) };
+    let (top, bottom) = (left.y0.min(right.y0), left.y1.max(right.y1));
+    ctx.page.lines.iter().enumerate().any(|(i, line)| {
+        !ctx.is_caption_line[i]
+            && line.bbox.x0 >= left.x1
+            && line.bbox.x1 <= right.x0
+            && line.bbox.y1 > top
+            && line.bbox.y0 < bottom
+    })
 }
 
 /// Gives a component to the captions left without one: a caption takes
@@ -2753,11 +2829,11 @@ fn absorb_between_caption(
 
 /// Absorbs the row of cells right outside the table `region` on the side
 /// away from its caption (`above`: the table is above the caption, so the
-/// row is above it): a header row over the first rule, or a total row
-/// under the last one. The lines of the row are not prose, share a
-/// baseline, are at least `FloatsConfig::far_row_min_cells_count` and are
-/// within `FloatsConfig::far_row_max_gap_pt` of the region. Returns the
-/// grown region.
+/// row is above it): a header row over the first rule, a header across
+/// the columns ("English-German translations"), or a total row under the
+/// last rule. The lines of the row are not prose nor a section heading,
+/// share a baseline and are within `FloatsConfig::far_row_max_gap_pt` of
+/// the region. Returns the grown region.
 fn absorb_far_row(
     ctx: &PageContext,
     absorbed: &mut [Option<usize>],
@@ -2782,6 +2858,7 @@ fn absorb_far_row(
             !ctx.is_caption_line[*i]
                 && absorbed[*i].is_none()
                 && !body_like(line, ctx.stats, cfg)
+                && !section_heading(ctx, line)
                 && (0.0..=cfg.far_row_max_gap_pt).contains(&gap_to_region(line))
                 && line.bbox.x0 >= region.x0 - cfg.far_row_max_gap_pt
                 && line.bbox.x1 <= region.x1 + cfg.far_row_max_gap_pt
@@ -2800,9 +2877,6 @@ fn absorb_far_row(
         .into_iter()
         .filter(|&i| (ctx.page.lines[i].baseline - baseline).abs() <= cfg.far_row_baseline_tol_pt)
         .collect();
-    if row.len() < cfg.far_row_min_cells_count {
-        return region;
-    }
     let mut region = region;
     for i in row {
         absorbed[i] = Some(float_idx);
