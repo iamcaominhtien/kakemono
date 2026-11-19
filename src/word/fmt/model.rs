@@ -355,6 +355,44 @@ pub struct ParaProps {
     pub snap_to_grid: bool,
     /// No automatic hyphenation.
     pub suppress_hyphens: bool,
+    /// The paragraph is in a frame (a positioned box of paragraphs).
+    pub frame: Option<Frame>,
+}
+
+/// A frame: paragraphs taken out of the text and placed like a text box
+/// (`w:framePr`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    /// Width; 0 when it is that of the text.
+    pub width: f32,
+    /// Height; 0 when it is that of the text.
+    pub height: f32,
+    /// The height is exact (else at least `height`).
+    pub exact: bool,
+    /// Where it is placed and how text flows around it.
+    pub anchor: Anchor,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        let pos = |from| AnchorPos {
+            from,
+            align: None,
+            offset: 0.0,
+        };
+        Frame {
+            width: 0.0,
+            height: 0.0,
+            exact: false,
+            anchor: Anchor {
+                h: pos(AnchorFrom::Column),
+                v: pos(AnchorFrom::Paragraph),
+                wrap: Wrap::Square,
+                behind: false,
+                dist: [0.0; 4],
+            },
+        }
+    }
 }
 
 /// A tab stop.

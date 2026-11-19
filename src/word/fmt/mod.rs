@@ -4,6 +4,7 @@
 
 mod doc;
 mod docx;
+mod frames;
 pub mod model;
 mod props;
 mod sprm;
@@ -23,4 +24,8 @@ pub fn read(data: &[u8], format: WordFormat) -> Result<FDoc> {
         WordFormat::Docx => docx::read(data),
         WordFormat::Doc => doc::read(data),
     }
+    .map(|mut doc| {
+        frames::group(&mut doc);
+        doc
+    })
 }

@@ -393,6 +393,7 @@ impl Flow<'_> {
                 };
                 let mut items = Vec::new();
                 push_items(&mut items, &sub.items, left, y);
+                self.put_sub_floats(&sub.floats, info.section, at, left, y, width);
                 // Headers are drawn behind the body.
                 let body = std::mem::take(&mut self.pages[at].items);
                 self.pages[at].items = items;
@@ -671,7 +672,8 @@ impl Flow<'_> {
                 }
                 for (shape_x, shape) in &line.shapes {
                     let top = y + line.baseline - shape.height;
-                    self.draw_shape(shape, x + shape_x, top);
+                    let page = self.pages.len() - 1;
+                    self.draw_shape(shape, page, x + shape_x, top, shape.width);
                 }
                 self.add_notes(line);
                 y += line.height;
@@ -837,9 +839,24 @@ impl Flow<'_> {
 
     /// Places a floating object anchored in a paragraph.
     fn place_float(&mut self, float: &Float, column_x: f32, para_top: f32, line_top: f32) {
-        let section = &self.doc.sections[self.state.section];
-        let page = section.page;
         let width = self.column_width();
+        let page_at = self.pages.len() - 1;
+        self.put_float(float, self.state.section, page_at, (column_x, width), (para_top, line_top), true);
+    }
+
+    /// Draws a floating object on page `page_at` of `section`, in a column
+    /// at (x, width), anchored to a paragraph and line at (top, top);
+    /// `wrap`: text of the body flows around it.
+    fn put_float(
+        &mut self,
+        float: &Float,
+        section: usize,
+        page_at: usize,
+        (column_x, width): (f32, f32),
+        (para_top, line_top): (f32, f32),
+        wrap: bool,
+    ) {
+        let page = self.doc.sections[section].page;
         let anchor = &float.anchor;
         let h_area = match anchor.h.from {
             AnchorFrom::Page => (0.0, page.width),
@@ -865,11 +882,16 @@ impl Flow<'_> {
             Some(AnchorAlign::Start | AnchorAlign::Inside) => area.0,
             None => area.0 + offset,
         };
-        let x = place(h_area, anchor.h.align, anchor.h.offset, float.width);
-        let mut y = place(v_area, anchor.v.align, anchor.v.offset, float.height);
+        // A shape sized by its text (a frame) is measured first.
+        let (float_width, float_height) = match &float.kind {
+            FloatKind::Shape(shape) => self.shape_size(shape, width, page_at),
+            FloatKind::Image(..) => (float.width, float.height),
+        };
+        let x = place(h_area, anchor.h.align, anchor.h.offset, float_width);
+        let mut y = place(v_area, anchor.v.align, anchor.v.offset, float_height);
         // An object is kept on its page.
-        if y + float.height > page.height {
-            y = (page.height - float.height).max(0.0);
+        if y + float_height > page.height {
+            y = (page.height - float_height).max(0.0);
         }
         let y = y.max(0.0);
         match &float.kind {
@@ -883,7 +905,6 @@ impl Flow<'_> {
                         h: float.height,
                         crop: *crop,
                     };
-                    let page_at = self.pages.len() - 1;
                     if anchor.behind {
                         self.pages[page_at].items.insert(0, item);
                     } else {
@@ -891,46 +912,45 @@ impl Flow<'_> {
                     }
                 }
             }
-            FloatKind::Shape(shape) => self.draw_shape(shape, x, y),
+            FloatKind::Shape(shape) => self.draw_shape(shape, page_at, x, y, float_width),
         }
-        if matches!(anchor.wrap, Wrap::Square | Wrap::Tight | Wrap::TopBottom) {
+        if wrap && matches!(anchor.wrap, Wrap::Square | Wrap::Tight | Wrap::TopBottom) {
             let [top, bottom, left, right] = anchor.dist;
             self.state.exclusions.push((
-                [x - left, y - top, x + float.width + right, y + float.height + bottom],
+                [x - left, y - top, x + float_width + right, y + float_height + bottom],
                 anchor.wrap == Wrap::TopBottom,
             ));
             // Text below the object in the same column moves past it when
             // the object covers the whole column.
             let column_left = column_x;
             let column_right = column_x + width;
-            let covers = x - left <= column_left + 1.0 && x + float.width + right >= column_right - 1.0;
+            let covers = x - left <= column_left + 1.0 && x + float_width + right >= column_right - 1.0;
             if (anchor.wrap == Wrap::TopBottom || covers)
                 && y - top <= self.state.y + 1.0
-                && y + float.height + bottom > self.state.y
+                && y + float_height + bottom > self.state.y
             {
                 // Handled by the caller's next lines: the cursor moves down.
-                self.state.pending_push = Some(y + float.height + bottom);
+                self.state.pending_push = Some(y + float_height + bottom);
             }
         }
     }
 
     /// Draws a shape (text box, rectangle) at `x`, `y`.
-    fn draw_shape(&mut self, shape: &Shape, x: f32, y: f32) {
+    fn draw_shape(&mut self, shape: &Shape, page: usize, x: f32, y: f32, width: f32) {
         let mut height = shape.height;
-        let inner_width = (shape.width - shape.insets[0] - shape.insets[2]).max(1.0);
+        let inner_width = (width - shape.insets[0] - shape.insets[2]).max(1.0);
         let mut sub = SubFlow::new(inner_width);
         if !shape.blocks.is_empty() {
-            self.sub_blocks(&mut sub, &shape.blocks, Some(self.state.number), None);
+            self.sub_blocks(&mut sub, &shape.blocks, Some(self.page_number(page)), None);
             if shape.auto_height {
                 height = height.max(sub.y + shape.insets[1] + shape.insets[3]);
             }
         }
-        let page = self.pages.len() - 1;
         if let Some(color) = shape.fill {
             self.pages[page].items.push(Item::Rect {
                 x,
                 y,
-                w: shape.width,
+                w: width,
                 h: height,
                 color,
             });
@@ -947,10 +967,10 @@ impl Flow<'_> {
         }
         if let Some(line) = shape.line {
             let mut lines = Vec::new();
-            border_line(&mut lines, line, x, y, x + shape.width, y);
-            border_line(&mut lines, line, x, y + height, x + shape.width, y + height);
+            border_line(&mut lines, line, x, y, x + width, y);
+            border_line(&mut lines, line, x, y + height, x + width, y + height);
             border_line(&mut lines, line, x, y, x, y + height);
-            border_line(&mut lines, line, x + shape.width, y, x + shape.width, y + height);
+            border_line(&mut lines, line, x + width, y, x + width, y + height);
             self.pages[page].items.extend(lines);
         }
         push_items(
@@ -959,6 +979,55 @@ impl Flow<'_> {
             x + shape.insets[0],
             y + shape.insets[1],
         );
+        let section = self.page_section(page);
+        self.put_sub_floats(&sub.floats, section, page, x + shape.insets[0], y + shape.insets[1], inner_width);
+    }
+
+    /// The number of page `page`.
+    fn page_number(&self, page: usize) -> u32 {
+        self.page_info.get(page).map_or(self.state.number, |info| info.number)
+    }
+
+    /// The section of page `page`.
+    fn page_section(&self, page: usize) -> usize {
+        self.page_info.get(page).map_or(self.state.section, |info| info.section)
+    }
+
+    /// Draws the floating objects of a sub-flow whose origin is at `x`, `y`
+    /// of page `page`.
+    fn put_sub_floats(&mut self, floats: &[SubFloat], section: usize, page: usize, x: f32, y: f32, width: f32) {
+        for sub_float in floats {
+            self.put_float(
+                &sub_float.float,
+                section,
+                page,
+                (x + sub_float.x, width),
+                (y + sub_float.para_top, y + sub_float.line_top),
+                false,
+            );
+        }
+    }
+
+    /// The size of a shape: a width of 0 is that of its text (a frame of
+    /// automatic width), and an automatic height grows with the text.
+    fn shape_size(&mut self, shape: &Shape, column_width: f32, page: usize) -> (f32, f32) {
+        let number = Some(self.page_number(page));
+        let insets = shape.insets[0] + shape.insets[2];
+        let mut width = shape.width;
+        if width <= 0.0 {
+            let mut sub = SubFlow::new(column_width.max(1.0));
+            self.sub_blocks(&mut sub, &shape.blocks, number, None);
+            // The text from the frame's left edge (with its indents).
+            let (_, right) = items_extent(&sub.items).unwrap_or((0.0, 0.0));
+            width = (right.max(0.0) + insets + 1.0).max(1.0);
+        }
+        let mut height = shape.height;
+        if shape.auto_height && !shape.blocks.is_empty() {
+            let mut sub = SubFlow::new((width - insets).max(1.0));
+            self.sub_blocks(&mut sub, &shape.blocks, number, None);
+            height = height.max(sub.y + shape.insets[1] + shape.insets[3]);
+        }
+        (width, height)
     }
 
     /// Places a table in the body, row by row.
@@ -1045,6 +1114,8 @@ impl Flow<'_> {
             }
             .max(0.0);
             push_items(&mut self.pages[page].items, &cell.items, x + cell.x, y + offset);
+            let section = self.state.section;
+            self.put_sub_floats(&cell.floats, section, page, x + cell.x, y + offset, cell.width);
             for (bookmark, dy) in &cell.bookmarks {
                 self.destinations.push(Destination {
                     name: bookmark.clone(),
@@ -1119,6 +1190,7 @@ impl Flow<'_> {
                     height: 0.0,
                     content_height: 0.0,
                     items: Vec::new(),
+                    floats: Vec::new(),
                     breaks: Vec::new(),
                     top_margin: margins[1],
                     bottom_margin: margins[3],
@@ -1150,6 +1222,7 @@ impl Flow<'_> {
                     let mut items = Vec::new();
                     push_items(&mut items, &sub.items, margins[0], margins[1]);
                     laid.items = items;
+                    laid.floats = sub.floats.iter().map(|float| float.moved(margins[0], margins[1])).collect();
                     laid.bookmarks = sub
                         .bookmarks
                         .into_iter()
@@ -1233,6 +1306,19 @@ impl Flow<'_> {
                     };
                     sub.y += self.spacing(after_prev, before);
                     let top = sub.y;
+                    for float in &layout.floats {
+                        let line_top = top
+                            + layout.lines[..float.line.min(layout.lines.len())]
+                                .iter()
+                                .map(|line| line.height)
+                                .sum::<f32>();
+                        sub.floats.push(SubFloat {
+                            float: float.clone(),
+                            x: 0.0,
+                            para_top: top,
+                            line_top,
+                        });
+                    }
                     for line in &layout.lines {
                         for bookmark in &line.bookmarks {
                             sub.bookmarks.push((bookmark.clone(), sub.y));
@@ -1280,6 +1366,7 @@ impl Flow<'_> {
                                 });
                             }
                             push_items(&mut row_items, &cell.items, cell.x, 0.0);
+                            sub.floats.extend(cell.floats.iter().map(|float| float.moved(cell.x, sub.y)));
                             let [b_top, b_left, b_bottom, b_right] = cell.borders;
                             let (l, r) = (cell.x, cell.x + cell.width);
                             if let Some(border) = b_top.filter(|_| cell.draw_top) {
@@ -1386,6 +1473,8 @@ struct LaidCell {
     height: f32,
     content_height: f32,
     items: Vec<Item>,
+    /// Floating objects anchored in it (from the cell's top left).
+    floats: Vec<SubFloat>,
     /// Where the content may be cut across pages (from the top of the
     /// cell).
     breaks: Vec<f32>,
@@ -1407,6 +1496,8 @@ struct SubFlow {
     width: f32,
     y: f32,
     items: Vec<Item>,
+    /// Floating objects anchored in it.
+    floats: Vec<SubFloat>,
     /// Bottoms of the lines placed: where the content may be cut across
     /// pages.
     breaks: Vec<f32>,
@@ -1427,6 +1518,7 @@ impl SubFlow {
             width,
             y: 0.0,
             items: Vec::new(),
+            floats: Vec::new(),
             breaks: Vec::new(),
             bookmarks: Vec::new(),
             pending_after: None,
@@ -1469,6 +1561,10 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
         };
         let (head, tail): (Vec<Item>, Vec<Item>) =
             cell.items.iter().cloned().partition(|item| item_top(item) < cut - EPS);
+        let (float_head, float_tail): (Vec<SubFloat>, Vec<SubFloat>) =
+            cell.floats.iter().cloned().partition(|float| float.para_top < cut - EPS);
+        first.cells[at].floats = float_head;
+        second.cells[at].floats = float_tail.iter().map(|float| float.moved(0.0, -(cut - cell.top_margin))).collect();
         first.cells[at].items = head;
         first.cells[at].draw_bottom = false;
         first.cells[at].height = room;
@@ -1655,4 +1751,41 @@ fn roman_value(text: &str) -> u32 {
         }
     }
     total.max(0) as u32
+}
+
+/// A floating object of a sub-flow, with the top of its paragraph and line
+/// in the sub-flow.
+#[derive(Debug, Clone)]
+struct SubFloat {
+    float: Float,
+    /// Left of its column in the sub-flow.
+    x: f32,
+    para_top: f32,
+    line_top: f32,
+}
+
+impl SubFloat {
+    /// The same float, moved by `dx`, `dy`.
+    fn moved(&self, dx: f32, dy: f32) -> Self {
+        SubFloat {
+            float: self.float.clone(),
+            x: self.x + dx,
+            para_top: self.para_top + dy,
+            line_top: self.line_top + dy,
+        }
+    }
+}
+
+/// The leftmost and rightmost points of the text of `items`.
+fn items_extent(items: &[Item]) -> Option<(f32, f32)> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Text(run) => {
+                let last = run.glyphs.last()?;
+                Some((run.x, run.x + last.x + last.advance))
+            }
+            _ => None,
+        })
+        .reduce(|(left, right), (l, r)| (left.min(l), right.max(r)))
 }

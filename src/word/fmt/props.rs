@@ -3,7 +3,7 @@
 //! hierarchy sets it, and their merging into resolved properties.
 
 use super::model::{
-    Align, Border, BorderStyle, LineSpacing, ParaBorders, ParaProps, Rgb, RunFmt, TabKind, TabStop, Underline, VAlign,
+    Align, AnchorAlign, AnchorFrom, Border, Frame, Wrap, BorderStyle, LineSpacing, ParaBorders, ParaProps, Rgb, RunFmt, TabKind, TabStop, Underline, VAlign,
     VertAlign, Width,
 };
 use crate::word::xml::{WORD_NS, attr, child, children, toggle, val};
@@ -288,6 +288,8 @@ pub(crate) struct RawPara {
     pub(crate) suppress_hyphens: Option<bool>,
     /// List numbering: (`numId`, level); a `numId` of "0" removes it.
     pub(crate) numbering: Option<(String, Option<u8>)>,
+    /// The frame the paragraph is in.
+    pub(crate) frame: Option<Option<Frame>>,
 }
 
 impl RawPara {
@@ -374,6 +376,7 @@ impl RawPara {
         raw.bidi = toggle(props, "bidi");
         raw.snap_to_grid = toggle(props, "snapToGrid");
         raw.suppress_hyphens = toggle(props, "suppressAutoHyphens");
+        raw.frame = child(props, WORD_NS, "framePr").map(parse_frame);
         if let Some(num) = child(props, WORD_NS, "numPr") {
             let level = val(num, "ilvl").and_then(|level| level.parse().ok());
             if let Some(id) = val(num, "numId") {
@@ -414,7 +417,8 @@ impl RawPara {
             outline,
             bidi,
             snap_to_grid,
-            suppress_hyphens
+            suppress_hyphens,
+            frame
         );
         for tab in &over.tabs {
             self.tabs.retain(|old| (old.pos - tab.pos).abs() > 0.01);
@@ -469,6 +473,7 @@ impl RawPara {
             bidi: self.bidi.unwrap_or(false),
             snap_to_grid: self.snap_to_grid.unwrap_or(true),
             suppress_hyphens: self.suppress_hyphens.unwrap_or(false),
+            frame: self.frame.clone().flatten(),
         }
     }
 }
@@ -764,4 +769,54 @@ pub(crate) fn theme_fonts(root: Node<'_, '_>) -> ThemeFonts {
     fonts.major_cs = typeface("majorFont", "cs");
     fonts.minor_cs = typeface("minorFont", "cs");
     fonts
+}
+
+/// A frame (`w:framePr`); `None` for a drop capital, kept in the text.
+fn parse_frame(node: Node<'_, '_>) -> Option<Frame> {
+    if attr(node, WORD_NS, "dropCap").is_some_and(|cap| cap != "none") {
+        return None;
+    }
+    let twips = |name: &str| {
+        attr(node, WORD_NS, name)
+            .and_then(|value| value.parse::<f32>().ok())
+            .map_or(0.0, |value| value / TWIPS_PER_PT)
+    };
+    let align = |name: &str| {
+        attr(node, WORD_NS, name).and_then(|value| match value {
+            "left" | "top" => Some(AnchorAlign::Start),
+            "center" => Some(AnchorAlign::Center),
+            "right" | "bottom" => Some(AnchorAlign::End),
+            "inside" => Some(AnchorAlign::Inside),
+            "outside" => Some(AnchorAlign::Outside),
+            _ => None,
+        })
+    };
+    let mut frame = Frame {
+        width: twips("w"),
+        height: twips("h"),
+        exact: attr(node, WORD_NS, "hRule") == Some("exact"),
+        ..Default::default()
+    };
+    frame.anchor.h.from = match attr(node, WORD_NS, "hAnchor").unwrap_or("page") {
+        "text" => AnchorFrom::Column,
+        "margin" => AnchorFrom::Margin,
+        _ => AnchorFrom::Page,
+    };
+    frame.anchor.v.from = match attr(node, WORD_NS, "vAnchor").unwrap_or("page") {
+        "text" => AnchorFrom::Paragraph,
+        "margin" => AnchorFrom::Margin,
+        _ => AnchorFrom::Page,
+    };
+    frame.anchor.h.offset = twips("x");
+    frame.anchor.v.offset = twips("y");
+    frame.anchor.h.align = align("xAlign");
+    frame.anchor.v.align = align("yAlign");
+    frame.anchor.wrap = match attr(node, WORD_NS, "wrap").unwrap_or("auto") {
+        "notBeside" => Wrap::TopBottom,
+        "none" => Wrap::None,
+        _ => Wrap::Square,
+    };
+    let (h_space, v_space) = (twips("hSpace"), twips("vSpace"));
+    frame.anchor.dist = [v_space, v_space, h_space, h_space];
+    Some(frame)
 }

@@ -3,7 +3,7 @@
 //! paragraphs, table rows and sections.
 
 use super::model::{
-    Align, Border, BorderStyle, Columns, LineSpacing, NumFormat, PageSetup, Rgb, SectionStart, TabKind, Underline,
+    Align, AnchorAlign, AnchorFrom, Border, BorderStyle, Columns, Frame, Wrap, LineSpacing, NumFormat, PageSetup, Rgb, SectionStart, TabKind, Underline,
     VAlign, VertAlign,
 };
 use super::props::{RawPara, RawRun, RawTab};
@@ -187,6 +187,71 @@ pub(crate) fn apply_chars(grpprl: &[u8], raw: &mut RawRun, base: &RawRun, fonts:
     }
 }
 
+/// Applies a frame property (`sprmPPc`, `sprmPDxaAbs`, ...) to `raw`.
+fn frame_sprm(sprm: u16, operand: &[u8], raw: &mut RawPara) {
+    let byte = operand.first().copied().unwrap_or(0);
+    let signed = i16_at(operand, 0).unwrap_or(0);
+    let twips = f32::from(signed) / TWIPS_PER_PT;
+    let frame = raw
+        .frame
+        .get_or_insert_with(|| Some(Frame::default()))
+        .get_or_insert_with(Frame::default);
+    match sprm {
+        0x261B => {
+            frame.anchor.v.from = match (byte >> 4) & 3 {
+                0 => AnchorFrom::Margin,
+                1 => AnchorFrom::Page,
+                _ => AnchorFrom::Paragraph,
+            };
+            frame.anchor.h.from = match (byte >> 6) & 3 {
+                1 => AnchorFrom::Margin,
+                2 => AnchorFrom::Page,
+                _ => AnchorFrom::Column,
+            };
+        }
+        0x8418 => {
+            (frame.anchor.h.align, frame.anchor.h.offset) = match signed {
+                -4 => (Some(AnchorAlign::Center), 0.0),
+                -8 => (Some(AnchorAlign::End), 0.0),
+                -12 => (Some(AnchorAlign::Inside), 0.0),
+                -16 => (Some(AnchorAlign::Outside), 0.0),
+                _ => (None, twips),
+            };
+        }
+        0x8419 => {
+            (frame.anchor.v.align, frame.anchor.v.offset) = match signed {
+                -4 => (Some(AnchorAlign::Start), 0.0),
+                -8 => (Some(AnchorAlign::Center), 0.0),
+                -12 => (Some(AnchorAlign::End), 0.0),
+                -16 => (Some(AnchorAlign::Inside), 0.0),
+                -20 => (Some(AnchorAlign::Outside), 0.0),
+                _ => (None, twips),
+            };
+        }
+        0x841A => frame.width = f32::from(u16_at(operand, 0).unwrap_or(0)) / TWIPS_PER_PT,
+        0x442B => {
+            let value = u16_at(operand, 0).unwrap_or(0);
+            frame.height = f32::from(value & 0x7FFF) / TWIPS_PER_PT;
+            frame.exact = value & 0x8000 == 0 && value != 0;
+        }
+        0x2423 => {
+            frame.anchor.wrap = match byte {
+                1 => Wrap::TopBottom,
+                3 => Wrap::None,
+                _ => Wrap::Square,
+            };
+        }
+        0x842F => {
+            frame.anchor.dist[2] = twips.abs();
+            frame.anchor.dist[3] = twips.abs();
+        }
+        _ => {
+            frame.anchor.dist[0] = twips.abs();
+            frame.anchor.dist[1] = twips.abs();
+        }
+    }
+}
+
 /// Applies a paragraph property list to `raw`.
 pub(crate) fn apply_para(grpprl: &[u8], raw: &mut RawPara) {
     for (sprm, operand) in sprms(grpprl) {
@@ -249,6 +314,7 @@ pub(crate) fn apply_para(grpprl: &[u8], raw: &mut RawPara) {
                 let (_, level) = raw.numbering.take().unwrap_or_default();
                 raw.numbering = Some((u16_at(operand, 0).unwrap_or(0).to_string(), level));
             }
+            0x261B | 0x8418 | 0x8419 | 0x841A | 0x442B | 0x2423 | 0x842F | 0x842E => frame_sprm(sprm, operand, raw),
             _ => {}
         }
     }
