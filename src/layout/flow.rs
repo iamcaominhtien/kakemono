@@ -190,6 +190,9 @@ struct State {
     /// fit in the previous one (not by a break): Word drops its space
     /// before.
     pushed: bool,
+    /// The paragraph being placed is an empty one that ends a section
+    /// before a new page: it stays on its page even when it does not fit.
+    section_mark: bool,
     /// Space after the last paragraph, with its style and whether it is
     /// contextual.
     pending_after: Option<(f32, String, bool)>,
@@ -287,7 +290,22 @@ impl Flow<'_> {
             let number = section.page_number_start.unwrap_or(previous_number + 1);
             self.start_page(at, section, number, true);
         }
-        self.blocks(&section.blocks);
+        // The empty paragraph that ends a section followed by a new page
+        // holds only the section break: Word keeps it on its page.
+        let next_page = self
+            .doc
+            .sections
+            .get(at + 1)
+            .is_some_and(|next| next.start != SectionStart::Continuous);
+        match section.blocks.split_last() {
+            Some((Block::Para(last), rest)) if next_page && last.inlines.is_empty() => {
+                self.blocks(rest);
+                self.state.section_mark = true;
+                self.blocks(std::slice::from_ref(&section.blocks[section.blocks.len() - 1]));
+                self.state.section_mark = false;
+            }
+            _ => self.blocks(&section.blocks),
+        }
     }
 
     /// Opens a new page of section `at`, numbered `number`.
@@ -465,7 +483,17 @@ impl Flow<'_> {
                 Block::Para(para) => {
                     // A paragraph kept with the next: the chain must start on
                     // a page where it fits.
-                    if para.props.keep_next && !self.state.fresh {
+                    // One holding a page break starts the new page itself.
+                    let breaks_page = para.inlines.iter().any(|inline| {
+                        matches!(
+                            inline,
+                            Inline::Break {
+                                kind: crate::word::fmt::model::BreakKind::Page,
+                                ..
+                            }
+                        )
+                    });
+                    if para.props.keep_next && !self.state.fresh && !breaks_page {
                         let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
@@ -734,7 +762,12 @@ impl Flow<'_> {
     /// they do not fit.
     fn place_lines(&mut self, para: &Para, layout: ParaLayout, gap: f32) {
         self.state.last_style = Some(para.style.clone());
-        let lines = layout.lines;
+        let mut lines = layout.lines;
+        if self.state.section_mark {
+            for line in &mut lines {
+                line.fit_height = 0.0;
+            }
+        }
         let count = lines.len();
         let mut at = 0;
         let mut gap = gap;
