@@ -633,7 +633,12 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     // The content as JSON, with its pictures as files.
     let content = paper.to_json(&analysis, &JsonOptions::default());
     check_content(&content.json, &content.files);
-    fingerprints.push(("content", fingerprint(&content.json, &content.files)));
+    // The `generator` line holds the crate version: leave it out, or every
+    // release would change the fingerprint.
+    let generator = regex::Regex::new(r#"(?m)^  "generator": "kakemono [^"]*",\n"#).unwrap();
+    let stable_json = generator.replace(&content.json, "");
+    assert_ne!(stable_json, content.json, "the content JSON has a generator line");
+    fingerprints.push(("content", fingerprint(&stable_json, &content.files)));
     let metrics = Metrics {
         title,
         tables,
