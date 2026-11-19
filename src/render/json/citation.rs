@@ -27,6 +27,11 @@ use std::sync::LazyLock;
 
 /// Most words of an author's name.
 const NAME_MAX_WORDS_COUNT: usize = 6;
+/// Most words of a surname written before the initials ("Dalla Vecchia,
+/// C.").
+const SURNAME_MAX_WORDS_COUNT: usize = 3;
+/// Most bytes of an initial or a run of them ("U.-L.", "J.-P.", "A.").
+const MAX_INITIAL_BYTES: usize = 6;
 /// Most words of a venue that is not in italics.
 const VENUE_MAX_WORDS_COUNT: usize = 15;
 /// Fewest words of a quoted title.
@@ -106,6 +111,9 @@ static NAME_WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:\p{Lu}\.(?:-?\p{Lu}\.)*|\p{Ll}\.|Md\.|(?:\p{Lu}\.)+\p{Lu}[\p{L}\p{M}’'\-]+|\p{Lu}|\p{Lu}[\p{L}\p{M}’'\-]*|[dl][’']\p{Lu}[\p{L}\p{M}’'\-]*|Jr\.?|Sr\.?|II|III|IV)$")
         .unwrap()
 });
+/// A word that starts with an initial: "A.", "J.-P.", "R.S.Hamilton", or a
+/// capital alone ("R Kallosh").
+static INITIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{Lu}(?:\.|$)").unwrap());
 /// "et al." at the end of a list of authors, or "and others".
 static ET_AL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i),?\s*(?:\bet\.?\s+al\b\.?|\band\s+others\b)").unwrap());
@@ -492,7 +500,8 @@ fn read_title(cite: &mut Citation, src: &str, start: usize, italic: &[(usize, us
             .trim_end_matches(" In")
             .trim_end_matches(" in"),
     );
-    if !title.is_empty() {
+    // "R. Schilling (unpublished)": a remark, not a title.
+    if !title.is_empty() && !title.starts_with('(') {
         cite.title = Some(title);
     }
     end
@@ -557,7 +566,7 @@ fn read_venue_after_year(cite: &mut Citation, src: &str, after: usize) {
         && venue.chars().any(char::is_alphabetic)
         && venue.split_whitespace().count() <= VENUE_MAX_WORDS_COUNT
     {
-        cite.venue = Some(clean(venue));
+        cite.venue = Some(venue_text(venue, cite.arxiv.is_some()));
         let venue_end = after + rest.find(venue).unwrap_or(0) + venue.len();
         if let Some(caps) = COMMA_VOLUME_PAGE.captures(&src[venue_end..]) {
             cite.volume = Some(caps[1].to_string());
@@ -677,7 +686,10 @@ pub(crate) fn split_names(text: &str) -> Option<(Vec<String>, bool)> {
     let text = text.trim().trim_end_matches([',', ' ']);
     // A period after the last name ends the list, unless it ends an initial.
     let last_word = text.rsplit([' ', '.']).find(|word| !word.is_empty()).unwrap_or("");
-    let text = if last_word.chars().count() > 1 && !text.ends_with("Jr.") && !text.ends_with("Sr.") {
+    let text = if last_word.chars().filter(|ch| ch.is_alphabetic()).count() > 1
+        && !text.ends_with("Jr.")
+        && !text.ends_with("Sr.")
+    {
         text.trim_end_matches('.')
     } else {
         text
@@ -701,6 +713,21 @@ pub(crate) fn split_names(text: &str) -> Option<(Vec<String>, bool)> {
     // Single words are names only alone ("OpenAI") or with initials glued
     // to them ("B.Chow"): in a list they are words of a venue ("B. P.
     // Abbott, Phys").
+    // "L. Blanchet, Living Rev. Relativity": a list of names that start
+    // with initials does not end with one that does not ("Living Rev" is
+    // a journal); "Diederik P. Kingma and Jimmy Ba" starts with none.
+    let initialed = |name: &String| {
+        name.split_whitespace()
+            .next()
+            .is_some_and(|word| INITIAL.is_match(word))
+    };
+    if let Some((last, others)) = names.split_last()
+        && !others.is_empty()
+        && others.iter().all(initialed)
+        && !initialed(last)
+    {
+        return None;
+    }
     let single_ok = names.len() == 1;
     names
         .iter()
@@ -711,14 +738,26 @@ pub(crate) fn split_names(text: &str) -> Option<(Vec<String>, bool)> {
 /// Whether the pieces between commas are surnames and given names in turn
 /// ("Graves, Alex, Mohamed, Abdel-rahman", "Mead, A. J., Peacock, J. A.").
 fn is_inverted(pieces: &[&str]) -> bool {
-    pieces.len().is_multiple_of(2)
-        && pieces.chunks(2).all(|pair| {
-            let surname: Vec<&str> = pair[0].split_whitespace().collect();
-            let surname_ok = surname
-                .split_last()
-                .is_some_and(|(_, particles)| particles.iter().all(|word| NAME_PARTICLES.contains(word)));
-            surname_ok && !pair[0].contains('.')
-        })
+    if !pieces.len().is_multiple_of(2) {
+        return false;
+    }
+    // Given names as initials only ("J. M.") allow surnames of several
+    // words ("Zorrilla Matilla, J. M.", "Van Waerbeke, L.").
+    let initials = pieces.chunks(2).all(|pair| {
+        pair[1]
+            .split_whitespace()
+            .all(|word| INITIAL.is_match(word) && word.len() <= MAX_INITIAL_BYTES)
+    });
+    pieces.chunks(2).all(|pair| {
+        let surname: Vec<&str> = pair[0].split_whitespace().collect();
+        let surname_ok = surname.split_last().is_some_and(|(_, rest)| {
+            rest.iter().all(|word| NAME_PARTICLES.contains(word))
+                || (initials
+                    && surname.len() <= SURNAME_MAX_WORDS_COUNT
+                    && rest.iter().all(|word| word.starts_with(char::is_uppercase)))
+        });
+        surname_ok && !pair[0].contains('.')
+    })
 }
 
 /// Whether `name` reads as the name of a person or a group: a few words,
@@ -853,6 +892,14 @@ mod tests {
             (got.volume.as_deref(), got.pages.as_deref()),
             (Some("454"), Some("1958"))
         );
+        let got = cite("Duffy, A. R., Schaye, J., Kay, S. T., & Dalla Vecchia, C. 2008, MNRAS, 390, L64");
+        assert_eq!(
+            got.authors,
+            ["A. R. Duffy", "J. Schaye", "S. T. Kay", "C. Dalla Vecchia"]
+        );
+        assert_eq!(got.venue.as_deref(), Some("MNRAS"));
+        let got = cite("Harnois-Déraps, J. & Pen, U.-L. 2013, MNRAS, 431, 3349");
+        assert_eq!(got.authors, ["J. Harnois-Déraps", "U.-L. Pen"]);
         let got = cite("Hildebrandt, H., Viola, M., Heymans, C., et al. 2017, MNRAS, 465, 1454");
         assert!(got.et_al);
         assert_eq!(got.authors, ["H. Hildebrandt", "M. Viola", "C. Heymans"]);
@@ -933,6 +980,20 @@ mod tests {
         assert_eq!(
             (got.volume.as_deref(), got.pages.as_deref(), got.year),
             (Some("B305"), Some("483"), Some(1988))
+        );
+        let got = cite("[12] L. Blanchet, Living Rev. Relativity 17, 2 (2014).");
+        assert_eq!(got.authors, ["L. Blanchet"]);
+        assert_eq!(got.title, None);
+        assert_eq!(got.venue.as_deref(), Some("Living Rev. Relativity"));
+        assert_eq!((got.volume.as_deref(), got.pages.as_deref()), (Some("17"), Some("2")));
+        let got = cite("[58] A. Chamseddine, S. Ferrara, G. Gibbons and R Kallosh, Phys. Rev. D55 (1997) 3647.");
+        assert_eq!(got.authors.len(), 4);
+        let got = cite("Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In ICLR, 2015.");
+        assert_eq!(got.authors, ["Diederik P. Kingma", "Jimmy Ba"]);
+        let got = cite("[50] R. Schilling (unpublished).");
+        assert_eq!(
+            (got.authors.as_slice(), got.title),
+            (&["R. Schilling".to_string()][..], None)
         );
     }
 
