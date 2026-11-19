@@ -6,6 +6,11 @@
 
 mod body;
 mod omml;
+
+/// The Office Math the Word output writes for a formula in running text
+/// (for the tests of the Word reader).
+#[cfg(test)]
+pub(crate) use omml::inline_math;
 mod parts;
 mod table;
 mod xml;
@@ -16,6 +21,7 @@ use super::{Equations, doc_title};
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::ImageSpec;
+use crate::render::Pictures;
 use parts::{
     APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, PACKAGE_RELS, SETTINGS, STYLES, XML_DECL, core_props, document_rels,
 };
@@ -86,7 +92,7 @@ struct Media {
 /// The pictures are drawn from `pdf` on `opts.jobs` threads; one that
 /// cannot be drawn is left out. The same document always gives the same
 /// bytes.
-pub fn render_docx(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> Vec<u8> {
+pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> Vec<u8> {
     write_package(analysis, pdf, opts).0
 }
 
@@ -94,7 +100,12 @@ pub fn render_docx(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> Ve
 /// returns each of its pictures as a file in `image_dir` as well
 /// (`image_dir/001-fig.png`, ...): the pictures stay embedded in the
 /// document.
-pub fn render_docx_with_images(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
+pub fn render_docx_with_images(
+    analysis: &Analysis,
+    pdf: Option<&PdfFile>,
+    opts: &DocxOptions,
+    image_dir: &str,
+) -> DocxOutput {
     let (docx, media) = write_package(analysis, pdf, opts);
     let files = media
         .files
@@ -110,18 +121,16 @@ pub fn render_docx_with_images(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOp
 }
 
 /// Writes the `.docx` package and returns its bytes with the pictures in it.
-fn write_package(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> (Vec<u8>, Media) {
+fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> (Vec<u8>, Media) {
     let doc = &analysis.doc;
     let mut body = body::Body::new(doc, opts);
     body.write(doc);
+    let pictures = Pictures::new(pdf, doc);
     let drawn = crate::common::parallel::map(
         body.images.len(),
         opts.jobs,
-        || pdf.renderer(),
-        |renderer, i| {
-            let spec = &body.images[i].spec;
-            renderer.region_picture(spec.page, spec.rect, opts.scale, spec.transparent)
-        },
+        || pictures.renderer(),
+        |renderer, i| pictures.region(renderer.as_ref(), &body.images[i].spec, opts.scale),
     );
     let mut media = Media::default();
     let content = fill_images(&body.xml, &body.images, drawn, &mut media);
@@ -137,7 +146,10 @@ fn write_package(analysis: &Analysis, pdf: &PdfFile, opts: &DocxOptions) -> (Vec
     let mut text = |name: &str, data: &str| zip.add(name, data.as_bytes(), Compression::Deflated);
     text("[Content_Types].xml", &format!("{XML_DECL}{CONTENT_TYPES}"));
     text("_rels/.rels", &format!("{XML_DECL}{PACKAGE_RELS}"));
-    text("docProps/core.xml", &core_props(&doc_title(doc), &doc.meta));
+    text(
+        "docProps/core.xml",
+        &core_props(&doc_title(doc), &doc.meta, crate::render::source_label(doc)),
+    );
     text("docProps/app.xml", &format!("{XML_DECL}{APP_PROPS}"));
     text("word/document.xml", &document);
     text("word/styles.xml", &format!("{XML_DECL}{STYLES}"));

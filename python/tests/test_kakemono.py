@@ -170,3 +170,17 @@ def test_unreadable_edited_text_warns_and_keeps_the_original():
     other = dict(content, source={"format": "pdf", "sha256": "0" * 64})
     with pytest.raises(ValueError, match="another file"):
         kakemono.to_markdown(LIGO, content=other)
+
+
+WORD_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "word" / "sample.docx"
+
+
+def test_word_document_is_an_input(tmp_path):
+    html = kakemono.convert(WORD_SAMPLE)
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from Word by kakemono" in html
+    text = kakemono.to_markdown(WORD_SAMPLE, tmp_path / "sample.md")
+    assert "$$" in text
+    assert (tmp_path / "sample_assets").is_dir()
+    with pytest.raises(ValueError, match="no pages"):
+        kakemono.convert(WORD_SAMPLE, mode="hard")

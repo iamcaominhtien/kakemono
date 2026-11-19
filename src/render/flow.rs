@@ -132,6 +132,31 @@ pub(crate) fn side_figures(doc: &Document, blocks: &[&Block]) -> std::collection
     sides
 }
 
+/// Whether the caption of a float goes before its picture or table: the
+/// side it had in the paper (the first line of the caption above the middle
+/// of the picture), or, without page geometry (a Word document), the side
+/// the document puts it on.
+pub(crate) fn caption_first(block: &Block, image: Option<&ImageSpec>) -> bool {
+    match (image, block.lines.first()) {
+        (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
+        _ => block.caption_above,
+    }
+}
+
+/// The structure a displayed formula is written from: its [`MathNode`]
+/// when there is one and `equations` asks for MathML, or when there is no
+/// picture of the formula to show instead. `None` means its picture.
+pub(crate) fn equation_math<'a>(
+    block: &'a Block,
+    image: Option<&ImageSpec>,
+    equations: Equations,
+) -> Option<&'a MathNode> {
+    block
+        .math
+        .as_ref()
+        .filter(|_| equations == Equations::MathMl || image.is_none())
+}
+
 /// The ids of the blocks that are the front and the back cover of a book:
 /// the first figure, when it is a picture on the first page covering most
 /// of it (see [`COVER_MIN_AREA_RATIO`]), and the last one, when it is such
@@ -214,7 +239,7 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
         {
             out.push_str(&equation_html(
                 block,
-                image,
+                image.as_ref(),
                 &Some(number),
                 &id_attr(block),
                 images,
@@ -427,7 +452,9 @@ fn block_html(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &m
             out.push_str(&format!("<li{id}>{body}</li>\n"));
         }
         BlockKind::Footnote { marker } => out.push_str(&footnote_html(block, marker, &id, ctx)),
-        BlockKind::Equation { image, number } => out.push_str(&equation_html(block, image, number, &id, images, ctx)),
+        BlockKind::Equation { image, number } => {
+            out.push_str(&equation_html(block, image.as_ref(), number, &id, images, ctx))
+        }
         BlockKind::Figure { kind, image, label } => {
             out.push_str(&figure_html(block, *kind, image, label, &id, images, ctx));
         }
@@ -481,7 +508,7 @@ fn footnote_html(block: &Block, marker: &str, id: &str, ctx: &FlowCtx) -> String
 /// number.
 fn equation_html(
     block: &Block,
-    image: &ImageSpec,
+    image: Option<&ImageSpec>,
     number: &Option<String>,
     id: &str,
     images: &mut ImageStore<'_>,
@@ -491,13 +518,14 @@ fn equation_html(
         .as_ref()
         .map(|number| format!("<span class=\"eqno\">{}</span>", esc(number)))
         .unwrap_or_default();
-    if images.opts.equations == Equations::MathMl
-        && let Some(math) = &block.math
-    {
+    if let Some(math) = equation_math(block, image, images.opts.equations) {
         let body = math_html(math, &plain(&block.spans));
         return format!("<div class=\"eq\"{id}><span class=\"eq-body\">{body}</span>{num}</div>\n");
     }
     let alt = esc(&plain(&block.spans));
+    let Some(image) = image else {
+        return format!("<div class=\"eq\"{id}><span class=\"eq-body\">{alt}</span>{num}</div>\n");
+    };
     let img = format!(
         "<img src=\"{}\" alt=\"{alt}\"{} style=\"{}\" loading=\"lazy\">",
         images.region(image, "eq"),
@@ -586,11 +614,7 @@ fn figure_html(
         format!("<figcaption>{}</figcaption>", caption_html(&block.spans, ctx.math))
     };
     // Keep the caption on the side it had in the paper.
-    let caption_first = match (image, block.lines.first()) {
-        _ if img.starts_with("<div class=\"algo\"") => true,
-        (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-        _ => false,
-    };
+    let caption_first = img.starts_with("<div class=\"algo\"") || caption_first(block, image.as_ref());
     let inner = if caption_first {
         format!("{cap}{img}")
     } else {

@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF or a Word document into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -63,7 +63,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
+    about = "Convert scientific-paper PDFs (arXiv) and Word documents into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -75,7 +75,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) or a Word document (.docx, .doc) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -87,7 +87,7 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF file, arXiv id or arXiv URL
+        /// Local PDF or Word file, arXiv id or arXiv URL
         input: String,
     },
     /// Read pictures of formulas (black on white, as LaTeX renders them) and
@@ -228,7 +228,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF file, arXiv id (1706.03762) or arXiv URL
+    /// Local PDF or Word file (.docx, .doc), arXiv id (1706.03762) or arXiv URL
     input: String,
     /// Fidelity mode
     #[arg(short, long, value_enum, default_value = "friendly")]
@@ -422,6 +422,9 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let (paper, stem) = load(&args.input)?;
     let paper = paper.with_png_compression(args.png_compression.into());
+    if !paper.format().has_pages() && format == FormatArg::Html && !args.all && args.mode != ModeArg::Friendly {
+        bail!("a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use --mode friendly");
+    }
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
     let mut analysis = paper.analyze_with(AnalyzeOptions {
@@ -430,12 +433,20 @@ fn convert(args: ConvertArgs) -> Result<()> {
         ..Default::default()
     });
     let tables = analysis.doc.blocks.iter().filter(|block| block.table.is_some()).count();
-    eprintln!(
-        "analysed {} pages ({jobs} threads), {} blocks, {tables} tables rebuilt in {:.2}s",
-        paper.page_count(),
-        analysis.doc.blocks.len(),
-        started.elapsed().as_secs_f32()
-    );
+    if paper.format().has_pages() {
+        eprintln!(
+            "analysed {} pages ({jobs} threads), {} blocks, {tables} tables rebuilt in {:.2}s",
+            paper.page_count(),
+            analysis.doc.blocks.len(),
+            started.elapsed().as_secs_f32()
+        );
+    } else {
+        eprintln!(
+            "read {} document, {} blocks, {tables} tables",
+            paper.format().name(),
+            analysis.doc.blocks.len(),
+        );
+    }
     if let Some(content) = &args.content {
         apply_content(&paper, &mut analysis, content)?;
     }
@@ -531,7 +542,10 @@ fn write_html(
     paths: &OutputPaths,
     stem: &str,
 ) -> Result<()> {
-    let modes: Vec<Mode> = if args.all && args.content.is_some() {
+    let modes: Vec<Mode> = if args.all && !paper.format().has_pages() {
+        eprintln!("hard, hard-95 and medium skipped: a Word document has no pages");
+        vec![Mode::Friendly]
+    } else if args.all && args.content.is_some() {
         eprintln!("hard mode skipped: it cannot show edited text from --content");
         vec![Mode::Hard95, Mode::Medium, Mode::Friendly]
     } else if args.all {
@@ -950,10 +964,11 @@ fn kind_label(kind: &BlockKind) -> String {
         BlockKind::ListItem { marker } => format!("LI {}", marker.clone().unwrap_or_default()),
         BlockKind::ListContinuation => "LI+".to_string(),
         BlockKind::Equation { number, image } => format!(
-            "EQ {} [{:.0}x{:.0}]",
+            "EQ {} {}",
             number.clone().unwrap_or_default(),
-            image.rect.width(),
-            image.rect.height()
+            image
+                .map(|spec| format!("[{:.0}x{:.0}]", spec.rect.width(), spec.rect.height()))
+                .unwrap_or_else(|| "[math]".into())
         ),
         BlockKind::Figure { kind, image, label } => format!(
             "{:?} {} {}",

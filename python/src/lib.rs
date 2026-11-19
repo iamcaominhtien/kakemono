@@ -1,4 +1,4 @@
-//! The native part of the `kakemono` Python package: PDF bytes in, HTML, a
+//! The native part of the `kakemono` Python package: PDF or Word bytes in, HTML, a
 //! Word document, Markdown, LaTeX, an EPUB book, the editable JSON or the document structure (as JSON) out.
 //! Every output can show the text of an edited JSON file (`content`). `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
@@ -65,7 +65,9 @@ fn parse_png_compression(name: &str) -> PyResult<PngCompression> {
     }
 }
 
-/// Converts a PDF to HTML in each of `modes`; returns one HTML string per mode.
+/// Converts a PDF or a Word document (`.docx`, `.doc`) to HTML in each of
+/// `modes`; returns one HTML string per mode. A Word document has only the
+/// friendly mode.
 #[pyfunction]
 #[pyo3(signature = (pdf, modes, *, source=None, tables=true, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0, jobs=0, png_compression="balanced", content=None))]
 #[allow(clippy::too_many_arguments)]
@@ -98,6 +100,11 @@ fn convert(
     }
     let (pages, warnings) = py.detach(move || {
         let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        if !paper.format().has_pages() && modes.iter().any(|mode| *mode != Mode::Friendly) {
+            return Err(value_error(
+                "a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
+            ));
+        }
         let pages = modes
             .into_iter()
             .map(|mode| {
@@ -122,7 +129,7 @@ fn convert(
 /// Picture files as Python values: (relative path, bytes).
 type PyFiles<'py> = Vec<(String, Bound<'py, PyBytes>)>;
 
-/// Loads and analyses a PDF, without the GIL being needed, and applies the
+/// Loads and analyses a PDF or Word document, without the GIL being needed, and applies the
 /// edited JSON `content` to the analysis. Returns the warnings of applying
 /// it (blocks that kept their text), to be given to Python with
 /// [`warn_all`] once the GIL is held again.
@@ -174,7 +181,7 @@ fn check_scale(scale: f32) -> PyResult<()> {
     }
 }
 
-/// Converts a PDF to a Word document; returns the bytes of the `.docx` file
+/// Converts a PDF or Word document to a Word document; returns the bytes of the `.docx` file
 /// and, when `image_dir` is given, its pictures as files in that folder.
 #[pyfunction]
 #[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir=None, content=None))]
@@ -210,7 +217,7 @@ fn to_docx<'py>(
     Ok((PyBytes::new(py, &data), py_files(py, files)))
 }
 
-/// Converts a PDF to Markdown; returns the text and its picture files
+/// Converts a PDF or Word document to Markdown; returns the text and its picture files
 /// (none when `inline_images`: the pictures are then data URIs).
 #[pyfunction]
 #[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None))]
@@ -246,7 +253,7 @@ fn to_markdown<'py>(
     Ok((out.markdown, py_files(py, out.files)))
 }
 
-/// Converts a PDF to the editable JSON; returns the text and its picture
+/// Converts a PDF or Word document to the editable JSON; returns the text and its picture
 /// files (none when `inline_images`: the pictures are then data URIs).
 #[pyfunction]
 #[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None))]
@@ -282,7 +289,7 @@ fn to_json<'py>(
     Ok((out.json, py_files(py, out.files)))
 }
 
-/// Converts a PDF to LaTeX; returns the source of the `.tex` file and its
+/// Converts a PDF or Word document to LaTeX; returns the source of the `.tex` file and its
 /// picture files (in `image_dir`).
 #[pyfunction]
 #[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), content=None))]
@@ -316,7 +323,7 @@ fn to_latex<'py>(
     Ok((out.latex, py_files(py, out.files)))
 }
 
-/// Converts a PDF to an EPUB book; returns the bytes of the `.epub` file.
+/// Converts a PDF or Word document to an EPUB book; returns the bytes of the `.epub` file.
 /// `modified` is its date (`CCYY-MM-DDThh:mm:ssZ`), fixed when `None`.
 #[pyfunction]
 #[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", max_math_width_em=20.0, cover=true, modified=None, content=None))]
@@ -362,7 +369,7 @@ fn py_files(py: Python<'_>, files: Vec<(String, Vec<u8>)>) -> PyFiles<'_> {
         .collect()
 }
 
-/// Analyses a PDF and returns its structure (blocks in reading order) as a
+/// Analyses a PDF or Word document and returns its structure (blocks in reading order) as a
 /// JSON string, the same document as `kakemono convert --json`.
 #[pyfunction]
 #[pyo3(signature = (pdf, *, tables=true, jobs=0))]

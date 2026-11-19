@@ -16,12 +16,13 @@ mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, code, code_run, doc_title, float_class,
-    heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
+    equation_math, float_class, heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
+use crate::render::Pictures;
 use math::latex;
 use std::collections::BTreeSet;
 use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
@@ -95,7 +96,7 @@ pub struct LatexOutput {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`LatexOutput::files`].
-pub fn render_latex(analysis: &Analysis, pdf: &PdfFile, opts: &LatexOptions) -> LatexOutput {
+pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOptions) -> LatexOutput {
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,
@@ -126,7 +127,7 @@ pub fn render_latex(analysis: &Analysis, pdf: &PdfFile, opts: &LatexOptions) -> 
     };
     writer.write(doc);
     let body = writer.out.trim_end().to_string();
-    let out = images.finish(pdf, body);
+    let out = images.finish(Pictures::new(pdf, &analysis.doc), body);
     LatexOutput {
         latex: document(doc, &out.html),
         files: out.files,
@@ -146,6 +147,9 @@ fn document(doc: &Document, body: &str) -> String {
         // T1 stays the main encoding (the last one loaded).
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
+    if doc.pages.is_empty() {
+        out = out.replacen("Converted from a PDF", "Converted from a Word document", 1);
+    }
     if !vietnamese.is_empty() {
         out.push_str(&format!(
             "% Vietnamese letters: pdfLaTeX sets them in the T5 encoding (vntex).\n\\ifPDFTeX\n  \\newcommand{{{cmd}}}[1]{{{{\\fontencoding{{T5}}\\selectfont#1}}}}\n",
@@ -303,7 +307,7 @@ impl Writer<'_, '_> {
                 // own takes it back.
                 BlockKind::Equation { image, number: None } => {
                     if let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next)) {
-                        self.equation(block, image, Some(&number));
+                        self.equation(block, image.as_ref(), Some(&number));
                         idx += 2;
                         continue;
                     }
@@ -365,7 +369,7 @@ impl Writer<'_, '_> {
                 }
             }
             BlockKind::Footnote { marker } => self.footnote(block, marker),
-            BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
+            BlockKind::Equation { image, number } => self.equation(block, image.as_ref(), number.as_deref()),
             BlockKind::Figure { kind, image, .. } => self.figure(block, *kind, image.as_ref()),
             BlockKind::ContentsEntry { level, page } => self.contents_entry(block, *level, page),
             BlockKind::Code => {
@@ -625,10 +629,11 @@ impl Writer<'_, '_> {
     /// Writes a displayed formula: as LaTeX math when its structure is
     /// known (and wanted), as a picture otherwise; with its number. It
     /// continues the paragraph before it.
-    fn equation(&mut self, block: &Block, image: &ImageSpec, number: Option<&str>) {
-        let body = match &block.math {
-            Some(math) if self.opts.equations == Equations::MathMl => latex(math).replace(['\n', '\r'], " "),
-            _ => format!("\\vcenter{{\\hbox{{{}}}}}", self.picture(image, "eq")),
+    fn equation(&mut self, block: &Block, image: Option<&ImageSpec>, number: Option<&str>) {
+        let body = match (equation_math(block, image, self.opts.equations), image) {
+            (Some(math), _) => latex(math).replace(['\n', '\r'], " "),
+            (None, Some(image)) => format!("\\vcenter{{\\hbox{{{}}}}}", self.picture(image, "eq")),
+            (None, None) => format!("\\text{{{}}}", self.text.spans(&block.spans)),
         };
         let tag = number
             .map(|number| number.trim().trim_start_matches('(').trim_end_matches(')').trim())
@@ -665,10 +670,7 @@ impl Writer<'_, '_> {
             }
             return self.verbatim(&lines);
         }
-        let caption_first = match (image, block.lines.first()) {
-            (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-            _ => false,
-        };
+        let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
             Some(format!(
                 "\\begin{{center}}\n\\begin{{kakemonotable}}\n{}\n\\end{{kakemonotable}}\n\\end{{center}}",

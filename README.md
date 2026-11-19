@@ -4,7 +4,7 @@
 
 # kakemono
 
-**Turn PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books — in pure Rust, as a single executable.**
+**Turn PDF papers and books — and Word documents — into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books, in pure Rust, as a single executable.**
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
@@ -25,7 +25,7 @@
 > *Kakemono* is a Japanese hanging scroll: a work unrolled so that it can be read at a
 > glance. kakemono does the same for documents — it unrolls a fixed PDF page into text that flows.
 
-Give it a local PDF or an arXiv ID; get HTML with continuous text, ready to read on any screen or
+Give it a local PDF, a Word document (`.docx`, `.doc`) or an arXiv ID; get HTML with continuous text, ready to read on any screen or
 to feed to translation tools, a Word document to edit, Markdown for notes, wikis and LLMs, a
 LaTeX source to edit and typeset again, an EPUB book for an e-reader, or JSON for other
 programs, which can be edited (translated, say) and turned back into any of these.
@@ -38,6 +38,7 @@ kakemono convert 1706.03762 -o attention.tex    # LaTeX, pictures in attention_a
 kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
 kakemono convert 1706.03762 -o attention.json   # the content as editable JSON
 kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages, with the edited text
+kakemono convert report.docx -o report.md       # a Word document (.docx or .doc) as input
 ```
 
 ## Features
@@ -67,6 +68,29 @@ kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages
 In every mode a paragraph stays one element in the DOM (`<p>` in `medium`/`friendly`, one `div`
 with `data-block` in `hard`/`hard-95`), so translation tools see whole paragraphs. In `hard-95`, a
 block whose text changes (after translation) reflows inside its box.
+
+## Word documents as input
+
+A `.docx` or `.doc` file is an input like a PDF (`kakemono convert report.docx -o report.md`): the
+format is recognised from the file's bytes. A Word document says what each paragraph is, so it is
+read directly, without the layout analysis a PDF needs, and turned into the same structure:
+
+- paragraph styles give the title, authors, abstract, headings (`Heading 1`–`9`, or any style with
+  an outline level), captions, footnotes written as paragraphs, references (`Bibliography`, or the
+  paragraphs after a "References" heading), code (a code style, or text all in a monospaced font)
+  and table of contents entries; list numbering gives list items with their markers ("1.", "(a)");
+- Word equations (Office Math) keep their structure: MathML, LaTeX and Office Math in the outputs,
+  in running text too;
+- tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, SVG) figures,
+  with the caption before or after them; footnotes and endnotes follow their paragraph;
+- hyperlinks, cross-references to bookmarks, citations and references to figures and tables become
+  links, as for a PDF.
+
+A Word document has no pages: only the `friendly` HTML mode (`hard`, `hard-95` and `medium` are
+refused; `--all` writes the friendly page), and every other format. `.doc` files (Word 97–2003)
+are read by kakemono itself, without Word or LibreOffice; Word 6/95 files and password-protected
+files are not. The editable JSON and `--content` work the same way. See
+[docs/WORD-INPUT.md](docs/WORD-INPUT.md) for the design.
 
 ## Word documents
 
@@ -297,8 +321,8 @@ kakemono convert paper.pdf -o paper.json
 kakemono convert paper.pdf --content paper.edited.json -m hard-95
 ```
 
-The input is a PDF file, an arXiv ID (`1706.03762`, `arXiv:1706.03762v7`, `hep-th/9901001`) or an
-arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
+The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.03762`,
+`arXiv:1706.03762v7`, `hep-th/9901001`) or an arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
 | Option | Meaning |
 | --- | --- |
@@ -440,6 +464,9 @@ All the numbers, and leads for making it faster, are in
 - Author–year citations are not linked yet; scanned and encrypted PDFs are not supported.
 - Word documents are one column (the page and column layout of the PDF is not kept), and figures
   are pictures.
+- Word input: pictures stored as Windows metafiles (EMF, WMF: charts, older drawings) and formulas
+  made with the old Equation Editor or MathType (in `.doc` files) are left out; floating shapes and
+  text boxes are read where they are anchored.
 - Unusual layouts may be read wrongly: `inspect` shows what was detected.
 
 ## Testing
@@ -461,6 +488,12 @@ cargo test --release
   editable JSON and of the `--json` document per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
+
+- **Word input** (`tests/word.rs`): `tests/data/word/sample.docx`, written by pandoc from
+  `sample.md`, and `sample.doc`, the same saved by LibreOffice, are read and written to every
+  format (snapshot in `tests/data/snapshots/word-sample.txt`); the LIGO paper goes through a round
+  trip PDF → Word → kakemono. To make the samples again:
+  `cd tests/data/word && pandoc sample.md -o sample.docx && soffice --headless --convert-to doc sample.docx`.
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):

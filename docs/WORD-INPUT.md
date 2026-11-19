@@ -1,8 +1,21 @@
 # Word input (`.docx`, `.doc`): research
 
-Status: research only, nothing implemented yet. This note looks at how kakemono
-could read Word documents next to PDFs, what was measured, and what is
-recommended.
+Status: implemented (steps 0 to 2 below, in one pull request). This note is
+the research behind it: how kakemono could read Word documents next to PDFs,
+what was measured, and what was chosen.
+
+What was built, in short:
+
+- `src/word/`: a `.docx` reader and a `.doc` reader of our own (on `cfb`), both
+  into one intermediate form, turned into a `Document` by `build.rs`.
+- `model`: `ImageSpec::embedded` and `Document::pictures` (pictures stored in
+  the document), `BlockKind::Equation::image` optional, `Span::math` (a formula
+  in running text with its structure), `Block::caption_above`.
+- `Paper::from_bytes` recognises the format; `Paper::format`, `InputFormat`;
+  `Paper::renderer` returns an `Option`. The page modes give the friendly page
+  for a Word document in the library, and are refused by the CLI and Python.
+- `.doc` is read by kakemono itself: `rust-docx` does not build next to hayro
+  (see below), so step 2 took the "reader of our own on `cfb`" branch.
 
 ## The question
 

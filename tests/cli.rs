@@ -325,3 +325,50 @@ fn edited_json_gives_latex_that_compiles_in_vietnamese() {
     assert!(!hard.status.success());
     assert!(String::from_utf8_lossy(&hard.stderr).contains("hard mode"));
 }
+
+/// The sample Word document of `tests/data/word`.
+const WORD_SAMPLE: &str = "tests/data/word/sample.docx";
+
+#[test]
+fn word_document_converts_to_friendly_html() {
+    let dir = scratch("cli-word");
+    let html = dir.join("sample.friendly.html");
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--fonts",
+        "system",
+        "-o",
+        html.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("read docx document"));
+    let text = std::fs::read_to_string(&html).unwrap();
+    assert!(text.contains("Converted from Word by kakemono · friendly mode"));
+}
+
+#[test]
+fn word_document_has_no_page_modes() {
+    let dir = scratch("cli-word-modes");
+    let html = dir.join("sample.hard.html");
+    let out = kakemono(&["convert", WORD_SAMPLE, "-m", "hard", "-o", html.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("a Word document has no pages"));
+    assert!(!html.exists());
+    // With --all, only the friendly page is written.
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--all",
+        "--fonts",
+        "system",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let written: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(written, ["sample.friendly.html"]);
+}

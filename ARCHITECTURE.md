@@ -3,6 +3,7 @@
 `kakemono` is a **pipeline**: a PDF passes through a chain of stages. Each stage takes one clearly
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
 (`Document` → HTML, Word, Markdown, LaTeX, EPUB or JSON) meet at exactly one place: the `Document` model in `model`.
+A Word document (`.docx`, `.doc`) skips the analysis: `word/` reads it straight into a `Document`.
 An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before any output is written.
 
 ```
@@ -25,6 +26,9 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
     │   math        structure of display formulas (MathNode trees: matrices, cases, dots)
     ▼
  Document (model)       fixed boundary between analysis and output
+    ▲
+    │  word/          DOCX/DOC bytes → the same Document: docx.rs (OOXML) or doc/ (Word 97–2003)
+    │                 → ir.rs (paragraphs, runs, tables, notes) → build.rs (styles → block kinds)
     │
     ▼  render/        trait Renderer: one implementation per mode
  hard │ hard-95 │ medium │ friendly        shared: assets, escape, flow, mathml, table
@@ -47,11 +51,12 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), EPUB (`to_epub`) or editable JSON (`to_json`), and applies an edited JSON file (`apply_content`) |
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
+| `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
 | `backend/` | Adapter around hayro: reads pages (`extract`), recognizes fonts (`fonts`), draws pages/regions (`render`; resvg turns a very large SVG page into a PNG; a photograph is cut out as a JPEG) |
-| `common/` | Shared code with no dependency on any other module: geometry, text styles, text handling, parallel execution |
+| `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution |
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
-| `render/` | HTML output: a `Renderer` for each mode, the `assets` image store, shared HTML parts |
+| `render/` | HTML output: a `Renderer` for each mode, the `assets` image store (pictures drawn from the pages of the PDF, or stored in the document for a Word input: `Pictures`), shared HTML parts |
 | `render/docx/` | Word output: `body` (blocks → `word/document.xml`), `omml` (`MathNode` → Office Math), `table` (Word tables), `parts` (styles, relationships, page); the package is written by `render/zip.rs` (a minimal ZIP writer shared with EPUB). Pictures are placeholders drawn afterwards on several threads, as in `assets`; `to_docx_with_images` also returns them as files |
 | `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math), Markdown and LaTeX (`$…$`) |
 | `render/markdown/` | Markdown output: `inline` (spans → emphasis, code, links; escaping), tables as pipe or HTML tables. Pictures go through the `assets` store, as files or data URIs |
@@ -65,6 +70,7 @@ Dependencies run in one direction only:
 
 ```
 main → paper → analysis → backend → common
+              → word    → analysis (the linking of `semantics`)
               → render  → model   → common
 ```
 

@@ -10,8 +10,8 @@ use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style
 use crate::render::assets::MARK;
 use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::{
-    CAP_LABEL, Equations, code, code_run, figure_alt, float_class, is_abstract_text, is_scene_break, plain,
-    stray_equation_number,
+    CAP_LABEL, Equations, caption_first, code, code_run, equation_math, figure_alt, float_class, is_abstract_text,
+    is_scene_break, plain, stray_equation_number,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -127,7 +127,7 @@ impl<'a> Body<'a> {
             if let BlockKind::Equation { image, number: None } = &block.kind
                 && let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next))
             {
-                self.equation(block, image, Some(&number));
+                self.equation(block, image.as_ref(), Some(&number));
                 idx += 2;
                 continue;
             }
@@ -160,7 +160,7 @@ impl<'a> Body<'a> {
                 let content = mark + &self.runs(&block.spans);
                 self.paragraph("FootnoteText", "", anchor, &content);
             }
-            BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
+            BlockKind::Equation { image, number } => self.equation(block, image.as_ref(), number.as_deref()),
             BlockKind::Figure { kind, image, label } => self.figure(block, *kind, image.as_ref(), label),
             BlockKind::ContentsEntry { level, page } => {
                 // The title, then a right-aligned tab with dot leaders up to
@@ -373,11 +373,11 @@ impl<'a> Body<'a> {
     /// Writes a displayed formula: as an Office Math equation when its
     /// structure is known (and wanted), as a picture otherwise; with its
     /// number at the right margin.
-    fn equation(&mut self, block: &Block, image: &ImageSpec, number: Option<&str>) {
+    fn equation(&mut self, block: &Block, image: Option<&ImageSpec>, number: Option<&str>) {
         let anchor = block.anchor.as_deref();
-        let content = match &block.math {
-            Some(math) if self.opts.equations == Equations::MathMl => display_math(math),
-            _ => {
+        let content = match (equation_math(block, image, self.opts.equations), image) {
+            (Some(math), _) => display_math(math),
+            (None, Some(image)) => {
                 let room = if number.is_some() {
                     EQ_MIDDLE_TWIPS
                 } else {
@@ -386,6 +386,7 @@ impl<'a> Body<'a> {
                 let scale = self.eq_scale;
                 self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale, "eq")
             }
+            (None, None) => self.runs(&block.spans),
         };
         let Some(number) = number else {
             return self.paragraph("Equation", "", anchor, &content);
@@ -434,10 +435,7 @@ impl<'a> Body<'a> {
             }
             return self.listing(&lines, anchor);
         }
-        let caption_first = match (image, block.lines.first()) {
-            (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-            _ => false,
-        };
+        let caption_first = caption_first(block, image);
         if caption_first && let Some(caption) = &caption {
             self.paragraph("Caption", "<w:keepNext/>", anchor.take(), caption);
         }

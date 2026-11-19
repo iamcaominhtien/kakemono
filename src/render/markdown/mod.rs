@@ -10,12 +10,14 @@ pub(crate) mod inline;
 
 use super::latex::math::latex;
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, code, code_run, doc_title, figure_alt, float_class,
-    heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number, table_walk,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
+    equation_math, figure_alt, float_class, heading_tag, is_abstract_text, is_scene_break, plain,
+    stray_equation_number, table_walk,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, Table, TableCell};
+use crate::render::Pictures;
 use inline::{Inline, escape, escape_line_start, spans_html};
 use std::collections::HashSet;
 
@@ -70,7 +72,7 @@ pub struct MarkdownOutput {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// embedded as data URIs or returned in [`MarkdownOutput::files`].
-pub fn render_markdown(analysis: &Analysis, pdf: &PdfFile, opts: &MarkdownOptions) -> MarkdownOutput {
+pub fn render_markdown(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &MarkdownOptions) -> MarkdownOutput {
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: opts.inline_images,
@@ -100,7 +102,7 @@ pub fn render_markdown(analysis: &Analysis, pdf: &PdfFile, opts: &MarkdownOption
     };
     writer.write(doc);
     let text = writer.out.trim_end().to_string() + "\n";
-    let out = images.finish(pdf, text);
+    let out = images.finish(Pictures::new(pdf, &analysis.doc), text);
     MarkdownOutput {
         markdown: out.html,
         files: out.files,
@@ -190,7 +192,7 @@ impl Writer<'_, '_> {
             if let BlockKind::Equation { image, number: None } = &block.kind
                 && let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next))
             {
-                self.equation(block, image, Some(&number));
+                self.equation(block, image.as_ref(), Some(&number));
                 idx += 2;
                 continue;
             }
@@ -233,7 +235,7 @@ impl Writer<'_, '_> {
                 let mark = format!("<sup>{}</sup> ", escape(marker));
                 self.paragraph(&format!("{mark}{}", self.inline.spans(&block.spans)));
             }
-            BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
+            BlockKind::Equation { image, number } => self.equation(block, image.as_ref(), number.as_deref()),
             BlockKind::Figure { kind, image, label } => self.figure(block, *kind, image.as_ref(), label),
             BlockKind::ContentsEntry { level, page } => {
                 let indent = " ".repeat(usize::from(level.saturating_sub(1)) * CONTENTS_INDENT);
@@ -388,19 +390,19 @@ impl Writer<'_, '_> {
 
     /// Writes a displayed formula: as LaTeX when its structure is known
     /// (and wanted), as a picture otherwise; with its number.
-    fn equation(&mut self, block: &Block, image: &ImageSpec, number: Option<&str>) {
+    fn equation(&mut self, block: &Block, image: Option<&ImageSpec>, number: Option<&str>) {
         let tag = number.map(|number| number.trim().trim_start_matches('(').trim_end_matches(')').trim());
-        match &block.math {
-            Some(math) if self.opts.equations == Equations::MathMl => {
-                let tag = tag.map(|tag| format!(" \\tag{{{tag}}}")).unwrap_or_default();
-                self.paragraph(&format!("$$\n{}{tag}\n$$", latex(math)));
-            }
-            _ => {
-                let picture = self.picture(image, &plain(&block.spans), "eq");
-                let number = number.map(|number| format!(" {}", escape(number))).unwrap_or_default();
-                self.paragraph(&format!("{picture}{number}"));
-            }
+        if let Some(math) = equation_math(block, image, self.opts.equations) {
+            let tag = tag.map(|tag| format!(" \\tag{{{tag}}}")).unwrap_or_default();
+            self.paragraph(&format!("$$\n{}{tag}\n$$", latex(math)));
+            return;
         }
+        let shown = match image {
+            Some(image) => self.picture(image, &plain(&block.spans), "eq"),
+            None => escape(&plain(&block.spans)),
+        };
+        let number = number.map(|number| format!(" {}", escape(number))).unwrap_or_default();
+        self.paragraph(&format!("{shown}{number}"));
     }
 
     /// Writes a float: the rebuilt table or the picture, and the caption
@@ -417,10 +419,7 @@ impl Writer<'_, '_> {
             }
             return self.fence(&lines);
         }
-        let caption_first = match (image, block.lines.first()) {
-            (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-            _ => false,
-        };
+        let caption_first = caption_first(block, image);
         if caption_first && let Some(caption) = &caption {
             self.paragraph(caption);
         }

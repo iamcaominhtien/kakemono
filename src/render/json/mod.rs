@@ -26,6 +26,7 @@ use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::common::geom::Rect;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, Table};
+use crate::render::Pictures;
 use markup::to_markup;
 use serde::Serialize;
 
@@ -251,7 +252,12 @@ struct LayoutOut {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// embedded as data URIs or returned in [`JsonOutput::files`].
-pub(crate) fn render_json(analysis: &Analysis, pdf: &PdfFile, opts: &JsonOptions, source: &SourceInfo) -> JsonOutput {
+pub(crate) fn render_json(
+    analysis: &Analysis,
+    pdf: Option<&PdfFile>,
+    opts: &JsonOptions,
+    source: &SourceInfo,
+) -> JsonOutput {
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: opts.inline_images,
@@ -288,7 +294,7 @@ pub(crate) fn render_json(analysis: &Analysis, pdf: &PdfFile, opts: &JsonOptions
     // serde_json writes the placeholder marks of the pictures as escapes;
     // the image store looks for the marks themselves.
     let json = json.replace(MARK_ESCAPED, &super::assets::MARK.to_string()) + "\n";
-    let out = images.finish(pdf, json);
+    let out = images.finish(Pictures::new(pdf, &analysis.doc), json);
     JsonOutput {
         json: out.html,
         files: out.files,
@@ -366,7 +372,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
         BlockKind::Authors if block.rows.is_empty() => json.text = Some(text_of(&block.spans)),
         BlockKind::Authors => json.rows = Some(block.rows.iter().map(|row| text_of(row)).collect()),
         BlockKind::Code => json.lines = Some(block.rows.iter().map(|row| plain_line(row)).collect()),
-        BlockKind::Equation { image, number } => equation_out(&mut json, block, image, number, opts, images),
+        BlockKind::Equation { image, number } => equation_out(&mut json, block, image.as_ref(), number, opts, images),
         BlockKind::Figure { kind, image, label } => {
             json.float = Some(float_name(*kind));
             json.label = label.clone();
@@ -385,7 +391,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
 fn equation_out(
     json: &mut BlockOut,
     block: &Block,
-    image: &ImageSpec,
+    image: Option<&ImageSpec>,
     number: &Option<String>,
     opts: &JsonOptions,
     images: &mut ImageStore<'_>,
@@ -396,7 +402,9 @@ fn equation_out(
         json.latex = Some(latex(node));
         json.mathml = Some(math_html(node, &alt));
     }
-    if block.math.is_none() || opts.equations == Equations::Image {
+    if let Some(image) = image
+        && (block.math.is_none() || opts.equations == Equations::Image)
+    {
         json.image = Some(images.region(image, "eq"));
     }
     json.alt = Some(alt);

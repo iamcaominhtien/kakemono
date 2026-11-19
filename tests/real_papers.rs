@@ -147,6 +147,15 @@ fn fingerprint(html: &str, files: &[(String, Vec<u8>)]) -> String {
     hex(h.finalize())
 }
 
+/// The editable JSON without the version of kakemono that wrote it
+/// (`"generator"`), which changes with every release.
+fn without_version(json: &str) -> String {
+    regex::Regex::new(r#""generator": "kakemono [^"]*""#)
+        .unwrap()
+        .replace(json, r#""generator": "kakemono""#)
+        .into_owned()
+}
+
 /// The files of a `.docx` or `.epub` package (a ZIP archive): (name, contents),
 /// inflated. Reads the local headers one after another, which is enough
 /// for the archives kakemono writes (no data descriptors).
@@ -622,7 +631,8 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
         .iter()
         .filter(|b| match &b.kind {
             BlockKind::Equation { image, .. } => {
-                b.math.is_some() && image.rect.width() <= epub_opts.max_math_width_em * doc.body_size
+                b.math.is_some()
+                    && image.is_none_or(|image| image.rect.width() <= epub_opts.max_math_width_em * doc.body_size)
             }
             _ => b.math.is_some(),
         })
@@ -633,7 +643,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     // The content as JSON, with its pictures as files.
     let content = paper.to_json(&analysis, &JsonOptions::default());
     check_content(&content.json, &content.files);
-    fingerprints.push(("content", fingerprint(&content.json, &content.files)));
+    fingerprints.push(("content", fingerprint(&without_version(&content.json), &content.files)));
     let metrics = Metrics {
         title,
         tables,
