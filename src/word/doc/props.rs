@@ -191,6 +191,25 @@ pub(crate) fn runs(word: &[u8], plc_bte: &[u8], paragraphs: bool) -> Vec<Run> {
     out
 }
 
+/// The paragraph runs `runs` with the property lists kept in the `Data`
+/// stream (`sprmPHugePapx`, for lists too long for an FKP) added to theirs.
+pub(crate) fn with_huge_papx(mut runs: Vec<Run>, data: &[u8]) -> Vec<Run> {
+    const SPRM_P_HUGE_PAPX: u16 = 0x6646;
+    for run in &mut runs {
+        let offset = sprms(&run.grpprl)
+            .find(|(sprm, _)| *sprm == SPRM_P_HUGE_PAPX)
+            .and_then(|(_, operand)| u32_at(operand, 0));
+        if let Some(offset) = offset {
+            let start = offset as usize;
+            let len = usize::from(u16_at(data, start).unwrap_or(0));
+            if let Some(huge) = data.get(start + 2..start + 2 + len) {
+                run.grpprl.extend_from_slice(huge);
+            }
+        }
+    }
+    runs
+}
+
 /// The run that holds the byte `fc`.
 pub(crate) fn run_at(runs: &[Run], fc: u32) -> Option<&Run> {
     let index = runs.partition_point(|run| run.start <= fc).checked_sub(1)?;
@@ -624,6 +643,27 @@ fn utf16_until_nul(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A paragraph whose properties are in the `Data` stream gets them.
+    #[test]
+    fn huge_papx_is_read() {
+        let mut data = vec![0u8; 8];
+        data.extend_from_slice(&3u16.to_le_bytes());
+        data.extend_from_slice(&[0x17, 0x24, 1]);
+        let mut grpprl = 0x6646u16.to_le_bytes().to_vec();
+        grpprl.extend_from_slice(&8u32.to_le_bytes());
+        let runs = with_huge_papx(
+            vec![Run {
+                start: 0,
+                end: 10,
+                istd: 0,
+                grpprl,
+            }],
+            &data,
+        );
+        let found: Vec<u16> = sprms(&runs[0].grpprl).map(|(sprm, _)| sprm).collect();
+        assert_eq!(found, [0x6646, 0x2417]);
+    }
 
     /// Sprm operands of every size are skipped correctly.
     #[test]

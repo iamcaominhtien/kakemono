@@ -84,7 +84,10 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         styles: &styles,
         numbering,
         chars: props::runs(&word, fib.slice(&table, Pair::PlcfBteChpx), false),
-        paras: props::runs(&word, fib.slice(&table, Pair::PlcfBtePapx), true),
+        paras: props::with_huge_papx(
+            props::runs(&word, fib.slice(&table, Pair::PlcfBtePapx), true),
+            &data_stream,
+        ),
         bookmarks: HashMap::new(),
         note_refs: HashMap::new(),
         pictures: Vec::new(),

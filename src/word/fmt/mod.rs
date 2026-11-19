@@ -2,6 +2,7 @@
 //! (`crate::layout`): what the semantic reading (`ir`, `build`) leaves out
 //! because the other outputs choose their own presentation.
 
+mod contrast;
 mod doc;
 mod docx;
 mod frames;
@@ -26,6 +27,7 @@ pub fn read(data: &[u8], format: WordFormat) -> Result<FDoc> {
     }
     .map(|mut doc| {
         frames::group(&mut doc);
+        contrast::apply(&mut doc);
         doc
     })
 }

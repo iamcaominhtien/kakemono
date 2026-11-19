@@ -25,6 +25,13 @@ fn group_blocks(blocks: &mut Vec<Block>) {
         match block {
             Block::Table(table) => {
                 for cell in table.rows.iter_mut().flat_map(|row| row.cells.iter_mut()) {
+                    // Word ignores the frames of paragraphs in a table: they
+                    // stay in the text of their cell.
+                    for block in &mut cell.blocks {
+                        if let Block::Para(para) = block {
+                            para.props.frame = None;
+                        }
+                    }
                     group_blocks(&mut cell.blocks);
                 }
             }

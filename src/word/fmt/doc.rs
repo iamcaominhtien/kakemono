@@ -136,7 +136,10 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         char_styles: HashMap::new(),
         numbering,
         chars: runs(&word, fib.slice(&table, Pair::PlcfBteChpx), false),
-        paras: runs(&word, fib.slice(&table, Pair::PlcfBtePapx), true),
+        paras: crate::word::doc::props::with_huge_papx(
+            runs(&word, fib.slice(&table, Pair::PlcfBtePapx), true),
+            &data_stream,
+        ),
         bookmarks: HashMap::new(),
         note_refs: HashMap::new(),
         images: Vec::new(),
@@ -542,9 +545,8 @@ impl Reader<'_> {
     fn blocks(&mut self, start: u32, end: u32) -> Vec<Block> {
         let end = end.min(self.text.units.len() as u32);
         let mut blocks = Vec::new();
-        let mut rows: Vec<(Vec<Vec<Block>>, RowProps)> = Vec::new();
-        let mut cells: Vec<Vec<Block>> = Vec::new();
-        let mut cell: Vec<Block> = Vec::new();
+        // The tables being read, one per depth of nesting.
+        let mut tables: Vec<TableBuild> = Vec::new();
         let mut cp = start;
         self.fields.clear();
         while cp < end {
@@ -559,34 +561,37 @@ impl Reader<'_> {
                     .collect();
                 eprintln!("PARA {istd} {first:?} {}", debug_sprms(&grpprl));
             }
-            let (depth, row_end) = table_flags(&grpprl);
-            if depth >= 1 && row_end {
+            let flags = table_flags(&grpprl);
+            let depth = flags.depth as usize;
+            close_tables(&mut tables, depth, &mut blocks);
+            tables.resize_with(depth, TableBuild::default);
+            if let Some(table) = tables.last_mut()
+                && flags.row_end
+            {
                 // The row end: its properties describe the row.
                 if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
                     eprintln!("ROW {}", debug_sprms(&grpprl));
                 }
-                rows.push((std::mem::take(&mut cells), row_props(&grpprl)));
-                cell.clear();
+                table.rows.push((std::mem::take(&mut table.cells), row_props(&grpprl)));
+                table.cell.clear();
                 cp = mark + 1;
                 continue;
             }
             let para = self.paragraph(cp, mark, istd, &grpprl, depth >= 1);
             cp = mark + 1;
-            if depth == 0 {
-                if !rows.is_empty() {
-                    blocks.push(Block::Table(build_table(std::mem::take(&mut rows))));
+            match tables.last_mut() {
+                None => blocks.push(Block::Para(Box::new(para))),
+                Some(table) => {
+                    table.cell.push(Block::Para(Box::new(para)));
+                    // A cell of the outer table ends with a cell mark; one of
+                    // a nested table, with a paragraph mark flagged as such.
+                    if (depth == 1 && terminator == CELL_END) || (depth > 1 && flags.inner_cell_end) {
+                        table.cells.push(std::mem::take(&mut table.cell));
+                    }
                 }
-                blocks.push(Block::Para(Box::new(para)));
-                continue;
-            }
-            cell.push(Block::Para(Box::new(para)));
-            if terminator == CELL_END && depth == 1 {
-                cells.push(std::mem::take(&mut cell));
             }
         }
-        if !rows.is_empty() {
-            blocks.push(Block::Table(build_table(rows)));
-        }
+        close_tables(&mut tables, 0, &mut blocks);
         blocks
     }
 
@@ -913,21 +918,65 @@ fn debug_sprms(grpprl: &[u8]) -> String {
     list.join(" ")
 }
 
-/// The table depth of a paragraph and whether it ends a table row.
-fn table_flags(grpprl: &[u8]) -> (u32, bool) {
-    let mut depth = 0;
-    let mut row_end = false;
+/// What the table properties of a paragraph say of its place in tables.
+#[derive(Default)]
+struct TableFlags {
+    /// Depth of the table the paragraph is in (0 outside tables).
+    depth: u32,
+    /// Whether it ends a row of its table.
+    row_end: bool,
+    /// Whether it ends a cell of a nested table.
+    inner_cell_end: bool,
+}
+
+/// The place in tables of a paragraph with the properties `grpprl`.
+fn table_flags(grpprl: &[u8]) -> TableFlags {
+    let mut flags = TableFlags::default();
+    let (mut ttp, mut inner_ttp) = (false, false);
     for (sprm, operand) in crate::word::doc::props::sprms(grpprl) {
         let byte = operand.first().copied().unwrap_or(0);
         match sprm {
-            0x2416 => depth = depth.max(u32::from(byte != 0)),
-            0x6649 => depth = u32_at(operand, 0).unwrap_or(0),
-            0x2417 => row_end = byte != 0,
-            0x244C if depth > 1 => row_end = false,
+            0x2416 => flags.depth = flags.depth.max(u32::from(byte != 0)),
+            0x6649 => flags.depth = u32_at(operand, 0).unwrap_or(0),
+            0x2417 => ttp = byte != 0,
+            0x244B => flags.inner_cell_end = byte != 0,
+            0x244C => inner_ttp = byte != 0,
             _ => {}
         }
     }
-    (depth, row_end)
+    flags.row_end = if flags.depth > 1 { inner_ttp } else { ttp } && flags.depth >= 1;
+    flags
+}
+
+/// A table being read: its finished rows, the cells of the current row and
+/// the blocks of the current cell.
+#[derive(Default)]
+struct TableBuild {
+    /// Finished rows, with their properties.
+    rows: Vec<(Vec<Vec<Block>>, RowProps)>,
+    /// Finished cells of the current row.
+    cells: Vec<Vec<Block>>,
+    /// Blocks of the current cell.
+    cell: Vec<Block>,
+}
+
+/// Closes the tables nested deeper than `depth`, each put in the cell of
+/// the table around it, or in `blocks` for the outermost.
+fn close_tables(tables: &mut Vec<TableBuild>, depth: usize, blocks: &mut Vec<Block>) {
+    while tables.len() > depth {
+        let Some(done) = tables.pop() else { break };
+        if done.rows.is_empty() {
+            // Text never closed into a row: keep it.
+            let target = tables.last_mut().map_or(&mut *blocks, |table| &mut table.cell);
+            target.extend(done.cells.into_iter().flatten().chain(done.cell));
+            continue;
+        }
+        let table = Block::Table(build_table(done.rows));
+        match tables.last_mut() {
+            Some(outer) => outer.cell.push(table),
+            None => blocks.push(table),
+        }
+    }
 }
 
 /// A table from its rows: the grid from the cell edges of every row, the
@@ -971,10 +1020,10 @@ fn build_table(rows: Vec<(Vec<Vec<Block>>, RowProps)>) -> Table {
             let tb = props.table_borders;
             let last = at + 1 == props.edges.len().saturating_sub(1);
             let borders = [
-                own[0].or(tb[0]),
-                own[1].or(if at == 0 { tb[1] } else { tb[5] }),
-                own[2].or(tb[4]).or(tb[2]),
-                own[3].or(if last { tb[3] } else { tb[5] }),
+                own[0].unwrap_or(tb[0]),
+                own[1].unwrap_or(if at == 0 { tb[1] } else { tb[5] }),
+                own[2].unwrap_or(tb[4].or(tb[2])),
+                own[3].unwrap_or(if last { tb[3] } else { tb[5] }),
             ];
             row.cells.push(Cell {
                 span,

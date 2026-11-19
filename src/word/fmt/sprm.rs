@@ -365,8 +365,9 @@ pub(crate) struct RowProps {
     /// Cell flags: merged into the previous, part of a vertical merge,
     /// start of a vertical merge.
     pub(crate) merges: Vec<(bool, bool, bool)>,
-    /// Borders of each cell: top, left, bottom, right.
-    pub(crate) cell_borders: Vec<[Option<Border>; 4]>,
+    /// Borders of each cell: top, left, bottom, right (`None` when unset,
+    /// for the table's border to apply; `Some(None)` for none).
+    pub(crate) cell_borders: Vec<[Option<Option<Border>>; 4]>,
     /// Shading of each cell.
     pub(crate) shading: Vec<Option<Rgb>>,
     /// Vertical alignment of each cell.
@@ -475,7 +476,13 @@ fn def_table(operand: &[u8], row: &mut RowProps) {
                 _ => VAlign::Top,
             };
         }
-        let side = |offset: usize| tc.and_then(|tc| tc.get(offset..offset + 4)).and_then(brc80).flatten();
+        // A border of zeros is unset (the table's applies); a nil one is
+        // none.
+        let side = |offset: usize| {
+            tc.and_then(|tc| tc.get(offset..offset + 4))
+                .filter(|bytes| bytes.iter().any(|&byte| byte != 0))
+                .and_then(brc80)
+        };
         row.cell_borders.push([side(4), side(8), side(12), side(16)]);
     }
 }
@@ -541,9 +548,9 @@ fn set_cell_borders(sprm: u16, operand: &[u8], row: &mut RowProps) {
         return;
     };
     let value = if sprm == 0xD620 {
-        body.get(3..7).and_then(brc80).flatten()
+        body.get(3..7).and_then(brc80)
     } else {
-        body.get(3..11).and_then(brc).flatten()
+        body.get(3..11).and_then(brc)
     };
     for cell in usize::from(first)..usize::from(lim) {
         let Some(borders) = row.cell_borders.get_mut(cell) else {
