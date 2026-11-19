@@ -104,9 +104,9 @@ used. That layout gives:
   continuous page, without page breaks;
 - `friendly` stays the single-column article, from the document's structure.
 
-How close it is to Word is measured in CI on 527 documents with the PDF Word made of them (government
+How close it is to Word is measured in CI on 524 documents with the PDF Word made of them (government
 reports, forms, letters, guidance, templates; `.docx` and `.doc`; see
-[Testing](#testing)): about 93% of lines break at the same words as in Word, and 80% of documents
+[Testing](#testing)): about 94% of lines break at the same words as in Word, and 81% of documents
 have the same number of pages. Text edited with `--content` reaches every output except the page
 layout (PDF, `hard`, `hard-95`, `medium`). `.doc` files (Word 97–2003) are read by kakemono
 itself; Word 6/95 files, RTF files and password-protected files are not. Comments, tracked

@@ -48,19 +48,28 @@ does not know which format it reads.
   the text is drawn in a stand-in face but measured, and so broken, as Word
   measures it.
 - **Lines** (`para.rs`): words placed until one does not fit, tabs to their
-  stops (with leaders), justification by widening spaces, line height from
+  stops (with leaders), justification by widening spaces (and, from Word
+  2013 on, squeezing them by up to a quarter to keep a word that sticks out
+  of the line by less than about half its width), line height from
   the Windows ascent and descent of the line's fonts (a tab's font counts only
   on a line without text), exact, at-least and multiple line spacing.
 - **Pages** (`flow.rs`): space before and after (collapsed as Word does),
   widows and orphans, keep-with-next and keep-together, page and column
   breaks, sections with their own page size, margins and columns, headers and
-  footers (first page, even pages), footnotes at the foot of their page,
+  footers (first page, even pages; a header taller than the top margin,
+  with its last paragraph's space after, pushes the body down), footnotes
+  at the foot of their page,
   frames and floating objects with their wrapping.
 - **Tables**: the grid from the column widths, row heights (an at-least row is
   the larger of its content and its value plus cell margins and border),
-  merged cells (grown by the row where the merge ends), borders and shading
+  merged cells (grown by the row where the merge ends), rows of exact height
+  that leave out what does not fit, borders and shading
   from the table style's conditional formats, repeated header rows, rows that
   may or may not break across pages, nested tables.
+
+`tests/word_layout.rs` checks seven of the corpus documents (columns, text
+boxes, floating shapes, frames, EMF pictures, exact rows) against Word's
+PDFs on every CI run.
 
 Rules like these were found by comparing with Word's PDFs, not from the
 specification alone: [MS-DOC] and ECMA-376 say what a property means, not
@@ -68,7 +77,7 @@ where Word puts the line.
 
 ### Measuring
 
-`tests/data/word-corpus.tsv` lists 527 public Word documents (`.docx` and
+`tests/data/word-corpus.tsv` lists 524 public Word documents (`.docx` and
 `.doc`: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories) each
 with the PDF Word made of it. `scripts/word-fidelity.py` lays each out,
 reads the lines of both PDFs (`kakemono lines`: glyph baselines) and counts
@@ -77,14 +86,15 @@ with the same page count. CI runs it and fails below its minimums.
 
 | | Result (2026-11) |
 | --- | --- |
-| Lines broken at the same words as Word | 92.8% |
-| Documents with Word's page count | 79.7% (420 of 527) |
+| Lines broken at the same words as Word | 93.9% |
+| Documents with Word's page count | 81.3% (426 of 524) |
 | Conversion errors | 0 |
 
 Pairs left out of the corpus, and why, are in
 `tests/data/word-corpus-excluded.tsv`: PDFs published next to a Word file
-that turned out to be of another document, RTF files named `.doc`, a Welsh
-document with its English PDF.
+that turned out to be of another document, Word files converted from their
+PDF years later (so the PDF is not Word's layout of them), RTF files named
+`.doc`, a Welsh document with its English PDF.
 
 What still differs, roughly by weight:
 
