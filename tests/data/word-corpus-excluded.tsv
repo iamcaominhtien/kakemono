@@ -35,3 +35,6 @@ govuk2-0151	the PDF published with it is of another document (checked by eye)
 govuk2-0152	the PDF published with it is of another document (checked by eye)
 govuk2-0205	an RTF file named .doc (RTF is not a Word format kakemono reads)
 gh-0454	Word printed the comments in balloons beside the text, and comments are out of scope
+au-0033	the Word file was converted from the PDF years later (PDF 2008, Word file 2026, with the marks of a PDF-to-Word conversion): its fonts and sizes differ from the PDF's, and Word's own page count saved in it is 90, the PDF's 69
+au-0034	the Word file was converted from the PDF years later (PDF 2022, Word file 2026, with the marks of a PDF-to-Word conversion): its fonts and sizes differ from the PDF's, and Word's own page count saved in it is 488, the PDF's 476
+au-0035	the Word file was converted from the PDF years later (PDF 2018, Word file 2026, with the marks of a PDF-to-Word conversion): its fonts and sizes differ from the PDF's, and Word's own page count saved in it is 93, the PDF's 54
