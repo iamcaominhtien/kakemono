@@ -1,16 +1,35 @@
 """Builds the metric table kakemono embeds (src/layout/metrics.txt) from
 harvested faces: fonts Word documents use that have no installed or
 metric-compatible stand-in."""
-import json, re, sys
-faces = json.load(open(sys.argv[1]))
+import json, os, sys, tempfile
+
+
+def confined(path):
+    """The path, resolved; it must lie inside the working directory or the
+    temporary directory, where corpora and outputs are kept."""
+    real = os.path.realpath(path)
+    for base in (os.getcwd(), tempfile.gettempdir()):
+        base = os.path.realpath(base)
+        if real == base or real.startswith(base + os.sep):
+            return real
+    sys.exit(f'{path}: not inside the working or temporary directory')
+
+
+SEGOE_UI = 'Segoe UI'
+TREBUCHET = 'Trebuchet MS'
+ARIAL_BLACK = 'Arial Black'
+ARIAL_UNICODE = 'Arial Unicode MS'
+CALIBRI_LIGHT = 'Calibri Light'
+with open(confined(sys.argv[1])) as source:
+    faces = json.load(source)
 NAMES = {
-    'Tahoma': 'Tahoma', 'Verdana': 'Verdana', 'SegoeUI': 'Segoe UI', 'Segoe UI': 'Segoe UI',
-    'SegoeUISymbol': 'Segoe UI Symbol', 'TrebuchetMS': 'Trebuchet MS', 'Trebuchet MS': 'Trebuchet MS',
-    'Georgia': 'Georgia', 'BookAntiqua': 'Book Antiqua', 'ArialBlack': 'Arial Black', 'Arial Black': 'Arial Black',
-    'LucidaConsole': 'Lucida Console', 'MonotypeCorsiva': 'Monotype Corsiva', 'ArialUnicodeMS': 'Arial Unicode MS',
-    'Arial Unicode MS': 'Arial Unicode MS', 'Lucida Sans Unicode': 'Lucida Sans Unicode', 'GillSansMT': 'Gill Sans MT',
-    'CenturyGothic': 'Century Gothic', 'Garamond': 'Garamond', 'FranklinGothic': 'Franklin Gothic', 'CalibriLight': 'Calibri Light',
-    'Calibri Light': 'Calibri Light', 'Aptos': 'Aptos', 'Constantia': 'Constantia', 'Candara': 'Candara', 'Corbel': 'Corbel',
+    'Tahoma': 'Tahoma', 'Verdana': 'Verdana', 'SegoeUI': SEGOE_UI, 'Segoe UI': SEGOE_UI,
+    'SegoeUISymbol': 'Segoe UI Symbol', 'TrebuchetMS': TREBUCHET, 'Trebuchet MS': TREBUCHET,
+    'Georgia': 'Georgia', 'BookAntiqua': 'Book Antiqua', 'ArialBlack': ARIAL_BLACK, 'Arial Black': ARIAL_BLACK,
+    'LucidaConsole': 'Lucida Console', 'MonotypeCorsiva': 'Monotype Corsiva', 'ArialUnicodeMS': ARIAL_UNICODE,
+    'Arial Unicode MS': ARIAL_UNICODE, 'Lucida Sans Unicode': 'Lucida Sans Unicode', 'GillSansMT': 'Gill Sans MT',
+    'CenturyGothic': 'Century Gothic', 'Garamond': 'Garamond', 'FranklinGothic': 'Franklin Gothic', 'CalibriLight': CALIBRI_LIGHT,
+    'Calibri Light': CALIBRI_LIGHT, 'Aptos': 'Aptos', 'Constantia': 'Constantia', 'Candara': 'Candara', 'Corbel': 'Corbel',
     'Consolas': 'Consolas',
 }
 best = {}
@@ -38,5 +57,6 @@ for (name, bold, italic), f in sorted(best.items()):
             flush(); run = []
         run.append((c, w))
     flush()
-open(sys.argv[2], 'w').write('\n'.join(out) + '\n')
+with open(confined(sys.argv[2]), 'w') as target:
+    target.write('\n'.join(out) + '\n')
 print(len(best), 'faces', sorted(best))

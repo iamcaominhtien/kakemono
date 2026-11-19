@@ -7,9 +7,21 @@ Usage: compare-steps.py CORPUS_DIR IDS_FILE OUT_DIR
 Prints the share of steps within 0.25 pt and the mean error per document
 and in total.
 """
-import importlib.util, os, sys
+import importlib.util, os, sys, tempfile
 spec = importlib.util.spec_from_file_location('c', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'compare-layout.py'))
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+
+
+def confined(path):
+    """The path, resolved; it must lie inside the working directory or the
+    temporary directory, where corpora and outputs are kept."""
+    real = os.path.realpath(path)
+    for base in (os.getcwd(), tempfile.gettempdir()):
+        base = os.path.realpath(base)
+        if real == base or real.startswith(base + os.sep):
+            return real
+    sys.exit(f'{path}: not inside the working or temporary directory')
+
 
 def steps(ref_pdf, our_pdf):
     ref, _ = c.lines(ref_pdf); ours, _ = c.lines(our_pdf)
@@ -28,10 +40,12 @@ def steps(ref_pdf, our_pdf):
     return good, total, err
 
 if __name__ == '__main__':
-    corpus, ids, out = sys.argv[1:4]
+    corpus, ids, out = (confined(arg) for arg in sys.argv[1:4])
     G = T = 0; E = 0.0
-    for id in open(ids).read().split():
-        g, t, e = steps(os.path.join(corpus, id + '.pdf'), os.path.join(out, id + '.pdf'))
+    with open(ids) as listing:
+        names = listing.read().split()
+    for name in names:
+        g, t, e = steps(os.path.join(corpus, name + '.pdf'), os.path.join(out, name + '.pdf'))
         G += g; T += t; E += e
-        print(f'{id} steps ok {g}/{t} mean err {e / max(1, t):.2f}')
+        print(f'{name} steps ok {g}/{t} mean err {e / max(1, t):.2f}')
     print(f'TOTAL steps ok {G}/{T} = {G / max(1, T):.3f}, mean err {E / max(1, T):.3f}')

@@ -7,16 +7,28 @@ Usage: corpus-layout.py CORPUS_DIR IDS_FILE OUT_DIR [KAKEMONO]
 CORPUS_DIR holds NNNN.docx (or .doc) with NNNN.pdf; IDS_FILE lists the ids.
 Prints one line per document and the totals.
 """
-import concurrent.futures as cf, json, os, resource, subprocess, sys, time
+import concurrent.futures as cf, json, os, resource, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import importlib.util
 spec = importlib.util.spec_from_file_location('compare', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'compare-layout.py'))
 compare = importlib.util.module_from_spec(spec); spec.loader.exec_module(compare)
 
-corpus, ids_file, out = sys.argv[1], sys.argv[2], sys.argv[3]
+def confined(path):
+    """The path, resolved; it must lie inside the working directory or the
+    temporary directory, where corpora and outputs are kept."""
+    real = os.path.realpath(path)
+    for base in (os.getcwd(), tempfile.gettempdir()):
+        base = os.path.realpath(base)
+        if real == base or real.startswith(base + os.sep):
+            return real
+    sys.exit(f'{path}: not inside the working or temporary directory')
+
+
+corpus, ids_file, out = (confined(arg) for arg in sys.argv[1:4])
 binary = sys.argv[4] if len(sys.argv) > 4 else 'target/release/kakemono'
 os.makedirs(out, exist_ok=True)
-ids = [line.strip() for line in open(ids_file) if line.strip()]
+with open(ids_file) as listing:
+    ids = [line.strip() for line in listing if line.strip()]
 
 def one(id):
     src = next((os.path.join(corpus, f'{id}.{ext}') for ext in ('docx', 'doc') if os.path.exists(os.path.join(corpus, f'{id}.{ext}'))), None)
@@ -49,4 +61,5 @@ print(f"lines broken as Word: {lines}/{total} = {lines / max(1, total):.3f}")
 print(f"same page count: {same_pages}/{len(ok)} = {same_pages / max(1, len(ok)):.3f}")
 on_page = sum(r['same_page_ratio'] * r['ref_lines'] for r in ok)
 print(f"lines on the same page as Word: {on_page / max(1, total):.3f}")
-json.dump(results, open(os.path.join(out, 'results.json'), 'w'), indent=1)
+with open(os.path.join(out, 'results.json'), 'w') as target:
+    json.dump(results, target, indent=1)

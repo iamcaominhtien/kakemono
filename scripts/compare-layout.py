@@ -34,11 +34,11 @@ KAKEMONO = os.environ.get('KAKEMONO', os.path.join(os.path.dirname(os.path.abspa
 def lines(pdf):
     """The lines of a PDF, as `kakemono lines` reads them: (page, baseline,
     left, text), and the page count."""
-    out = subprocess.run([KAKEMONO, 'lines', pdf], capture_output=True, text=True).stdout.splitlines()
+    out = subprocess.run([KAKEMONO, 'lines', '--', os.path.realpath(pdf)], capture_output=True, text=True).stdout.splitlines()
     pages = int(out[0].split('\t')[1]) if out and out[0].startswith('pages') else 0
     result = []
     for row in out[1:]:
-        page, base, left, right, text = row.split('\t', 4)
+        page, base, left, _, text = row.split('\t', 4)
         text = ' '.join(norm(word) for word in text.split())
         # A tab leader: whether a space precedes it depends on how the PDF
         # writes the tab, not on the layout.
@@ -59,7 +59,7 @@ def compare(ref_pdf, our_pdf, detail=False):
     for page, top, left, text in ref:
         pages = available.get(text)
         if pages:
-            best = min(range(len(pages)), key=lambda i: abs(pages[i] - page))
+            best = min(range(len(pages)), key=lambda i, pages=pages, page=page: abs(pages[i] - page))
             our_page = pages.pop(best)
             matched += 1
             same_page += our_page == page

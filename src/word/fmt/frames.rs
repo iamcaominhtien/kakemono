@@ -22,27 +22,7 @@ pub(crate) fn group(doc: &mut FDoc) {
 /// in them.
 fn group_blocks(blocks: &mut Vec<Block>) {
     for block in blocks.iter_mut() {
-        match block {
-            Block::Table(table) => {
-                for cell in table.rows.iter_mut().flat_map(|row| row.cells.iter_mut()) {
-                    // Word ignores the frames of paragraphs in a table: they
-                    // stay in the text of their cell.
-                    for block in &mut cell.blocks {
-                        if let Block::Para(para) = block {
-                            para.props.frame = None;
-                        }
-                    }
-                    group_blocks(&mut cell.blocks);
-                }
-            }
-            Block::Para(para) => {
-                for inline in &mut para.inlines {
-                    if let Inline::Shape(shape) = inline {
-                        group_blocks(&mut shape.blocks);
-                    }
-                }
-            }
-        }
+        group_inside(block);
     }
     if !blocks
         .iter()
@@ -50,59 +30,114 @@ fn group_blocks(blocks: &mut Vec<Block>) {
     {
         return;
     }
-    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
-    // Shapes waiting for the paragraph they are anchored to.
-    let mut waiting: Vec<Inline> = Vec::new();
-    let mut current: Option<(Frame, Vec<Block>)> = None;
+    let mut grouping = Grouping {
+        out: Vec::with_capacity(blocks.len()),
+        waiting: Vec::new(),
+        current: None,
+    };
     for block in std::mem::take(blocks) {
+        grouping.step(block);
+    }
+    let Grouping {
+        mut out,
+        mut waiting,
+        current,
+    } = grouping;
+    if let Some((open, members)) = current {
+        waiting.push(shape(open, members));
+    }
+    put_waiting(&mut out, waiting);
+    *blocks = out;
+}
+
+/// The state of the grouping of a list of blocks.
+struct Grouping {
+    /// The blocks kept.
+    out: Vec<Block>,
+    /// Shapes waiting for the paragraph they are anchored to.
+    waiting: Vec<Inline>,
+    /// The frame being gathered, with its paragraphs.
+    current: Option<(Frame, Vec<Block>)>,
+}
+
+impl Grouping {
+    /// Takes the next block: a framed paragraph joins its frame, another
+    /// paragraph takes the frames waiting before it.
+    fn step(&mut self, block: Block) {
         let frame = match &block {
             Block::Para(para) => para.props.frame.clone(),
             Block::Table(_) => None,
         };
-        if let Some((open, members)) = current.take() {
+        if let Some((open, members)) = self.current.take() {
             if frame.as_ref() == Some(&open) {
-                current = Some((open, members));
+                self.current = Some((open, members));
             } else {
-                waiting.push(shape(open, members));
+                self.waiting.push(shape(open, members));
             }
         }
         match (frame, block) {
             (Some(frame), Block::Para(mut para)) => {
                 para.props.frame = None;
-                match current.as_mut() {
+                match self.current.as_mut() {
                     Some((_, members)) => members.push(Block::Para(para)),
-                    None => current = Some((frame, vec![Block::Para(para)])),
+                    None => self.current = Some((frame, vec![Block::Para(para)])),
                 }
             }
             (_, Block::Para(mut para)) => {
-                if !waiting.is_empty() {
+                if !self.waiting.is_empty() {
                     let rest = std::mem::take(&mut para.inlines);
-                    para.inlines = std::mem::take(&mut waiting);
+                    para.inlines = std::mem::take(&mut self.waiting);
                     para.inlines.extend(rest);
                 }
-                out.push(Block::Para(para));
+                self.out.push(Block::Para(para));
             }
-            (_, table) => out.push(table),
+            (_, table) => self.out.push(table),
         }
     }
-    if let Some((open, members)) = current {
-        waiting.push(shape(open, members));
-    }
-    if !waiting.is_empty() {
-        // No paragraph follows: the last one before holds them, else an
-        // empty one.
-        match out.iter_mut().rev().find_map(|block| match block {
-            Block::Para(para) => Some(para),
-            Block::Table(_) => None,
-        }) {
-            Some(para) => para.inlines.extend(waiting),
-            None => out.push(Block::Para(Box::new(Para {
-                inlines: waiting,
-                ..Default::default()
-            }))),
+}
+
+/// Groups the framed paragraphs inside `block`: in its cells (where Word
+/// ignores frames) and its text boxes.
+fn group_inside(block: &mut Block) {
+    match block {
+        Block::Table(table) => {
+            for cell in table.rows.iter_mut().flat_map(|row| row.cells.iter_mut()) {
+                // Word ignores the frames of paragraphs in a table: they
+                // stay in the text of their cell.
+                for block in &mut cell.blocks {
+                    if let Block::Para(para) = block {
+                        para.props.frame = None;
+                    }
+                }
+                group_blocks(&mut cell.blocks);
+            }
+        }
+        Block::Para(para) => {
+            for inline in &mut para.inlines {
+                if let Inline::Shape(shape) = inline {
+                    group_blocks(&mut shape.blocks);
+                }
+            }
         }
     }
-    *blocks = out;
+}
+
+/// Puts the shapes that no paragraph follows in the last paragraph of
+/// `out`, else in a new empty one.
+fn put_waiting(out: &mut Vec<Block>, waiting: Vec<Inline>) {
+    if waiting.is_empty() {
+        return;
+    }
+    match out.iter_mut().rev().find_map(|block| match block {
+        Block::Para(para) => Some(para),
+        Block::Table(_) => None,
+    }) {
+        Some(para) => para.inlines.extend(waiting),
+        None => out.push(Block::Para(Box::new(Para {
+            inlines: waiting,
+            ..Default::default()
+        }))),
+    }
 }
 
 /// The floating shape of a frame holding `blocks`.

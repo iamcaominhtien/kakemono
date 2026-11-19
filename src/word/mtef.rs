@@ -998,7 +998,12 @@ mod tests {
         data.extend_from_slice(&[0x02, 0x88, b'1', 0, 0x02, 0x82, b',', 0, 0x02, 0x88, b'2', 0]);
         data.extend_from_slice(&[0, 0, 0, 0]);
         let node = equation(&data).expect("a formula");
-        let MathNode::UnderOver { over: Some(mark), accent: true, .. } = node else {
+        let MathNode::UnderOver {
+            over: Some(mark),
+            accent: true,
+            ..
+        } = node
+        else {
             panic!("not an overline: {node:?}")
         };
         assert!(matches!(*mark, MathNode::Operator { ref text, .. } if text == "\u{AF}"));

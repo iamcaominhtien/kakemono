@@ -26,6 +26,22 @@ parser.add_argument('--json')
 parser.add_argument('--min-lines', type=float, default=0.0)
 parser.add_argument('--min-pages', type=float, default=0.0)
 args = parser.parse_args()
+
+
+def confined(path):
+    """The path, resolved; it must lie inside the working directory or the
+    temporary directory, where corpora and outputs are kept."""
+    real = os.path.realpath(path)
+    for base in (os.getcwd(), tempfile.gettempdir()):
+        base = os.path.realpath(base)
+        if real == base or real.startswith(base + os.sep):
+            return real
+    sys.exit(f'{path}: not inside the working or temporary directory')
+
+
+args.corpus = confined(args.corpus)
+if args.json:
+    args.json = confined(args.json)
 compare.KAKEMONO = args.kakemono
 out_dir = tempfile.mkdtemp(prefix='word-fidelity-')
 docs = sorted(name for name in os.listdir(args.corpus)
@@ -33,19 +49,19 @@ docs = sorted(name for name in os.listdir(args.corpus)
 
 
 def one(name):
-    id = os.path.splitext(name)[0]
-    dst = os.path.join(out_dir, id + '.pdf')
+    doc_id = os.path.splitext(name)[0]
+    dst = os.path.join(out_dir, doc_id + '.pdf')
     limit = lambda: resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
     start = time.time()
     try:
         run = subprocess.run([args.kakemono, 'convert', os.path.join(args.corpus, name), '-o', dst],
                              capture_output=True, text=True, timeout=300, preexec_fn=limit)
     except subprocess.TimeoutExpired:
-        return {'id': id, 'error': 'timeout'}
+        return {'id': doc_id, 'error': 'timeout'}
     if run.returncode != 0:
-        return {'id': id, 'error': (run.stderr.strip() or f'exit {run.returncode}')[-300:]}
-    result = compare.compare(os.path.join(args.corpus, id + '.pdf'), dst)
-    result.update(id=id, seconds=round(time.time() - start, 2))
+        return {'id': doc_id, 'error': (run.stderr.strip() or f'exit {run.returncode}')[-300:]}
+    result = compare.compare(os.path.join(args.corpus, doc_id + '.pdf'), dst)
+    result.update(id=doc_id, seconds=round(time.time() - start, 2))
     return result
 
 

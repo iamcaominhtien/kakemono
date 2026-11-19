@@ -176,7 +176,7 @@ impl FontBook {
             }
             let ext = path
                 .extension()
-                .and_then(|ext| ext.to_str())
+                .and_then(std::ffi::OsStr::to_str)
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
