@@ -238,6 +238,11 @@ pub struct BlocksConfig {
     /// ... introduced by a footnote mark, more than this many leadings
     /// (scaled to the line's size) below the row above.
     pub footnote_gap_leading: f32,
+    /// ... and ending below this fraction of the page height, or with no
+    /// text below it: notes end the text of the page, so small marked text
+    /// above other text (affiliations and an abstract in small type under
+    /// the title) is not a footnote area.
+    pub footnote_run_min_bottom_ratio: f32,
 
     // --- paragraphs ---
     /// The lines of a centred group have their centres within this of the
@@ -387,6 +392,7 @@ const DEFAULT_CONFIG: BlocksConfig = BlocksConfig {
     footnote_same_size_max_excess_pt: 0.3,
     footnote_run_size_drop_pt: 0.9,
     footnote_gap_leading: 1.25,
+    footnote_run_min_bottom_ratio: 0.6,
     centered_group_tol_pt: 2.5,
     centered_group_min_offset_pt: 3.0,
     para_word_space_em: 0.25,
@@ -1633,10 +1639,24 @@ fn enclosing_delimiters(lines: &[Line], cfg: &BlocksConfig) -> Vec<Rect> {
 
 /// Index of the first row that belongs to the footnote area of the leaf
 /// (`rows.len()` when there is none): below a footnote rule if there is
-/// one, else a trailing run of small lines introduced by a footnote mark.
+/// one, else a trailing run of small lines introduced by a footnote mark at
+/// the foot of the page.
 fn footnote_start(ctx: BlockContext, leaf: &Leaf, rows: &[Row], extent: &LeafExtent) -> usize {
+    // Notes end the text of the page: they are low on it, or nothing is
+    // below them (a short last page).
+    let at_foot = rows
+        .iter()
+        .rev()
+        .find_map(|row| match row {
+            Row::Text(line) => Some(line.bbox.y1),
+            _ => None,
+        })
+        .is_some_and(|bottom| {
+            bottom >= ctx.cfg.footnote_run_min_bottom_ratio * ctx.page.height
+                || !ctx.page.lines.iter().any(|line| line.bbox.y0 > bottom)
+        });
     ruled_footnote_start(ctx, leaf, rows, extent)
-        .or_else(|| marked_footnote_start(rows, ctx.stats, ctx.cfg))
+        .or_else(|| marked_footnote_start(rows, ctx.stats, ctx.cfg).filter(|_| at_foot))
         .unwrap_or(rows.len())
 }
 

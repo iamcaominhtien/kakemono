@@ -799,7 +799,7 @@ paper_test!(
     glyphs <= 3,
     // Two compounds ("gravitational-wave", "signal-to-noise") are in the
     // column beside Fig. 2, which the figure no longer swallows.
-    hyphenated <= 78,
+    hyphenated <= 76,
     // Its one formula has brackets without a Unicode value: a picture.
     math >= 0
 );
@@ -2181,6 +2181,24 @@ fn json_references_have_citations() {
             refs.len()
         );
     }
+    // Physical Review style: no titles, but authors, venue, volume and year.
+    if let Some(json) = content_json("1602.03837v1") {
+        let refs: Vec<&serde_json::Value> = json["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["type"] == "reference")
+            .collect();
+        let dated = refs
+            .iter()
+            .filter(|b| b["citation"]["authors"].is_array() && b["citation"]["year"].is_u64())
+            .count();
+        assert!(
+            dated >= 100,
+            "LIGO: {dated} of {} references have authors and a year",
+            refs.len()
+        );
+    }
     if let Some(json) = content_json("1706.03762v7") {
         let shazeer = json["blocks"]
             .as_array()
@@ -2228,4 +2246,30 @@ fn json_plain_text_is_read_only() {
     assert_eq!(report.edited_blocks, 0);
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
     assert!(report.warnings[0].contains("`plain`"));
+}
+
+/// The bibliography of a Physical Review Letter has no heading: its
+/// entries, labelled [1] to [118], are references all the same.
+#[test]
+fn ligo_references_without_heading_are_references() {
+    let Some(paper) = load("1602.03837v1") else { return };
+    let doc = paper.analyze().doc;
+    let labels: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Reference { label } => label.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 118);
+    assert_eq!(labels.first().map(String::as_str), Some("1"));
+    assert_eq!(labels.last().map(String::as_str), Some("118"));
+    // The last page's notes are still footnotes.
+    let notes = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(&block.kind, BlockKind::Footnote { marker } if marker == "a"))
+        .count();
+    assert_eq!(notes, 1);
 }

@@ -21,6 +21,10 @@ pub(crate) static DIALOGUE_LINE: LazyLock<Regex> =
 /// title (up to four levels of at most two digits each).
 pub(crate) static HEADING_NUM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?P<num>\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(?P<rest>\S.*)$").unwrap());
+/// A section number of several parts at the start of a heading ("2.1.",
+/// "3.5.1", "A.1"), which items of a list do not have.
+pub(crate) static DOTTED_SECTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:Appendix\s+|APPENDIX\s+)?[A-Z0-9]{1,3}\.\d").unwrap());
 /// Appendix label and title: "Appendix A", "A.1", "B:" followed by the
 /// title; `word` captures the word "Appendix" when present.
 pub(crate) static HEADING_APP: LazyLock<Regex> = LazyLock::new(|| {
