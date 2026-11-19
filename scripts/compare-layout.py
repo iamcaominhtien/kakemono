@@ -15,6 +15,7 @@ import collections, html, json, os, re, subprocess, sys, unicodedata
 QUOTES = str.maketrans({'’': "'", '‘': "'", '“': '"', '”': '"', ' ': ' '})
 
 
+LEADER = re.compile(r' ?([.\-_·…]{3,}) ?')
 BULLETS = set('•·▪■●◆○□◦‣➢➤✓✔')
 
 
@@ -39,6 +40,9 @@ def lines(pdf):
     for row in out[1:]:
         page, base, left, right, text = row.split('\t', 4)
         text = ' '.join(norm(word) for word in text.split())
+        # A tab leader: whether a space precedes it depends on how the PDF
+        # writes the tab, not on the layout.
+        text = LEADER.sub(lambda match: match.group(1), text)
         if text:
             result.append((int(page), float(base), float(left), text))
     return result, pages

@@ -100,6 +100,7 @@ impl Writer<'_> {
             page_count: None,
             section_pages: None,
             coverage: self.coverage,
+            origin: 0.0,
         }
     }
 

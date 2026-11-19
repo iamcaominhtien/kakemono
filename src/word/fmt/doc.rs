@@ -617,6 +617,8 @@ impl Reader<'_> {
                 // the style's own indents win over the level's.
                 if from_style {
                     let mut under = def.para.clone();
+                    // The style's tab stops replace the level's.
+                    under.tabs.clear();
                     under.overlay(para_raw);
                     *para_raw = under;
                 } else {

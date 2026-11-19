@@ -192,6 +192,7 @@ struct Flow<'a> {
 impl Flow<'_> {
     /// The layout context.
     fn ctx(&mut self) -> Ctx<'_> {
+        let origin = self.column_left();
         Ctx {
             book: self.book,
             shaper: self.shaper,
@@ -202,6 +203,7 @@ impl Flow<'_> {
             page_count: None,
             section_pages: None,
             coverage: self.coverage,
+            origin,
         }
     }
 

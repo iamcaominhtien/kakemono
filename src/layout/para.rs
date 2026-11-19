@@ -25,6 +25,11 @@ const SMALL_CAPS_RATIO: f32 = 0.8;
 /// A tab that reaches no stop before the end of the line moves to the next
 /// line; this much past the end is still accepted, in points.
 const TAB_OVERFLOW_PT: f32 = 0.5;
+/// Resolution at which Word measures the cells of leader characters, in
+/// dots per inch.
+const LAYOUT_DPI: f32 = 600.0;
+/// Points per inch.
+const PT_PER_INCH: f32 = 72.0;
 /// The baseline of a line of exact height, as a share of the height.
 const EXACT_BASELINE_RATIO: f32 = 0.8;
 
@@ -84,6 +89,10 @@ pub struct Ctx<'a> {
     pub section_pages: Option<u32>,
     /// Faces that cover each character, cached.
     pub coverage: &'a mut HashMap<(FaceId, char), bool>,
+    /// Distance from the left edge of the page to the start of the lines
+    /// (leader characters are placed on a grid that starts at the page's
+    /// edge).
+    pub origin: f32,
 }
 
 /// A laid-out line of a paragraph.
@@ -1577,12 +1586,16 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
     if piece.width <= 0.0 {
         return;
     }
-    // Leader characters sit on a grid of their width, as in Word.
-    let mut x = (from / piece.width).ceil() * piece.width;
+    // Leader characters fill the cells of a grid that starts at the left
+    // edge of the page, as wide as the character rounded to Word's layout
+    // resolution.
+    let pitch = (piece.width * LAYOUT_DPI / PT_PER_INCH).round().max(1.0) * PT_PER_INCH / LAYOUT_DPI;
+    let origin = ctx.origin;
+    let mut x = ((from + origin) / pitch - FIT_TOLERANCE_PT).ceil() * pitch - origin;
     let mut glyphs = Vec::new();
     let mut text = String::new();
     let start = x;
-    while x + piece.width <= to - piece.width * 0.5 {
+    while x + pitch <= to + FIT_TOLERANCE_PT {
         for glyph in &piece.glyphs {
             glyphs.push(Glyph {
                 x: x - start + glyph.x,
@@ -1591,7 +1604,7 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
             });
         }
         text.push(leader);
-        x += piece.width;
+        x += pitch;
     }
     if glyphs.is_empty() {
         return;
