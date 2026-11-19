@@ -88,6 +88,90 @@ mod tests {
         std::fs::write(format!("{path}.svg"), svg).expect("the SVG is written");
     }
 
+    /// A placeable WMF (bbox 0,0,1000,500 at 1000 units per inch) whose
+    /// records `body` writes.
+    fn wmf(body: impl FnOnce(&mut dyn FnMut(u16, &[i16]))) -> Vec<u8> {
+        let mut wmf = Vec::new();
+        wmf.extend_from_slice(&WMF_PLACEABLE_KEY.to_le_bytes());
+        for value in [0u16, 0, 0, 1000, 500, 1000, 0, 0, 0] {
+            wmf.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [1u16, 9, 0x300, 0, 0, 3, 0, 0, 0] {
+            wmf.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut record = |function: u16, params: &[i16]| {
+            let size = 3 + params.len() as u32;
+            wmf.extend_from_slice(&size.to_le_bytes());
+            wmf.extend_from_slice(&function.to_le_bytes());
+            for param in params {
+                wmf.extend_from_slice(&param.to_le_bytes());
+            }
+        };
+        body(&mut record);
+        record(0, &[]);
+        wmf
+    }
+
+    /// Lines, shapes, pens, fonts and saved states of a WMF reach the SVG.
+    #[test]
+    fn wmf_shapes_pens_and_fonts() {
+        let data = wmf(|record| {
+            // Window origin and extent; polygon fill mode.
+            record(0x020B, &[0, 0]);
+            record(0x020C, &[500, 1000]);
+            record(0x0106, &[1]);
+            // A blue pen 10 wide, selected: a line, a polyline, a polygon.
+            record(0x02FA, &[0, 10, 0, 0, 0x00FF]);
+            record(0x012D, &[0]);
+            record(0x0214, &[10, 10]);
+            record(0x0213, &[100, 200]);
+            record(0x0325, &[3, 0, 0, 50, 50, 100, 0]);
+            record(0x0324, &[3, 200, 200, 300, 200, 250, 300]);
+            // Two polygons at once, an ellipse, a rounded rectangle, an arc,
+            // a pie and a chord.
+            record(0x0538, &[2, 3, 3, 0, 0, 10, 0, 0, 10, 20, 20, 30, 20, 20, 30]);
+            record(0x0418, &[300, 600, 200, 500]);
+            record(0x061C, &[20, 20, 400, 900, 300, 700]);
+            record(0x0817, &[0, 100, 100, 0, 200, 200, 0, 0]);
+            record(0x081A, &[0, 100, 100, 0, 200, 200, 0, 0]);
+            record(0x0830, &[0, 100, 100, 0, 200, 200, 0, 0]);
+            // A saved state, a green text colour and an Arial font,
+            // restored; the pen deleted.
+            record(0x001E, &[]);
+            record(0x0209, &[0x0000, 0x00FF]);
+            let mut font = vec![-40i16, 0, 0, 0, 700, 1, 0, 0, 0];
+            font.extend(
+                b"Arial\0\0\0"
+                    .chunks(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+            );
+            record(0x02FB, &font);
+            record(0x012D, &[1]);
+            record(0x012E, &[0]);
+            // EXTTEXTOUT "Hey" at (400, 600) with its advances.
+            record(
+                0x0A32,
+                &[
+                    400,
+                    600,
+                    3,
+                    0,
+                    i16::from_le_bytes(*b"He"),
+                    i16::from_le_bytes([b'y', 0]),
+                    20,
+                    20,
+                    20,
+                ],
+            );
+            record(0x0127, &[-1]);
+            record(0x01F0, &[0]);
+        });
+        let svg = to_svg(&data).expect("an SVG");
+        assert!(svg.contains("#0000ff"), "the blue pen: {svg}");
+        assert!(svg.contains(">Hey<"), "{svg}");
+        assert!(svg.matches("<path").count() >= 6, "{svg}");
+    }
+
     /// A WMF that draws a red rectangle and a word becomes an SVG with both.
     #[test]
     fn wmf_rectangle_and_text() {

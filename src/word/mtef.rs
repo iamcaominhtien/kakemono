@@ -1008,4 +1008,211 @@ mod tests {
         };
         assert!(matches!(*mark, MathNode::Operator { ref text, .. } if text == "\u{AF}"));
     }
+
+    /// A line record holding one character.
+    fn slot(face: u8, code: char) -> Vec<u8> {
+        let mut line = vec![LINE, 0];
+        line.extend(ch(face, code));
+        line.push(END);
+        line
+    }
+
+    /// A formula made of one template with three slots.
+    fn template(selector: u8, variation: u8) -> Option<MathNode> {
+        let mut records = vec![LINE, 0, TMPL, 0, selector, variation, 0];
+        for code in ['a', 'b', 'c'] {
+            records.extend(slot(3, code));
+        }
+        records.extend_from_slice(&[END, END, END]);
+        equation(&mtef5(&records))
+    }
+
+    /// Every template selector of version 5, in every variation, gives a
+    /// formula.
+    #[test]
+    fn every_template_gives_a_formula() {
+        for selector in 0..=40 {
+            for variation in [0, 1, 2, 3] {
+                assert!(
+                    template(selector, variation).is_some(),
+                    "template {selector} {variation}"
+                );
+            }
+        }
+    }
+
+    /// The main kinds of templates give the formula nodes they stand for.
+    #[test]
+    fn templates_give_their_structure() {
+        assert!(matches!(template(10, 0), Some(MathNode::Sqrt(_))));
+        assert!(matches!(template(10, 1), Some(MathNode::Root { .. })));
+        assert!(matches!(template(11, 0), Some(MathNode::Frac { .. })));
+        assert!(matches!(
+            template(23, 0),
+            Some(MathNode::UnderOver { accent: false, .. })
+        ));
+        assert!(matches!(template(24, 0), Some(MathNode::UnderOver { .. })));
+        assert!(matches!(
+            template(31, 0),
+            Some(MathNode::UnderOver { accent: true, .. })
+        ));
+        // A paren fence keeps its delimiters around its slot.
+        let Some(MathNode::Row(row)) = template(1, 3) else {
+            panic!("a fence is a row")
+        };
+        assert!(matches!(&row[0], MathNode::Operator { text, .. } if text == "("));
+        // An integral with its limits is a scripted operator before its
+        // operand.
+        let Some(MathNode::Row(row)) = template(15, 0) else {
+            panic!("an integral is a row")
+        };
+        assert!(matches!(&row[0], MathNode::Scripts { .. }));
+    }
+
+    /// Lines stacked in a pile and the cells of a matrix become tables.
+    #[test]
+    fn piles_and_matrices_are_tables() {
+        let mut records = vec![LINE, 0, PILE, 0, 1, 0];
+        records.extend(slot(3, 'x'));
+        records.extend(slot(3, 'y'));
+        records.extend_from_slice(&[END, END, END]);
+        let Some(MathNode::Table { rows, align }) = equation(&mtef5(&records)) else {
+            panic!("a pile is a table")
+        };
+        assert_eq!((rows.len(), align), (2, vec!["left"]));
+        // A 2 x 2 matrix: alignments, size, one byte of partition lines for
+        // the rows and one for the columns, then its cells.
+        let mut records = vec![LINE, 0, MATRIX, 0, 0, 0, 0, 2, 2, 0, 0];
+        for code in ['a', 'b', 'c', 'd'] {
+            records.extend(slot(3, code));
+        }
+        records.extend_from_slice(&[END, END, END]);
+        let Some(MathNode::Table { rows, .. }) = equation(&mtef5(&records)) else {
+            panic!("a matrix is a table")
+        };
+        assert_eq!((rows.len(), rows[0].len()), (2, 2));
+    }
+
+    /// Embellishments mark the character they follow: a prime as a
+    /// superscript, a dot as an accent.
+    #[test]
+    fn embellishments_mark_their_character() {
+        for (embell, prime) in [(5, true), (2, false)] {
+            let records = vec![
+                LINE,
+                0,
+                CHAR,
+                OPT_CHAR_EMBELL,
+                3 + 128,
+                b'f',
+                0,
+                EMBELL,
+                0,
+                embell,
+                END,
+                END,
+                END,
+            ];
+            let node = equation(&mtef5(&records)).expect("a formula");
+            if prime {
+                assert!(matches!(node, MathNode::Scripts { sup: Some(_), .. }), "{node:?}");
+            } else {
+                assert!(matches!(node, MathNode::UnderOver { accent: true, .. }), "{node:?}");
+            }
+        }
+    }
+
+    /// Records that hold no part of the formula (sizes, colours, fonts,
+    /// rulers, records of later versions) are skipped.
+    #[test]
+    fn records_without_formula_are_skipped() {
+        let mut records = vec![
+            // Sizes: a typesize, an explicit point size and a size change.
+            SIZE,
+            2,
+            0,
+            SIZE,
+            101,
+            0x20,
+            0x00,
+            SIZE,
+            100,
+            1,
+            0x10,
+            0x00,
+            SIZE_FULL,
+            SIZE_SUBSYM,
+            // A colour, a colour definition (RGB with a name), a font.
+            COLOR,
+            1,
+            COLOR_DEF,
+            0x04,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            b'r',
+            b'e',
+            b'd',
+            0,
+            FONT_DEF,
+            1,
+            b'X',
+            0,
+            // An encoding, a font or style definition, a record of a later
+            // version (two bytes of data).
+            ENCODING_DEF,
+            b'U',
+            b'N',
+            b'I',
+            0,
+            FONT_OR_STYLE_DEF,
+            1,
+            0,
+            FUTURE,
+            2,
+            0,
+            9,
+            9,
+            // Preferences: one dimension (unit 2, digit 1), none, two
+            // styles; then a ruler with one tab stop.
+            EQN_PREFS,
+            0,
+            1,
+            0x21,
+            0xF0,
+            0,
+            2,
+            1,
+            3,
+            0,
+            RULER,
+            1,
+            0,
+            0x10,
+            0x00,
+        ];
+        records.extend(slot(3, 'z'));
+        records.push(END);
+        let node = equation(&mtef5(&records)).expect("a formula");
+        assert!(
+            matches!(node, MathNode::Ident { ref text, .. } if text == "z"),
+            "{node:?}"
+        );
+    }
+
+    /// Version 3 numbers its templates otherwise: each maps to the
+    /// version 5 template of the same kind.
+    #[test]
+    fn version_3_templates_map_to_version_5() {
+        assert_eq!(v3_selector(13), (10, None));
+        assert_eq!(v3_selector(14), (11, None));
+        assert_eq!(v3_selector(11), (9, Some(('[', ')'))));
+        assert_eq!(v3_selector(39), (23, None));
+        assert_eq!(fence(9, &['[', ')']), ("[", ")"));
+        assert_eq!(big_operator(17, &[]), "\u{220F}");
+        assert_eq!(big_operator(16, &['\u{2211}']), "\u{2211}");
+    }
 }
