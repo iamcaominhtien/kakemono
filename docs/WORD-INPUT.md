@@ -70,6 +70,15 @@ does not know which format it reads.
   from the table style's conditional formats, repeated header rows, rows that
   may or may not break across pages, nested tables.
 
+- **Line heights** (`para.rs`, `metrics.txt`): a line rises to the highest
+  external leading plus ascent of its fonts; Symbol and Wingdings bullets
+  count with their own ascent (from the metric table) and no descent;
+  Cambria is measured with its own vertical metrics (Caladea, its
+  stand-in, is taller). An empty paragraph holding a section break before
+  a continuous section takes no room.
+- **Spacing in `.doc`**: a compatibility bit of the DOP (Word 2000 part)
+  tells whether the space after and before two paragraphs add up or the
+  larger one counts.
 - **Pictures**: the lines of text of an EMF or WMF picture (a table pasted
   from Excel, a chart) are drawn as text over the picture, as Word's PDFs
   do; the bookmarks of a text box are on the page the box is on.
@@ -95,8 +104,8 @@ its minimums.
 
 | | Result (2026-11) |
 | --- | --- |
-| Lines broken at the same words as Word | 95.7% |
-| Documents with Word's page count | 83.2% (436 of 524) |
+| Lines broken at the same words as Word | 95.8% |
+| Documents with Word's page count | 85.5% (448 of 524) |
 | Conversion errors | 0 |
 
 Pairs left out of the corpus, and why, are in
