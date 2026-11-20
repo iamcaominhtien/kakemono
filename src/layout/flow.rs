@@ -612,6 +612,7 @@ impl Flow<'_> {
                     if para.props.keep_next
                         && !chain_moved
                         && !self.state.fresh
+                        && !self.state.section_mark
                         && !breaks_page(para)
                         && !para.props.page_break_before
                     {
