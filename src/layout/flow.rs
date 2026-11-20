@@ -317,6 +317,27 @@ impl Flow<'_> {
             .sections
             .get(at + 1)
             .is_some_and(|next| next.start != SectionStart::Continuous);
+        // Empty paragraphs that end the document open no page: Word leaves
+        // them below the last page.
+        let last_section = at + 1 == self.doc.sections.len();
+        let trailing = if last_section {
+            section
+                .blocks
+                .iter()
+                .rev()
+                .take_while(|block| matches!(block, Block::Para(para) if para.inlines.is_empty()))
+                .count()
+        } else {
+            0
+        };
+        if trailing > 0 && trailing < section.blocks.len() {
+            let split = section.blocks.len() - trailing;
+            self.blocks(&section.blocks[..split]);
+            self.state.section_mark = true;
+            self.blocks(&section.blocks[split..]);
+            self.state.section_mark = false;
+            return;
+        }
         match section.blocks.split_last() {
             Some((Block::Para(last), rest)) if next_page && last.inlines.is_empty() => {
                 self.blocks(rest);
