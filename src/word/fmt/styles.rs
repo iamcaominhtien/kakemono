@@ -184,6 +184,20 @@ impl Styles {
         (para, run)
     }
 
+    /// The paragraph properties of the paragraph style `id`, split into
+    /// what it inherits and what it sets itself.
+    pub(crate) fn paragraph_layers(&self, id: Option<&str>) -> (RawPara, RawPara) {
+        let chain = self.chain(id, self.default_para_style.as_deref());
+        let mut inherited = RawPara::default();
+        let Some((own, bases)) = chain.split_last() else {
+            return (inherited, RawPara::default());
+        };
+        for style in bases {
+            inherited.overlay(&style.para);
+        }
+        (inherited, own.para.clone())
+    }
+
     /// The text properties of the character style `id`.
     pub(crate) fn character(&self, id: &str) -> RawRun {
         let mut run = RawRun::default();

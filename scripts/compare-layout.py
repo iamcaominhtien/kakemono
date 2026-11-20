@@ -12,7 +12,10 @@ line of ours matches once, the one on the nearest page first.
 """
 import collections, html, json, os, re, subprocess, sys, unicodedata
 
-QUOTES = str.maketrans({'’': "'", '‘': "'", '“': '"', '”': '"', ' ': ' '})
+# Quotes compared as plain ones. Word's PDFs of some documents give the
+# curly apostrophe and opening quote the Unicode of '‟' and '„' (a wrong
+# ToUnicode map), so these are folded too, on both sides alike.
+QUOTES = str.maketrans({'’': "'", '‘': "'", '“': '"', '”': '"', '‟': "'", '„': "'", ' ': ' '})
 
 
 LEADER = re.compile(r' ?([.\-_·…]{3,}) ?')

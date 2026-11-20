@@ -45,7 +45,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "govuk-0320",
         ext: "docx",
-        min_line_ratio: 0.97,
+        min_line_ratio: 0.98,
         same_pages: false,
     },
     // Floating shapes, frames, nested tables.
@@ -74,7 +74,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "govuk2-0131",
         ext: "doc",
-        min_line_ratio: 0.86,
+        min_line_ratio: 0.88,
         same_pages: true,
     },
 ];
@@ -99,7 +99,8 @@ fn normalized(text: &str) -> String {
             let word: String = word
                 .chars()
                 .map(|ch| match ch {
-                    '\u{2019}' | '\u{2018}' => '\'',
+                    // Word's PDFs sometimes give these two the codes of '‟' and '„'.
+                    '\u{2019}' | '\u{2018}' | '\u{201F}' | '\u{201E}' => '\'',
                     '\u{201C}' | '\u{201D}' => '"',
                     other => other,
                 })

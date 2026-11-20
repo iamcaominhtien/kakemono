@@ -934,7 +934,9 @@ impl Reader<'_> {
                     push(Inline::NoteNumber { fmt: fmt.clone() }, text, para);
                 }
             }
-            SYMBOL if special => {
+            // Word draws the symbol of `sprmCSymbol` even on a character
+            // not marked special.
+            SYMBOL if special || symbol.is_some() => {
                 if let Some(inline) = self.symbol(symbol, fmt) {
                     push(inline, text, para);
                 }

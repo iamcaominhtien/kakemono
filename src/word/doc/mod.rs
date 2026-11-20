@@ -482,7 +482,9 @@ impl Reader<'_> {
                     para.inlines.push(Inline::NoteRef { endnote, id });
                 }
             }
-            SYMBOL if extras.special => {
+            // Word draws the symbol of `sprmCSymbol` even on a character
+            // not marked special.
+            SYMBOL if extras.special || extras.symbol.is_some() => {
                 if let Some((font, code)) = extras.symbol {
                     units.extend(
                         symbol(self.fonts.get(usize::from(font)), code)

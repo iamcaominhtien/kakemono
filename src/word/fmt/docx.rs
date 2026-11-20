@@ -509,6 +509,20 @@ impl Reader<'_> {
             numbering = Some((id, level.or(old_level)));
         }
         let from_style = direct.numbering.is_none();
+        // A paragraph that turns off the list its style sets loses the
+        // indents that style sets itself (Word writes the list's indents
+        // there): those of its base style apply, then the paragraph's own.
+        if direct.numbering.as_ref().is_some_and(|(id, _)| id == "0") {
+            let (inherited, own) = self.styles.paragraph_layers(style_id);
+            if own.numbering.as_ref().is_some_and(|(id, _)| !id.is_empty() && id != "0") {
+                if own.left.is_some() {
+                    para_raw.left = inherited.left;
+                }
+                if own.first_line.is_some() {
+                    para_raw.first_line = inherited.first_line;
+                }
+            }
+        }
         let mut number = None;
         if let Some((num_id, level)) = numbering.filter(|(id, _)| !id.is_empty() && id != "0") {
             let level = level.unwrap_or(0);
