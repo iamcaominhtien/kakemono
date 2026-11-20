@@ -103,6 +103,9 @@ struct Reader<'a> {
     /// what the style and its other base styles set (a list set by the
     /// style goes between them).
     style_layers: HashMap<u16, (RawPara, RawPara)>,
+    /// Each paragraph style's properties split into what its base style
+    /// gives and what it sets itself.
+    style_own: HashMap<u16, (RawPara, RawPara)>,
     char_styles: HashMap<u16, RawRun>,
     numbering: Numbering,
     chars: Vec<Run>,
@@ -124,6 +127,9 @@ struct Reader<'a> {
 
 /// The document-wide settings of a `.doc`, from its DOP.
 fn settings(dop: &[u8]) -> FDoc {
+    if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
+        eprintln!("DOP {:02x?}", dop.get(..16));
+    }
     FDoc {
         default_tab: u16_at(dop, 10)
             .map(|twips| f32::from(twips) / TWIPS_PER_PT)
@@ -164,6 +170,7 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         styles,
         para_styles: HashMap::new(),
         style_layers: HashMap::new(),
+        style_own: HashMap::new(),
         char_styles: HashMap::new(),
         numbering,
         chars: runs(&word, fib.slice(&table, Pair::PlcfBteChpx), false),
@@ -552,6 +559,16 @@ impl Reader<'_> {
                     }
                 }
                 self.style_layers.insert(istd, (normal, own));
+                if let Some(&(_, base, papx, _)) = kinds.get(&istd).as_ref() {
+                    let inherited = if *base == NO_BASE {
+                        RawPara::default()
+                    } else {
+                        resolve(*base, kinds, self.fonts, 1).0
+                    };
+                    let mut own_only = RawPara::default();
+                    apply_para(papx, &mut own_only);
+                    self.style_own.insert(istd, (inherited, own_only));
+                }
             }
             match kind {
                 StyleKind::Character => {
@@ -666,6 +683,23 @@ impl Reader<'_> {
             numbering = Some((id, level.or(old_level)));
         }
         let from_style = direct.numbering.is_none();
+        // A paragraph that turns off the list its style sets loses the
+        // indents that style sets itself (Word writes the list's indents
+        // there): those of its base style apply, then the paragraph's own.
+        if direct.numbering.as_ref().is_some_and(|(id, _)| id == "0")
+            && let Some((inherited, own)) = self.style_own.get(&istd)
+            && own
+                .numbering
+                .as_ref()
+                .is_some_and(|(id, _)| !id.is_empty() && id != "0")
+        {
+            if own.left.is_some() {
+                para_raw.left = inherited.left;
+            }
+            if own.first_line.is_some() {
+                para_raw.first_line = inherited.first_line;
+            }
+        }
         let mut number = None;
         if let Some((num_id, level)) = numbering.filter(|(id, _)| !id.is_empty() && id != "0") {
             let level = level.unwrap_or(0);

@@ -266,6 +266,9 @@ impl Flow<'_> {
             (before.width - section.page.width).abs() < EPS && (before.height - section.page.height).abs() < EPS
         };
         let continuous = section.start == SectionStart::Continuous && self.state.open && same_size;
+        if trace() {
+            eprintln!("SECTION\t{at}\t{:?}\tpage {}", section.start, self.pages.len());
+        }
         let previous_number = self.state.number;
         if !continuous {
             self.finish_page();
@@ -642,7 +645,7 @@ impl Flow<'_> {
         // paragraph of a frame, the bottom one below the last.
         let borders = para.props.borders;
         let key = (borders, para.props.left, para.props.right);
-        let framed = borders.top.is_some() || borders.bottom.is_some();
+        let framed = borders.top.is_some() || borders.bottom.is_some() || borders.between.is_some();
         let same_frame = framed && self.state.last_borders == Some(key);
         let pending_border = std::mem::take(&mut self.state.pending_border);
         if !same_frame {
@@ -650,6 +653,17 @@ impl Flow<'_> {
             if let Some(top) = borders.top {
                 gap += top.space + top.width;
             }
+        } else if let Some(between) = borders.between {
+            // A rule between two paragraphs of the group, with its space on
+            // both sides.
+            let y = self.state.y + gap + between.space + between.width / 2.0;
+            let left = self.column_left() + para.props.left;
+            let right = self.column_left() + self.column_width() - para.props.right;
+            let mut rule = Vec::new();
+            border_line(&mut rule, between, left, y, right, y);
+            let page = self.pages.len() - 1;
+            self.pages[page].items.extend(rule);
+            gap += 2.0 * between.space + between.width;
         }
         self.state.last_borders = framed.then_some(key);
         self.state.pending_border = borders.bottom.map_or(0.0, |bottom| bottom.space + bottom.width);

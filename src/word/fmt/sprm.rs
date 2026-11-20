@@ -296,7 +296,8 @@ pub(crate) fn apply_para(grpprl: &[u8], raw: &mut RawPara) {
             0x246D => raw.contextual = Some(byte != 0),
             0x2441 => raw.bidi = Some(byte != 0),
             0x2640 => raw.outline = Some((byte < 9).then_some(byte)),
-            0xC60D | 0xC615 => apply_tabs(operand, raw),
+            0xC60D => apply_tabs(operand, raw, false),
+            0xC615 => apply_tabs(operand, raw, true),
             0x6424 => raw.border_top = brc80(operand),
             0x6425 => raw.border_left = brc80(operand),
             0x6426 => raw.border_bottom = brc80(operand),
@@ -323,8 +324,9 @@ pub(crate) fn apply_para(grpprl: &[u8], raw: &mut RawPara) {
     }
 }
 
-/// Applies a tab change (`sprmPChgTabsPapx`, `sprmPChgTabs`).
-fn apply_tabs(operand: &[u8], raw: &mut RawPara) {
+/// Applies a tab change (`sprmPChgTabsPapx`, or `sprmPChgTabs` when
+/// `tolerances`: each deleted tab then has a tolerance after the list).
+fn apply_tabs(operand: &[u8], raw: &mut RawPara, tolerances: bool) {
     // The operand starts with its length.
     let body = operand.get(1..).unwrap_or(&[]);
     let deleted = usize::from(body.first().copied().unwrap_or(0));
@@ -334,7 +336,7 @@ fn apply_tabs(operand: &[u8], raw: &mut RawPara) {
         }
     }
     // `sprmPChgTabs` has a tolerance per deleted tab; it is skipped.
-    let added_at = 1 + deleted * 2;
+    let added_at = 1 + deleted * if tolerances { 4 } else { 2 };
     let added = usize::from(body.get(added_at).copied().unwrap_or(0));
     let kinds_at = added_at + 1 + added * 2;
     for at in 0..added {
