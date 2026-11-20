@@ -562,7 +562,9 @@ impl Writer<'_, '_> {
 ///   above it, from top to bottom. A group header (a cell over several
 ///   columns) is followed by a colon ("BLEU: EN-DE"); a header over one
 ///   column only is the line before, and a space follows it ("train
-///   steps").
+///   steps"). A header across the whole table that no header row below
+///   splits is not a group but a header the analysis could not cut: it
+///   is written once, in the first column.
 /// - A cell of the body spanning rows is repeated in each, so that every
 ///   row reads on its own. A cell spanning columns is repeated in each
 ///   when they are under one group header (one cost for two language
@@ -575,12 +577,17 @@ impl Writer<'_, '_> {
 fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
     let grid = covering_cells(table);
     let header_rows = table.header_rows.min(grid.len());
+    let head = &grid[..header_rows];
     let header: Vec<String> = (0..table.n_cols)
         .map(|col| {
             let mut out = String::new();
             let mut group = false;
-            for row in &grid[..header_rows] {
+            for (row_idx, row) in head.iter().enumerate() {
                 let Some(cell) = row[col] else { continue };
+                let is_group = is_group(head, row_idx, cell, table.n_cols);
+                if col != cell.col && !is_group {
+                    continue;
+                }
                 let text = inline.cell(&cell.spans);
                 if text.is_empty() || out.ends_with(&text) {
                     continue;
@@ -589,7 +596,7 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
                     out.push_str(if group { HEADER_GROUP_JOIN } else { " " });
                 }
                 out.push_str(text.strip_suffix(':').unwrap_or(&text).trim_end());
-                group = cell.colspan > 1;
+                group = is_group;
             }
             out
         })
@@ -605,9 +612,7 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
     for row in &grid[header_rows..] {
         let mut cells: Vec<String> = (0..table.n_cols)
             .map(|col| match row[col] {
-                Some(cell) if col == cell.col || under_one_group(&grid[..header_rows], cell) => {
-                    inline.cell(&cell.spans)
-                }
+                Some(cell) if col == cell.col || under_one_group(head, cell, table.n_cols) => inline.cell(&cell.spans),
                 _ => String::new(),
             })
             .collect();
@@ -642,14 +647,35 @@ fn pipe_row<S: AsRef<str>>(cells: &[S]) -> String {
     format!("| {} |", cells.join(" | "))
 }
 
-/// A cell spanning several columns lies under one group header: a header
-/// cell over several columns covers all of its columns (as "Training Cost"
-/// over its two language pairs).
-fn under_one_group(header: &[Vec<Option<&TableCell>>], cell: &TableCell) -> bool {
+/// A header cell over several columns is a group header ("BLEU" over
+/// "EN-DE" and "EN-FR"), unless it is across the whole table and no header
+/// row below splits it: then it is a row of headers the analysis could not
+/// cut ("Dataset Sampling prop. Epochs Disk size").
+fn is_group(header: &[Vec<Option<&TableCell>>], row_idx: usize, cell: &TableCell, n_cols: usize) -> bool {
+    cell.colspan > 1 && (cell.colspan < n_cols || splits_below(header, row_idx, cell))
+}
+
+/// A header row below the header cell `cell` splits its columns into other
+/// cells.
+fn splits_below(header: &[Vec<Option<&TableCell>>], row_idx: usize, cell: &TableCell) -> bool {
+    header[row_idx + 1..].iter().any(|row| {
+        row.iter()
+            .skip(cell.col)
+            .take(cell.colspan)
+            .any(|below| below.is_some_and(|below| !std::ptr::eq(below, cell) && !below.spans.is_empty()))
+    })
+}
+
+/// A cell spanning several columns lies under one group header: a group
+/// header covers all of its columns (as "Training Cost" over its two
+/// language pairs).
+fn under_one_group(header: &[Vec<Option<&TableCell>>], cell: &TableCell, n_cols: usize) -> bool {
     cell.colspan > 1
-        && header.iter().any(|row| {
+        && header.iter().enumerate().any(|(row_idx, row)| {
             row.get(cell.col).copied().flatten().is_some_and(|group| {
-                group.colspan > 1 && group.col <= cell.col && group.col + group.colspan >= cell.col + cell.colspan
+                group.col <= cell.col
+                    && group.col + group.colspan >= cell.col + cell.colspan
+                    && is_group(header, row_idx, group, n_cols)
             })
         })
 }
@@ -781,6 +807,23 @@ mod tests {
             ],
         );
         assert_eq!(flat(&table), "| train steps | BLEU |\n| --- | --- |\n| 100K | 25.8 |");
+    }
+
+    #[test]
+    fn flat_table_writes_an_unsplit_header_once() {
+        // The analysis could not cut the header: one cell across the table.
+        let table = table(
+            3,
+            1,
+            vec![
+                vec![cell(0, 3, 1, "Dataset Prop. Size")],
+                vec![cell(0, 1, 1, "C4"), cell(1, 1, 1, "15%"), cell(2, 1, 1, "783 GB")],
+            ],
+        );
+        assert_eq!(
+            flat(&table),
+            "| Dataset Prop. Size |  |  |\n| --- | --- | --- |\n| C4 | 15% | 783 GB |"
+        );
     }
 
     #[test]
