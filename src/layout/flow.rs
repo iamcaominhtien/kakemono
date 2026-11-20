@@ -206,6 +206,8 @@ struct State {
     /// The paragraph being placed is the last of a section followed by a
     /// new page: a page break on its last line opens no page.
     break_ends_section: bool,
+    /// The paragraph placed last ended with a page or column break.
+    after_break: bool,
     /// Space after the last paragraph, with its style and whether it is
     /// contextual.
     pending_after: Option<(f32, String, bool)>,
@@ -791,6 +793,13 @@ impl Flow<'_> {
         // is what it adds to the space after the last paragraph of the
         // section before (spent on the previous page): with the larger of
         // the two counted, none when that space after is as large.
+        // At the top of a page opened by a break that ends the paragraph
+        // before, Word drops the space before.
+        let before = if self.state.fresh && self.state.after_break {
+            0.0
+        } else {
+            before
+        };
         let before = if self.state.fresh && self.state.section_top {
             let after = self.state.section_after;
             (self.spacing(after, before) - after).max(0.0)
@@ -855,6 +864,7 @@ impl Flow<'_> {
             para.props.after
         };
         self.state.pending_after = (!ends_with_break).then(|| (after, para.style.clone(), para.props.contextual));
+        self.state.after_break = ends_with_break;
     }
 
     /// The space between two paragraphs: the larger of the space after the
