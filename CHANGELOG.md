@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.13.1](https://github.com/iamcaominhtien/kakemono/compare/v0.13.0...v0.13.1) - 2026-11-20
+
+### Added
+
+- Feat!(markdown): adapt tables to pipe tables in friendly mode
+
+### Fixed
+
+- *(markdown)* Write a header row the analysis could not cut once
+
+### Changed
+
+- *(markdown)* Split the flattening of a table into header and rows
 ## [0.13.0](https://github.com/iamcaominhtien/kakemono/compare/v0.12.0...v0.13.0) - 2026-11-20
 
 ### Added
