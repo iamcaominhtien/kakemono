@@ -136,6 +136,104 @@ change is checked against all 524). The causes found so far:
   page moves every later page break: their lines still match (95% and
   more) though the page count is one off.
 
+### Speed and resources
+
+Measured with `scripts/word-benchmark.py` (release build) on a 4-vCPU cloud machine with 16 GB of
+RAM, against LibreOffice 24.2 (`soffice --headless --convert-to`, started once per file as a
+command line conversion would be; its first start, which creates its profile, is not counted).
+Times are wall times; memory is the peak resident memory of the process. To run it again:
+
+```bash
+scripts/word-benchmark.py compare --json compare.json          # the whole corpus to PDF, both tools
+scripts/word-benchmark.py sizes compare.json                   # the size table of a saved run
+scripts/word-benchmark.py formats DOC...                       # every output of each document
+scripts/word-benchmark.py threads DOC                          # -j 1, 2, 4
+scripts/word-benchmark.py concurrent DOC --max 16              # several conversions at once
+```
+
+**Word to PDF, the 524 documents of the corpus, one at a time:**
+
+| | kakemono | LibreOffice 24.2 |
+| --- | --- | --- |
+| Total time (11,657 pages) | 209 s (56 pages/s) | 790 s (14 pages/s) |
+| Median time per document | 0.12 s | 0.47 s |
+| Longest | 6.0 s | 70 s |
+| CPU time | 162 s | 773 s |
+| Peak memory, median / largest | 35 / 526 MB | 192 / 822 MB |
+| Documents it could not convert | 0 | 5 (crashes, signal 6) |
+| Lines broken at the same words as Word | 95.9% | 79.6% |
+| Documents with Word's page count | 89.1% | 72.3% |
+| Lines on the same page as in Word | 81.8% | 49.7% |
+
+**By size** (pages of Word's PDF; the 519 documents both converted):
+
+| Size | Documents | Median file | kakemono: median time | pages/s | memory, median / max | LibreOffice: median time | pages/s | memory, median / max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1–4 pages | 225 | 87 KB | 0.08 s | 27 | 33 / 45 MB | 0.36 s | 6 | 184 / 213 MB |
+| 5–19 pages | 124 | 180 KB | 0.14 s | 40 | 35 / 179 MB | 0.51 s | 11 | 195 / 800 MB |
+| 20–49 pages | 105 | 611 KB | 0.41 s | 66 | 37 / 329 MB | 1.0 s | 25 | 222 / 473 MB |
+| 50–149 pages | 59 | 2.1 MB | 0.91 s | 58 | 88 / 526 MB | 2.7 s | 13 | 278 / 822 MB |
+| 150+ pages | 6 | 11.7 MB | 2.8 s | 68 | 201 / 471 MB | 7.6 s | 12 | 526 / 783 MB |
+
+Time grows with the number of pages, and memory with the pictures the file holds (a 145-page
+`.doc` of 65 MB takes 525 MB; a 308-page `.docx` of 7 MB, 144 MB).
+
+**Every output** (time / peak memory; 11 documents of every size, `.doc` and `.docx`):
+
+| Document | Pages | File | PDF | friendly | medium | hard | hard-95 | docx | md, tex, epub, json |
+| --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
+| govuk-0219.doc | 2 | 0.1 MB | 0.10 s / 33 MB | 0.01 s / 18 MB | 0.06 s / 33 MB | 0.13 s / 33 MB | 0.13 s / 33 MB | 0.01 s / 17 MB | 0.01 s / 17 MB |
+| govuk2-0015.docx | 2 | 0.04 MB | 0.07 s / 33 MB | 0.02 s / 18 MB | 0.07 s / 33 MB | 0.11 s / 33 MB | 0.11 s / 33 MB | 0.01 s / 17 MB | 0.01 s / 17 MB |
+| govuk2-0147.doc | 9 | 0.5 MB | 0.10 s / 37 MB | 0.02 s / 21 MB | 0.06 s / 37 MB | 0.13 s / 40 MB | 0.14 s / 41 MB | 0.02 s / 20 MB | 0.01–0.02 s / ≤ 20 MB |
+| govuk2-0212.docx | 10 | 0.1 MB | 0.14 s / 34 MB | 0.02 s / 21 MB | 0.07 s / 35 MB | 0.18 s / 43 MB | 0.18 s / 43 MB | 0.02 s / 21 MB | 0.02 s / ≤ 21 MB |
+| govuk-0271.doc | 31 | 0.7 MB | 0.36 s / 36 MB | 0.03 s / 19 MB | 0.14 s / 36 MB | 0.90 s / 88 MB | 0.78 s / 88 MB | 0.03 s / 19 MB | 0.03 s / ≤ 19 MB |
+| govuk2-0124.docx | 29 | 0.1 MB | 0.34 s / 36 MB | 0.03 s / 23 MB | 0.13 s / 35 MB | 0.41 s / 52 MB | 0.40 s / 51 MB | 0.02 s / 22 MB | 0.02 s / ≤ 22 MB |
+| govuk2-0184.doc | 68 | 1.1 MB | 0.61 s / 48 MB | 0.04 s / 28 MB | 0.26 s / 38 MB | 1.21 s / 105 MB | 1.18 s / 103 MB | 0.04 s / 29 MB | 0.04–0.05 s / ≤ 27 MB |
+| au-0036.docx | 76 | 2.5 MB | 2.60 s / 156 MB | 0.81 s / 106 MB | 1.59 s / 132 MB | 3.34 s / 218 MB | 3.44 s / 219 MB | 0.69 s / 106 MB | 0.69–0.72 s / ≤ 106 MB |
+| govuk2-0132.doc | 145 | 64.6 MB | 1.03 s / 525 MB | 0.28 s / 319 MB | 0.64 s / 455 MB | 4.73 s / 1115 MB | 4.43 s / 988 MB | 0.40 s / 423 MB | 0.27–0.36 s / ≤ 414 MB |
+| au-0027.docx | 142 | 22.1 MB | 1.70 s / 284 MB | 0.25 s / 149 MB | 0.83 s / 250 MB | 4.20 s / 652 MB | 4.10 s / 584 MB | 0.28 s / 191 MB | 0.24–0.30 s / ≤ 188 MB |
+| govuk-0300.docx | 308 | 7.0 MB | 0.93 s / 144 MB | 0.13 s / 60 MB | 0.30 s / 89 MB | 3.07 s / 213 MB | 3.34 s / 216 MB | 0.11 s / 70 MB | 0.09–0.11 s / ≤ 70 MB |
+
+- The flowing outputs (friendly, Word, Markdown, LaTeX, EPUB, JSON) read the structure only,
+  without laying out pages: 0.01–0.4 s, from 17 MB.
+- PDF and `medium` lay the pages out; `hard` and `hard-95` also draw a picture of every page,
+  which makes them the slowest and the largest in memory.
+
+**The same documents with LibreOffice** (time / peak memory, kakemono · LibreOffice):
+
+| Document | Pages | PDF | Word (`.doc` → `.docx`, or `.docx` again) | HTML (kakemono `friendly`) | ODT (LibreOffice only) |
+| --- | ---: | --- | --- | --- | --- |
+| govuk-0219.doc | 2 | 0.10 s / 33 MB · 0.49 s / 185 MB | 0.01 s / 17 MB · 0.34 s / 189 MB | 0.01 s / 18 MB · 0.40 s / 181 MB | 0.44 s / 213 MB |
+| govuk2-0015.docx | 2 | 0.07 s / 33 MB · 0.39 s / 186 MB | 0.01 s / 17 MB · 0.50 s / 193 MB | 0.02 s / 18 MB · 0.54 s / 184 MB | 0.55 s / 217 MB |
+| govuk2-0147.doc | 9 | 0.10 s / 37 MB · 0.58 s / 194 MB | 0.02 s / 20 MB · 0.40 s / 197 MB | 0.02 s / 21 MB · 0.38 s / 180 MB | 0.58 s / 217 MB |
+| govuk2-0212.docx | 10 | 0.14 s / 34 MB · 0.59 s / 197 MB | 0.02 s / 21 MB · 0.61 s / 207 MB | 0.02 s / 21 MB · 0.56 s / 197 MB | 0.69 s / 221 MB |
+| govuk-0271.doc | 31 | 0.36 s / 36 MB · 1.42 s / 226 MB | 0.03 s / 19 MB · 0.69 s / 234 MB | 0.03 s / 19 MB · 0.61 s / 206 MB | 0.81 s / 240 MB |
+| govuk2-0124.docx | 29 | 0.34 s / 36 MB · 0.69 s / 210 MB | 0.02 s / 22 MB · 0.64 s / 222 MB | 0.03 s / 23 MB · 0.57 s / 198 MB | 0.70 s / 218 MB |
+| govuk2-0184.doc | 68 | 0.61 s / 48 MB · 2.99 s / 246 MB | 0.04 s / 29 MB · 0.92 s / 261 MB | 0.04 s / 28 MB · 0.98 s / 233 MB | 1.23 s / 268 MB |
+| au-0036.docx | 76 | 2.60 s / 156 MB · 2.74 s / 320 MB | 0.69 s / 106 MB · 1.92 s / 337 MB | 0.81 s / 106 MB · 1.86 s / 294 MB | 2.74 s / 343 MB |
+| govuk2-0132.doc | 145 | 1.03 s / 525 MB · 11.0 s / 822 MB | 0.40 s / 423 MB · 3.79 s / 875 MB | 0.28 s / 319 MB · 3.02 s / 840 MB | 4.62 s / 876 MB |
+| au-0027.docx | 142 | 1.70 s / 284 MB · 24.9 s / 643 MB | 0.28 s / 191 MB · 23.7 s / 1390 MB | 0.25 s / 149 MB · 12.7 s / 610 MB | 15.9 s / 632 MB |
+| govuk-0300.docx | 308 | 0.93 s / 144 MB · 4.72 s / 389 MB | 0.11 s / 70 MB · 2.90 s / 387 MB | 0.13 s / 60 MB · 2.05 s / 332 MB | 3.58 s / 376 MB |
+
+Over these 11 documents kakemono is 6× faster to PDF (8.0 s against 50.5 s), 23× to Word
+(1.6 s against 36.4 s; `.doc` → `.docx` alone, 0.5 s against 6.1 s) and 15× to HTML, with a
+half to a fifth of the memory. LibreOffice's HTML is its own export of the document, not a page
+layout like kakemono's `hard` modes.
+
+**Threads and several files at once.** The page layout of one document runs on one thread:
+`-j 1`, `2` and `4` give the same time (au-0027, 142 pages: 1.69 / 1.82 / 1.73 s, 282 MB; the
+308-page govuk-0300: 1.02 / 1.06 / 0.89 s, 145 MB). Threads help only the picture of each page in
+`hard` and `hard-95` (4.7 s of CPU for 3.1 s on govuk-0300). To convert many files, run one
+process per core:
+
+| Document | At once | Total | Throughput | Memory (sum of the peaks) |
+| --- | ---: | ---: | ---: | ---: |
+| govuk2-0124.docx, 29 pages, to PDF | 1 / 2 / 4 / 8 / 16 | 0.23 / 0.24 / 0.28 / 0.55 / 1.06 s | 261 / 506 / 865 / 866 / 907 files/min | 35 / 71 / 142 / 283 / 567 MB |
+| au-0027.docx, 142 pages, to PDF | 1 / 2 / 4 / 8 | 1.74 / 1.94 / 1.99 / 3.76 s | 35 / 62 / 121 / 128 files/min | 283 / 566 / 1130 / 2264 MB |
+
+Throughput grows with the processes up to the number of cores (4 here), then stays the same
+while the memory adds up: on 4 cores, about 870 short documents a minute at 35 MB each.
+
 ### Robustness
 
 `scripts/word-crash-test.py` converts every Word file of the given folders to

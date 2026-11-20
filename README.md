@@ -469,6 +469,23 @@ default `-j`, `friendly` mode; the other formats take up to a third longer, and 
 - The command line uses the mimalloc allocator; the library leaves the choice of allocator to
   the program that uses it.
 
+**Word documents** (`scripts/word-benchmark.py`, same machine, against LibreOffice 24.2 on the
+524 documents of the Word corpus, one at a time):
+
+| Word → PDF | kakemono | LibreOffice 24.2 |
+| --- | --- | --- |
+| All 524 documents (11,657 pages) | 209 s (56 pages/s) | 790 s (14 pages/s) |
+| Median per document | 0.12 s, 35 MB | 0.47 s, 192 MB |
+| Largest memory | 526 MB | 822 MB |
+| Could not convert | 0 | 5 (crashes) |
+| Lines / page counts as in Word's PDF | 95.9% / 89.1% | 79.6% / 72.3% |
+
+The flowing outputs of a Word file (friendly HTML, Word, Markdown, LaTeX, EPUB, JSON) skip the
+page layout: 0.01–0.4 s per document, 15–23× faster than LibreOffice's Word and HTML exports
+(`.doc` → `.docx` included). One process per core converts about 870 short documents a minute on 4
+cores. By size, every format, threads and memory:
+[docs/WORD-INPUT.md](docs/WORD-INPUT.md#speed-and-resources).
+
 All the numbers, and leads for making it faster, are in
 [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md#10-benchmark-november-2026-and-leads-for-speed-and-memory).
 
