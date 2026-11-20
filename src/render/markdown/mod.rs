@@ -579,27 +579,7 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
     let header_rows = table.header_rows.min(grid.len());
     let head = &grid[..header_rows];
     let header: Vec<String> = (0..table.n_cols)
-        .map(|col| {
-            let mut out = String::new();
-            let mut group = false;
-            for (row_idx, row) in head.iter().enumerate() {
-                let Some(cell) = row[col] else { continue };
-                let is_group = is_group(head, row_idx, cell, table.n_cols);
-                if col != cell.col && !is_group {
-                    continue;
-                }
-                let text = inline.cell(&cell.spans);
-                if text.is_empty() || out.ends_with(&text) {
-                    continue;
-                }
-                if !out.is_empty() {
-                    out.push_str(if group { HEADER_GROUP_JOIN } else { " " });
-                }
-                out.push_str(text.strip_suffix(':').unwrap_or(&text).trim_end());
-                group = is_group;
-            }
-            out
-        })
+        .map(|col| flat_header(inline, head, col, table.n_cols))
         .collect();
     let rule: Vec<&str> = (0..table.n_cols)
         .map(|col| match table.col_align.get(col).copied() {
@@ -609,32 +589,70 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
         })
         .collect();
     let mut lines = vec![pipe_row(&header), pipe_row(&rule)];
-    for row in &grid[header_rows..] {
-        let mut cells: Vec<String> = (0..table.n_cols)
-            .map(|col| match row[col] {
-                Some(cell) if col == cell.col || under_one_group(head, cell, table.n_cols) => inline.cell(&cell.spans),
-                _ => String::new(),
-            })
-            .collect();
-        if cells.iter().all(String::is_empty) {
+    lines.extend(
+        grid[header_rows..]
+            .iter()
+            .filter_map(|row| flat_row(inline, head, row, table.n_cols))
+            .map(|cells| pipe_row(&cells)),
+    );
+    lines.join("\n")
+}
+
+/// The header of column `col` of a flattened table: the texts of the header
+/// rows above it, from top to bottom (see [`flat_table`]).
+fn flat_header(inline: &Inline<'_>, head: &[Vec<Option<&TableCell>>], col: usize, n_cols: usize) -> String {
+    let mut out = String::new();
+    let mut group = false;
+    for (row_idx, row) in head.iter().enumerate() {
+        let Some(cell) = row[col] else { continue };
+        let is_group = is_group(head, row_idx, cell, n_cols);
+        if col != cell.col && !is_group {
             continue;
         }
-        let label = table.n_cols > 1
-            && row
-                .iter()
-                .all(|cell| cell.is_some_and(|cell| row[0].is_some_and(|first| std::ptr::eq(cell, first))));
-        if label {
-            let text = std::mem::take(&mut cells[0]);
-            cells.iter_mut().for_each(String::clear);
-            cells[0] = if text.starts_with("**") {
-                text
-            } else {
-                format!("**{text}**")
-            };
+        let text = inline.cell(&cell.spans);
+        if text.is_empty() || out.ends_with(&text) {
+            continue;
         }
-        lines.push(pipe_row(&cells));
+        if !out.is_empty() {
+            out.push_str(if group { HEADER_GROUP_JOIN } else { " " });
+        }
+        out.push_str(text.strip_suffix(':').unwrap_or(&text).trim_end());
+        group = is_group;
     }
-    lines.join("\n")
+    out
+}
+
+/// The cells of a body row of a flattened table (see [`flat_table`]), or
+/// `None` when the row is empty.
+fn flat_row(
+    inline: &Inline<'_>,
+    head: &[Vec<Option<&TableCell>>],
+    row: &[Option<&TableCell>],
+    n_cols: usize,
+) -> Option<Vec<String>> {
+    let mut cells: Vec<String> = (0..n_cols)
+        .map(|col| match row[col] {
+            Some(cell) if col == cell.col || under_one_group(head, cell, n_cols) => inline.cell(&cell.spans),
+            _ => String::new(),
+        })
+        .collect();
+    if cells.iter().all(String::is_empty) {
+        return None;
+    }
+    let label = n_cols > 1
+        && row
+            .iter()
+            .all(|cell| cell.is_some_and(|cell| row[0].is_some_and(|first| std::ptr::eq(cell, first))));
+    if label {
+        let text = std::mem::take(&mut cells[0]);
+        cells.iter_mut().for_each(String::clear);
+        cells[0] = if text.starts_with("**") {
+            text
+        } else {
+            format!("**{text}**")
+        };
+    }
+    Some(cells)
 }
 
 /// Follows a group header (over several columns) in the header of a
