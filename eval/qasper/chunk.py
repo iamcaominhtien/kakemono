@@ -10,6 +10,8 @@ Pipelines:
                    kakemono-struct chunks, to tell structure from size
   kakemono-struct  kakemono's blocks grouped by section, never cut inside a block
                    unless it is too long, each chunk headed by "paper title | section path"
+  kakemono-chunks  kakemono's own chunks output (kakemono convert -f chunks): the same
+                   method as kakemono-struct-notitle, in Rust, sized by its token estimate
   kakemono-struct-notitle
                    the same chunks with the paper title taken out of the heading (the
                    section path stays): retrieval is within one paper, so a title
@@ -44,6 +46,13 @@ def kakemono_json(pdf: Path) -> dict:
         out = Path(tmp) / "paper.json"
         subprocess.run([str(KAKEMONO), "convert", str(pdf), "-o", str(out)], check=True, capture_output=True)
         return json.loads(out.read_text())
+
+
+def kakemono_chunks(pdf: Path) -> list[str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "paper.jsonl"
+        subprocess.run([str(KAKEMONO), "convert", str(pdf), "-o", str(out)], check=True, capture_output=True)
+        return [json.loads(line)["text"] for line in out.read_text().split("\n") if line.strip()]
 
 
 def block_text(b: dict) -> str:
@@ -152,6 +161,8 @@ def build(pipeline: str, pid: str) -> list[str]:
     size = int(pipeline.rsplit("fixed", 1)[1] or MAX_CHUNK_TOKENS) if "-fixed" in pipeline else 0
     if pipeline.startswith("pypdf-fixed"):
         return fixed_chunks(pypdf_text(pdf), size)
+    if pipeline == "kakemono-chunks":
+        return kakemono_chunks(pdf)
     doc = kakemono_json(pdf)
     if pipeline.startswith("kakemono-fixed"):
         return fixed_chunks("\n\n".join(t for t in map(block_text, doc["blocks"]) if t), size)

@@ -14,7 +14,7 @@ import numpy as np
 from common import RESULTS
 
 KEYS = ["ceiling", "recall@512", "recall@1024", "recall@2048"]
-ORDER = ["pypdf-fixed", "pypdf-fixed256", "unstructured-title", "docling-hybrid", "kakemono-fixed", "kakemono-fixed256", "kakemono-struct", "kakemono-struct-notitle"]
+ORDER = ["pypdf-fixed", "pypdf-fixed256", "unstructured-title", "docling-hybrid", "kakemono-fixed", "kakemono-fixed256", "kakemono-struct", "kakemono-struct-notitle", "kakemono-chunks"]
 
 
 def main():
