@@ -142,6 +142,11 @@ committing.
   `needless_bool`). Check the CI log if the "fmt + clippy" job fails.
 - **Commits:** Conventional Commits (`fix(tables): ...`, `feat: ...`), in English, imperative
   mood.
+- **Google Drive:** everything uploaded for this project (test corpora, evaluation kits, results)
+  goes in the `kakemono` folder at the root of My Drive
+  (id `1P1p1y-8wzjb_LNIIK9Y5zYBJiiUVLKRj`), in one subfolder per purpose
+  (`kakemono-excel-corpus`, `kakemono-qasper-eval`, ...). Reuse a subfolder that fits; never
+  create a project folder at the root of the Drive.
 
 ## Pull requests
 
