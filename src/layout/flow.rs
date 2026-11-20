@@ -712,7 +712,25 @@ impl Flow<'_> {
                         break;
                     }
                 }
-                Block::Table(_) => break,
+                Block::Table(table) => {
+                    height += self.kept_rows_height(table, width);
+                    break;
+                }
+            }
+        }
+        height
+    }
+
+    /// The height of the first rows of `table` that a chain kept with the
+    /// next paragraph brings along: rows whose text is kept with the next,
+    /// and the row after them.
+    fn kept_rows_height(&mut self, table: &Table, width: f32) -> f32 {
+        let laid = self.lay_table(table, width);
+        let mut height = 0.0;
+        for (row, laid_row) in table.rows.iter().zip(&laid.rows) {
+            height += laid_row.height;
+            if !row_keeps_next(row) {
+                break;
             }
         }
         height
@@ -2195,6 +2213,15 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
     first.height = room;
     second.height = rest_height;
     Some((first, second))
+}
+
+/// Whether a row is kept on the page of the next one: its cells' text is
+/// kept with the next paragraph.
+fn row_keeps_next(row: &Row) -> bool {
+    row.cells
+        .iter()
+        .flat_map(|cell| &cell.blocks)
+        .any(|block| matches!(block, Block::Para(para) if para.props.keep_next))
 }
 
 /// Whether a paragraph holds a page break.
