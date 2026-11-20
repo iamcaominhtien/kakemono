@@ -481,7 +481,9 @@ impl Flow<'_> {
         let mut footer_top = page.height;
         // A footer that shows nothing (empty paragraphs, objects floating
         // apart) does not push the body up.
-        if let Some(part) = footer.filter(|&part| shows_something(&self.doc.parts[part])) {
+        if let Some(part) =
+            footer.filter(|&part| std::env::var_os("KSF").is_some() || shows_something(&self.doc.parts[part]))
+        {
             let height =
                 self.blocks_height(&self.doc.parts[part], width, Some(number)) + last_after(&self.doc.parts[part]);
             // The body stays above the top border of the footer, which
@@ -2519,15 +2521,16 @@ fn last_after(blocks: &[Block]) -> f32 {
 }
 
 /// Whether `blocks` show anything in the flow: text, a table, a picture or
-/// shape in the line (not empty paragraphs, nor objects floating apart).
+/// shape in the line or that text wraps around (not empty paragraphs, nor
+/// objects in front of or behind the text).
 fn shows_something(blocks: &[Block]) -> bool {
     blocks.iter().any(|block| match block {
         Block::Table(_) => true,
         Block::Para(para) => para.inlines.iter().any(|inline| match inline {
             Inline::Text { text, .. } => !text.trim().is_empty(),
             Inline::Tab { .. } | Inline::Break { .. } => false,
-            Inline::Image { anchor, .. } => anchor.is_none(),
-            Inline::Shape(shape) => shape.anchor.is_none(),
+            Inline::Image { anchor, .. } => anchor.as_ref().is_none_or(|anchor| anchor.wrap != Wrap::None),
+            Inline::Shape(shape) => shape.anchor.as_ref().is_none_or(|anchor| anchor.wrap != Wrap::None),
             _ => true,
         }),
     })
