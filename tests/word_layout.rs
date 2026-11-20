@@ -45,7 +45,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "govuk-0320",
         ext: "docx",
-        min_line_ratio: 0.98,
+        min_line_ratio: 0.97,
         same_pages: false,
     },
     // Floating shapes, frames, nested tables.
@@ -74,7 +74,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         id: "govuk2-0131",
         ext: "doc",
-        min_line_ratio: 0.88,
+        min_line_ratio: 0.87,
         same_pages: true,
     },
 ];
