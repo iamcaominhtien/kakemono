@@ -137,6 +137,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
         content: &content,
         fonts: &fonts,
         math: &math,
+        source: source_label(doc),
     };
     page.html()
 }
@@ -158,6 +159,8 @@ struct Page<'a> {
     /// Style of the MathML formulas, with the embedded math font (empty
     /// when the paper has no MathML).
     math: &'a str,
+    /// What the document was converted from (`PDF`, `Word`).
+    source: &'a str,
 }
 
 impl Page<'_> {
@@ -173,10 +176,11 @@ impl Page<'_> {
         .flatten()
         .collect();
         let colophon = if embedded.is_empty() {
-            "Converted from PDF by kakemono · friendly mode".to_string()
+            format!("Converted from {} by kakemono · friendly mode", self.source)
         } else {
             format!(
-                "Converted from PDF by kakemono · friendly mode · {}",
+                "Converted from {} by kakemono · friendly mode · {}",
+                self.source,
                 embedded.join(" · ")
             )
         };
@@ -311,7 +315,9 @@ fn paper_head(doc: &Document, title: &str, front: &[&Block]) -> String {
             }
         }
     }
-    kicker.push(format!("{} pages", doc.pages.len()));
+    if !doc.pages.is_empty() {
+        kicker.push(format!("{} pages", doc.pages.len()));
+    }
     let mut head = format!(
         "<div class=\"kicker\">{}</div>\n<h1 class=\"title\">{}</h1>\n",
         kicker

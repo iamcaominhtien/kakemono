@@ -359,29 +359,13 @@ fn cut<'t>(text: &'t str, budget: usize, counter: &TokenCounter) -> (&'t str, &'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::geom::Rect;
     use crate::model::Span;
 
     /// A block of `kind` with `text`, on page 0.
     fn block(id: usize, kind: BlockKind, text: &str) -> Block {
-        Block {
-            id,
-            kind,
-            page: 0,
-            bbox: Rect::default(),
-            spans: vec![Span::plain(text)],
-            rows: Vec::new(),
-            anchor: None,
-            loc: Default::default(),
-            lines: Vec::new(),
-            line_texts: Vec::new(),
-            hlines: Vec::new(),
-            table: None,
-            inner_lines: Vec::new(),
-            inner_spans: Vec::new(),
-            eq_runs: Vec::new(),
-            math: None,
-        }
+        let mut block = Block::new(id, kind);
+        block.spans = vec![Span::plain(text)];
+        block
     }
 
     /// A document titled "A Paper" with these blocks.
@@ -397,6 +381,7 @@ mod tests {
             body_font: String::new(),
             math_font: String::new(),
             blocks,
+            pictures: Vec::new(),
         }
     }
 

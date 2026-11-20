@@ -54,6 +54,13 @@ jobs:
         if: env.SONAR_TOKEN != '' && steps.papers.outputs.cache-hit != 'true'
         run: scripts/fetch-test-pdfs.sh
 
+      # A few Word documents of the fidelity corpus, with Word's PDFs, for
+      # tests/word_layout.rs (public gov.uk documents, downloaded, not
+      # committed).
+      - name: Download the Word layout fixtures
+        if: env.SONAR_TOKEN != ''
+        run: scripts/fetch-word-corpus.sh 8 $(cat tests/data/word-layout-fixtures.txt)
+
       # Clippy findings for SonarQube; the CI lint job is what fails a build on them.
       - name: Clippy report
         if: env.SONAR_TOKEN != ''

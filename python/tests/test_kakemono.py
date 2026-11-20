@@ -183,3 +183,17 @@ def test_to_chunks_follows_the_sections(tmp_path):
     assert all(chunk["tokens"] <= 512 for chunk in exact)
     with pytest.raises(ValueError):
         kakemono.to_chunks(LIGO, tokenizer=tmp_path / "missing.json")
+
+
+WORD_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "word" / "sample.docx"
+
+
+def test_word_document_is_an_input(tmp_path):
+    html = kakemono.convert(WORD_SAMPLE)
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from Word by kakemono" in html
+    text = kakemono.to_markdown(WORD_SAMPLE, tmp_path / "sample.md")
+    assert "$$" in text
+    assert (tmp_path / "sample_assets").is_dir()
+    with pytest.raises(ValueError, match="no pages"):
+        kakemono.convert(WORD_SAMPLE, mode="hard")

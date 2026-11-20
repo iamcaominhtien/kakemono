@@ -30,16 +30,28 @@ pub struct Span {
     /// Text colour as RGB; black is the default.
     #[serde(skip_serializing_if = "is_black")]
     pub color: [u8; 3],
+    /// A formula in running text whose structure is known (the Office Math
+    /// of a Word document): the span stands for it, and `text` is its plain
+    /// text. `None` for the spans of a PDF, whose formulas are rebuilt from
+    /// their styles.
+    #[serde(skip)]
+    pub math: Option<Box<MathNode>>,
 }
 
 impl Span {
     /// An unstyled, unlinked, black span.
     pub fn plain(text: impl Into<String>) -> Self {
+        Self::styled(text, 0)
+    }
+
+    /// An unlinked, black span with the style flags `style`.
+    pub fn styled(text: impl Into<String>, style: u8) -> Self {
         Self {
             text: text.into(),
-            style: 0,
+            style,
             href: None,
             color: [0; 3],
+            math: None,
         }
     }
 }
@@ -167,15 +179,43 @@ pub struct PLine {
     pub kind: &'static str,
 }
 
-/// A rectangular area of a page that is shown as an image.
+/// A picture: a rectangular area of a page of a PDF, drawn from the page,
+/// or a picture file stored in the document (a Word document's pictures).
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ImageSpec {
-    /// Zero-based page index.
+    /// Zero-based page index (0 for a stored picture).
     pub page: usize,
-    /// The area to render, in page coordinates.
+    /// The area to render, in page coordinates; for a stored picture, its
+    /// size in the document, in points, from the origin.
     pub rect: Rect,
     /// Render on a transparent background (equations).
     pub transparent: bool,
+    /// Index of the stored picture in [`Document::pictures`]; `None` for an
+    /// area of a page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded: Option<usize>,
+}
+
+impl ImageSpec {
+    /// An area of a page of the PDF.
+    pub fn region(page: usize, rect: Rect, transparent: bool) -> Self {
+        Self {
+            page,
+            rect,
+            transparent,
+            embedded: None,
+        }
+    }
+}
+
+/// A picture file stored in the document (a picture of a Word document),
+/// ready to be written as it is.
+#[derive(Debug, Clone)]
+pub struct Picture {
+    /// The PNG or JPEG data.
+    pub data: Vec<u8>,
+    /// The data is a JPEG (a PNG otherwise).
+    pub jpeg: bool,
 }
 
 /// What a [`Block`] is, with the data specific to that kind. Serialised as
@@ -203,13 +243,19 @@ pub enum BlockKind {
     ListItem {
         /// `None` for bullet lists.
         marker: Option<String>,
+        /// Nesting level: 0 for an item of the outermost list, 1 for one
+        /// of a list inside it, ...
+        level: u8,
     },
     /// A further paragraph of the list item before it.
     ListContinuation,
-    /// A displayed formula, shown as an image of its area.
+    /// A displayed formula, shown as an image of its area or from its
+    /// structure ([`Block::math`]).
     Equation {
-        /// The area of the page that shows the formula.
-        image: ImageSpec,
+        /// The area of the page that shows the formula; `None` when there
+        /// is no picture of it (the formulas of a Word document, which have
+        /// their structure instead).
+        image: Option<ImageSpec>,
         /// The equation number as printed ("(3)"), if it has one.
         number: Option<String>,
     },
@@ -284,6 +330,11 @@ pub struct Block {
     /// Reconstructed structure of a table float.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<Table>,
+    /// The caption of a float comes before its picture or table, in a
+    /// document read without page geometry (Word). For a PDF the side of
+    /// the caption follows from the positions of its lines.
+    #[serde(skip)]
+    pub caption_above: bool,
     /// Lines inside a float (labels of a figure, cells of a table) with
     /// their styled text.
     #[serde(skip)]
@@ -302,6 +353,30 @@ pub struct Block {
 }
 
 impl Block {
+    /// An empty block of the given kind on the first page, with no box; the
+    /// caller fills in the content.
+    pub fn new(id: usize, kind: BlockKind) -> Self {
+        Self {
+            id,
+            kind,
+            page: 0,
+            bbox: Rect::default(),
+            spans: Vec::new(),
+            rows: Vec::new(),
+            anchor: None,
+            loc: Loc::default(),
+            lines: Vec::new(),
+            line_texts: Vec::new(),
+            hlines: Vec::new(),
+            table: None,
+            caption_above: false,
+            inner_lines: Vec::new(),
+            inner_spans: Vec::new(),
+            eq_runs: Vec::new(),
+            math: None,
+        }
+    }
+
     /// The plain text of the block (its spans concatenated, without
     /// styling).
     pub fn text(&self) -> String {
@@ -337,7 +412,8 @@ pub struct Meta {
 pub struct Document {
     /// Bibliographic information.
     pub meta: Meta,
-    /// Size of every page, by page index.
+    /// Size of every page, by page index; empty for a document without
+    /// pages (a Word document).
     pub pages: Vec<PageInfo>,
     /// Font size of the running text in points.
     pub body_size: f32,
@@ -351,6 +427,10 @@ pub struct Document {
     pub math_font: String,
     /// All content, in reading order.
     pub blocks: Vec<Block>,
+    /// The pictures stored in the document (those of a Word document),
+    /// which [`ImageSpec::embedded`] refers to; empty for a PDF.
+    #[serde(skip)]
+    pub pictures: Vec<Picture>,
 }
 
 /// Position of a block in the layout of its page, used to keep the reading

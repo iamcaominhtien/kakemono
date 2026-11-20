@@ -21,6 +21,7 @@ use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::common::geom::Rect;
 use crate::model::{Block, BlockKind, Document, ImageSpec, SUP};
+use crate::render::Pictures;
 use package::{BookInfo, CONTAINER, CSS_FILE, ContentDoc, NAV_FILE, NavEntry, nav_xhtml, package_opf, toc_ncx};
 use std::collections::HashMap;
 
@@ -99,7 +100,7 @@ impl Default for EpubOptions {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and stored
 /// in the book.
-pub fn render_epub(analysis: &Analysis, pdf: &PdfFile, opts: &EpubOptions) -> Vec<u8> {
+pub fn render_epub(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &EpubOptions) -> Vec<u8> {
     let doc = &analysis.doc;
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
@@ -138,7 +139,7 @@ pub fn render_epub(analysis: &Analysis, pdf: &PdfFile, opts: &EpubOptions) -> Ve
         text.push(SPLIT);
         text.push_str(&images.region(&cover_spec(doc), "cover"));
     });
-    let out = images.finish(pdf, text);
+    let out = images.finish(Pictures::new(pdf, &analysis.doc), text);
     let mut parts: Vec<&str> = out.html.split(SPLIT).collect();
     let cover_file = cover.and_then(|()| parts.pop()).filter(|src| !src.is_empty());
     let bodies: Vec<String> = parts.iter().map(|part| xhtml::from_html(part)).collect();
@@ -309,7 +310,7 @@ fn book_blocks(doc: &Document, max_math_width_em: f32) -> Vec<Block> {
             if matches!(block.kind, BlockKind::Heading { .. }) && block.anchor.is_none() {
                 block.anchor = Some(format!("{HEADING_ANCHOR_PREFIX}{}", block.id));
             }
-            if let BlockKind::Equation { image, .. } = &block.kind
+            if let BlockKind::Equation { image: Some(image), .. } = &block.kind
                 && image.rect.width() > max_math_width_em * doc.body_size
             {
                 block.math = None;
@@ -374,16 +375,13 @@ fn chapter_html(doc: &Document, blocks: &[&Block], images: &mut ImageStore<'_>, 
 /// The whole first page, drawn as the cover.
 fn cover_spec(doc: &Document) -> ImageSpec {
     let page = doc.pages[0];
-    ImageSpec {
-        page: 0,
-        rect: Rect {
-            x0: 0.0,
-            y0: 0.0,
-            x1: page.width,
-            y1: page.height,
-        },
-        transparent: false,
-    }
+    let rect = Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: page.width,
+        y1: page.height,
+    };
+    ImageSpec::region(0, rect, false)
 }
 
 /// The authors of the paper: the first line of each author group, without
@@ -497,42 +495,18 @@ mod tests {
             body_font: String::new(),
             math_font: String::new(),
             blocks: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 
     /// A paragraph block with no text.
     fn empty_block() -> Block {
-        Block {
-            id: 0,
-            kind: BlockKind::Paragraph { in_abstract: false },
-            page: 0,
-            bbox: Rect::default(),
-            spans: Vec::new(),
-            rows: Vec::new(),
-            anchor: None,
-            loc: Default::default(),
-            lines: Vec::new(),
-            line_texts: Vec::new(),
-            hlines: Vec::new(),
-            table: None,
-            inner_lines: Vec::new(),
-            inner_spans: Vec::new(),
-            eq_runs: Vec::new(),
-            math: None,
-        }
+        Block::new(0, BlockKind::Paragraph { in_abstract: false })
     }
 
     #[test]
     fn identifier_is_a_uuid() {
-        let doc = Document {
-            meta: Default::default(),
-            pages: Vec::new(),
-            body_size: 10.0,
-            leading: 12.0,
-            body_font: String::new(),
-            math_font: String::new(),
-            blocks: Vec::new(),
-        };
+        let doc = empty_doc();
         let id = identifier(&doc);
         let uuid = id.strip_prefix("urn:uuid:").unwrap();
         let groups: Vec<usize> = uuid.split('-').map(str::len).collect();

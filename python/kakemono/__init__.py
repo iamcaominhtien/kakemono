@@ -1,4 +1,4 @@
-"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
+"""Convert PDF papers and books, and Word documents (.docx, .doc), into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -11,6 +11,7 @@
 >>> html = kakemono.convert("paper.pdf", "hard-95", content="out/paper.vi.json")  # with the edited text
 >>> chunks = kakemono.to_chunks("paper.pdf")             # chunks for retrieval (RAG), a list of dicts
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
+>>> md = kakemono.to_markdown("report.docx", "out/report.md")  # a Word document as input
 
 The work is done by the kakemono Rust library; the GIL is released while it
 runs, so conversions can run in parallel threads.
@@ -52,14 +53,15 @@ Mode = Literal["hard", "hard-95", "medium", "friendly"]
 PngCompression = Literal["fast", "balanced", "high"]
 #: A path to a file, or a string.
 PathArg = Union[str, "os.PathLike[str]"]
-#: A PDF: its bytes, a path to a file, or an arXiv id or URL.
+#: A PDF or a Word document (.docx, .doc): its bytes, a path to a file, or
+#: an arXiv id or URL. A Word document has only the friendly HTML mode.
 Source = Union[bytes, bytearray, memoryview, PathArg]
 #: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
 Content = Union[Dict[str, Any], PathArg]
 
 
 def _load(source: Source) -> tuple[bytes, str | None]:
-    """The PDF bytes of `source`, and the name recorded in the output."""
+    """The bytes of `source` (PDF or Word), and the name recorded in the output."""
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source), None
     path = os.fspath(source)
@@ -97,7 +99,7 @@ def convert_all(
     png_compression: PngCompression = "balanced",
     content: Optional[Content] = None,
 ) -> Dict[str, str]:
-    """Convert a PDF to HTML in several modes, analysing it only once.
+    """Convert a PDF or Word document to HTML in several modes, analysing it only once.
 
     Returns a dict from mode name to a self-contained HTML document (images
     and fonts embedded). The options are those of the command line:
@@ -139,7 +141,7 @@ def convert_all(
 
 
 def convert(source: Source, mode: Mode = "friendly", **options: Any) -> str:
-    """Convert a PDF to one self-contained HTML document.
+    """Convert a PDF or Word document to one self-contained HTML document.
 
     `source` is the PDF's bytes, a path, or an arXiv id or URL. `mode` is one
     of :data:`MODES`; the other options are those of :func:`convert_all`.
@@ -186,7 +188,7 @@ def to_docx(
     save_images: bool = False,
     content: Optional[Content] = None,
 ) -> bytes:
-    """Convert a PDF to a Word document (``.docx``) and return its bytes.
+    """Convert a PDF or Word document to a Word document (``.docx``) and return its bytes.
 
     When `path` is given, the document is also written there; with
     ``save_images=True`` its pictures are also written as files to
@@ -223,7 +225,7 @@ def to_markdown(
     inline_images: bool = False,
     content: Optional[Content] = None,
 ) -> str:
-    """Convert a PDF to Markdown and return the text.
+    """Convert a PDF or Word document to Markdown and return the text.
 
     Headings, lists, captions and references get their Markdown syntax,
     rebuilt tables become pipe tables (HTML tables when cells span), and
@@ -268,7 +270,7 @@ def to_json(
     inline_images: bool = False,
     content: Optional[Content] = None,
 ) -> Dict[str, Any]:
-    """Convert a PDF to the editable JSON and return it as a dict.
+    """Convert a PDF or Word document to the editable JSON and return it as a dict.
 
     The blocks come in reading order, each with its ``type``, ``section``,
     ``layout`` and ``text``: one string whose tags (``<i>``, ``<b>``,
@@ -323,7 +325,7 @@ def to_latex(
     image_dir: Optional[str] = None,
     content: Optional[Content] = None,
 ) -> str:
-    """Convert a PDF to a LaTeX document (``.tex``) and return its source.
+    """Convert a PDF or Word document to a LaTeX document (``.tex``) and return its source.
 
     The document compiles with pdfLaTeX, XeLaTeX or LuaLaTeX. Headings
     become sections, the abstract and lists their environments, rebuilt
@@ -361,7 +363,7 @@ def to_epub(
     modified: Optional[str] = None,
     content: Optional[Content] = None,
 ) -> bytes:
-    """Convert a PDF to an EPUB 3 book (``.epub``) and return its bytes.
+    """Convert a PDF or Word document to an EPUB 3 book (``.epub``) and return its bytes.
 
     When `path` is given, the book is also written there. It has one
     chapter per top-level section and a table of contents; formulas whose

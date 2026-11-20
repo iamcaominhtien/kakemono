@@ -360,6 +360,16 @@ fn convert_writes_chunks_as_json_lines() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(dir.join("1602.03837v1.chunks.jsonl").is_file());
 
+    // A Word document gives chunks too.
+    let word = dir.join("sample.jsonl");
+    let out = kakemono(&["convert", WORD_SAMPLE, "-o", word.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        std::fs::read_to_string(&word)
+            .unwrap()
+            .contains("\"text\":\"Abstract\\n\\n")
+    );
+
     // A tokenizer counts the tokens of chunks only.
     let html = kakemono(&[
         "convert",
@@ -391,4 +401,61 @@ fn chunks_can_be_sized_by_an_openai_tokenizer() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("tokens,") && !stderr.contains("estimated"), "{stderr}");
+}
+
+/// The sample Word document of `tests/data/word`.
+const WORD_SAMPLE: &str = "tests/data/word/sample.docx";
+
+#[test]
+fn word_document_converts_to_friendly_html() {
+    let dir = scratch("cli-word");
+    let html = dir.join("sample.friendly.html");
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--fonts",
+        "system",
+        "-o",
+        html.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("read docx document"));
+    let text = std::fs::read_to_string(&html).unwrap();
+    assert!(text.contains("Converted from Word by kakemono · friendly mode"));
+}
+
+#[test]
+fn word_document_has_every_mode() {
+    let dir = scratch("cli-word-modes");
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--all",
+        "--fonts",
+        "system",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut written: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "sample.friendly.html",
+            "sample.hard-95.html",
+            "sample.hard.html",
+            "sample.medium.html"
+        ]
+    );
+    // hard and hard-95 show the pages Word would print; medium shows Word's
+    // formatting on one continuous sheet.
+    let hard95 = std::fs::read_to_string(dir.join("sample.hard-95.html")).unwrap();
+    assert!(hard95.contains("pages") || hard95.contains("page"));
+    let medium = std::fs::read_to_string(dir.join("sample.medium.html")).unwrap();
+    assert!(medium.contains("class=\"sheet\""), "medium is one sheet");
+    assert!(medium.contains("font-family:"), "medium keeps Word's fonts");
 }

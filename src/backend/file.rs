@@ -29,6 +29,11 @@ impl PdfFile {
     /// # Errors
     /// When the data is not a readable PDF, or the PDF has no pages.
     pub fn open(data: Vec<u8>) -> Result<Self> {
+        // A PDF has its header in its first kilobyte.
+        let head = &data[..data.len().min(1024)];
+        if !head.windows(5).any(|window| window == b"%PDF-") {
+            return Err(anyhow!("not a PDF or Word document"));
+        }
         let pdf = Pdf::new(data).map_err(|err| anyhow!("cannot read PDF: {err:?}"))?;
         if pdf.pages().is_empty() {
             return Err(anyhow!("the PDF has no pages"));

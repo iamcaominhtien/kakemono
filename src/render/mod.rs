@@ -9,7 +9,7 @@ mod chunks;
 mod code;
 mod docx;
 mod epub;
-mod escape;
+pub(crate) mod escape;
 mod flow;
 mod friendly;
 mod hard;
@@ -18,13 +18,16 @@ mod inline_math;
 mod json;
 mod latex;
 mod markdown;
-mod mathml;
+pub(crate) mod mathml;
 mod medium;
 mod options;
 mod table;
-mod zip;
+pub(crate) mod zip;
 
-pub(crate) use assets::ImageStore;
+#[cfg(test)]
+pub(crate) use docx::inline_math as docx_omml_for_tests;
+
+pub(crate) use assets::{ImageStore, Pictures};
 pub use chunks::{
     Chunk, ChunkOptions, NAMED_TOKENIZERS, TokenCounter, chunks_jsonl, estimate as estimate_tokens, render_chunks,
 };
@@ -81,10 +84,10 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 /// The HTML is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// inlined as data URIs or returned in [`HtmlOutput::files`].
-pub fn render(analysis: &Analysis, pdf: &PdfFile, opts: &HtmlOptions) -> HtmlOutput {
+pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) -> HtmlOutput {
     let mut images = ImageStore { opts, jobs: Vec::new() };
     let html = renderer_for(opts.mode).render(analysis, &mut images);
-    images.finish(pdf, html)
+    images.finish(Pictures::new(pdf, &analysis.doc), html)
 }
 
 /// Renders an analysed document as HTML, like [`render`], but writes it to
@@ -97,12 +100,12 @@ pub fn render(analysis: &Analysis, pdf: &PdfFile, opts: &HtmlOptions) -> HtmlOut
 /// The first error of `out` or `file`.
 pub fn render_to(
     analysis: &Analysis,
-    pdf: &PdfFile,
+    pdf: Option<&PdfFile>,
     opts: &HtmlOptions,
     out: &mut dyn std::io::Write,
     file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut images = ImageStore { opts, jobs: Vec::new() };
     let html = renderer_for(opts.mode).render(analysis, &mut images);
-    images.finish_into(pdf, &html, out, file)
+    images.finish_into(Pictures::new(pdf, &analysis.doc), &html, out, file)
 }

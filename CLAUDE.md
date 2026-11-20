@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-`kakemono`: a Rust CLI and library that converts arXiv PDF papers to HTML, in 4 modes, to a
+`kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
+and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
+writes them as a PDF) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
 LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
 retrieval (`.jsonl`, `src/render/chunks/`) or to editable JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
@@ -29,16 +31,20 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
 ./target/release/kakemono convert <file.pdf> -o out/x.jsonl                   # chunks for RAG (or -f chunks; --tokenizer tokenizer.json)
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
+./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
+./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers   # when output changes ON PURPOSE
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
 node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
+scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layout vs Word's own PDFs (CI minimums in ci.yml)
+python3 scripts/word-crash-test.py DIR...                            # every output of every Word file: panics, timeouts
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
@@ -89,6 +95,21 @@ committing.
   a regression.
 - A test for a specific bug goes in `tests/real_papers.rs` and is named after the behaviour, for
   example `ligo_radical_is_a_square_root`.
+
+## Word input (`src/word`)
+
+- Both readers (`docx.rs` for `.docx`, `doc/` for `.doc`) fill the same intermediate form
+  (`ir.rs`); `build.rs` alone decides what each paragraph is. A rule about styles goes there.
+- The test samples are `tests/data/word/sample.docx` (pandoc, from `sample.md`) and `sample.doc`
+  (LibreOffice); a change to the reading shows in `tests/data/snapshots/word-sample.txt`.
+- A Word document has no pages (`Document::pages` is empty) and its pictures are stored in
+  `Document::pictures` (`ImageSpec::embedded`): renderers must not assume a page to draw from.
+- The page layout (`src/word/fmt/` → `src/layout/`) is a second reading of the same file, with
+  every formatting property: a layout rule (line height, row height, page break) is checked
+  against Word's own PDFs with `scripts/word-fidelity.py` on the corpus of
+  `tests/data/word-corpus.tsv` (downloaded, not committed). A change that raises the totals
+  should raise the minimums in `.github/workflows/ci.yml` too; one that lowers them is a
+  regression. `scripts/compare-layout.py REF.pdf OURS.pdf --diff` shows the lines that differ.
 
 ## Public API and packages
 

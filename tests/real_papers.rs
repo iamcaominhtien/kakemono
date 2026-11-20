@@ -653,7 +653,8 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
         .iter()
         .filter(|b| match &b.kind {
             BlockKind::Equation { image, .. } => {
-                b.math.is_some() && image.rect.width() <= epub_opts.max_math_width_em * doc.body_size
+                b.math.is_some()
+                    && image.is_none_or(|image| image.rect.width() <= epub_opts.max_math_width_em * doc.body_size)
             }
             _ => b.math.is_some(),
         })

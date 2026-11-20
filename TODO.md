@@ -47,6 +47,20 @@ uses get new fields, not new formats.
       warning. Until then, the translation kit's `remap.py` carries a
       translation over by matching the original text.
 
+## Word input (`src/word`)
+
+- [ ] Pictures stored as Windows metafiles (EMF, WMF) are left out: charts
+      pasted from Excel, drawings of older documents, the previews of
+      formula objects.
+- [ ] Formulas of the old Equation Editor and of MathType (OLE objects with
+      MTEF data, common in `.doc` files) are left out; only Office Math is read.
+- [ ] Floating shapes of a `.doc` (drawn objects, `0x08`) are skipped; text
+      boxes of a `.docx` come after the paragraph they are anchored in.
+- [ ] Nested lists are flat: the level of a list item is not kept in the
+      `Document`.
+- [ ] `.doc` files have not been tried yet with files saved by Word itself
+      (the tests use files saved by LibreOffice).
+
 ## hard-95
 
 - [ ] Edited blocks get uneven font sizes: each one shrinks on its own to fit

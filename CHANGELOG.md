@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.12.0](https://github.com/iamcaominhtien/kakemono/compare/v0.11.0...v0.12.0) - 2026-11-20
+
+### Added
+
+- [**breaking**] Read Word documents (.docx, .doc) as input ([#16](https://github.com/iamcaominhtien/kakemono/pull/16))
+
+kakemono reads Word documents (.docx and .doc) and writes every output from them: friendly HTML, Word, Markdown, LaTeX, EPUB and JSON from their structure (src/word/), and a PDF and the hard, hard-95 and medium modes from a page layout made as Word makes it (src/word/fmt/, src/layout/), in Rust only.
+
+- .doc read on cfb (FIB, piece table, sprms, styles, lists, notes, fields, tables, pictures, OfficeArt); Office Math and MathType (MTEF 3 and 5) as formulas; EMF and WMF drawn.
+- On 524 public Word documents with Word's own PDFs: 95.9% of lines broken at the same words and 89.1% of page counts as Word's (scripts/word-fidelity.py, checked in CI with minimums).
+- Against LibreOffice 24.2, Word to PDF on the same 524 documents: 209 s against 790 s, median 35 MB against 192 MB, no crash against 5 (scripts/word-benchmark.py).
+- No panic or timeout on 4,317 public Word files.
+
 ## [0.11.0](https://github.com/iamcaominhtien/kakemono/compare/v0.10.0...v0.11.0) - 2026-11-19
 
 ### Added

@@ -180,7 +180,7 @@ pub(crate) fn link_spans(spans: Vec<Span>, targets: &LinkTargets, at: usize, own
     let mut out = Vec::with_capacity(spans.len());
     let mut run: Vec<Span> = Vec::new();
     for span in spans {
-        if span.href.is_some() || span.style & (SUP | SUB) != 0 {
+        if span.href.is_some() || span.style & (SUP | SUB) != 0 || span.math.is_some() {
             link_run(std::mem::take(&mut run), targets, at, own, &mut out);
             out.push(span);
         } else {
@@ -282,6 +282,7 @@ fn push_piece(out: &mut Vec<Span>, piece: &str, href: Option<String>, like: &Spa
             style: like.style,
             href,
             color: like.color,
+            math: None,
         });
     }
 }

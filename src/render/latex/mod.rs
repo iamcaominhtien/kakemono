@@ -16,18 +16,21 @@ mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, code, code_run, doc_title, float_class,
-    heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
+    equation_math, float_class, heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
+use crate::render::Pictures;
 use math::latex;
 use std::collections::BTreeSet;
 use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
 /// The packages and commands that every document uses.
 const PREAMBLE: &str = include_str!("preamble.tex");
+/// Lists LaTeX can nest inside a list (it allows four levels in all).
+const MAX_LIST_NESTING: u8 = 3;
 /// The encoding of pdfLaTeX's fonts, in [`PREAMBLE`].
 const T1_FONTENC: &str = "\\usepackage[T1]{fontenc}";
 /// The encodings of a document with Vietnamese letters (see
@@ -95,7 +98,7 @@ pub struct LatexOutput {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`LatexOutput::files`].
-pub fn render_latex(analysis: &Analysis, pdf: &PdfFile, opts: &LatexOptions) -> LatexOutput {
+pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOptions) -> LatexOutput {
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,
@@ -122,11 +125,12 @@ pub fn render_latex(analysis: &Analysis, pdf: &PdfFile, opts: &LatexOptions) -> 
         out: String::new(),
         group: Group::None,
         item_open: false,
+        nested: 0,
         after_text: false,
     };
     writer.write(doc);
     let body = writer.out.trim_end().to_string();
-    let out = images.finish(pdf, body);
+    let out = images.finish(Pictures::new(pdf, &analysis.doc), body);
     LatexOutput {
         latex: document(doc, &out.html),
         files: out.files,
@@ -146,6 +150,9 @@ fn document(doc: &Document, body: &str) -> String {
         // T1 stays the main encoding (the last one loaded).
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
+    if doc.pages.is_empty() {
+        out = out.replacen("Converted from a PDF", "Converted from a Word document", 1);
+    }
     if !vietnamese.is_empty() {
         out.push_str(&format!(
             "% Vietnamese letters: pdfLaTeX sets them in the T5 encoding (vntex).\n\\ifPDFTeX\n  \\newcommand{{{cmd}}}[1]{{{{\\fontencoding{{T5}}\\selectfont#1}}}}\n",
@@ -252,6 +259,8 @@ struct Writer<'a, 'r> {
     group: Group,
     /// An `\item` of the open list has been written.
     item_open: bool,
+    /// Lists open inside the open list.
+    nested: u8,
     /// The block written last is a paragraph of text: a displayed formula
     /// after it continues it (no blank line, which would start a new
     /// paragraph above the formula).
@@ -303,7 +312,7 @@ impl Writer<'_, '_> {
                 // own takes it back.
                 BlockKind::Equation { image, number: None } => {
                     if let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next)) {
-                        self.equation(block, image, Some(&number));
+                        self.equation(block, image.as_ref(), Some(&number));
                         idx += 2;
                         continue;
                     }
@@ -325,6 +334,7 @@ impl Writer<'_, '_> {
         if group == self.group {
             return;
         }
+        self.nest(0);
         if let Some(env) = self.group.environment() {
             self.paragraph(&format!("\\end{{{env}}}"));
         }
@@ -354,7 +364,7 @@ impl Writer<'_, '_> {
                 self.paragraph("\\begin{center}\n* * *\n\\end{center}");
             }
             BlockKind::Paragraph { .. } => self.text_paragraph(&block.spans),
-            BlockKind::ListItem { marker } => self.list_item(block, marker.as_deref()),
+            BlockKind::ListItem { marker, level } => self.list_item(block, marker.as_deref(), *level),
             BlockKind::ListContinuation => self.list_continuation(block),
             BlockKind::Reference { .. } => {
                 let text = self.text.spans(&block.spans);
@@ -365,7 +375,7 @@ impl Writer<'_, '_> {
                 }
             }
             BlockKind::Footnote { marker } => self.footnote(block, marker),
-            BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
+            BlockKind::Equation { image, number } => self.equation(block, image.as_ref(), number.as_deref()),
             BlockKind::Figure { kind, image, .. } => self.figure(block, *kind, image.as_ref()),
             BlockKind::ContentsEntry { level, page } => self.contents_entry(block, *level, page),
             BlockKind::Code => {
@@ -544,7 +554,8 @@ impl Writer<'_, '_> {
 
     /// Writes a list item: `\item[3.]` with the marker of the paper, its
     /// text after it.
-    fn list_item(&mut self, block: &Block, marker: Option<&str>) {
+    fn list_item(&mut self, block: &Block, marker: Option<&str>, level: u8) {
+        self.nest(level.min(MAX_LIST_NESTING));
         let rest = marker.and_then(|marker| strip_label(&block.spans, marker));
         let item = match (marker, &rest) {
             (Some(marker), Some(_)) => format!("\\item[{{{}}}]", escape(marker)),
@@ -555,6 +566,23 @@ impl Writer<'_, '_> {
         let label = self.anchor_label(block);
         self.paragraph(format!("{item} {label}{text}").trim_end());
         self.item_open = true;
+    }
+
+    /// Opens or closes lists inside the open list until `level` are open.
+    fn nest(&mut self, level: u8) {
+        while self.nested > level {
+            self.paragraph("\\end{itemize}");
+            self.nested -= 1;
+            self.item_open = true;
+        }
+        while self.nested < level {
+            if !self.item_open {
+                self.out.push_str("\\item[]\n");
+            }
+            self.paragraph("\\begin{itemize}");
+            self.nested += 1;
+            self.item_open = false;
+        }
     }
 
     /// Writes a paragraph that continues a list item.
@@ -625,10 +653,11 @@ impl Writer<'_, '_> {
     /// Writes a displayed formula: as LaTeX math when its structure is
     /// known (and wanted), as a picture otherwise; with its number. It
     /// continues the paragraph before it.
-    fn equation(&mut self, block: &Block, image: &ImageSpec, number: Option<&str>) {
-        let body = match &block.math {
-            Some(math) if self.opts.equations == Equations::MathMl => latex(math).replace(['\n', '\r'], " "),
-            _ => format!("\\vcenter{{\\hbox{{{}}}}}", self.picture(image, "eq")),
+    fn equation(&mut self, block: &Block, image: Option<&ImageSpec>, number: Option<&str>) {
+        let body = match (equation_math(block, image, self.opts.equations), image) {
+            (Some(math), _) => latex(math).replace(['\n', '\r'], " "),
+            (None, Some(image)) => format!("\\vcenter{{\\hbox{{{}}}}}", self.picture(image, "eq")),
+            (None, None) => format!("\\text{{{}}}", self.text.spans(&block.spans)),
         };
         let tag = number
             .map(|number| number.trim().trim_start_matches('(').trim_end_matches(')').trim())
@@ -665,10 +694,7 @@ impl Writer<'_, '_> {
             }
             return self.verbatim(&lines);
         }
-        let caption_first = match (image, block.lines.first()) {
-            (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-            _ => false,
-        };
+        let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
             Some(format!(
                 "\\begin{{center}}\n\\begin{{kakemonotable}}\n{}\n\\end{{kakemonotable}}\n\\end{{center}}",
@@ -904,6 +930,7 @@ mod tests {
             out: String::new(),
             group: Group::None,
             item_open: false,
+            nested: 0,
             after_text: false,
         };
         assert_eq!(

@@ -1,15 +1,15 @@
 [package]
 name = "kakemono"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
-description = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML in four fidelity modes, Word documents, Markdown, LaTeX or EPUB books"
+description = "Convert scientific-paper PDFs (arXiv) and Word documents into clean, readable HTML in four fidelity modes, Word documents, Markdown, LaTeX or EPUB books"
 repository = "https://github.com/iamcaominhtien/kakemono"
 documentation = "https://docs.rs/kakemono"
 readme = "README.md"
 # What goes into the package published on crates.io; the tests, scripts, docs and
 # Python binding stay in the repository only.
 include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE", "/CHANGELOG.md"]
-keywords = ["pdf", "html", "arxiv", "converter", "papers"]
+keywords = ["pdf", "docx", "html", "arxiv", "converter"]
 categories = ["command-line-utilities", "text-processing"]
 license = "MIT"
 
@@ -35,12 +35,12 @@ serde_json = "1"
 base64 = "0.22"
 crc32fast = "1"
 flate2 = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 regex = "1"
 unicode-normalization = "0.1"
 skrifa = "0.49"
 ureq = { version = "2", features = ["native-certs"] }
-resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
+resvg = { version = "0.45", default-features = false, features = ["raster-images", "text", "system-fonts", "memmap-fonts"] }
 # The CLI's allocator (src/main.rs). Version 2 of mimalloc: version 3 keeps
 # freed memory for a second, so a 15-page paper took three times the memory
 # of the system allocator.
@@ -48,6 +48,11 @@ mimalloc = { version = "0.1.52", features = ["v2"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 png = "0.18"
 sha2 = "0.10"
+roxmltree = "0.20"
+cfb = "0.16"
+# The Word layout engine: text shaping, and the PDF it writes.
+rustybuzz = "0.20"
+krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
 # Real tokenizers for `--tokenizer` of the chunks output (optional: without
 # them, chunk sizes are estimated). Hugging Face's reads the tokenizer.json of
 # an embedding model; tiktoken-rs holds OpenAI's cl100k_base and o200k_base

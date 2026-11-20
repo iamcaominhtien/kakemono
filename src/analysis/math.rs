@@ -230,7 +230,7 @@ impl Default for MathConfig {
 
 /// Alphabet of a letter or digit, from its font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Alphabet {
+pub(crate) enum Alphabet {
     /// The usual letters.
     Plain,
     /// Bold upright (`\mathbf`).
@@ -393,7 +393,7 @@ struct Parser<'a> {
 /// others keep `None` and stay pictures.
 pub fn build_math(doc: &mut Document, pages: &[PageData], fonts: &[FontInfo], cfg: &MathConfig) {
     for block in &mut doc.blocks {
-        let BlockKind::Equation { image, .. } = &block.kind else {
+        let BlockKind::Equation { image: Some(image), .. } = &block.kind else {
             continue;
         };
         let page = &pages[block.page];
@@ -1844,7 +1844,7 @@ fn split_off(items: Vec<Item>, take: impl Fn(usize) -> bool) -> (Vec<(usize, Ite
 
 /// `text` written in the Unicode mathematical alphanumerics of `alphabet`
 /// (letters and digits that have no such form are kept).
-fn styled(text: &str, alphabet: Alphabet) -> String {
+pub(crate) fn styled(text: &str, alphabet: Alphabet) -> String {
     text.chars().map(|ch| styled_char(ch, alphabet)).collect()
 }
 
