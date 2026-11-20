@@ -65,9 +65,10 @@ SIZE_BINS = [('1–4 pages', 1, 4), ('5–19 pages', 5, 19), ('20–49 pages', 2
 
 
 def confined(path):
-    """The path, resolved; it must lie inside the working directory or the
-    temporary directory, where corpora and outputs are kept."""
-    real = os.path.realpath(path)
+    """The absolute path, `..` resolved; it must lie inside the working
+    directory or the temporary directory, where corpora and outputs are kept
+    (the corpus may hold links to the files)."""
+    real = os.path.normpath(os.path.abspath(path))
     for base in (os.getcwd(), tempfile.gettempdir()):
         base = os.path.realpath(base)
         if real == base or real.startswith(base + os.sep):
