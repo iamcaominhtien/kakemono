@@ -911,14 +911,15 @@ impl Flow<'_> {
     /// How many of the `fit` lines that fit (of `remaining` in the chunk,
     /// from line `at`) go in this column, after the paragraph's
     /// keep-lines-together and widow and orphan rules. 0 moves the lines to
-    /// the next column; a fresh column takes at least one line.
-    fn lines_to_take(&self, para: &Para, at: usize, fit: usize, remaining: usize) -> usize {
+    /// the next column; a fresh column takes at least one line. A last line
+    /// of pictures alone (`widow_pictures`) may go to the next page alone.
+    fn lines_to_take(&self, para: &Para, at: usize, fit: usize, remaining: usize, widow_pictures: bool) -> usize {
         let mut take = fit;
         if take < remaining {
             if para.props.keep_lines && at == 0 && !self.state.fresh {
                 take = 0;
             } else if para.props.widow_control {
-                if take == remaining - 1 && remaining > WIDOW_LINES {
+                if take == remaining - 1 && remaining > WIDOW_LINES && !widow_pictures {
                     take -= 1;
                 }
                 if take < WIDOW_LINES && (at == 0 && remaining > take) && remaining >= WIDOW_LINES && !self.state.fresh
@@ -1015,7 +1016,8 @@ impl Flow<'_> {
         }
         while at < count {
             let (fit, chunk_end) = self.lines_that_fit(&lines, at, gap);
-            let take = self.lines_to_take(para, at, fit, chunk_end - at);
+            let widow_pictures = lines[chunk_end - 1].pictures_only;
+            let take = self.lines_to_take(para, at, fit, chunk_end - at, widow_pictures);
             if take == 0 {
                 self.next_column();
                 gap = if at == 0 { self.top_gap(para) } else { 0.0 };
@@ -1453,7 +1455,12 @@ impl Flow<'_> {
         while at < laid.rows.len() {
             let row = rest.take().unwrap_or_else(|| laid.rows[at].clone());
             let room = self.state.bottom - self.state.notes_height - self.state.y;
-            if row.height <= room + EPS || forced && self.state.fresh {
+            let need = if table.rows[at].cant_split {
+                cant_split_need(&row, self.state.bottom - self.state.top)
+            } else {
+                row.height
+            };
+            if need <= room + EPS || forced && self.state.fresh {
                 if row.height > room + EPS
                     && let Some((first, second)) = split_row(&row, room)
                 {
@@ -1900,6 +1907,17 @@ struct LaidTable {
 struct LaidRow {
     height: f32,
     cells: Vec<LaidCell>,
+}
+
+/// The room a row that cannot split needs: its height, or the whole text of
+/// a cell merged down from it (which the row cannot cut), when that fits in
+/// a page of `page_room`.
+fn cant_split_need(row: &LaidRow, page_room: f32) -> f32 {
+    row.cells
+        .iter()
+        .filter(|cell| cell.merged_rows > 1 && cell.content_height <= page_room)
+        .map(|cell| cell.content_height)
+        .fold(row.height, f32::max)
 }
 
 /// A laid-out cell, relative to the table's left edge and the row's top.

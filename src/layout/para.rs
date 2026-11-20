@@ -124,6 +124,8 @@ pub struct Line {
     pub page_break: bool,
     /// It ends with a column break.
     pub column_break: bool,
+    /// It holds pictures or shapes and no text.
+    pub pictures_only: bool,
     /// The notes it refers to: (endnote, id).
     pub notes: Vec<(bool, String)>,
     /// Bookmarks that start on it.
@@ -1249,6 +1251,7 @@ impl Builder {
             items,
             page_break: end == LineEnd::Break(BreakKind::Page),
             column_break: end == LineEnd::Break(BreakKind::Column),
+            pictures_only: only_pictures,
             notes,
             bookmarks: std::mem::take(&mut self.pending_bookmarks),
             shapes,
