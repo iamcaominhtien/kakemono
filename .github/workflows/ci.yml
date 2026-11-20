@@ -125,7 +125,7 @@ jobs:
       # pages as Word's: the minimums are the levels reached, so that a
       # change that lowers them fails.
       - name: Compare with Word's PDFs
-        run: python3 scripts/word-fidelity.py --min-lines 0.95 --min-pages 0.84 --json word-fidelity.json
+        run: python3 scripts/word-fidelity.py --min-lines 0.95 --min-pages 0.86 --json word-fidelity.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

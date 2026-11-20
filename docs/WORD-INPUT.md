@@ -104,8 +104,9 @@ its minimums.
 
 | | Result (2026-11) |
 | --- | --- |
-| Lines broken at the same words as Word | 95.8% |
-| Documents with Word's page count | 85.5% (448 of 524) |
+| Lines broken at the same words as Word | 95.9% (414,132 of 431,845) |
+| Documents with Word's page count | 88.2% (462 of 524) |
+| Lines on the same page as in Word | 80.6% |
 | Conversion errors | 0 |
 
 Pairs left out of the corpus, and why, are in
@@ -114,14 +115,26 @@ that turned out to be of another document, Word files converted from their
 PDF years later (so the PDF is not Word's layout of them), RTF files named
 `.doc`, a Welsh document with its English PDF.
 
-What still differs, roughly by weight:
+What still differs: each of the 62 documents whose page count is not Word's
+has a cause of its own, and a rule that fixes one often breaks others (each
+change is checked against all 524). The causes found so far:
 
-- a page that holds one line more or less than Word's (rounding of line
-  heights accumulates over a page), which moves every later page break;
-- row heights in long tables, where the same rounding adds up;
-- text boxes that do not wrap, and shapes kakemono draws as rectangles
-  (rounded and freeform shapes) or blends over white (transparency);
-- fonts with neither an open equivalent nor built-in metrics.
+- **Footnote areas** in some report templates (Ofsted): Word ends the
+  footnotes one empty line above the bottom margin, in documents whose
+  separator story has the same structure as others where it does not. No
+  property found yet tells the two apart (5 documents).
+- **Forms** made of tables: rows a few points taller or shorter than Word's
+  (merged cells, form fields, check boxes, which kakemono does not draw),
+  which adds up over a page.
+- **Text boxes and frames in `.doc`** that wrap text (a title block in a
+  frame, a two-column layout made of boxes).
+- **Trailing empty paragraphs**: Word usually leaves those that do not fit
+  below the last page, but not always (one document opens a blank page).
+- **East Asian documents**: line grids and fonts with neither an open
+  equivalent nor built-in metrics.
+- **Long documents** (100 pages and more), where a line more or less on one
+  page moves every later page break: their lines still match (95% and
+  more) though the page count is one off.
 
 ### Robustness
 
