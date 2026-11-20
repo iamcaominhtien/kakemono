@@ -673,6 +673,30 @@ impl Flow<'_> {
             .map_or(468.0, |&(_, width)| width)
     }
 
+    /// Where a line `height` high at `top` in the current column must go
+    /// instead, below the objects of the page wrapped top and bottom; or
+    /// `None` when it meets none.
+    fn below_exclusions(&self, top: f32, height: f32) -> Option<f32> {
+        let left = self.column_left();
+        let right = left + self.column_width();
+        let mut y = top;
+        let mut moved = false;
+        // Moving below one object can run into another.
+        for _ in 0..self.state.exclusions.len() {
+            let hit = self.state.exclusions.iter().find(|&&([x0, y0, x1, y1], top_bottom)| {
+                top_bottom && x0 < right && x1 > left && y0 < y + height && y1 > y + EPS
+            });
+            match hit {
+                Some(&([_, _, _, bottom], _)) => {
+                    y = bottom;
+                    moved = true;
+                }
+                None => break,
+            }
+        }
+        moved.then_some(y)
+    }
+
     /// Left edge of the current column.
     fn column_left(&self) -> f32 {
         self.state
@@ -782,6 +806,12 @@ impl Flow<'_> {
             && push > self.state.y
         {
             gap += push - self.state.y;
+        }
+        // A first line that would run into an object text does not flow
+        // beside starts below it, after its space before.
+        let first_height = layout.lines.first().map_or(0.0, |line| line.height);
+        if let Some(below) = self.below_exclusions(self.state.y + gap, first_height) {
+            gap = below + before - self.state.y;
         }
         self.place_lines(para, layout, gap);
         let after = if para.props.after_auto {
