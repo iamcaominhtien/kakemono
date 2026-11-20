@@ -1396,6 +1396,18 @@ impl Flow<'_> {
         let after_prev = self.state.pending_after.take().map_or(0.0, |(after, _, _)| after);
         self.state.y += after_prev + std::mem::take(&mut self.state.pending_border);
         self.state.last_borders = None;
+        // A table floating below the text, as wide as the column: the text
+        // goes on below it; it starts its offset lower.
+        let below_text = table
+            .props
+            .float
+            .as_ref()
+            .filter(|anchor| anchor.vertical.from == AnchorFrom::Paragraph && anchor.vertical.align.is_none());
+        if let Some(anchor) = below_text
+            && !self.state.fresh
+        {
+            self.state.y += anchor.vertical.offset.max(0.0);
+        }
         let width = self.column_width();
         let laid = self.lay_table(table, width);
         let header_rows: Vec<usize> = (0..laid.rows.len()).take_while(|&at| table.rows[at].header).collect();
@@ -1433,6 +1445,9 @@ impl Flow<'_> {
             }
             self.page_break_in_table(&laid, &header_rows, at);
             forced = true;
+        }
+        if let Some(anchor) = below_text {
+            self.state.y += anchor.dist[1];
         }
         self.state.last_style = None;
     }
