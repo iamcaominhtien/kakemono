@@ -53,10 +53,13 @@ does not know which format it reads.
   of the line by less than about half its width), line height from
   the Windows ascent and descent of the line's fonts (a tab's font counts only
   on a line without text), exact, at-least and multiple line spacing.
-- **Pages** (`flow.rs`): space before and after (collapsed as Word does),
+- **Pages** (`flow.rs`): space before and after (collapsed as Word does;
+  at the top of a section that starts a new page, the space before counts
+  only for what it adds to the space after of the section before),
   widows and orphans, keep-with-next and keep-together, page and column
   breaks, sections with their own page size, margins and columns, headers and
-  footers (first page, even pages; a header taller than the top margin,
+  footers (first page, even pages; a page break that ends a section followed
+  by a new page opens no page of its own; a header taller than the top margin,
   with its last paragraph's space after, pushes the body down), footnotes
   at the foot of their page,
   frames and floating objects with their wrapping.
@@ -66,6 +69,10 @@ does not know which format it reads.
   that leave out what does not fit, borders and shading
   from the table style's conditional formats, repeated header rows, rows that
   may or may not break across pages, nested tables.
+
+- **Pictures**: the lines of text of an EMF or WMF picture (a table pasted
+  from Excel, a chart) are drawn as text over the picture, as Word's PDFs
+  do; the bookmarks of a text box are on the page the box is on.
 
 `tests/word_layout.rs` checks seven of the corpus documents (columns, text
 boxes, floating shapes, frames, EMF pictures, exact rows) against Word's
@@ -81,13 +88,15 @@ where Word puts the line.
 `.doc`: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories) each
 with the PDF Word made of it. `scripts/word-fidelity.py` lays each out,
 reads the lines of both PDFs (`kakemono lines`: glyph baselines) and counts
-the lines of Word's PDF that ours breaks at the same words, and the documents
-with the same page count. CI runs it and fails below its minimums.
+the lines of Word's PDF that ours breaks at the same words (spaces are not
+compared: Word's PDFs leave out some, such as those typed in runs of their
+own), and the documents with the same page count. CI runs it and fails below
+its minimums.
 
 | | Result (2026-11) |
 | --- | --- |
-| Lines broken at the same words as Word | 93.9% |
-| Documents with Word's page count | 81.3% (426 of 524) |
+| Lines broken at the same words as Word | 95.7% |
+| Documents with Word's page count | 83.2% (436 of 524) |
 | Conversion errors | 0 |
 
 Pairs left out of the corpus, and why, are in
