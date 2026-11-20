@@ -276,7 +276,16 @@ ready to embed, one JSON object per line:
 Measured on [Qasper](https://allenai.org/data/qasper) (questions on 100 NLP papers; share of the
 gold evidence in the retrieved text, two embedding models; see `eval/qasper/`):
 
-RESULTS_TABLE
+| Chunks from | nomic-embed v1.5, 1024 / 2048 tokens retrieved | Qwen3-Embedding 0.6B, 1024 / 2048 | Time, 100 papers (CPU) |
+| --- | --- | --- | --- |
+| **kakemono** (`-f chunks`) | **0.611** / **0.738** | **0.581** / **0.753** | **9.5 s** |
+| docling + its `HybridChunker` | 0.608 / 0.734 | 0.536 / 0.705 | 2032 s |
+| unstructured (`fast`) + `chunk_by_title` | 0.461 / 0.596 | 0.446 / 0.626 | 153 s |
+| pypdf, cut every 512 tokens | 0.388 / 0.559 | 0.450 / 0.621 | 38 s |
+
+docling ties with nomic and is 4 to 5 points behind with Qwen3 (a difference outside the 95%
+interval of a bootstrap over papers); pypdf and unstructured are 13 to 22 points behind with both. Times are conversion and chunking,
+without embedding, one paper after another on 4 cores.
 
 ```bash
 kakemono convert paper.pdf -o paper.jsonl --chunk-tokens 256
