@@ -14,8 +14,8 @@ use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
-    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    PageImage, Paper, PngCompression,
+    AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
+    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,9 @@ const MIN_SCALE: f32 = 0.2;
 /// Largest accepted `--scale` (pixels per PDF point): larger images only
 /// waste space.
 const MAX_SCALE: f32 = 8.0;
+/// Smallest accepted `--chunk-tokens`: a section path and a sentence need
+/// about this much.
+const MIN_CHUNK_TOKENS: usize = 32;
 /// `inspect` shortens block texts longer than this many characters.
 const INSPECT_MAX_CHARS: usize = 150;
 /// Characters kept from the start of a shortened block text.
@@ -146,6 +149,8 @@ enum FormatArg {
     Epub,
     /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
     Json,
+    /// Chunks for retrieval (.jsonl): pieces of at most --chunk-tokens tokens that follow the sections, each headed by its section path, one JSON object per line
+    Chunks,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -236,10 +241,10 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub or .json; html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub, .json or .jsonl; html otherwise); --mode applies to html only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx, .md, .tex, .epub or .json file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md, .tex, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX and JSON; EPUB books always hold theirs]
@@ -272,6 +277,12 @@ struct ConvertArgs {
     /// Use the text of this edited JSON file (written by --format json for the same PDF) in the output: any format, except hard mode
     #[arg(long, value_name = "FILE.json")]
     content: Option<PathBuf>,
+    /// Largest size of a chunk in tokens (--format chunks)
+    #[arg(long, default_value_t = 512, value_name = "N")]
+    chunk_tokens: usize,
+    /// Count the tokens of chunks with a real tokenizer instead of the estimate: the path of a Hugging Face tokenizer.json (the one of your embedding model), or cl100k_base or o200k_base (OpenAI)
+    #[arg(long, value_name = "FILE.json|NAME")]
+    tokenizer: Option<String>,
     /// Number of worker threads: 0 = one per CPU core, 1 = no parallelism
     #[arg(short, long, default_value_t = 0, value_name = "N")]
     jobs: usize,
@@ -404,7 +415,13 @@ fn convert(args: ConvertArgs) -> Result<()> {
     }
     let format = output_format(&args);
     if format != FormatArg::Html && args.all {
-        bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex, epub or json");
+        bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex, epub, json or chunks");
+    }
+    if args.chunk_tokens < MIN_CHUNK_TOKENS {
+        bail!("--chunk-tokens must be at least {MIN_CHUNK_TOKENS}");
+    }
+    if format != FormatArg::Chunks && args.tokenizer.is_some() {
+        bail!("--tokenizer counts the tokens of chunks: it needs --format chunks (or a .jsonl output)");
     }
     if args.content.is_some() && format == FormatArg::Html && !args.all && args.mode == ModeArg::Hard {
         bail!("hard mode shows the pages of the PDF: it cannot show edited text from --content (hard-95 can)");
@@ -447,6 +464,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
+        FormatArg::Chunks => write_chunks(&paper, &analysis, &args, &paths.single_file(&stem, "chunks.jsonl"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
     }
 
@@ -478,6 +496,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "tex" | "latex" => FormatArg::Latex,
             "epub" => FormatArg::Epub,
             "json" => FormatArg::Json,
+            "jsonl" => FormatArg::Chunks,
             _ => FormatArg::Html,
         }
     })
@@ -652,6 +671,36 @@ fn write_json(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usiz
         "json",
         file.display(),
         out.json.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Writes `analysis` as chunks (JSON Lines) to `file` and reports the
+/// result on stderr.
+///
+/// # Errors
+/// When the tokenizer of `--tokenizer` cannot be loaded or the file cannot
+/// be written.
+fn write_chunks(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, file: &Path) -> Result<()> {
+    let counter = match &args.tokenizer {
+        Some(spec) => TokenCounter::load(spec)?,
+        None => TokenCounter::estimate(),
+    };
+    let opts = ChunkOptions {
+        max_tokens: args.chunk_tokens,
+        counter,
+    };
+    let started = Instant::now();
+    let chunks = paper.to_chunks(analysis, &opts);
+    write_file(file, kakemono::chunks_jsonl(&chunks).as_bytes())?;
+    let tokens: usize = chunks.iter().map(|chunk| chunk.tokens).sum();
+    eprintln!(
+        "{:<8} -> {} ({} chunks, {tokens} tokens{}, {:.2}s)",
+        "chunks",
+        file.display(),
+        chunks.len(),
+        if args.tokenizer.is_some() { "" } else { " estimated" },
         started.elapsed().as_secs_f32()
     );
     Ok(())

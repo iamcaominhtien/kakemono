@@ -1,4 +1,4 @@
-"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books or editable JSON.
+"""Convert PDF papers and books into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -9,6 +9,7 @@
 >>> book = kakemono.to_epub("paper.pdf", "out/paper.epub")    # an EPUB book (also returns its bytes)
 >>> content = kakemono.to_json("paper.pdf", "out/paper.json")  # editable JSON + out/paper_assets/
 >>> html = kakemono.convert("paper.pdf", "hard-95", content="out/paper.vi.json")  # with the edited text
+>>> chunks = kakemono.to_chunks("paper.pdf")             # chunks for retrieval (RAG), a list of dicts
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 
 The work is done by the kakemono Rust library; the GIL is released while it
@@ -32,6 +33,7 @@ __all__ = [
     "convert",
     "convert_all",
     "fetch_arxiv",
+    "to_chunks",
     "to_docx",
     "to_epub",
     "to_json",
@@ -394,6 +396,45 @@ def to_epub(
     if path is not None:
         _write(path, book)
     return book
+
+
+def to_chunks(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    max_tokens: int = 512,
+    tokenizer: Optional[PathArg] = None,
+    tables: bool = True,
+    jobs: int = 0,
+    content: Optional[Content] = None,
+) -> List[Dict[str, Any]]:
+    """Cut a PDF into chunks for retrieval (RAG) and return them as dicts.
+
+    Chunks follow the sections: each holds the blocks of one section, up to
+    `max_tokens` tokens, and its ``text`` starts with the section path
+    (``3 Model > 3.2 Attention``). Each also has its ``tokens``, the paper's
+    ``title``, its ``section`` headings, and the ``blocks`` (ids of
+    :func:`to_json`) and ``pages`` it comes from.
+
+    Tokens are estimated unless `tokenizer` names a real one: the path of a
+    Hugging Face ``tokenizer.json`` (your embedding model's), or
+    ``"cl100k_base"`` / ``"o200k_base"`` for OpenAI's models. When `path` is
+    given, the chunks are also written there as JSON Lines. The other options
+    are those of :func:`convert_all`.
+    """
+    data, name = _load(source)
+    text = _kakemono.to_chunks(
+        data,
+        source=name,
+        max_tokens=max_tokens,
+        tokenizer=os.fspath(tokenizer) if tokenizer is not None else None,
+        tables=tables,
+        jobs=jobs,
+        content=_content(content),
+    )
+    if path is not None:
+        _write(path, text)
+    return [json.loads(line) for line in text.split("\n") if line]
 
 
 def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:

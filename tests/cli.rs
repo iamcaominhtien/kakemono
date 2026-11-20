@@ -325,3 +325,70 @@ fn edited_json_gives_latex_that_compiles_in_vietnamese() {
     assert!(!hard.status.success());
     assert!(String::from_utf8_lossy(&hard.stderr).contains("hard mode"));
 }
+
+#[test]
+fn convert_writes_chunks_as_json_lines() {
+    let dir = scratch("cli-chunks");
+    // `-o x.jsonl` is enough to choose the format.
+    let file = dir.join("ligo.jsonl");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--chunk-tokens",
+        "128",
+        "-o",
+        file.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let chunks: Vec<serde_json::Value> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(chunks.len() > 10);
+    assert!(chunks.iter().all(|chunk| chunk["tokens"].as_u64().unwrap() <= 128));
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk["text"].as_str().unwrap().starts_with("I. INTRODUCTION\n\n"))
+    );
+
+    // `--format chunks` with a directory gives `<stem>.chunks.jsonl`.
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-f", "chunks", "-o", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("1602.03837v1.chunks.jsonl").is_file());
+
+    // A tokenizer counts the tokens of chunks only.
+    let html = kakemono(&[
+        "convert",
+        LIGO,
+        "--tokenizer",
+        "o200k_base",
+        "-o",
+        dir.join("x.html").to_str().unwrap(),
+    ]);
+    assert!(!html.status.success());
+    assert!(String::from_utf8_lossy(&html.stderr).contains("--tokenizer"));
+}
+
+#[cfg(feature = "openai-tokenizers")]
+#[test]
+fn chunks_can_be_sized_by_an_openai_tokenizer() {
+    let dir = scratch("cli-chunks-openai");
+    let file = dir.join("ligo.jsonl");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--tokenizer",
+        "cl100k_base",
+        "-o",
+        file.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("tokens,") && !stderr.contains("estimated"), "{stderr}");
+}

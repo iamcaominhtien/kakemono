@@ -2,9 +2,10 @@
 //! ([`render_docx`]), Markdown output ([`render_markdown`]), LaTeX output
 //! ([`render_latex`]), EPUB output ([`render_epub`]) and JSON output
 //! (`render_json`), which can also be edited and applied back
-//! (`apply_content`).
+//! (`apply_content`), and chunks for retrieval ([`render_chunks`]).
 
 mod assets;
+mod chunks;
 mod code;
 mod docx;
 mod epub;
@@ -24,6 +25,9 @@ mod table;
 mod zip;
 
 pub(crate) use assets::ImageStore;
+pub use chunks::{
+    Chunk, ChunkOptions, NAMED_TOKENIZERS, TokenCounter, chunks_jsonl, estimate as estimate_tokens, render_chunks,
+};
 pub use docx::{DocxOptions, DocxOutput, render_docx, render_docx_with_images};
 pub use epub::{EpubOptions, render_epub};
 pub(crate) use escape::*;

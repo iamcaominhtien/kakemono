@@ -45,6 +45,7 @@ pub use backend::{PageRenderer, PngCompression};
 pub use config::{AnalyzeOptions, LayoutConfig};
 pub use paper::{Paper, convert};
 pub use render::{
-    ContentReport, DocxOptions, DocxOutput, EpubOptions, Equations, HtmlOptions, HtmlOutput, JsonOptions, JsonOutput,
-    LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, PageImage,
+    Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, Equations, HtmlOptions, HtmlOutput,
+    JsonOptions, JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, NAMED_TOKENIZERS,
+    PageImage, TokenCounter, chunks_jsonl,
 };

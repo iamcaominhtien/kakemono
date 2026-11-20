@@ -170,3 +170,16 @@ def test_unreadable_edited_text_warns_and_keeps_the_original():
     other = dict(content, source={"format": "pdf", "sha256": "0" * 64})
     with pytest.raises(ValueError, match="another file"):
         kakemono.to_markdown(LIGO, content=other)
+
+
+def test_to_chunks_follows_the_sections(tmp_path):
+    out = tmp_path / "ligo.jsonl"
+    chunks = kakemono.to_chunks(LIGO, out, max_tokens=256)
+    assert len(chunks) > 10
+    assert all(chunk["tokens"] <= 256 for chunk in chunks)
+    assert any(chunk["text"].startswith("I. INTRODUCTION\n\n") for chunk in chunks)
+    assert len(out.read_text().splitlines()) == len(chunks)
+    exact = kakemono.to_chunks(LIGO, tokenizer="cl100k_base")
+    assert all(chunk["tokens"] <= 512 for chunk in exact)
+    with pytest.raises(ValueError):
+        kakemono.to_chunks(LIGO, tokenizer=tmp_path / "missing.json")

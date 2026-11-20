@@ -6,9 +6,10 @@ use crate::backend::{PageRenderer, PdfFile, PngCompression};
 use crate::config::AnalyzeOptions;
 use crate::model::Meta;
 use crate::render::{
-    ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions, JsonOutput,
-    LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, SourceInfo, apply_content, render, render_docx,
-    render_docx_with_images, render_epub, render_json, render_latex, render_markdown, render_to,
+    Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions,
+    JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, SourceInfo, apply_content, render,
+    render_chunks, render_docx, render_docx_with_images, render_epub, render_json, render_latex, render_markdown,
+    render_to,
 };
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -163,6 +164,14 @@ impl Paper {
     /// since the pictures are drawn from its PDF.
     pub fn to_json(&self, analysis: &Analysis, opts: &JsonOptions) -> JsonOutput {
         render_json(analysis, &self.pdf, opts, &self.source_info())
+    }
+
+    /// Cuts an analysis into chunks for retrieval (RAG): pieces of at most
+    /// `opts.max_tokens` tokens that follow the sections of the document,
+    /// each headed by its section path, with the blocks and pages it comes
+    /// from. Write them as JSON Lines with [`chunks_jsonl`](crate::chunks_jsonl).
+    pub fn to_chunks(&self, analysis: &Analysis, opts: &ChunkOptions) -> Vec<Chunk> {
+        render_chunks(&analysis.doc, opts)
     }
 
     /// Applies an edited JSON file (written by [`Paper::to_json`] for this

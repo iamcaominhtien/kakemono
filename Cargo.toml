@@ -48,6 +48,19 @@ mimalloc = { version = "0.1.52", features = ["v2"] }
 libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 png = "0.18"
 sha2 = "0.10"
+# Real tokenizers for `--tokenizer` of the chunks output (optional: without
+# them, chunk sizes are estimated). Hugging Face's reads the tokenizer.json of
+# an embedding model; tiktoken-rs holds OpenAI's cl100k_base and o200k_base
+# (about 6 MB; bpe-openai, faster, adds 70 MB of tables).
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
+tiktoken-rs = { version = "0.12", optional = true }
+
+[features]
+default = ["tokenizers", "openai-tokenizers"]
+## `--tokenizer path/to/tokenizer.json` (Hugging Face tokenizers).
+tokenizers = ["dep:tokenizers"]
+## `--tokenizer cl100k_base` / `o200k_base` (OpenAI's tokenizers).
+openai-tokenizers = ["dep:tiktoken-rs"]
 
 [profile.release]
 opt-level = 3
