@@ -132,27 +132,37 @@ def struct_units(doc: dict) -> list:
     return units
 
 
-def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
-    chunks: list[str] = []
-    head, body = "", []
-
-    def flush():
-        if body:
-            chunks.append((head + "\n\n" if head else "") + "\n\n".join(body))
-            body.clear()
-
-    for unit in struct_units(doc):
-        if unit is None or unit[0] != head:
-            flush()
+def section_runs(units: list) -> list[tuple[str, list[str]]]:
+    """The texts of `units` grouped into runs that share a chunk heading, broken at each heading."""
+    runs: list[tuple[str, list[str]]] = []
+    open_run = False
+    for unit in units:
         if unit is None:
-            continue
-        head = unit[0]
-        for piece in block_pieces(unit[1], head, size):
-            if body and count_tokens(head + "\n\n" + "\n\n".join(body + [piece])) > size:
-                flush()
-            body.append(piece)
-    flush()
+            open_run = False
+        elif open_run and runs[-1][0] == unit[0]:
+            runs[-1][1].append(unit[1])
+        else:
+            runs.append((unit[0], [unit[1]]))
+            open_run = True
+    return runs
+
+
+def pack(head: str, texts: list[str], size: int) -> list[str]:
+    """The chunks of one run: its texts, cut to fit, packed in order under `head`."""
+    chunks, body = [], []
+    prefix = head + "\n\n" if head else ""
+    for piece in (p for text in texts for p in block_pieces(text, head, size)):
+        if body and count_tokens(head + "\n\n" + "\n\n".join(body + [piece])) > size:
+            chunks.append(prefix + "\n\n".join(body))
+            body = []
+        body.append(piece)
+    if body:
+        chunks.append(prefix + "\n\n".join(body))
     return chunks
+
+
+def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
+    return [chunk for head, texts in section_runs(struct_units(doc)) for chunk in pack(head, texts, size)]
 
 
 def drop_title(chunk: str) -> str:
