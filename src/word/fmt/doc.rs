@@ -280,6 +280,12 @@ impl Reader<'_> {
         {
             doc.footnote_separator = Some(self.story(hdd_base + from, hdd_base + to));
         }
+        // The third is the notice for footnotes that go on.
+        if let (Some(&from), Some(&to)) = (hdd.get(2), hdd.get(3))
+            && to > from
+        {
+            doc.footnote_notice = Some(self.story(hdd_base + from, hdd_base + to));
+        }
         let mut previous = [None; STORIES_PER_SECTION];
         for (at, (start, end, props)) in ranges.into_iter().enumerate() {
             let mut stories = previous;

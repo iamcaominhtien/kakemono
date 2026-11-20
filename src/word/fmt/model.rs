@@ -21,6 +21,9 @@ pub struct FDoc {
     /// The line between the text and the footnotes of a page, when the file
     /// sets it.
     pub footnote_separator: Option<Vec<Block>>,
+    /// The notice for footnotes that go on to the next page, when the file
+    /// sets one (`.doc`): Word keeps room for it below the footnotes.
+    pub footnote_notice: Option<Vec<Block>>,
     /// The endnotes, by their id in the file.
     pub endnotes: Vec<(String, Vec<Block>)>,
     /// The pictures, as PNG or JPEG files.

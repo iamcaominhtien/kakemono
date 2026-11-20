@@ -454,6 +454,15 @@ impl Flow<'_> {
         layout.lines.first().map_or(12.0, |line| line.height)
     }
 
+    /// Room Word keeps below the footnotes of a page: the notice for
+    /// footnotes that go on to the next page, when the file sets one.
+    fn notes_reserve(&mut self) -> f32 {
+        match &self.doc.footnote_notice {
+            Some(blocks) => self.blocks_height(blocks, 100.0, None),
+            None => 0.0,
+        }
+    }
+
     /// Bottom of the header and top of the footer of a page, laid out with
     /// a provisional page number.
     fn header_extent(&mut self, section: usize, number: u32, first: bool) -> (f32, f32) {
@@ -680,7 +689,14 @@ impl Flow<'_> {
                     if breaks_page(para) {
                         // The chain ends at a page break: what comes before
                         // it stays on this page.
-                        height += before + layout.lines.first().map_or(0.0, |line| line.height);
+                        // A paragraph that starts with the break leaves
+                        // only the break's empty line (and its space before
+                        // goes to the new page).
+                        height += match layout.lines.first() {
+                            Some(line) if line.page_break && line.items.is_empty() => line.fit_height,
+                            Some(line) => before + line.height,
+                            None => before,
+                        };
                         break;
                     }
                     if para.props.keep_next {
@@ -1083,7 +1099,7 @@ impl Flow<'_> {
                 continue;
             }
             if self.state.page_notes.is_empty() && height == 0.0 {
-                height += self.separator_height();
+                height += self.separator_height() + self.notes_reserve();
             }
             height += self.note_lines(id).iter().map(|line| line.height).sum::<f32>();
         }
@@ -1120,7 +1136,7 @@ impl Flow<'_> {
     /// Adds footnote `id` to the page.
     fn add_note(&mut self, id: &str) {
         if self.state.page_notes.is_empty() {
-            self.state.notes_height += self.separator_height();
+            self.state.notes_height += self.separator_height() + self.notes_reserve();
         }
         let lines = self.note_lines(id);
         self.state.notes_height += lines.iter().map(|line| line.height).sum::<f32>();
@@ -1140,7 +1156,7 @@ impl Flow<'_> {
             return 0.0;
         }
         let mut height = if self.state.page_notes.is_empty() {
-            self.separator_height()
+            self.separator_height() + self.notes_reserve()
         } else {
             0.0
         };
