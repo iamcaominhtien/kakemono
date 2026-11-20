@@ -959,6 +959,19 @@ impl Flow<'_> {
         let mut at = 0;
         let borders = para.props.borders;
         let shading = para.props.shading;
+        // A paragraph that starts with a page break: the break's empty line
+        // ends the page it is on, and the space before goes with the text
+        // after it, on the new page, for what it adds to the space after
+        // the paragraph before (as at the top of a section).
+        if count > 1 && lines[0].page_break && lines[0].items.is_empty() && !self.state.fresh {
+            let page = self.pages.len() - 1;
+            let x = self.column_left();
+            self.place_line(para, &lines[0], true, page, x, self.state.y);
+            self.next_page();
+            let (after, before) = self.state.trace_spacing;
+            gap = (self.spacing(after, before) - after).max(0.0);
+            at = 1;
+        }
         while at < count {
             let (fit, chunk_end) = self.lines_that_fit(&lines, at, gap);
             let take = self.lines_to_take(para, at, fit, chunk_end - at);

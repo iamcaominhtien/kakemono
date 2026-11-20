@@ -125,6 +125,14 @@ struct Reader<'a> {
     pending_shapes: Vec<(usize, Shape)>,
 }
 
+/// Byte of the DOP (in its Word 2000 part) holding the option that makes
+/// paragraph spacing the larger of the space after and before, and its
+/// bit. Found by comparing with Word's PDFs: every document whose spacing
+/// Word adds has it off, nearly all others on.
+const DOP_HTML_SPACING_BYTE: usize = 0x21E;
+/// See [`DOP_HTML_SPACING_BYTE`].
+const DOP_HTML_SPACING_BIT: u8 = 0x40;
+
 /// The document-wide settings of a `.doc`, from its DOP.
 fn settings(dop: &[u8]) -> FDoc {
     if std::env::var_os("KAKEMONO_DEBUG_DOC").is_some() {
@@ -139,6 +147,12 @@ fn settings(dop: &[u8]) -> FDoc {
         endnote_format: NumFormat::LowerRoman,
         compat_mode: 11,
         split_break_and_mark: true,
+        // A compatibility option of Word 2000 on (as in nearly every
+        // document): the space between paragraphs is the larger of the
+        // two. Off, it is their sum, as in .docx without HTML spacing.
+        add_paragraph_spacing: dop
+            .get(DOP_HTML_SPACING_BYTE)
+            .is_some_and(|byte| byte & DOP_HTML_SPACING_BIT == 0),
         ..Default::default()
     }
 }
