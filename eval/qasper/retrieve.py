@@ -82,14 +82,19 @@ def embedder(model: str):
     return lambda texts, query: m.encode([(qp if query else dp) + t for t in texts], batch_size=8, normalize_embeddings=True)
 
 
-def cached(file, compute):
-    """The array in `file`, computed and saved there the first time."""
+def cached(file, compute, *args):
+    """The array in `file`, computed by `compute(*args)` and saved there the first time."""
     if file.exists():
         return np.load(file)
-    arr = compute()
+    arr = compute(*args)
     file.parent.mkdir(parents=True, exist_ok=True)
     np.save(file, arr)
     return arr
+
+
+def embed_chunks(embed, chunks: list[dict], dim: int):
+    """The embeddings of the chunks of one paper (none for a paper without text)."""
+    return embed([c["text"] for c in chunks], False) if chunks else np.zeros((0, dim))
 
 
 def retrieved(chunks: list[dict], order, budget: int) -> list[str]:
@@ -120,10 +125,7 @@ def run_pipeline(pipeline: str, ids: list[str], qs: list[dict], qemb, embed, cac
     rows = []
     for pid in ids:
         chunks = read_jsonl(CHUNKS / pipeline / f"{pid}.jsonl")
-        emb = cached(
-            cache / pipeline / f"{pid}.npy",
-            lambda: embed([c["text"] for c in chunks], False) if chunks else np.zeros((0, qemb.shape[1])),
-        )
+        emb = cached(cache / pipeline / f"{pid}.npy", embed_chunks, embed, chunks, qemb.shape[1])
         whole = ngrams(words(" ".join(c["text"] for c in chunks)))
         rows += [score(q, pid, chunks, emb, qemb[qi], whole) for qi, q in enumerate(qs) if q["pid"] == pid]
         print(f"{pipeline} {pid} done", file=sys.stderr, flush=True)
@@ -137,7 +139,7 @@ def main():
     embed = embedder(model)
     cache = RESULTS / "emb" / model
     cache.mkdir(parents=True, exist_ok=True)
-    qemb = cached(cache / "questions.npy", lambda: embed([q["question"] for q in qs], True))
+    qemb = cached(cache / "questions.npy", embed, [q["question"] for q in qs], True)
     summary = {}
     for pipeline in pipelines:
         rows = run_pipeline(pipeline, ids, qs, qemb, embed, cache)
