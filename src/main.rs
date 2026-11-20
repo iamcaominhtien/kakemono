@@ -355,14 +355,22 @@ fn run() -> Result<()> {
         Command::Lines { input } => {
             let data = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
             let (lines, pages) = kakemono::layout::lines::pdf_lines(data)?;
-            println!("pages\t{pages}");
-            for line in lines {
-                println!(
-                    "{}\t{:.2}\t{:.2}\t{:.2}\t{}",
-                    line.page, line.baseline, line.left, line.right, line.text
-                );
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            let written = writeln!(out, "pages\t{pages}").and_then(|()| {
+                for line in lines {
+                    writeln!(
+                        out,
+                        "{}\t{:.2}\t{:.2}\t{:.2}\t{}",
+                        line.page, line.baseline, line.left, line.right, line.text
+                    )?;
+                }
+                out.flush()
+            });
+            // A reader that stops early (`| head`) is not an error.
+            match written {
+                Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.into()),
+                _ => Ok(()),
             }
-            Ok(())
         }
         Command::Formula { images, scores } => formula(&images, scores),
     }
