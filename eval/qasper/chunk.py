@@ -101,18 +101,24 @@ def split_long(text: str, budget: int) -> list[str]:
     return pieces
 
 
+def section_path(by_id: dict, section_id) -> str:
+    """The headings from the top down to `section_id`, joined by " > "."""
+    names = []
+    while section_id is not None and section_id in by_id:
+        h = by_id[section_id]
+        names.append(h.get("plain", ""))
+        section_id = h.get("parent")
+    return " > ".join(reversed(names))
+
+
+def block_pieces(text: str, head: str, size: int) -> list[str]:
+    """`text` as it fits in chunks headed by `head`: whole, or cut at sentence ends."""
+    room = size - count_tokens(head) - 2
+    return split_long(text, room) if count_tokens(text) > room else [text]
+
+
 def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
-    blocks = doc["blocks"]
-    by_id = {b["id"]: b for b in blocks}
-
-    def path(section_id):
-        names = []
-        while section_id is not None and section_id in by_id:
-            h = by_id[section_id]
-            names.append(h.get("plain", ""))
-            section_id = h.get("parent")
-        return " > ".join(reversed(names))
-
+    by_id = {b["id"]: b for b in doc["blocks"]}
     title = doc.get("meta", {}).get("title", "")
     chunks: list[str] = []
     head, body = "", []
@@ -122,19 +128,17 @@ def struct_chunks(doc: dict, size: int = MAX_CHUNK_TOKENS) -> list[str]:
             chunks.append((head + "\n\n" if head else "") + "\n\n".join(body))
             body.clear()
 
-    for b in blocks:
+    for b in doc["blocks"]:
+        text = "" if b["type"] == "heading" else block_text(b).strip()
         if b["type"] == "heading":
             flush()
-            continue
-        text = block_text(b).strip()
         if not text:
             continue
-        new_head = " | ".join(p for p in (title, path(b.get("section"))) if p)
+        new_head = " | ".join(p for p in (title, section_path(by_id, b.get("section"))) if p)
         if new_head != head:
             flush()
             head = new_head
-        room = size - count_tokens(head) - 2
-        for piece in split_long(text, room) if count_tokens(text) > room else [text]:
+        for piece in block_pieces(text, head, size):
             if body and count_tokens(head + "\n\n" + "\n\n".join(body + [piece])) > size:
                 flush()
             body.append(piece)

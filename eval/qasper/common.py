@@ -54,7 +54,7 @@ _WORD = re.compile(r"[a-z0-9]+")
 def words(text: str) -> list[str]:
     """Lower-case alphanumeric words, placeholders dropped, hyphenation joined."""
     text = _PLACEHOLDER.sub(" ", text)
-    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)  # "seg-\nment" -> "segment"
+    text = re.sub(r"(\w)-[^\S\n]*\n\s*(\w)", r"\1\2", text)  # "seg-\nment" -> "segment"
     return _WORD.findall(text.lower())
 
 

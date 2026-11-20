@@ -91,13 +91,33 @@ def ask(system: str, user: str, max_tokens: int) -> str:
     return "".join(b.text for b in r.content if b.type == "text").strip()
 
 
+def judge_score(verdict: str) -> float:
+    """1 for CORRECT, 0.5 for PARTIAL, 0 otherwise."""
+    v = verdict.upper()
+    if v.startswith("CORRECT"):
+        return 1.0
+    if v.startswith("PARTIAL"):
+        return 0.5
+    return 0.0
+
+
+def excerpts_of(row: dict, pipeline: str, budget: int) -> list[str]:
+    """The retrieved chunks of a question, in rank order, cut at `budget` tokens."""
+    chunks = read_jsonl(CHUNKS / pipeline / f"{row['pid']}.jsonl")
+    left, excerpts = budget, []
+    for j in row[f"top@{budget}"]:
+        c = chunks[j]
+        excerpts.append(c["text"] if c["tokens"] <= left else cut_tokens(c["text"], left))
+        left -= c["tokens"]
+    return excerpts
+
+
 def solve(item: dict) -> dict:
     context = "\n\n---\n\n".join(item["excerpts"])
     answer = ask(ANSWER_SYSTEM, f"Excerpts:\n\n{context}\n\nQuestion: {item['question']}", 2000)
     refs = "\n".join(f"- {r}" for r in item["refs"])
     verdict = ask(JUDGE_SYSTEM, f"Question: {item['question']}\n\nReferences:\n{refs}\n\nAnswer: {answer}", 500)
-    v = verdict.upper()
-    judge = 1.0 if v.startswith("CORRECT") else 0.5 if v.startswith("PARTIAL") else 0.0
+    judge = judge_score(verdict)
     f1 = max(token_f1(answer, r) for r in item["refs"])
     return {"qid": item["qid"], "answer": answer, "verdict": verdict, "judge": judge, "answer_f1": f1}
 
@@ -110,18 +130,16 @@ def main():
         rows = json.loads((RESULTS / model / f"{pipeline}.json").read_text())
         out = RESULTS / model / f"answers-{budget}-{pipeline}.jsonl"
         done = {r["qid"]: r for r in read_jsonl(out)} if out.exists() else {}
-        todo = []
-        for r in rows:
-            if r["qid"] in done:
-                continue
-            chunks = read_jsonl(CHUNKS / pipeline / f"{r['pid']}.jsonl")
-            left, excerpts = budget, []
-            for j in r[f"top@{budget}"]:
-                c = chunks[j]
-                excerpts.append(c["text"] if c["tokens"] <= left else cut_tokens(c["text"], left))
-                left -= c["tokens"]
-            q = by_qid[r["qid"]]
-            todo.append({"qid": r["qid"], "question": q["question"], "excerpts": excerpts, "refs": references(q)})
+        todo = [
+            {
+                "qid": r["qid"],
+                "question": by_qid[r["qid"]]["question"],
+                "excerpts": excerpts_of(r, pipeline, budget),
+                "refs": references(by_qid[r["qid"]]),
+            }
+            for r in rows
+            if r["qid"] not in done
+        ]
         with ThreadPoolExecutor(WORKERS) as pool, out.open("a") as f:
             for res in pool.map(solve, todo):
                 done[res["qid"]] = res

@@ -38,12 +38,12 @@ MODELS = {
 # run (trust_remote_code). Both its repositories are pinned to the commits
 # whose code was read, so that what runs cannot change.
 REMOTE_CODE = {
-    "nomic": dict(
-        trust_remote_code=True,
-        revision="e9b6763023c676ca8431644204f50c2b100d9aab",
-        config_kwargs={"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
-        model_kwargs={"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
-    ),
+    "nomic": {
+        "trust_remote_code": True,
+        "revision": "e9b6763023c676ca8431644204f50c2b100d9aab",
+        "config_kwargs": {"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
+        "model_kwargs": {"code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca"},
+    },
 }
 
 
@@ -82,6 +82,54 @@ def embedder(model: str):
     return lambda texts, query: m.encode([(qp if query else dp) + t for t in texts], batch_size=8, normalize_embeddings=True)
 
 
+def cached(file, compute):
+    """The array in `file`, computed and saved there the first time."""
+    if file.exists():
+        return np.load(file)
+    arr = compute()
+    file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(file, arr)
+    return arr
+
+
+def retrieved(chunks: list[dict], order, budget: int) -> list[str]:
+    """The texts of the chunks in rank order until `budget` tokens, the last one cut."""
+    left, parts = budget, []
+    for j in order:
+        if left <= 0:
+            break
+        c = chunks[j]
+        parts.append(c["text"] if c["tokens"] <= left else cut_tokens(c["text"], left))
+        left -= c["tokens"]
+    return parts
+
+
+def score(q: dict, pid: str, chunks: list[dict], emb, qvec, whole: set) -> dict:
+    """The row of one question: its ceiling, and recall and ranks at each budget."""
+    order = np.argsort(-(emb @ qvec)) if len(chunks) else []
+    row = {"qid": q["qid"], "pid": pid, "ceiling": coverage(q["evidences"], whole)}
+    for budget in BUDGETS:
+        parts = retrieved(chunks, order, budget)
+        row[f"recall@{budget}"] = coverage(q["evidences"], ngrams(words("\n".join(parts))))
+        row[f"top@{budget}"] = [int(j) for j in order[: len(parts)]]
+    return row
+
+
+def run_pipeline(pipeline: str, ids: list[str], qs: list[dict], qemb, embed, cache) -> list[dict]:
+    """The rows of every question for one pipeline, embedding its chunks when not cached."""
+    rows = []
+    for pid in ids:
+        chunks = read_jsonl(CHUNKS / pipeline / f"{pid}.jsonl")
+        emb = cached(
+            cache / pipeline / f"{pid}.npy",
+            lambda: embed([c["text"] for c in chunks], False) if chunks else np.zeros((0, qemb.shape[1])),
+        )
+        whole = ngrams(words(" ".join(c["text"] for c in chunks)))
+        rows += [score(q, pid, chunks, emb, qemb[qi], whole) for qi, q in enumerate(qs) if q["pid"] == pid]
+        print(f"{pipeline} {pid} done", file=sys.stderr, flush=True)
+    return rows
+
+
 def main():
     model, pipelines = sys.argv[1], sys.argv[2:] or ["pypdf-fixed", "kakemono-fixed", "kakemono-struct"]
     papers, ids = qasper(), sample_ids()
@@ -89,42 +137,10 @@ def main():
     embed = embedder(model)
     cache = RESULTS / "emb" / model
     cache.mkdir(parents=True, exist_ok=True)
-    qfile = cache / "questions.npy"
-    if qfile.exists():
-        qemb = np.load(qfile)
-    else:
-        qemb = embed([q["question"] for q in qs], True)
-        np.save(qfile, qemb)
+    qemb = cached(cache / "questions.npy", lambda: embed([q["question"] for q in qs], True))
     summary = {}
     for pipeline in pipelines:
-        rows = []
-        for pid in ids:
-            chunks = read_jsonl(CHUNKS / pipeline / f"{pid}.jsonl")
-            efile = cache / pipeline / f"{pid}.npy"
-            if efile.exists():
-                emb = np.load(efile)
-            else:
-                emb = embed([c["text"] for c in chunks], False) if chunks else np.zeros((0, qemb.shape[1]))
-                efile.parent.mkdir(parents=True, exist_ok=True)
-                np.save(efile, emb)
-            whole = ngrams(words(" ".join(c["text"] for c in chunks)))
-            for qi, q in enumerate(qs):
-                if q["pid"] != pid:
-                    continue
-                order = np.argsort(-(emb @ qemb[qi])) if len(chunks) else []
-                row = {"qid": q["qid"], "pid": pid, "ceiling": coverage(q["evidences"], whole)}
-                for budget in BUDGETS:
-                    left, parts = budget, []
-                    for j in order:
-                        if left <= 0:
-                            break
-                        c = chunks[j]
-                        parts.append(c["text"] if c["tokens"] <= left else cut_tokens(c["text"], left))
-                        left -= c["tokens"]
-                    row[f"recall@{budget}"] = coverage(q["evidences"], ngrams(words("\n".join(parts))))
-                    row[f"top@{budget}"] = [int(j) for j in order[: len(parts)]]
-                rows.append(row)
-            print(f"{pipeline} {pid} done", file=sys.stderr, flush=True)
+        rows = run_pipeline(pipeline, ids, qs, qemb, embed, cache)
         (RESULTS / model).mkdir(parents=True, exist_ok=True)
         (RESULTS / model / f"{pipeline}.json").write_text(json.dumps(rows))
         keys = ["ceiling"] + [f"recall@{b}" for b in BUDGETS]
