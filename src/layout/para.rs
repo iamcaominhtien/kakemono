@@ -250,11 +250,12 @@ impl Ctx<'_> {
     /// The face and size used for `ch` in a run of format `fmt`.
     fn face_for(&mut self, ch: char, fmt: &RunFmt) -> FaceChoice {
         let (face, fake_bold, fake_italic, size, family) = self.face_and_family(ch, fmt);
-        // A missing font with known metrics: measured with them.
-        let metric = (!self.book.has_family(&family))
-            .then(|| super::metrics::lookup(&family, fmt.bold, fmt.italic))
-            .flatten()
-            .filter(|metric| ch.is_whitespace() || metric.vertical_only() || metric.advance(ch).is_some());
+        // A missing font with known metrics: measured with them. A face
+        // known by its vertical metrics alone applies to a stand-in too
+        // (Caladea has Cambria's widths, not its line height).
+        let missing = !self.book.has_family(&family);
+        let metric = super::metrics::lookup(&family, fmt.bold, fmt.italic)
+            .filter(|metric| metric.vertical_only() || missing && (ch.is_whitespace() || metric.advance(ch).is_some()));
         (
             face,
             fake_bold,

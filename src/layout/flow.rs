@@ -332,6 +332,13 @@ impl Flow<'_> {
                 self.blocks(&section.blocks[section.blocks.len() - 1..]);
                 self.state.break_ends_section = false;
             }
+            Some((Block::Para(last), rest))
+                if at + 1 < self.doc.sections.len() && last.inlines.is_empty() && !rest.is_empty() =>
+            {
+                // The empty paragraph that holds a continuous section break
+                // takes no room.
+                self.blocks(rest);
+            }
             _ => self.blocks(&section.blocks),
         }
     }
