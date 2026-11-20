@@ -175,14 +175,31 @@ def fidelity_summary(rows):
     }
 
 
+def file_kb(corpus, doc_id):
+    """The size of the Word file of `doc_id` in the corpus, in KB."""
+    for ext in ('.docx', '.doc'):
+        path = os.path.join(corpus, doc_id + ext)
+        if os.path.exists(path):
+            return os.path.getsize(path) / 1024
+    return 0.0
+
+
+def tool_figures(rows, ids, pages):
+    """Time and memory of one tool over the documents `ids` (`pages` pages)."""
+    mine = [r for r in rows if r['id'] in ids]
+    seconds = sum(r['seconds'] for r in mine)
+    return {
+        'median_seconds': round(statistics.median(r['seconds'] for r in mine), 3),
+        'pages_per_second': round(pages / max(seconds, 1e-9), 1),
+        'median_peak_mb': round(statistics.median(r['peak_mb'] for r in mine), 1),
+        'max_peak_mb': round(max(r['peak_mb'] for r in mine), 1),
+    }
+
+
 def size_table(results, corpus):
     """Time and memory of each tool by document size (pages of Word's PDF),
     over the documents both converted."""
-    pages = {}
-    for rows in results.values():
-        for r in rows:
-            if 'ref_pages' in r:
-                pages[r['id']] = r['ref_pages']
+    pages = {r['id']: r['ref_pages'] for rows in results.values() for r in rows if 'ref_pages' in r}
     both = set.intersection(*({r['id'] for r in rows if 'error' not in r} for rows in results.values()))
     table = []
     for label, first, last in SIZE_BINS:
@@ -190,22 +207,9 @@ def size_table(results, corpus):
         if not ids:
             continue
         row = {'size': label, 'documents': len(ids), 'pages': sum(pages[i] for i in ids)}
-        sizes = []
-        for doc_id in ids:
-            for ext in ('.docx', '.doc'):
-                path = os.path.join(corpus, doc_id + ext)
-                if os.path.exists(path):
-                    sizes.append(os.path.getsize(path) / 1024)
-        row['median_file_kb'] = round(statistics.median(sizes))
+        row['median_file_kb'] = round(statistics.median(file_kb(corpus, i) for i in ids))
         for tool, rows in results.items():
-            mine = [r for r in rows if r['id'] in ids]
-            seconds = sum(r['seconds'] for r in mine)
-            row[tool] = {
-                'median_seconds': round(statistics.median(r['seconds'] for r in mine), 3),
-                'pages_per_second': round(row['pages'] / max(seconds, 1e-9), 1),
-                'median_peak_mb': round(statistics.median(r['peak_mb'] for r in mine), 1),
-                'max_peak_mb': round(max(r['peak_mb'] for r in mine), 1),
-            }
+            row[tool] = tool_figures(rows, ids, row['pages'])
         table.append(row)
     return table
 
@@ -310,10 +314,10 @@ def run_concurrent(args, tools):
         began = time.time()
         launched = []
         for at in range(count):
-            command, out = tools.kakemono_command(src, 'pdf', 'pdf', [], jobs=1, tag=f'-{at}')
+            command, _ = tools.kakemono_command(src, 'pdf', 'pdf', [], jobs=1, tag=f'-{at}')
             launched.append(start(command))
         with cf.ThreadPoolExecutor(count) as pool:
-            waited = list(pool.map(lambda process: wait(process, began), launched))
+            waited = list(pool.map(wait, launched, [began] * count))
         total = time.time() - began
         rows.append({
             'at_once': count,
