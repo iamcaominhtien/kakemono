@@ -104,9 +104,9 @@ its minimums.
 
 | | Result (2026-11) |
 | --- | --- |
-| Lines broken at the same words as Word | 95.9% (414,132 of 431,845) |
-| Documents with Word's page count | 88.2% (462 of 524) |
-| Lines on the same page as in Word | 80.6% |
+| Lines broken at the same words as Word | 95.9% (414,168 of 431,845) |
+| Documents with Word's page count | 89.1% (467 of 524) |
+| Lines on the same page as in Word | 81.8% |
 | Conversion errors | 0 |
 
 Pairs left out of the corpus, and why, are in
@@ -115,14 +115,14 @@ that turned out to be of another document, Word files converted from their
 PDF years later (so the PDF is not Word's layout of them), RTF files named
 `.doc`, a Welsh document with its English PDF.
 
-What still differs: each of the 62 documents whose page count is not Word's
+What still differs: each of the 57 documents whose page count is not Word's
 has a cause of its own, and a rule that fixes one often breaks others (each
 change is checked against all 524). The causes found so far:
 
-- **Footnote areas** in some report templates (Ofsted): Word ends the
-  footnotes one empty line above the bottom margin, in documents whose
-  separator story has the same structure as others where it does not. No
-  property found yet tells the two apart (5 documents).
+- **Footnote areas** in some report templates: Word keeps room below the
+  footnotes in documents whose separator story looks like that of others
+  where it does not; only the `.doc` continuation notice explains part of
+  it.
 - **Forms** made of tables: rows a few points taller or shorter than Word's
   (merged cells, form fields, check boxes, which kakemono does not draw),
   which adds up over a page.
