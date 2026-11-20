@@ -465,16 +465,11 @@ impl Flow<'_> {
         if let Some(part) = header.filter(|&part| shows_something(&self.doc.parts[part])) {
             let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
             // The space after the header's last paragraph is part of it.
-            let after = match self.doc.parts[part].last() {
-                Some(Block::Para(para)) if para.props.after_auto => AUTO_SPACING_PT,
-                Some(Block::Para(para)) => para.props.after,
-                _ => 0.0,
-            };
-            header_bottom = page.header + height + after;
+            header_bottom = page.header + height + last_after(&self.doc.parts[part]);
         }
         let mut footer_top = page.height;
         if let Some(part) = footer.filter(|&part| shows_something(&self.doc.parts[part])) {
-            let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
+            let height = self.blocks_height(&self.doc.parts[part], width, Some(number)) + last_after(&self.doc.parts[part]);
             footer_top = page.height - page.footer - height;
         }
         (header_bottom, footer_top)
@@ -604,10 +599,12 @@ impl Flow<'_> {
                 sub.format = format.clone();
                 let blocks = &self.doc.parts[part];
                 self.sub_blocks(&mut sub, blocks, Some(info.number), None);
+                // A footer ends, with the space after its last paragraph,
+                // at the footer distance from the bottom of the page.
                 let y = if header {
                     page.header
                 } else {
-                    page.height - page.footer - sub.y
+                    page.height - page.footer - sub.y - last_after(blocks)
                 };
                 let mut items = Vec::new();
                 push_items(&mut items, &sub.items, left, y);
@@ -2403,6 +2400,16 @@ fn items_extent(items: &[Item]) -> Option<(f32, f32)> {
             _ => None,
         })
         .reduce(|(left, right), (other_left, other_right)| (left.min(other_left), right.max(other_right)))
+}
+
+/// The space after the last paragraph of `blocks`: part of a header or
+/// footer's height.
+fn last_after(blocks: &[Block]) -> f32 {
+    match blocks.last() {
+        Some(Block::Para(para)) if para.props.after_auto => AUTO_SPACING_PT,
+        Some(Block::Para(para)) => para.props.after,
+        _ => 0.0,
+    }
 }
 
 /// Whether `blocks` show anything in the flow: text, a table, a picture or

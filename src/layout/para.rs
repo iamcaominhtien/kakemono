@@ -952,6 +952,31 @@ fn place_atom(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, atom: Atom,
         0.0
     };
     let fits = builder.x + body - shrink <= right + FIT_TOLERANCE_PT;
+    if !fits
+        && matches!(atom, Atom::Word { .. })
+        && builder.current.len() > 1
+        && let Some(Placed {
+            atom: Atom::Tab { fmt },
+            x,
+            ..
+        }) = builder.current.last().cloned()
+    {
+        // A word that does not fit after a tab takes the tab to the next
+        // line with it.
+        builder.current.pop();
+        builder.x = x;
+        builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
+        *first_line = false;
+        builder.x = line_bounds(props, builder.width, false).0;
+        place_tab(ctx, para, builder, fmt, first_line);
+        let (_, right) = line_bounds(props, builder.width, *first_line);
+        if builder.x + body > right + FIT_TOLERANCE_PT {
+            cut_word(ctx, para, builder, atom, first_line);
+        } else {
+            builder.push(atom, body + trailing);
+        }
+        return;
+    }
     if !fits && builder.has_content() {
         builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
         *first_line = false;
@@ -959,23 +984,30 @@ fn place_atom(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, atom: Atom,
     }
     let (_, right) = line_bounds(props, builder.width, *first_line);
     if builder.x + body > right + FIT_TOLERANCE_PT && !builder.has_content() {
-        // A word longer than the line: cut it.
-        let mut rest = Some(atom);
-        while let Some(atom) = rest.take() {
-            let room = right - builder.x;
-            let (head, tail) = split_word(atom, room);
-            let (head_body, head_trailing) = atom_width(&head);
-            builder.push(head, head_body + head_trailing);
-            if let Some(tail) = tail {
-                builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
-                *first_line = false;
-                builder.x = line_bounds(props, builder.width, false).0;
-                rest = Some(tail);
-            }
-        }
+        cut_word(ctx, para, builder, atom, first_line);
         return;
     }
     builder.push(atom, body + trailing);
+}
+
+/// Places a word longer than the room left on the line, cut at the right
+/// edge of each line it runs over.
+fn cut_word(ctx: &mut Ctx<'_>, para: &Para, builder: &mut Builder, atom: Atom, first_line: &mut bool) {
+    let props = &para.props;
+    let mut rest = Some(atom);
+    while let Some(atom) = rest.take() {
+        let (_, right) = line_bounds(props, builder.width, *first_line);
+        let room = right - builder.x;
+        let (head, tail) = split_word(atom, room);
+        let (head_body, head_trailing) = atom_width(&head);
+        builder.push(head, head_body + head_trailing);
+        if let Some(tail) = tail {
+            builder.finish_line(ctx, para, *first_line, LineEnd::Wrap);
+            *first_line = false;
+            builder.x = line_bounds(props, builder.width, false).0;
+            rest = Some(tail);
+        }
+    }
 }
 
 /// The shaped glyphs of `shown` placed one after another, at `size` and
