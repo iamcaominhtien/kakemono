@@ -40,6 +40,7 @@ def to_markdown(
     image_dir: str = "images",
     inline_images: bool = False,
     content: Optional[str] = None,
+    mode: str = "friendly",
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_json(
     pdf: bytes,

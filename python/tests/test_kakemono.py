@@ -82,6 +82,17 @@ def test_to_markdown_writes_text_and_pictures(tmp_path):
         kakemono.to_markdown(LIGO, out, image_dir="../x")
 
 
+def test_to_markdown_mode_chooses_how_tables_are_written():
+    # Table I has no header row: an HTML table in medium, a pipe table in friendly.
+    medium = kakemono.to_markdown(LIGO, scale=1.0, mode="medium")
+    assert "<tr><td>Primary black hole mass</td>" in medium
+    friendly = kakemono.to_markdown(LIGO, scale=1.0)
+    assert "<table>" not in friendly
+    assert "| Primary black hole mass | " in friendly
+    with pytest.raises(ValueError, match="friendly"):
+        kakemono.to_markdown(LIGO, mode="hard")
+
+
 def test_to_latex_writes_source_and_pictures(tmp_path):
     out = tmp_path / "tex" / "ligo.tex"
     text = kakemono.to_latex(LIGO, out, scale=1.0)

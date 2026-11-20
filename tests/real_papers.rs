@@ -641,6 +641,21 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
     check_markdown(&md.markdown, &md.files, math);
     fingerprints.push(("markdown", fingerprint(&md.markdown, &md.files)));
+    // Friendly Markdown adapts every table to a pipe table; medium keeps
+    // the HTML tables of those with spanning cells.
+    assert!(
+        !md.markdown.contains("<table>"),
+        "markdown: friendly tables are pipe tables"
+    );
+    let medium = paper.to_markdown(
+        &analysis,
+        &MarkdownOptions {
+            mode: Mode::Medium,
+            ..MarkdownOptions::default()
+        },
+    );
+    check_markdown(&medium.markdown, &medium.files, math);
+    fingerprints.push(("markdown-medium", fingerprint(&medium.markdown, &medium.files)));
     // The LaTeX document, with its pictures.
     let tex = paper.to_latex(&analysis, &LatexOptions::default());
     check_latex(&tex.latex, &tex.files, math);

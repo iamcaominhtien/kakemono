@@ -142,7 +142,11 @@ analysis, readable on GitHub, in Obsidian, Jupyter, Pandoc, or by an LLM:
 
 - the title (`#`), headings (`##`–`#####`), lists, footnotes, references and code listings (fenced
   blocks) get their Markdown syntax; bold, italic, code, links and `<sup>`/`<sub>` are kept;
-- rebuilt tables become pipe tables, or HTML tables when cells span rows or columns;
+- rebuilt tables become pipe tables. With `-m friendly` (the default) every table is adapted to
+  one, its meaning kept rather than its layout: the header rows become one (`BLEU: EN-DE`), and a
+  cell spanning rows, or columns under one group header, is repeated in each, so that every row
+  reads on its own. With `-m medium` the layout is kept: a table whose cells span rows or columns
+  stays an HTML table;
 - formulas whose structure is clear become LaTeX between `$$` (with `\tag{n}` for their number),
   the others pictures; formulas inside the text become `$…$`;
 - figures are pictures, written to `<name>_assets/` next to the file (`--image-dir images` for
@@ -393,7 +397,7 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 
 | Option | Meaning |
 | --- | --- |
-| `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
+| `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`); for Markdown, `friendly` or `medium` (how tables are written) |
 | `--all` | All four modes: `<name>.<mode>.html` |
 | `-f, --format <html\|docx\|md\|tex\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` |
 | `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |

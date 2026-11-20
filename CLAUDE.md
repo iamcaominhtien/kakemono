@@ -25,7 +25,7 @@ Read before changing code:
 cargo build --release
 ./target/release/kakemono convert <file.pdf | arXiv id> -m friendly -o out/x.friendly.html   # or --all -o out/dir
 ./target/release/kakemono convert <file.pdf> -o out/x.docx                    # Word document (or -f docx)
-./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md)
+./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md; -m medium keeps HTML tables)
 ./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
 ./target/release/kakemono convert <file.pdf> -o out/x.epub                    # EPUB 3 book (or -f epub)
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)

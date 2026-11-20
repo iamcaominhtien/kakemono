@@ -151,6 +151,28 @@ fn convert_writes_markdown_with_an_image_folder() {
 }
 
 #[test]
+fn markdown_mode_chooses_how_tables_are_written() {
+    let dir = scratch("cli-markdown-mode");
+    let md = dir.join("ligo.md");
+    let convert = |mode: &str| {
+        let out = kakemono(&["convert", LIGO, "-j", "1", "-m", mode, "-o", md.to_str().unwrap()]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        std::fs::read_to_string(&md).unwrap()
+    };
+    // Table I of the LIGO paper has no header row: medium keeps it as an
+    // HTML table, friendly adapts it to a pipe table with an empty header.
+    let medium = convert("medium");
+    assert!(medium.contains("<tr><td>Primary black hole mass</td>"));
+    let friendly = convert("friendly");
+    assert!(!friendly.contains("<table>"));
+    assert!(friendly.contains("|  |  |\n| --- | --- |\n| Primary black hole mass | "));
+    // Markdown has no pages to keep.
+    let hard = kakemono(&["convert", LIGO, "-m", "hard-95", "-o", md.to_str().unwrap()]);
+    assert!(!hard.status.success());
+    assert!(String::from_utf8_lossy(&hard.stderr).contains("friendly or medium"));
+}
+
+#[test]
 fn convert_writes_latex_that_compiles() {
     let dir = scratch("cli-latex");
     // `-o x.tex` is enough to choose the format; pictures go to a folder.
