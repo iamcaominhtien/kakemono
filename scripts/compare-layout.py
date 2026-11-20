@@ -8,7 +8,8 @@ Usage: compare-layout.py REFERENCE.pdf OURS.pdf [--json | --diff]
 Lines are read with `kakemono lines` (glyph baselines). A line of the
 reference is matched when a line of ours has exactly the same words (in
 any order of reading, so that tables and text boxes do not matter); each
-line of ours matches once, the one on the nearest page first.
+line of ours matches once, the one on the nearest page first. Spaces are
+not compared: Word's PDFs leave some out.
 """
 import collections, html, json, os, re, subprocess, sys, unicodedata
 
@@ -31,6 +32,13 @@ def norm(text):
     return text
 
 
+def mark(ch):
+    """A character as compared: a symbol (a bullet, ©) is one mark."""
+    if ch in BULLETS or ch == '\ufffd' or unicodedata.category(ch) in ('So', 'Co'):
+        return '•'
+    return ch
+
+
 KAKEMONO = os.environ.get('KAKEMONO', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'target', 'release', 'kakemono'))
 
 
@@ -46,6 +54,11 @@ def lines(pdf):
         # A tab leader: whether a space precedes it depends on how the PDF
         # writes the tab, not on the layout.
         text = LEADER.sub(lambda match: match.group(1), text)
+        # Without its spaces, and with every symbol as one mark: Word's PDFs
+        # leave out spaces typed in runs of their own ("householdsrepresentative")
+        # and the one after a symbol ("©2013"). Where a line breaks does
+        # not depend on them.
+        text = ''.join(mark(ch) for ch in text if not ch.isspace())
         if text:
             result.append((int(page), float(base), float(left), text))
     return result, pages

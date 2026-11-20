@@ -89,9 +89,9 @@ fn corpus(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// A line's text as compared: plain quotes, single spaces, a lone symbol
-/// (a bullet, which Word's PDFs often draw with no Unicode for it) as one
-/// mark, and tab leaders without the spaces around them.
+/// A line's text as compared: plain quotes, a lone symbol (a bullet, which
+/// Word's PDFs often draw with no Unicode for it) as one mark, tab leaders
+/// without the spaces around them, and then no spaces at all.
 fn normalized(text: &str) -> String {
     let words: Vec<String> = text
         .split_whitespace()
@@ -134,7 +134,20 @@ fn normalized(text: &str) -> String {
             at += 1;
         }
     }
-    out
+    // Without spaces, which Word's PDFs leave out in places, and with every
+    // symbol as one mark.
+    out.chars()
+        .filter(|ch| !ch.is_whitespace())
+        .map(|ch| if is_symbol(ch) { '•' } else { ch })
+        .collect()
+}
+
+/// A bullet or other symbol (`So`, private use, U+FFFD), as
+/// `scripts/compare-layout.py` folds them.
+fn is_symbol(ch: char) -> bool {
+    "•·▪■●◆○□◦‣➢➤✓✔\u{FFFD}©®".contains(ch)
+        || ('\u{E000}'..='\u{F8FF}').contains(&ch)
+        || ('\u{2190}'..='\u{2BFF}').contains(&ch)
 }
 
 /// The share of `reference`'s lines that `ours` has with the same words
