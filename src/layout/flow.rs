@@ -9,7 +9,7 @@ use super::para::{self, Ctx, Float, FloatKind, Line, ParaLayout};
 use super::shape::Shaper;
 use crate::word::fmt::model::{
     Align, AnchorAlign, AnchorFrom, Block, Border, BorderStyle, Cell, FDoc, Inline, NumFormat, Para, ParaBorders, Rgb,
-    Row, Section, SectionStart, Shape, Table, VAlign, VMerge, Width, Wrap,
+    Row, RunFmt, Section, SectionStart, Shape, Table, VAlign, VMerge, Width, Wrap,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -29,6 +29,10 @@ const EPS: f32 = 0.01;
 
 /// Whether the placed lines are printed (`KAKEMONO_LAYOUT_TRACE`), for
 /// calibration against Word's own PDFs.
+/// A metafile's line of text is narrowed or widened to the width the
+/// metafile gives it when ours differs by more than this share.
+const METAFILE_FIT_RATIO: f32 = 0.02;
+
 fn trace() -> bool {
     std::env::var_os("KAKEMONO_LAYOUT_TRACE").is_some()
 }
@@ -97,6 +101,7 @@ fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<Strin
     flow.endnotes();
     flow.finish_page();
     flow.headers_and_footers();
+    flow.metafile_texts();
     let mut refs = HashMap::new();
     for destination in &flow.destinations {
         if let Some(info) = flow.page_info.get(destination.page) {
@@ -441,6 +446,84 @@ impl Flow<'_> {
             footer_top = page.height - page.footer - height;
         }
         (header_bottom, footer_top)
+    }
+
+    /// Draws the lines of text of the metafile pictures placed on every
+    /// page as text over them, as Word's PDFs do (the picture drawn is
+    /// the one without them).
+    fn metafile_texts(&mut self) {
+        for at in 0..self.pages.len() {
+            let placed: Vec<(usize, [f32; 4], [f32; 4])> = self.pages[at]
+                .items
+                .iter()
+                .filter_map(|item| match *item {
+                    Item::Image {
+                        index,
+                        x,
+                        y,
+                        width,
+                        height,
+                        crop,
+                    } if self.doc.images.get(index).is_some_and(|image| image.bare.is_some()) => {
+                        Some((index, [x, y, width, height], crop))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (index, frame, crop) in placed {
+                let items = self.metafile_items(index, frame, crop);
+                self.pages[at].items.extend(items);
+            }
+        }
+    }
+
+    /// The text items of the metafile `index` drawn in `frame` (x, y,
+    /// width, height) with `crop` cut off its sides.
+    fn metafile_items(&mut self, index: usize, frame: [f32; 4], crop: [f32; 4]) -> Vec<Item> {
+        let [x, y, width, height] = frame;
+        let [left, top, right, bottom] = crop;
+        let shown_width = (1.0 - left - right).max(EPS);
+        let shown_height = (1.0 - top - bottom).max(EPS);
+        let doc = self.doc;
+        let mut out = Vec::new();
+        for text in &doc.images[index].texts {
+            let fx = (text.x - left) / shown_width;
+            let fy = (text.y - top) / shown_height;
+            if !(0.0..=1.0).contains(&fx) || !(0.0..=1.0).contains(&fy) {
+                continue;
+            }
+            let size = text.size / shown_height * height;
+            if size <= EPS {
+                continue;
+            }
+            let fmt = RunFmt {
+                font: text.face.clone(),
+                font_hansi: text.face.clone(),
+                font_cs: text.face.clone(),
+                size,
+                size_cs: size,
+                bold: text.bold,
+                italic: text.italic,
+                color: Some(text.color),
+                ..RunFmt::default()
+            };
+            let (px, py) = (x + fx * width, y + fy * height);
+            let mut ctx = self.ctx();
+            let (items, drawn) = para::text_items(&mut ctx, &text.text, &fmt, px, py);
+            // As wide as the metafile sets it, within reason.
+            let wanted = (text.end_x - text.x) / shown_width * width;
+            let ratio = wanted / drawn.max(EPS);
+            if drawn > EPS && wanted > EPS && (ratio - 1.0).abs() > METAFILE_FIT_RATIO && ratio > 0.5 && ratio < 2.0 {
+                let scaled = RunFmt {
+                    scale: 100.0 * ratio,
+                    ..fmt
+                };
+                out.extend(para::text_items(&mut ctx, &text.text, &scaled, px, py).0);
+            } else {
+                out.extend(items);
+            }
+        }
+        out
     }
 
     /// The header (or footer) part of a page.

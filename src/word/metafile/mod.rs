@@ -19,13 +19,30 @@ pub(crate) fn is_metafile(data: &[u8]) -> bool {
     is_emf(data) || is_wmf(data)
 }
 
+pub use svg::MetaText;
+
 /// The metafile `data` as an SVG document, or `None` when it is not one or
 /// draws nothing.
 pub(crate) fn to_svg(data: &[u8]) -> Option<String> {
+    let (svg, view, size) = draw(data)?;
+    Some(svg.finish(view, size))
+}
+
+/// The metafile `data` as an SVG document without its lines of text that
+/// are neither rotated nor underlined, and those lines, for a writer that
+/// draws them as text over the picture.
+pub(crate) fn to_svg_and_text(data: &[u8]) -> Option<(String, Vec<MetaText>)> {
+    let (svg, view, size) = draw(data)?;
+    Some(svg.finish_parts(view, size, false))
+}
+
+/// The drawing of the metafile `data`, the area of the picture it shows and
+/// its size in points.
+fn draw(data: &[u8]) -> Option<(svg::Svg, [f32; 4], (f32, f32))> {
     if is_emf(data) {
-        emf::to_svg(data)
+        emf::draw(data)
     } else if is_wmf(data) {
-        wmf::to_svg(data)
+        wmf::draw(data)
     } else {
         None
     }
@@ -170,6 +187,18 @@ mod tests {
         assert!(svg.contains("#0000ff"), "the blue pen: {svg}");
         assert!(svg.contains(">Hey<"), "{svg}");
         assert!(svg.matches("<path").count() >= 6, "{svg}");
+        // Without its text, which is given apart, placed in the picture.
+        let (bare, texts) = to_svg_and_text(&data).expect("an SVG");
+        assert!(!bare.contains(">Hey<") && bare.matches("<path").count() >= 6, "{bare}");
+        let [text] = texts.as_slice() else {
+            panic!("one line of text: {texts:?}")
+        };
+        assert_eq!(
+            (text.text.as_str(), text.face.as_str(), text.bold),
+            ("Hey", "Arial", true)
+        );
+        assert!(text.x > 0.0 && text.x < text.end_x && text.end_x <= 1.0, "{text:?}");
+        assert!(text.y > 0.0 && text.size > 0.0, "{text:?}");
     }
 
     /// A WMF that draws a red rectangle and a word becomes an SVG with both.

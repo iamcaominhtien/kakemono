@@ -3,6 +3,7 @@
 //! metafiles (EMF, WMF, through SVG) turned into PNG.
 
 use crate::model::Picture;
+use crate::word::fmt::model::FImage;
 
 /// Pixels per point of an SVG drawing turned into a PNG.
 const SVG_SCALE: f32 = 2.0;
@@ -40,6 +41,23 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
         return Some(Picture { data: png, jpeg: false });
     }
     None
+}
+
+/// The picture `data` for the page layout: as [`normalize`] makes it and,
+/// for a metafile with lines of text, also without them, with those lines,
+/// which the PDF draws as text.
+pub(crate) fn for_layout(data: Vec<u8>) -> Option<FImage> {
+    let parts = super::metafile::to_svg_and_text(&data)
+        .filter(|(_, texts)| !texts.is_empty())
+        .and_then(|(svg, texts)| Some((crate::backend::svg_to_png(&svg, SVG_SCALE)?, texts)));
+    let picture = normalize(data)?;
+    let (bare, texts) = parts.map_or((None, Vec::new()), |(png, texts)| (Some(png), texts));
+    Some(FImage {
+        data: picture.data,
+        jpeg: picture.jpeg,
+        bare,
+        texts,
+    })
 }
 
 /// A bitmap in another format re-encoded as a PNG.

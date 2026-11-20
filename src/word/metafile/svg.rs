@@ -6,11 +6,41 @@ use base64::Engine as _;
 /// Thinnest line, in picture units (a device pixel).
 const MIN_STROKE: f32 = 1.0;
 
+/// A line of text of a metafile, placed in the picture as shares of its
+/// size, for a writer that draws it as text over the picture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaText {
+    /// The text.
+    pub text: String,
+    /// Pen position of the first character, as a share of the picture's
+    /// width.
+    pub x: f32,
+    /// Baseline, as a share of the picture's height.
+    pub y: f32,
+    /// Pen position after the last character, as a share of the picture's
+    /// width (the width the metafile gives the text).
+    pub end_x: f32,
+    /// Font size, as a share of the picture's height.
+    pub size: f32,
+    /// Font face.
+    pub face: String,
+    /// Bold.
+    pub bold: bool,
+    /// Italic.
+    pub italic: bool,
+    /// Colour.
+    pub color: Rgb,
+}
+
 /// The SVG elements drawn so far.
 #[derive(Debug, Default)]
 pub(super) struct Svg {
-    /// The elements, in order.
-    elements: Vec<String>,
+    /// The elements, in order, and whether each is a line of text that
+    /// [`Svg::texts`] holds.
+    elements: Vec<(String, bool)>,
+    /// The lines of text not rotated, in picture units: text, pen
+    /// position, end, baseline, size, font, colour.
+    texts: Vec<(String, f32, f32, f32, f32, Font, Rgb)>,
 }
 
 impl Svg {
@@ -35,9 +65,9 @@ impl Svg {
             None => String::new(),
         };
         let rule = if even_odd { " fill-rule=\"evenodd\"" } else { "" };
-        self.elements.push(format!(
-            "<path d=\"{}\" fill=\"{fill}\"{rule}{stroke}/>",
-            data.trim_end()
+        self.elements.push((
+            format!("<path d=\"{}\" fill=\"{fill}\"{rule}{stroke}/>", data.trim_end()),
+            false,
         ));
     }
 
@@ -81,12 +111,20 @@ impl Svg {
                 num(y)
             )
         };
-        self.elements.push(format!(
-            "<text x=\"{xs}\" y=\"{ys}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\"{weight}{style}{underline}{rotate} xml:space=\"preserve\">{}</text>",
-            escape(&family_list(&font.face)),
-            num(size),
-            hex(color),
-            escape(&text)
+        let plain = font.escapement == 0.0 && !font.underline && !text.trim().is_empty();
+        if plain {
+            let end = advance_end(positions, size);
+            self.texts.push((text.clone(), x, end, y, size, font.clone(), color));
+        }
+        self.elements.push((
+            format!(
+                "<text x=\"{xs}\" y=\"{ys}\" font-family=\"{}\" font-size=\"{}\" fill=\"{}\"{weight}{style}{underline}{rotate} xml:space=\"preserve\">{}</text>",
+                escape(&family_list(&font.face)),
+                num(size),
+                hex(color),
+                escape(&text)
+            ),
+            plain,
         ));
     }
 
@@ -100,19 +138,43 @@ impl Svg {
             (y, height)
         };
         let data = base64::engine::general_purpose::STANDARD.encode(png);
-        self.elements.push(format!(
-            "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{data}\"/>",
-            num(x),
-            num(y),
-            num(width),
-            num(height)
+        self.elements.push((
+            format!(
+                "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,{data}\"/>",
+                num(x),
+                num(y),
+                num(width),
+                num(height)
+            ),
+            false,
         ));
     }
 
     /// The SVG document: the area `view` (x, y, width, height) of the
     /// picture, shown at `size` (width, height) points.
     pub(super) fn finish(self, view: [f32; 4], size: (f32, f32)) -> String {
+        self.finish_parts(view, size, true).0
+    }
+
+    /// The SVG document, with or without the lines of text that
+    /// [`MetaText`] can hold, and those lines.
+    pub(super) fn finish_parts(self, view: [f32; 4], size: (f32, f32), with_text: bool) -> (String, Vec<MetaText>) {
         let [x, y, width, height] = view;
+        let texts = self
+            .texts
+            .into_iter()
+            .map(|(text, pen, end, baseline, font_size, font, color)| MetaText {
+                text,
+                x: (pen - x) / width,
+                y: (baseline - y) / height,
+                end_x: (end - x) / width,
+                size: font_size / height,
+                bold: font.weight >= 600,
+                italic: font.italic,
+                face: font.face,
+                color,
+            })
+            .collect();
         let mut out = format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}pt\" height=\"{}pt\" viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\">",
             num(size.0),
@@ -122,11 +184,23 @@ impl Svg {
             num(width),
             num(height)
         );
-        for element in self.elements {
-            out.push_str(&element);
+        for (element, text) in self.elements {
+            if with_text || !text {
+                out.push_str(&element);
+            }
         }
         out.push_str("</svg>");
-        out
+        (out, texts)
+    }
+}
+
+/// The pen position after the last character: past the last position by
+/// as much as the step between the last two, or half the size.
+fn advance_end(positions: &[(f32, f32)], size: f32) -> f32 {
+    match positions {
+        [] => 0.0,
+        [only] => only.0 + size * 0.5,
+        [.., before, last] => last.0 + (last.0 - before.0),
     }
 }
 

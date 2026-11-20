@@ -1475,6 +1475,21 @@ fn shift_item(item: &mut Item, baseline: f32) {
     }
 }
 
+/// The items of `text` set in `fmt`, the pen starting at `x` on baseline
+/// `y` (text that is not part of a paragraph: the lines of a metafile),
+/// and the width of the text.
+pub(super) fn text_items(ctx: &mut Ctx<'_>, text: &str, fmt: &RunFmt, x: f32, y: f32) -> (Vec<Item>, f32) {
+    let mut items = Vec::new();
+    let mut pen = x;
+    for piece in ctx.pieces(text, fmt) {
+        pen = emit_piece(&piece, pen, 0.0, &mut items);
+    }
+    for item in &mut items {
+        shift_item(item, y);
+    }
+    (items, pen - x)
+}
+
 /// Draws a piece at `x` on baseline 0 (with justification `extra` per
 /// space), with its underline, strike, highlight and link; returns the
 /// pen position after it.

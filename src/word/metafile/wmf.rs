@@ -2,6 +2,7 @@
 //! "placeable" header giving the picture's box and resolution.
 
 use super::dc::{Dc, Font, Object, Pen, ROP_NOP, Rgb};
+use super::svg::Svg;
 use super::{WMF_PLACEABLE_KEY, i16_at, u16_at, u32_at};
 
 /// Size of the placeable header.
@@ -23,8 +24,9 @@ struct Frame {
     size: (f32, f32),
 }
 
-/// The WMF `data` as SVG.
-pub(super) fn to_svg(data: &[u8]) -> Option<String> {
+/// The drawing of the WMF `data`, with the area of the picture it
+/// shows (x, y, width, height, picture units) and its size in points.
+pub(super) fn draw(data: &[u8]) -> Option<(Svg, [f32; 4], (f32, f32))> {
     let placeable = u32_at(data, 0) == Some(WMF_PLACEABLE_KEY);
     let header_at = if placeable { PLACEABLE_LEN } else { 0 };
     let header_words = usize::from(u16_at(data, header_at + 2)?);
@@ -66,7 +68,7 @@ pub(super) fn to_svg(data: &[u8]) -> Option<String> {
         });
     }
     let frame = frame?;
-    Some(dc.svg.finish(frame.view, frame.size))
+    Some((dc.svg, frame.view, frame.size))
 }
 
 /// The box and size given by the placeable header.

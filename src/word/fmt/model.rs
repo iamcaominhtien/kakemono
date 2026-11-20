@@ -78,6 +78,11 @@ pub struct FImage {
     pub data: Vec<u8>,
     /// It is a JPEG (else a PNG).
     pub jpeg: bool,
+    /// For a metafile: the picture without the lines of text of
+    /// [`FImage::texts`] (a PNG), which the PDF draws as text over it.
+    pub bare: Option<Vec<u8>>,
+    /// The lines of text of a metafile that the PDF draws as text.
+    pub texts: Vec<crate::word::metafile::MetaText>,
 }
 
 /// A font embedded in the document.

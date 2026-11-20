@@ -3,6 +3,7 @@
 //! between `BEGINPATH` and `ENDPATH` build a path instead of drawing.
 
 use super::dc::{Dc, Font, Matrix, Object, Pen, ROP_NOP};
+use super::svg::Svg;
 use super::wmf::{colorref, dib_to_png};
 use super::{f32_at, i16_at, i32_at, u32_at};
 
@@ -23,8 +24,9 @@ struct Device {
     px_per_mm: (f32, f32),
 }
 
-/// The EMF `data` as SVG.
-pub(super) fn to_svg(data: &[u8]) -> Option<String> {
+/// The drawing of the EMF `data`, with the area of the picture it
+/// shows (x, y, width, height, picture units) and its size in points.
+pub(super) fn draw(data: &[u8]) -> Option<(Svg, [f32; 4], (f32, f32))> {
     let frame = [
         i32_at(data, 24)?,
         i32_at(data, 28)?,
@@ -67,7 +69,7 @@ pub(super) fn to_svg(data: &[u8]) -> Option<String> {
     if view[2] <= 0.0 || view[3] <= 0.0 {
         return None;
     }
-    Some(dc.svg.finish(view, size))
+    Some((dc.svg, view, size))
 }
 
 /// The `i32` at byte `at` of the record's data, as `f32`.

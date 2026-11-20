@@ -156,6 +156,10 @@ fn draw_item(surface: &mut krilla::surface::Surface<'_>, item: &Item, loaded: &m
             let images = loaded.images;
             let picture = loaded.pictures.entry(*index).or_insert_with(|| {
                 let image = images.get(*index)?;
+                // A metafile's lines of text are drawn as text over it.
+                if let Some(bare) = &image.bare {
+                    return Image::from_png(bare.clone().into(), true).ok();
+                }
                 let data = image.data.clone().into();
                 if image.jpeg {
                     Image::from_jpeg(data, true).ok()

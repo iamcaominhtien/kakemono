@@ -11,7 +11,7 @@ use super::props::{RawCell, RawPara, RawRun, TWIPS_PER_PT, ThemeFonts, is_on, pa
 use super::styles::{Conditional, Numbering, Styles, TableStyle, parse_num_format};
 use crate::word::docx::{Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of};
 use crate::word::omml;
-use crate::word::pictures::normalize;
+use crate::word::pictures::for_layout;
 use crate::word::xml::{
     DRAWING_NS, MATH_NS, MC_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child, children, is, toggle, val,
 };
@@ -1075,12 +1075,9 @@ impl Reader<'_> {
             .read(&rel.target)
             .ok()
             .flatten()
-            .and_then(normalize)
-            .map(|picture| {
-                self.images.push(FImage {
-                    data: picture.data,
-                    jpeg: picture.jpeg,
-                });
+            .and_then(for_layout)
+            .map(|image| {
+                self.images.push(image);
                 self.images.len() - 1
             });
         self.image_index.insert(rel.target, index);
