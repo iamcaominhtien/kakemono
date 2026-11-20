@@ -254,7 +254,7 @@ impl Ctx<'_> {
         let metric = (!self.book.has_family(&family))
             .then(|| super::metrics::lookup(&family, fmt.bold, fmt.italic))
             .flatten()
-            .filter(|metric| ch.is_whitespace() || metric.advance(ch).is_some());
+            .filter(|metric| ch.is_whitespace() || metric.vertical_only() || metric.advance(ch).is_some());
         (
             face,
             fake_bold,
@@ -1321,6 +1321,12 @@ impl Builder {
 /// width, height and the share cut off each side.
 type LineImage = (f32, Option<usize>, f32, f32, [f32; 4]);
 
+/// Whether `font` is a symbol font (Symbol, Wingdings).
+fn is_symbol_font(font: &str) -> bool {
+    let font = font.to_ascii_lowercase();
+    font == "symbol" || font.starts_with("wingdings")
+}
+
 /// What the atoms of a line hold, gathered before the line's height is
 /// known.
 #[derive(Default)]
@@ -1353,9 +1359,16 @@ impl LineParts {
     fn emit_pieces(&mut self, pieces: &[Piece], x: f32, space_extra: f32) {
         let mut x = x;
         for piece in pieces {
-            self.ascent = self.ascent.max(piece.ascent);
-            self.descent = self.descent.max(piece.descent);
+            // The leading sits above the ascent of each font: the line rises
+            // to the highest of the two together.
+            let top = (self.leading + self.ascent).max(piece.leading + piece.ascent);
             self.leading = self.leading.max(piece.leading);
+            self.ascent = top - self.leading;
+            // Word does not lower the line for a symbol font's descent (a
+            // bullet in Symbol or Wingdings).
+            if !is_symbol_font(&piece.fmt.font) {
+                self.descent = self.descent.max(piece.descent);
+            }
             x = emit_piece(piece, x, space_extra, &mut self.items);
         }
     }

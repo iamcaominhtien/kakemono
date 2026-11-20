@@ -27,6 +27,12 @@ pub struct MetricFace {
 }
 
 impl MetricFace {
+    /// Whether only the vertical metrics are known (a symbol font, whose
+    /// characters are drawn by another font at its own widths).
+    pub fn vertical_only(&self) -> bool {
+        self.widths.is_empty()
+    }
+
     /// The advance of `ch` in multiples of the font size, when known.
     pub fn advance(&self, ch: char) -> Option<f32> {
         self.widths
