@@ -486,13 +486,20 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
         pending_bookmarks: Vec::new(),
         width,
     };
-    // The number or bullet starts the first line.
+    // The number or bullet starts the first line, or, after a break that
+    // starts the paragraph, the line after it.
     builder.x = props.left + props.first_line;
-    if let Some(number) = &para.number {
+    let leading_break = atoms
+        .iter()
+        .find(|atom| !matches!(atom, Atom::Bookmark(_)))
+        .is_some_and(|atom| matches!(atom, Atom::Break(BreakKind::Page | BreakKind::Column)));
+    let mut number = para.number.as_ref();
+    if !leading_break && let Some(number) = number.take() {
         place_number(ctx, para, number, &mut builder);
     }
     let mut first_line = true;
     for atom in atoms {
+        let is_break = matches!(atom, Atom::Break(_));
         match atom {
             Atom::Float(mut float) => {
                 float.line = builder.lines.len();
@@ -507,6 +514,10 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
             }
             Atom::Tab { ref fmt } => place_tab(ctx, para, &mut builder, fmt.clone(), &mut first_line),
             atom => place_atom(ctx, para, &mut builder, atom, &mut first_line),
+        }
+        if is_break && let Some(number) = number.take() {
+            builder.x = props.left + props.first_line;
+            place_number(ctx, para, number, &mut builder);
         }
     }
     // The mark of a paragraph that ends with a page or column break stays

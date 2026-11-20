@@ -18,6 +18,9 @@ use std::collections::hash_map::Entry;
 const AUTO_SPACING_PT: f32 = 14.0;
 /// Length of the line that separates footnotes from the text.
 const NOTE_SEPARATOR_LEN_PT: f32 = 144.0;
+/// How many times a row is cut higher to make room for the footnotes of
+/// its first part.
+const SPLIT_NOTE_TRIES: usize = 3;
 /// Width of the separator line.
 const NOTE_SEPARATOR_WIDTH_PT: f32 = 0.5;
 /// Fewest lines of a paragraph left at the bottom or top of a page with
@@ -1108,16 +1111,43 @@ impl Flow<'_> {
     /// Adds the footnotes of a placed line to the page.
     fn add_notes(&mut self, line: &Line) {
         for (endnote, id) in &line.notes {
-            if *endnote {
-                continue;
+            if !endnote {
+                self.add_note(id);
             }
-            if self.state.page_notes.is_empty() {
-                self.state.notes_height += self.separator_height();
-            }
-            let lines = self.note_lines(id);
-            self.state.notes_height += lines.iter().map(|line| line.height).sum::<f32>();
-            self.state.page_notes.push(lines);
         }
+    }
+
+    /// Adds footnote `id` to the page.
+    fn add_note(&mut self, id: &str) {
+        if self.state.page_notes.is_empty() {
+            self.state.notes_height += self.separator_height();
+        }
+        let lines = self.note_lines(id);
+        self.state.notes_height += lines.iter().map(|line| line.height).sum::<f32>();
+        self.state.page_notes.push(lines);
+    }
+
+    /// The footnote height that the notes of a row (or part of one) add to
+    /// the page.
+    fn row_notes_height(&mut self, row: &LaidRow) -> f32 {
+        let ids: Vec<String> = row
+            .cells
+            .iter()
+            .flat_map(|cell| &cell.notes)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() {
+            return 0.0;
+        }
+        let mut height = if self.state.page_notes.is_empty() {
+            self.separator_height()
+        } else {
+            0.0
+        };
+        for id in &ids {
+            height += self.note_lines(id).iter().map(|line| line.height).sum::<f32>();
+        }
+        height
     }
 
     /// Draws the borders and shading of the part of a paragraph between
@@ -1455,7 +1485,9 @@ impl Flow<'_> {
         let mut rest: Option<LaidRow> = None;
         while at < laid.rows.len() {
             let row = rest.take().unwrap_or_else(|| laid.rows[at].clone());
-            let room = self.state.bottom - self.state.notes_height - self.state.y;
+            let room_all = self.state.bottom - self.state.notes_height - self.state.y;
+            // The row's footnotes go on the page with it.
+            let room = room_all - self.row_notes_height(&row);
             let need = if table.rows[at].cant_split {
                 cant_split_need(&row, self.state.bottom - self.state.top)
             } else {
@@ -1463,7 +1495,7 @@ impl Flow<'_> {
             };
             if need <= room + EPS || forced && self.state.fresh {
                 if row.height > room + EPS
-                    && let Some((first, second)) = split_row(&row, room)
+                    && let Some((first, second)) = self.split_row_with_notes(&row, room_all)
                 {
                     self.draw_row(&first);
                     rest = Some(second);
@@ -1478,7 +1510,7 @@ impl Flow<'_> {
             }
             // The row does not fit: split it at a line, or move it on.
             if !table.rows[at].cant_split
-                && let Some((first, second)) = split_row(&row, room)
+                && let Some((first, second)) = self.split_row_with_notes(&row, room_all)
             {
                 self.draw_row(&first);
                 rest = Some(second);
@@ -1492,6 +1524,21 @@ impl Flow<'_> {
             self.state.y += anchor.dist[1];
         }
         self.state.last_style = None;
+    }
+
+    /// Splits `row` so that its first part and the footnotes it refers to
+    /// fit in `room`.
+    fn split_row_with_notes(&mut self, row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
+        let mut limit = room;
+        for _ in 0..SPLIT_NOTE_TRIES {
+            let (first, second) = split_row(row, limit)?;
+            let notes = self.row_notes_height(&first);
+            if limit + notes <= room + EPS {
+                return Some((first, second));
+            }
+            limit = room - notes;
+        }
+        split_row(row, limit)
     }
 
     /// Moves a table to the next column or page, repeating its header rows.
@@ -1549,6 +1596,9 @@ impl Flow<'_> {
                     y: y + dy,
                 });
             }
+        }
+        for (id, _) in row.cells.iter().flat_map(|cell| &cell.notes) {
+            self.add_note(id);
         }
         for cell in &row.cells {
             let height = cell.height.max(row.height);
@@ -1668,6 +1718,7 @@ impl Flow<'_> {
             top_margin: margins[1],
             bottom_margin: margins[3],
             bookmarks: Vec::new(),
+            notes: Vec::new(),
             borders: cell.borders,
             shading: cell.shading,
             valign: cell.valign,
@@ -1700,6 +1751,7 @@ impl Flow<'_> {
             .into_iter()
             .map(|(name, y)| (name, y + margins[1]))
             .collect();
+        laid.notes = sub.notes.into_iter().map(|(id, y)| (id, y + margins[1])).collect();
         laid
     }
 
@@ -1772,6 +1824,11 @@ impl Flow<'_> {
             push_items(&mut sub.items, &line.items, 0.0, sub.y);
             sub.y += line.height;
             sub.breaks.push(sub.y);
+            for (endnote, id) in &line.notes {
+                if !endnote {
+                    sub.notes.push((id.clone(), sub.y));
+                }
+            }
         }
         if let Some(color) = para.props.shading {
             sub.items.insert(
@@ -1819,6 +1876,8 @@ impl Flow<'_> {
                 push_items(&mut row_items, &cell.items, cell.x, 0.0);
                 sub.floats
                     .extend(cell.floats.iter().map(|float| float.moved(cell.x, sub.y)));
+                sub.notes
+                    .extend(cell.notes.iter().map(|(id, y)| (id.clone(), y + sub.y)));
                 let [b_top, b_left, b_bottom, b_right] = cell.borders;
                 let (left, right) = (cell.x, cell.x + cell.width);
                 if let Some(border) = b_top.filter(|_| cell.draw_top) {
@@ -1939,6 +1998,9 @@ struct LaidCell {
     /// Bottom margin.
     bottom_margin: f32,
     bookmarks: Vec<(String, f32)>,
+    /// The footnotes referred to, with the bottom of the line referring to
+    /// each (from the top of the cell).
+    notes: Vec<(String, f32)>,
     borders: [Option<Border>; 4],
     shading: Option<Rgb>,
     valign: VAlign,
@@ -1968,6 +2030,9 @@ struct SubFlow {
     pending_bottom: Option<(Border, f32, f32, f32)>,
     in_cell: bool,
     own_note: Option<String>,
+    /// The footnotes referred to, with the bottom of the line referring to
+    /// each.
+    notes: Vec<(String, f32)>,
     page_count: Option<u32>,
     section_pages: Option<u32>,
     format: NumFormat,
@@ -2035,6 +2100,7 @@ impl SubFlow {
             pending_bottom: None,
             in_cell: false,
             own_note: None,
+            notes: Vec::new(),
             page_count: None,
             section_pages: None,
             format: NumFormat::Decimal,
@@ -2082,6 +2148,13 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
             .map(|float| float.moved(0.0, -(cut - cell.top_margin)))
             .collect();
         first.cells[at].items = head;
+        first.cells[at].notes.retain(|(_, y)| *y <= cut + EPS);
+        second.cells[at].notes = cell
+            .notes
+            .iter()
+            .filter(|(_, y)| *y > cut + EPS)
+            .map(|(id, y)| (id.clone(), y - (cut - cell.top_margin)))
+            .collect();
         first.cells[at].draw_bottom = false;
         first.cells[at].height = room;
         let shift = cut - cell.top_margin;
@@ -2125,6 +2198,7 @@ fn breaks_page(para: &Para) -> bool {
 fn clip_cell(cell: &mut LaidCell, height: f32) {
     cell.items.retain(|item| item_top(item) < height);
     cell.breaks.retain(|&at| at < height);
+    cell.notes.retain(|(_, at)| *at <= height + EPS);
     cell.content_height = cell.content_height.min(height);
     cell.height = cell.height.min(height);
 }
@@ -2181,6 +2255,9 @@ fn shift_cell(cell: &mut LaidCell, by: f32) {
         *y += by;
     }
     for (_, y) in &mut cell.bookmarks {
+        *y += by;
+    }
+    for (_, y) in &mut cell.notes {
         *y += by;
     }
     cell.top_margin += by;
