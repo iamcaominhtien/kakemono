@@ -24,5 +24,11 @@ __pycache__/
 *.pyd
 benchmark-results/
 
+# Qasper evaluation: downloaded data, embeddings and results
+/eval/qasper/data/
+/eval/qasper/.venv/
+/eval/qasper/.venv-tools/
+/eval/qasper/.venv-nomic/
+
 # Word documents and the PDFs Word made of them (scripts/fetch-word-corpus.sh)
 /tests/data/word-corpus/

@@ -15,7 +15,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-Linux_%7C_macOS_%7C_Windows-555)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f9e44)](LICENSE)
 
-[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [EPUB](#epub) · [JSON](#editable-json) · [Install](#installation) · [Usage](#usage) ·
+[Features](#features) · [Modes](#the-four-modes) · [Word](#word-documents) · [Markdown](#markdown) · [LaTeX](#latex) · [EPUB](#epub) · [JSON](#editable-json) · [Chunks](#chunks-for-retrieval-rag) · [Install](#installation) · [Usage](#usage) ·
 [Library](#use-as-a-library) · [Python](#python) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -27,8 +27,9 @@
 
 Give it a local PDF, a Word document (`.docx`, `.doc`) or an arXiv ID; get HTML with continuous text, ready to read on any screen or
 to feed to translation tools, a Word document to edit, Markdown for notes, wikis and LLMs, a
-LaTeX source to edit and typeset again, an EPUB book for an e-reader, or JSON for other
-programs, which can be edited (translated, say) and turned back into any of these.
+LaTeX source to edit and typeset again, an EPUB book for an e-reader, JSON for other
+programs, which can be edited (translated, say) and turned back into any of these, or chunks
+ready to embed for retrieval (RAG).
 
 ```bash
 kakemono convert 1706.03762            # "Attention Is All You Need" → 1706.03762.friendly.html
@@ -38,6 +39,7 @@ kakemono convert 1706.03762 -o attention.tex    # LaTeX, pictures in attention_a
 kakemono convert 1706.03762 -o attention.epub   # an EPUB book for e-readers
 kakemono convert 1706.03762 -o attention.json   # the content as editable JSON
 kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages, with the edited text
+kakemono convert 1706.03762 -o attention.jsonl  # chunks for retrieval (RAG), one per line
 kakemono convert report.docx -o report.md       # a Word document (.docx or .doc) as input
 kakemono convert report.docx -o report.pdf      # a Word document as a PDF, laid out as Word lays it out
 ```
@@ -55,6 +57,7 @@ kakemono convert report.docx -o report.pdf      # a Word document as a PDF, laid
 | 📐 **LaTeX** | `.tex` that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX math. |
 | 📚 **EPUB** | `.epub` (EPUB 3) for e-readers: reflowing text, a table of contents, MathML formulas, tables and the first page as the cover. |
 | 🌐 **Editable JSON** | `.json` with the blocks in reading order, their text with styles and formulas kept; edit it (translate it, say) and `--content` writes any output from it, the `hard-95` pages included. |
+| 🔎 **Chunks for RAG** | `.jsonl` with the text cut along the sections, each chunk headed by its section path, sized in tokens (estimated, or by your embedding model's tokenizer), with the blocks and pages it comes from. |
 | ⚡ **Fast** | A 15-page paper takes 1–2 s for all four modes; a 400-page book a few seconds per mode. |
 
 ## The four modes
@@ -291,6 +294,49 @@ again. The `hard` mode shows the pages themselves and cannot show edited text. I
 pdfLaTeX prints Vietnamese (with `vntex`); for scripts its fonts lack (Chinese, say), use XeLaTeX
 or LuaLaTeX.
 
+## Chunks for retrieval (RAG)
+
+`kakemono convert paper.pdf -o paper.jsonl` (or `--format chunks`) cuts the text into chunks
+ready to embed, one JSON object per line:
+
+```json
+{"id":3,"text":"I. INTRODUCTION\n\nThe discovery of the binary pulsar system PSR B1913+16 by Hulse and Taylor ...",
+ "tokens":439,"title":"Observation of Gravitational Waves from a Binary Black Hole Merger",
+ "section":["I. INTRODUCTION"],"blocks":[12,13],"pages":[0]}
+```
+
+- **Along the structure.** A chunk holds the blocks of one section, up to `--chunk-tokens`
+  (default 512); a block is cut only when it does not fit in one chunk, at sentence ends. Tables
+  give their caption and rows (cells joined by `|`), formulas their LaTeX (`$$...$$`).
+- **Headed by the section path** (`3 Model > 3.2 Attention`), not by the paper title: within one
+  paper a title on every chunk only blurs the embeddings. The title is in each chunk's `title`,
+  to filter or prefix when searching several papers. `blocks` are the ids of the
+  [editable JSON](#editable-json) (and `--json`), `pages` count from 0.
+- **Sized in tokens.** By default an estimate that needs no tokenizer: 15 to 20% above the count
+  of real subword tokenizers, so that a chunk seldom passes a model's limit. To count exactly,
+  give `--tokenizer` your embedding model's `tokenizer.json` (from its Hugging Face repository) or
+  `cl100k_base` / `o200k_base` for OpenAI's models. `tokens` then counts without special tokens
+  (`[CLS]`, `<s>`), which most models add.
+
+Measured on [Qasper](https://allenai.org/data/qasper) (questions on 100 NLP papers; share of the
+gold evidence in the retrieved text, two embedding models; see `eval/qasper/`):
+
+| Chunks from | nomic-embed v1.5, 1024 / 2048 tokens retrieved | Qwen3-Embedding 0.6B, 1024 / 2048 | Time, 100 papers (CPU) |
+| --- | --- | --- | --- |
+| **kakemono** (`-f chunks`) | **0.611** / **0.738** | **0.581** / **0.753** | **9.5 s** |
+| docling + its `HybridChunker` | 0.608 / 0.734 | 0.536 / 0.705 | 2032 s |
+| unstructured (`fast`) + `chunk_by_title` | 0.461 / 0.596 | 0.446 / 0.626 | 153 s |
+| pypdf, cut every 512 tokens | 0.388 / 0.559 | 0.450 / 0.621 | 38 s |
+
+docling ties with nomic and is 4 to 5 points behind with Qwen3 (a difference outside the 95%
+interval of a bootstrap over papers); pypdf and unstructured are 13 to 22 points behind with both. Times are conversion and chunking,
+without embedding, one paper after another on 4 cores.
+
+```bash
+kakemono convert paper.pdf -o paper.jsonl --chunk-tokens 256
+kakemono convert paper.pdf -o paper.jsonl --tokenizer path/to/bge-m3/tokenizer.json
+```
+
 ## Installation
 
 **Prebuilt binaries** for Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows are
@@ -349,8 +395,8 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|epub\|json\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json` or `.pdf` |
-| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub` or `.json` file, or directory |
+| `-f, --format <html\|docx\|md\|tex\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but the `hard` mode |
 | `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX; Word keeps them embedded too; never for EPUB) |
 | `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
@@ -361,6 +407,8 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 | `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure with every field of the analysis (see below; to edit the text, use `--format json`) |
+| `--chunk-tokens <N>` | Largest chunk, in tokens (default 512), for `--format chunks` |
+| `--tokenizer <file.json\|name>` | Count the tokens of chunks with a real tokenizer: a Hugging Face `tokenizer.json`, or `cl100k_base` / `o200k_base` (OpenAI); the default is an estimate |
 | `-j, --jobs <N>` | Threads (default one per core); the result is the same for every value |
 
 Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
@@ -410,7 +458,12 @@ std::fs::write("paper.html", out.html)?;
 `paper.to_markdown(&analysis, &MarkdownOptions::default())` returns Markdown with its picture files,
 `paper.to_latex(&analysis, &LatexOptions::default())` a LaTeX document with its picture files,
 `paper.to_epub(&analysis, &EpubOptions::default())` the bytes of an EPUB book, and
-`paper.to_json(&analysis, &JsonOptions::default())` the editable JSON with its picture files.
+`paper.to_json(&analysis, &JsonOptions::default())` the editable JSON with its picture files, and
+`paper.to_chunks(&analysis, &ChunkOptions::default())` the chunks for retrieval
+(`kakemono::chunks_jsonl` writes them as JSON Lines; `TokenCounter::load` reads a tokenizer,
+`TokenCounter::custom` takes any counting function). The real tokenizers are the default cargo
+features `tokenizers` (Hugging Face) and `openai-tokenizers`; without them, chunks are sized by the
+estimate.
 `paper.apply_content(&mut analysis, &json)` applies an edited JSON file to the analysis, and every
 output written from it afterwards shows the edited text. `analysis.doc` is the
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
@@ -524,7 +577,7 @@ cargo test --release
 - **Editable JSON**: on every paper, an unedited file changes nothing and edited text comes back
   exactly as written; edited text reaches every output with its formulas and links.
 - **Snapshots**: a hash of each mode's HTML, of the Word, Markdown, LaTeX and EPUB documents, of the
-  editable JSON and of the `--json` document per paper, in `tests/data/snapshots/`.
+  editable JSON, of the chunks and of the `--json` document per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 

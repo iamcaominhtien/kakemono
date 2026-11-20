@@ -4,8 +4,8 @@
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
 writes them as a PDF) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
-LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`) or to editable
-JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
+LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
+retrieval (`.jsonl`, `src/render/chunks/`) or to editable JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
 edited (for example translated) text:
 
 - `hard`: a copy of every page, with a selectable text layer.
@@ -29,6 +29,7 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
 ./target/release/kakemono convert <file.pdf> -o out/x.epub                    # EPUB 3 book (or -f epub)
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
+./target/release/kakemono convert <file.pdf> -o out/x.jsonl                   # chunks for RAG (or -f chunks; --tokenizer tokenizer.json)
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
@@ -75,7 +76,7 @@ committing.
   2. Compare the output text before and after on as many papers as you can (the 8 test papers,
      plus other varied papers if you have them).
 - Snapshots (`tests/data/snapshots/*.txt`) are hashes of each mode's HTML, of the Word document, of the
-  Markdown, of the LaTeX, of the EPUB book and of the JSON.
+  Markdown, of the LaTeX, of the EPUB book, of the JSON and of the chunks.
 - The editable JSON (`src/render/json/`) is a published format: a field that changes meaning or
   goes away needs a new `FORMAT_VERSION` and a breaking-change commit (`feat!:`); new fields
   do not.

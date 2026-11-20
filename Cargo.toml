@@ -53,6 +53,19 @@ cfb = "0.16"
 # The Word layout engine: text shaping, and the PDF it writes.
 rustybuzz = "0.20"
 krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
+# Real tokenizers for `--tokenizer` of the chunks output (optional: without
+# them, chunk sizes are estimated). Hugging Face's reads the tokenizer.json of
+# an embedding model; tiktoken-rs holds OpenAI's cl100k_base and o200k_base
+# (about 6 MB; bpe-openai, faster, adds 70 MB of tables).
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
+tiktoken-rs = { version = "0.12", optional = true }
+
+[features]
+default = ["tokenizers", "openai-tokenizers"]
+## `--tokenizer path/to/tokenizer.json` (Hugging Face tokenizers).
+tokenizers = ["dep:tokenizers"]
+## `--tokenizer cl100k_base` / `o200k_base` (OpenAI's tokenizers).
+openai-tokenizers = ["dep:tiktoken-rs"]
 
 [profile.release]
 opt-level = 3

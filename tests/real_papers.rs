@@ -25,8 +25,8 @@
 
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
 use kakemono::{
-    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    PageImage, Paper,
+    AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
+    MarkdownOptions, Mode, PageImage, Paper,
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -423,6 +423,37 @@ fn check_content(json: &str, files: &[(String, Vec<u8>)]) {
     }
 }
 
+/// Checks the chunks: numbered in order, none empty or over the size, each
+/// from existing blocks in reading order, and most of them under a heading.
+fn check_chunks(chunks: &[kakemono::Chunk], n_blocks: usize, max_tokens: usize) {
+    assert!(!chunks.is_empty(), "chunks: none");
+    let mut last_block = 0;
+    for (i, chunk) in chunks.iter().enumerate() {
+        assert_eq!(chunk.id, i, "chunks: numbered out of order");
+        assert!(!chunk.text.trim().is_empty(), "chunks: chunk {i} is empty");
+        assert!(
+            chunk.tokens <= max_tokens,
+            "chunks: chunk {i} has {} tokens",
+            chunk.tokens
+        );
+        assert!(
+            chunk.blocks.iter().all(|&id| id < n_blocks),
+            "chunks: chunk {i} names a missing block"
+        );
+        assert!(
+            chunk.blocks.first().is_some_and(|&id| id >= last_block),
+            "chunks: chunk {i} goes back"
+        );
+        last_block = *chunk.blocks.last().unwrap();
+    }
+    let under_heading = chunks.iter().filter(|chunk| !chunk.section.is_empty()).count();
+    assert!(
+        under_heading * 2 > chunks.len(),
+        "chunks: only {under_heading} of {} under a heading",
+        chunks.len()
+    );
+}
+
 fn check_snapshot(id: &str, snap: &Snapshot) {
     let dir = data_dir().join("snapshots");
     let file = dir.join(format!("{id}.txt"));
@@ -640,6 +671,14 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let stable_json = generator.replace(&content.json, "");
     assert_ne!(stable_json, content.json, "the content JSON has a generator line");
     fingerprints.push(("content", fingerprint(&stable_json, &content.files)));
+    // The chunks for retrieval.
+    let chunk_opts = ChunkOptions::default();
+    let chunks = paper.to_chunks(&analysis, &chunk_opts);
+    check_chunks(&chunks, doc.blocks.len(), chunk_opts.max_tokens);
+    fingerprints.push((
+        "chunks",
+        hex(Sha256::digest(kakemono::chunks_jsonl(&chunks).as_bytes())),
+    ));
     let metrics = Metrics {
         title,
         tables,

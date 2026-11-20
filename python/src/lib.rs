@@ -1,12 +1,12 @@
 //! The native part of the `kakemono` Python package: PDF or Word bytes in, HTML, a
-//! Word document, Markdown, LaTeX, an EPUB book, the editable JSON or the document structure (as JSON) out.
+//! Word document, Markdown, LaTeX, an EPUB book, the editable JSON, chunks for retrieval or the document structure (as JSON) out.
 //! Every output can show the text of an edited JSON file (`content`). `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
 
 use kakemono::source::arxiv;
 use kakemono::{
-    AnalyzeOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    PageImage, Paper, PngCompression,
+    AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
+    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter,
 };
 use pyo3::exceptions::{PyUserWarning, PyValueError};
 use pyo3::prelude::*;
@@ -369,6 +369,36 @@ fn py_files(py: Python<'_>, files: Vec<(String, Vec<u8>)>) -> PyFiles<'_> {
         .collect()
 }
 
+/// Cuts a PDF or Word document into chunks for retrieval; returns them as JSON Lines (one
+/// object per line). `tokenizer` is the path of a Hugging Face
+/// `tokenizer.json` or the name of an OpenAI tokenizer; without it, tokens
+/// are estimated.
+#[pyfunction]
+#[pyo3(signature = (pdf, *, source=None, max_tokens=512, tokenizer=None, tables=true, jobs=0, content=None))]
+#[allow(clippy::too_many_arguments)]
+fn to_chunks(
+    py: Python<'_>,
+    pdf: Vec<u8>,
+    source: Option<String>,
+    max_tokens: usize,
+    tokenizer: Option<String>,
+    tables: bool,
+    jobs: usize,
+    content: Option<String>,
+) -> PyResult<String> {
+    let counter = match tokenizer {
+        Some(spec) => TokenCounter::load(&spec).map_err(|err| value_error(format!("{err:#}")))?,
+        None => TokenCounter::estimate(),
+    };
+    let (jsonl, warnings) = py.detach(move || {
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, PngCompression::default(), content)?;
+        let chunks = paper.to_chunks(&analysis, &ChunkOptions { max_tokens, counter });
+        Ok::<_, PyErr>((kakemono::chunks_jsonl(&chunks), warnings))
+    })?;
+    warn_all(py, &warnings)?;
+    Ok(jsonl)
+}
+
 /// Analyses a PDF or Word document and returns its structure (blocks in reading order) as a
 /// JSON string, the same document as `kakemono convert --json`.
 #[pyfunction]
@@ -408,6 +438,7 @@ fn _kakemono(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(to_latex, module)?)?;
     module.add_function(wrap_pyfunction!(to_json, module)?)?;
     module.add_function(wrap_pyfunction!(to_epub, module)?)?;
+    module.add_function(wrap_pyfunction!(to_chunks, module)?)?;
     module.add_function(wrap_pyfunction!(analyze, module)?)?;
     module.add_function(wrap_pyfunction!(parse_arxiv_id, module)?)?;
     module.add_function(wrap_pyfunction!(fetch_arxiv, module)?)?;
