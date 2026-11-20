@@ -481,9 +481,7 @@ impl Flow<'_> {
         let mut footer_top = page.height;
         // A footer that shows nothing (empty paragraphs, objects floating
         // apart) does not push the body up.
-        if let Some(part) =
-            footer.filter(|&part| std::env::var_os("KSF").is_some() || shows_something(&self.doc.parts[part]))
-        {
+        if let Some(part) = footer.filter(|&part| shows_something(&self.doc.parts[part])) {
             let height =
                 self.blocks_height(&self.doc.parts[part], width, Some(number)) + last_after(&self.doc.parts[part]);
             // The body stays above the top border of the footer, which
