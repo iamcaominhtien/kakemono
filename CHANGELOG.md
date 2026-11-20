@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.13.0](https://github.com/iamcaominhtien/kakemono/compare/v0.12.0...v0.13.0) - 2026-11-20
+
+### Added
+
+- Chunks output for retrieval (RAG), with a Qasper evaluation ([#17](https://github.com/iamcaominhtien/kakemono/pull/17))
+
+kakemono now writes the text of a paper as chunks ready to embed for retrieval (RAG): `kakemono convert paper.pdf -o paper.jsonl` (or `--format chunks`), one JSON object per line.
+
 ## [0.12.0](https://github.com/iamcaominhtien/kakemono/compare/v0.11.0...v0.12.0) - 2026-11-20
 
 ### Added
