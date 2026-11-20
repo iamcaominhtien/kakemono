@@ -198,6 +198,9 @@ struct State {
     /// The paragraph being placed is an empty one that ends a section
     /// before a new page: it stays on its page even when it does not fit.
     section_mark: bool,
+    /// The paragraph being placed is the last of a section followed by a
+    /// new page: a page break on its last line opens no page.
+    break_ends_section: bool,
     /// Space after the last paragraph, with its style and whether it is
     /// contextual.
     pending_after: Option<(f32, String, bool)>,
@@ -315,6 +318,14 @@ impl Flow<'_> {
                 self.state.section_mark = true;
                 self.blocks(std::slice::from_ref(&section.blocks[section.blocks.len() - 1]));
                 self.state.section_mark = false;
+            }
+            Some((Block::Para(_), rest)) if next_page => {
+                // A page break on the last line of the section's last
+                // paragraph: the new section starts the new page.
+                self.blocks(rest);
+                self.state.break_ends_section = true;
+                self.blocks(&section.blocks[section.blocks.len() - 1..]);
+                self.state.break_ends_section = false;
             }
             _ => self.blocks(&section.blocks),
         }
@@ -870,6 +881,7 @@ impl Flow<'_> {
             at += take;
             gap = 0.0;
             match lines.get(at - 1) {
+                Some(last) if last.page_break && self.state.break_ends_section && at == count => {}
                 Some(last) if last.page_break => self.next_page(),
                 Some(last) if last.column_break => self.next_column(),
                 _ if at < count => self.next_column(),
@@ -1128,6 +1140,14 @@ impl Flow<'_> {
             self.sub_blocks(&mut sub, &shape.blocks, Some(self.page_number(page)), None);
             if shape.auto_height {
                 height = height.max(sub.y + shape.insets[1] + shape.insets[3]);
+            }
+            // A bookmark in the text box is on the page the box is on.
+            for (name, dy) in std::mem::take(&mut sub.bookmarks) {
+                self.destinations.push(Destination {
+                    name,
+                    page,
+                    y: y + shape.insets[1] + dy,
+                });
             }
         }
         if let Some(color) = shape.fill {
