@@ -514,7 +514,11 @@ impl Reader<'_> {
         // there): those of its base style apply, then the paragraph's own.
         if direct.numbering.as_ref().is_some_and(|(id, _)| id == "0") {
             let (inherited, own) = self.styles.paragraph_layers(style_id);
-            if own.numbering.as_ref().is_some_and(|(id, _)| !id.is_empty() && id != "0") {
+            if own
+                .numbering
+                .as_ref()
+                .is_some_and(|(id, _)| !id.is_empty() && id != "0")
+            {
                 if own.left.is_some() {
                     para_raw.left = inherited.left;
                 }

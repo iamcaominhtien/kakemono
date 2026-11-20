@@ -191,6 +191,10 @@ struct State {
     /// fit in the previous one (not by a break): Word drops its space
     /// before.
     pushed: bool,
+    /// The column is the first of a section's first page.
+    section_top: bool,
+    /// The space after the last paragraph of the section before.
+    section_after: f32,
     /// The paragraph being placed is an empty one that ends a section
     /// before a new page: it stays on its page even when it does not fit.
     section_mark: bool,
@@ -270,6 +274,7 @@ impl Flow<'_> {
             eprintln!("SECTION\t{at}\t{:?}\tpage {}", section.start, self.pages.len());
         }
         let previous_number = self.state.number;
+        self.state.section_after = self.state.pending_after.as_ref().map_or(0.0, |(after, _, _)| *after);
         if !continuous {
             self.finish_page();
             if matches!(section.start, SectionStart::OddPage | SectionStart::EvenPage) {
@@ -337,6 +342,7 @@ impl Flow<'_> {
         self.state.y = self.state.top;
         self.state.fresh = true;
         self.state.pushed = false;
+        self.state.section_top = first_of_section;
         self.state.pending_after = None;
         self.state.page_notes.clear();
         self.state.notes_height = 0.0;
@@ -588,6 +594,7 @@ impl Flow<'_> {
             self.state.y = self.state.top;
             self.state.fresh = true;
             self.state.pushed = false;
+            self.state.section_top = false;
             self.state.pending_after = None;
             return;
         }
@@ -632,6 +639,16 @@ impl Flow<'_> {
             AUTO_SPACING_PT
         } else {
             para.props.before
+        };
+        // At the top of a section that starts a new page, the space before
+        // is what it adds to the space after the last paragraph of the
+        // section before (spent on the previous page): with the larger of
+        // the two counted, none when that space after is as large.
+        let before = if self.state.fresh && self.state.section_top {
+            let after = self.state.section_after;
+            (self.spacing(after, before) - after).max(0.0)
+        } else {
+            before
         };
         let before = if para.props.contextual && self.state_style_matches(para) || self.state.fresh && self.state.pushed
         {
@@ -1479,6 +1496,7 @@ impl Flow<'_> {
                 Block::Table(table) => self.sub_table(sub, table),
             }
         }
+        sub.close_frame();
         // The space after the last paragraph counts in a cell.
         if let Some((after, _, _)) = sub.pending_after.take()
             && sub.in_cell
@@ -1516,6 +1534,7 @@ impl Flow<'_> {
             before
         };
         sub.y += self.spacing(after_prev, before);
+        sub.borders(para);
         let top = sub.y;
         for float in &layout.floats {
             let line_top = top
@@ -1555,6 +1574,7 @@ impl Flow<'_> {
         } else {
             para.props.after
         };
+        sub.bottom_border(para);
         sub.pending_after = Some((after, para.style.clone(), para.props.contextual));
         sub.last_style = Some(para.style.clone());
     }
@@ -1562,6 +1582,7 @@ impl Flow<'_> {
     /// Lays out a table in a sub-flow, row by row, with its shading and
     /// borders.
     fn sub_table(&mut self, sub: &mut SubFlow, table: &Table) {
+        sub.close_frame();
         if let Some((after, _, _)) = sub.pending_after.take() {
             sub.y += after;
         }
@@ -1712,6 +1733,12 @@ struct SubFlow {
     bookmarks: Vec<(String, f32)>,
     pending_after: Option<(f32, String, bool)>,
     last_style: Option<String>,
+    /// The borders and indents of the last paragraph, when it has borders.
+    last_borders: Option<(ParaBorders, f32, f32)>,
+    /// The bottom border of the last paragraph, with its left and right
+    /// ends and the paragraph's bottom: drawn below it unless the next
+    /// paragraph is of the same frame.
+    pending_bottom: Option<(Border, f32, f32, f32)>,
     in_cell: bool,
     own_note: Option<String>,
     page_count: Option<u32>,
@@ -1720,6 +1747,52 @@ struct SubFlow {
 }
 
 impl SubFlow {
+    /// The top border of a paragraph that starts a frame, or the rule
+    /// between two paragraphs of one; ends the frame of the paragraph
+    /// before when this one is not part of it. In a header, a footer or a
+    /// cell, Word draws them in the spacing around the text, without
+    /// making room for them.
+    fn borders(&mut self, para: &Para) {
+        let borders = para.props.borders;
+        let key = (borders, para.props.left, para.props.right);
+        let framed = borders.top.is_some() || borders.bottom.is_some() || borders.between.is_some();
+        let same_frame = framed && self.last_borders == Some(key);
+        let (left, right) = (para.props.left, self.width - para.props.right);
+        if same_frame {
+            self.pending_bottom = None;
+            if let Some(between) = borders.between {
+                let y = self.y - between.space - between.width / 2.0;
+                border_line(&mut self.items, between, left, y, right, y);
+            }
+        } else {
+            self.close_frame();
+            if let Some(top) = borders.top {
+                let y = self.y - top.space - top.width / 2.0;
+                border_line(&mut self.items, top, left, y, right, y);
+            }
+        }
+        self.last_borders = framed.then_some(key);
+    }
+
+    /// Notes the bottom border of the paragraph just placed, drawn when its
+    /// frame ends.
+    fn bottom_border(&mut self, para: &Para) {
+        self.pending_bottom = para
+            .props
+            .borders
+            .bottom
+            .map(|bottom| (bottom, para.props.left, self.width - para.props.right, self.y));
+    }
+
+    /// Draws the bottom border of the last frame, below its space.
+    fn close_frame(&mut self) {
+        if let Some((bottom, left, right, y)) = self.pending_bottom.take() {
+            let y = y + bottom.space + bottom.width / 2.0;
+            border_line(&mut self.items, bottom, left, y, right, y);
+        }
+        self.last_borders = None;
+    }
+
     /// An empty sub-flow of width `width`.
     fn new(width: f32) -> Self {
         SubFlow {
@@ -1731,6 +1804,8 @@ impl SubFlow {
             bookmarks: Vec::new(),
             pending_after: None,
             last_style: None,
+            last_borders: None,
+            pending_bottom: None,
             in_cell: false,
             own_note: None,
             page_count: None,
