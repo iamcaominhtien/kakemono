@@ -55,7 +55,7 @@ KAKEMONO_OUTPUTS = [
 # Outputs of LibreOffice: (name, --convert-to filter, extension written).
 LIBREOFFICE_OUTPUTS = [
     ('pdf', 'pdf', 'pdf'),
-    ('docx', 'docx:"MS Word 2007 XML"', 'docx'),
+    ('docx', 'docx:MS Word 2007 XML', 'docx'),
     ('html', 'html', 'html'),
     ('odt', 'odt', 'odt'),
 ]
