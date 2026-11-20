@@ -470,7 +470,8 @@ impl Flow<'_> {
         // A footer that shows nothing (empty paragraphs, objects floating
         // apart) does not push the body up.
         if let Some(part) = footer.filter(|&part| shows_something(&self.doc.parts[part])) {
-            let height = self.blocks_height(&self.doc.parts[part], width, Some(number)) + last_after(&self.doc.parts[part]);
+            let height =
+                self.blocks_height(&self.doc.parts[part], width, Some(number)) + last_after(&self.doc.parts[part]);
             // The body stays above the top border of the footer, which
             // the footer draws in the space above its text.
             footer_top = page.height - page.footer - height - first_top_border(&self.doc.parts[part]);
