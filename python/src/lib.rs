@@ -220,7 +220,7 @@ fn to_docx<'py>(
 /// Converts a PDF or Word document to Markdown; returns the text and its picture files
 /// (none when `inline_images`: the pictures are then data URIs).
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None, mode="friendly"))]
 #[allow(clippy::too_many_arguments)]
 fn to_markdown<'py>(
     py: Python<'py>,
@@ -234,7 +234,16 @@ fn to_markdown<'py>(
     image_dir: String,
     inline_images: bool,
     content: Option<String>,
+    mode: &str,
 ) -> PyResult<(String, PyFiles<'py>)> {
+    let mode = match parse_mode(mode)? {
+        mode @ (Mode::Medium | Mode::Friendly) => mode,
+        _ => {
+            return Err(PyValueError::new_err(
+                "Markdown has no pages: mode can be 'friendly' or 'medium'",
+            ));
+        }
+    };
     let equations = parse_equations(equations)?;
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
@@ -246,6 +255,7 @@ fn to_markdown<'py>(
             scale,
             jobs,
             equations,
+            mode,
         };
         Ok::<_, PyErr>((paper.to_markdown(&analysis, &opts), warnings))
     })?;

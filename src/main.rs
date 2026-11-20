@@ -244,13 +244,13 @@ impl From<PngCompressionArg> for PngCompression {
 struct ConvertArgs {
     /// Local PDF or Word file (.docx, .doc), arXiv id (1706.03762) or arXiv URL
     input: String,
-    /// Fidelity mode
+    /// Fidelity mode (HTML); for Markdown, friendly adapts the tables to pipe tables and medium keeps their layout
     #[arg(short, long, value_enum, default_value = "friendly")]
     mode: ModeArg,
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub, .json or .jsonl; html otherwise); --mode applies to html only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub, .json or .jsonl; html otherwise); --mode applies to html and md only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
     /// Output HTML, .docx, .md, .tex, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
@@ -451,6 +451,9 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     }
     if args.content.is_some() && format == FormatArg::Html && !args.all && args.mode == ModeArg::Hard {
         bail!("hard mode shows the pages of the PDF: it cannot show edited text from --content (hard-95 can)");
+    }
+    if format == FormatArg::Markdown && matches!(args.mode, ModeArg::Hard | ModeArg::Hard95) {
+        bail!("Markdown has no pages: --mode can be friendly or medium with --format md");
     }
     if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
         bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
@@ -678,6 +681,7 @@ fn write_markdown(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: 
         scale: args.scale,
         jobs,
         equations: equations(args.equations),
+        mode: args.mode.into(),
     };
     let started = Instant::now();
     let out = paper.to_markdown(analysis, &opts);

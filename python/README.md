@@ -44,8 +44,10 @@ Word equations (editable in Word), the others pictures; rebuilt tables become Wo
 `<name>_assets`, next to the document).
 
 `to_markdown` takes the same options, plus `image_dir` (default `<name>_assets`, next to the
-file) and `inline_images`. Formulas whose structure is clear become LaTeX between `$$`, tables
-pipe tables. Without a path, or with `inline_images=True`, the pictures are embedded as data URIs.
+file), `inline_images` and `mode`. Formulas whose structure is clear become LaTeX between `$$`,
+tables pipe tables: with `mode="friendly"` (the default) every table, its header rows joined and
+its spanning cells repeated; with `mode="medium"` a table with spanning cells stays an HTML table.
+Without a path, or with `inline_images=True`, the pictures are embedded as data URIs.
 
 `to_latex` takes `tables`, `equations`, `scale`, `jobs` and `image_dir`, and returns a LaTeX
 document that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX
@@ -58,7 +60,7 @@ formulas wider than this, in multiples of the text size, become pictures; defaul
 by default, now). It returns an EPUB 3 book with one chapter per top-level section, a table of
 contents, MathML formulas and the pictures inside.
 
-`to_json` takes the options of `to_markdown` and returns the editable JSON as a dict: the blocks
+`to_json` takes the options of `to_markdown` but `mode`, and returns the editable JSON as a dict: the blocks
 in reading order, each with its `type`, `section`, `layout` and `text`, a string whose tags
 (`<i>`, `<b>`, `<a href>`, ...) keep the styles and links and where `<m id="n">` stands for a
 formula. Every conversion function takes `content`: an edited copy of that JSON for the same

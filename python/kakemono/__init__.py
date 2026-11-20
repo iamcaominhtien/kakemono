@@ -224,13 +224,19 @@ def to_markdown(
     image_dir: Optional[str] = None,
     inline_images: bool = False,
     content: Optional[Content] = None,
+    mode: Literal["friendly", "medium"] = "friendly",
 ) -> str:
     """Convert a PDF or Word document to Markdown and return the text.
 
     Headings, lists, captions and references get their Markdown syntax,
-    rebuilt tables become pipe tables (HTML tables when cells span), and
-    formulas whose structure is clear become LaTeX between ``$$`` (with
-    ``equations="image"``, every formula is a picture).
+    rebuilt tables become pipe tables, and formulas whose structure is
+    clear become LaTeX between ``$$`` (with ``equations="image"``, every
+    formula is a picture).
+
+    With ``mode="friendly"`` every table is adapted to a pipe table: its
+    header rows become one and a cell spanning rows or columns is repeated
+    in each. With ``mode="medium"`` the layout of the tables is kept: a
+    table with spanning cells stays an HTML table.
 
     When `path` is given, the Markdown is written there and its pictures to
     `image_dir` (default ``<name>_assets``, relative to the file). With
@@ -251,6 +257,7 @@ def to_markdown(
         image_dir=folder,
         inline_images=inline,
         content=_content(content),
+        mode=mode,
     )
     if path is not None:
         _write(path, text, files)

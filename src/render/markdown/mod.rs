@@ -1,7 +1,9 @@
 //! Markdown output: the document as one `.md` file, built from the same
 //! [`Document`] as the HTML modes. Headings, lists, captions, references and
 //! code listings get their Markdown syntax; rebuilt tables become pipe
-//! tables (HTML tables when cells span rows or columns); formulas whose
+//! tables: in friendly mode every one of them, spanning cells and header
+//! rows flattened; in medium mode only those
+//! without spanning cells, the others staying HTML tables; formulas whose
 //! structure is known become LaTeX between `$$`; figures (and the other
 //! formulas) are pictures of their area of the page, written to an image
 //! folder next to the file (or embedded as data URIs).
@@ -45,13 +47,22 @@ pub struct MarkdownOptions {
     /// (`$$ … $$`) rebuilt from the glyphs where the structure of the
     /// formula is clear, pictures elsewhere.
     pub equations: Equations,
+    /// How tables are written. [`Mode::Friendly`] adapts every rebuilt
+    /// table to a pipe table: the header rows become one, and a cell that
+    /// spans rows or columns is repeated in each of them. [`Mode::Medium`]
+    /// keeps the layout of the table: pipe tables only for tables without
+    /// spanning cells, HTML tables for the others. [`Mode::Hard`] and
+    /// [`Mode::Hard95`] are written as medium.
+    pub mode: Mode,
 }
 
 impl Default for MarkdownOptions {
     /// Pictures written to `images/` at 3 pixels per point, formulas as
-    /// LaTeX where their structure is clear, one worker thread per CPU.
+    /// LaTeX where their structure is clear, tables adapted to Markdown
+    /// (friendly), one worker thread per CPU.
     fn default() -> Self {
         Self {
+            mode: Mode::Friendly,
             inline_images: false,
             asset_dir: "images".into(),
             scale: 3.0,
@@ -465,9 +476,13 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// A rebuilt table: a pipe table when it has one header row and no
-    /// cell spans several positions, an HTML table otherwise.
+    /// A rebuilt table: in friendly mode a flattened pipe table; in the
+    /// others a pipe table when it has one header row and no cell spans
+    /// several positions, an HTML table otherwise.
     fn table(&self, table: &Table) -> String {
+        if self.opts.mode == Mode::Friendly && table.n_cols > 0 {
+            return flat_table(&self.inline, table);
+        }
         let simple = table.header_rows == 1
             && table.n_cols > 0
             && table
@@ -540,6 +555,125 @@ impl Writer<'_, '_> {
     }
 }
 
+/// A table as a pipe table, whatever its spanning cells: the meaning of
+/// every cell is kept, not its layout.
+///
+/// - The header rows become one: each column is headed by the texts
+///   above it, from top to bottom. A group header (a cell over several
+///   columns) is followed by a colon ("BLEU: EN-DE"); a header over one
+///   column only is the line before, and a space follows it ("train
+///   steps").
+/// - A cell of the body spanning rows is repeated in each, so that every
+///   row reads on its own. A cell spanning columns is repeated in each
+///   when they are under one group header (one cost for two language
+///   pairs), and written once in the first otherwise (a note across the
+///   row).
+/// - A row holding one cell across the whole table (a group label) is
+///   written in bold in the first column.
+/// - A table without header rows gets an empty one, which a pipe table
+///   needs.
+fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
+    let grid = covering_cells(table);
+    let header_rows = table.header_rows.min(grid.len());
+    let header: Vec<String> = (0..table.n_cols)
+        .map(|col| {
+            let mut out = String::new();
+            let mut group = false;
+            for row in &grid[..header_rows] {
+                let Some(cell) = row[col] else { continue };
+                let text = inline.cell(&cell.spans);
+                if text.is_empty() || out.ends_with(&text) {
+                    continue;
+                }
+                if !out.is_empty() {
+                    out.push_str(if group { HEADER_GROUP_JOIN } else { " " });
+                }
+                out.push_str(text.strip_suffix(':').unwrap_or(&text).trim_end());
+                group = cell.colspan > 1;
+            }
+            out
+        })
+        .collect();
+    let rule: Vec<&str> = (0..table.n_cols)
+        .map(|col| match table.col_align.get(col).copied() {
+            Some("center") => ":---:",
+            Some("right") => "---:",
+            _ => "---",
+        })
+        .collect();
+    let mut lines = vec![pipe_row(&header), pipe_row(&rule)];
+    for row in &grid[header_rows..] {
+        let mut cells: Vec<String> = (0..table.n_cols)
+            .map(|col| match row[col] {
+                Some(cell) if col == cell.col || under_one_group(&grid[..header_rows], cell) => {
+                    inline.cell(&cell.spans)
+                }
+                _ => String::new(),
+            })
+            .collect();
+        if cells.iter().all(String::is_empty) {
+            continue;
+        }
+        let label = table.n_cols > 1
+            && row
+                .iter()
+                .all(|cell| cell.is_some_and(|cell| row[0].is_some_and(|first| std::ptr::eq(cell, first))));
+        if label {
+            let text = std::mem::take(&mut cells[0]);
+            cells.iter_mut().for_each(String::clear);
+            cells[0] = if text.starts_with("**") {
+                text
+            } else {
+                format!("**{text}**")
+            };
+        }
+        lines.push(pipe_row(&cells));
+    }
+    lines.join("\n")
+}
+
+/// Follows a group header (over several columns) in the header of a
+/// column of a flattened table, before the header below it.
+const HEADER_GROUP_JOIN: &str = ": ";
+
+/// One row of a pipe table.
+fn pipe_row<S: AsRef<str>>(cells: &[S]) -> String {
+    let cells: Vec<&str> = cells.iter().map(AsRef::as_ref).collect();
+    format!("| {} |", cells.join(" | "))
+}
+
+/// A cell spanning several columns lies under one group header: a header
+/// cell over several columns covers all of its columns (as "Training Cost"
+/// over its two language pairs).
+fn under_one_group(header: &[Vec<Option<&TableCell>>], cell: &TableCell) -> bool {
+    cell.colspan > 1
+        && header.iter().any(|row| {
+            row.get(cell.col).copied().flatten().is_some_and(|group| {
+                group.colspan > 1 && group.col <= cell.col && group.col + group.colspan >= cell.col + cell.colspan
+            })
+        })
+}
+
+/// For each position `[row][col]` of the grid, the cell that covers it:
+/// the cell that starts there or one spanning from an earlier row or
+/// column.
+fn covering_cells(table: &Table) -> Vec<Vec<Option<&TableCell>>> {
+    let n_rows = table.rows.len();
+    let mut grid = vec![vec![None; table.n_cols]; n_rows];
+    for (row_idx, row) in table.rows.iter().enumerate() {
+        for cell in row {
+            let rows_end = (row_idx + cell.rowspan.max(1)).min(n_rows);
+            let cols_end = (cell.col + cell.colspan.max(1)).min(table.n_cols);
+            for grid_row in &mut grid[row_idx..rows_end] {
+                for slot in grid_row.iter_mut().take(cols_end).skip(cell.col) {
+                    *slot = Some(cell);
+                }
+            }
+        }
+    }
+    grid
+}
+
 /// The `#` marks of a heading of `level` (`##` for sections: `#` is the
 /// title), as for the HTML headings.
 fn heading_marks(level: u8) -> &'static str {
@@ -559,4 +693,99 @@ pub(crate) fn strip_label(spans: &[Span], label: &str) -> Option<Vec<Span>> {
     let mut spans = spans.to_vec();
     spans[0].text = rest.trim_start().to_string();
     Some(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::TableGeom;
+
+    fn cell(col: usize, colspan: usize, rowspan: usize, text: &str) -> TableCell {
+        TableCell {
+            col,
+            colspan,
+            rowspan,
+            spans: vec![Span::plain(text)],
+        }
+    }
+
+    fn table(n_cols: usize, header_rows: usize, rows: Vec<Vec<TableCell>>) -> Table {
+        let n_rows = rows.len();
+        Table {
+            n_cols,
+            header_rows,
+            col_align: vec!["left"; n_cols],
+            rows,
+            rule_above: vec![vec![0; n_cols]; n_rows],
+            rule_bottom: vec![0; n_cols],
+            rule_left: vec![vec![false; n_cols]; n_rows],
+            rule_right: vec![false; n_rows],
+            geom: TableGeom::default(),
+        }
+    }
+
+    fn flat(table: &Table) -> String {
+        let anchors = HashSet::new();
+        let inline = Inline {
+            anchors: &anchors,
+            math: false,
+        };
+        flat_table(&inline, table)
+    }
+
+    #[test]
+    fn flat_table_joins_header_rows_and_repeats_spanning_cells() {
+        // Model | BLEU (2 columns) | Cost (2 columns), then the language
+        // pairs; a model spanning two rows; a cost over both pairs; a note
+        // across columns that are not one group.
+        let table = table(
+            5,
+            2,
+            vec![
+                vec![cell(0, 1, 2, "Model"), cell(1, 2, 1, "BLEU"), cell(3, 2, 1, "Cost")],
+                vec![
+                    cell(1, 1, 1, "DE"),
+                    cell(2, 1, 1, "FR"),
+                    cell(3, 1, 1, "DE"),
+                    cell(4, 1, 1, "FR"),
+                ],
+                vec![
+                    cell(0, 1, 2, "A"),
+                    cell(1, 1, 1, "1"),
+                    cell(2, 1, 1, "2"),
+                    cell(3, 2, 1, "9"),
+                ],
+                vec![cell(1, 3, 1, "same as above"), cell(4, 1, 1, "8")],
+                vec![cell(0, 5, 1, "Ensembles")],
+            ],
+        );
+        assert_eq!(
+            flat(&table),
+            "| Model | BLEU: DE | BLEU: FR | Cost: DE | Cost: FR |\n\
+             | --- | --- | --- | --- | --- |\n\
+             | A | 1 | 2 | 9 | 9 |\n\
+             | A | same as above |  |  | 8 |\n\
+             | **Ensembles** |  |  |  |  |"
+        );
+    }
+
+    #[test]
+    fn flat_table_joins_a_wrapped_header_with_a_space() {
+        let table = table(
+            2,
+            2,
+            vec![
+                vec![cell(0, 1, 1, "train"), cell(1, 1, 2, "BLEU")],
+                vec![cell(0, 1, 1, "steps")],
+                vec![cell(0, 1, 1, "100K"), cell(1, 1, 1, "25.8")],
+            ],
+        );
+        assert_eq!(flat(&table), "| train steps | BLEU |\n| --- | --- |\n| 100K | 25.8 |");
+    }
+
+    #[test]
+    fn flat_table_without_header_rows_has_an_empty_header() {
+        let table = table(2, 0, vec![vec![cell(0, 1, 1, "mass"), cell(1, 1, 1, "36 | 5")]]);
+        assert_eq!(flat(&table), "|  |  |\n| --- | --- |\n| mass | 36 \\| 5 |");
+    }
 }
