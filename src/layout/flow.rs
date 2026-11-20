@@ -460,7 +460,9 @@ impl Flow<'_> {
         let header = self.header_part(section, number, first, true);
         let footer = self.header_part(section, number, first, false);
         let mut header_bottom = 0.0;
-        if let Some(part) = header {
+        // A header or footer that shows nothing (empty paragraphs, objects
+        // floating apart) does not push the body.
+        if let Some(part) = header.filter(|&part| shows_something(&self.doc.parts[part])) {
             let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
             // The space after the header's last paragraph is part of it.
             let after = match self.doc.parts[part].last() {
@@ -471,7 +473,7 @@ impl Flow<'_> {
             header_bottom = page.header + height + after;
         }
         let mut footer_top = page.height;
-        if let Some(part) = footer {
+        if let Some(part) = footer.filter(|&part| shows_something(&self.doc.parts[part])) {
             let height = self.blocks_height(&self.doc.parts[part], width, Some(number));
             footer_top = page.height - page.footer - height;
         }
@@ -2383,4 +2385,19 @@ fn items_extent(items: &[Item]) -> Option<(f32, f32)> {
             _ => None,
         })
         .reduce(|(left, right), (other_left, other_right)| (left.min(other_left), right.max(other_right)))
+}
+
+/// Whether `blocks` show anything in the flow: text, a table, a picture or
+/// shape in the line (not empty paragraphs, nor objects floating apart).
+fn shows_something(blocks: &[Block]) -> bool {
+    blocks.iter().any(|block| match block {
+        Block::Table(_) => true,
+        Block::Para(para) => para.inlines.iter().any(|inline| match inline {
+            Inline::Text { text, .. } => !text.trim().is_empty(),
+            Inline::Tab { .. } | Inline::Break { .. } => false,
+            Inline::Image { anchor, .. } => anchor.is_none(),
+            Inline::Shape(shape) => shape.anchor.is_none(),
+            _ => true,
+        }),
+    })
 }
