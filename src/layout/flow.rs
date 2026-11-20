@@ -813,13 +813,19 @@ impl Flow<'_> {
         if let Some(below) = self.below_exclusions(self.state.y + gap, first_height) {
             gap = below + before - self.state.y;
         }
+        // A paragraph that ends with a page or column break leaves its
+        // space after on the page it ends: the next column starts at its top.
+        let ends_with_break = layout
+            .lines
+            .last()
+            .is_some_and(|line| line.page_break || line.column_break);
         self.place_lines(para, layout, gap);
         let after = if para.props.after_auto {
             AUTO_SPACING_PT
         } else {
             para.props.after
         };
-        self.state.pending_after = Some((after, para.style.clone(), para.props.contextual));
+        self.state.pending_after = (!ends_with_break).then(|| (after, para.style.clone(), para.props.contextual));
     }
 
     /// The space between two paragraphs: the larger of the space after the
