@@ -75,8 +75,32 @@ struct Token {
 }
 
 /// The pieces of `spans`: text, and the formulas found in it. The text of
-/// the pieces, put together, is the text of the spans.
+/// the pieces, put together, is the text of the spans. A span that carries
+/// its formula ([`Span::math`], from a Word document) is that formula as it
+/// is.
 pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
+    if spans.iter().all(|span| span.math.is_none()) {
+        return find_formulas(spans);
+    }
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    for (idx, span) in spans.iter().enumerate() {
+        let Some(node) = &span.math else { continue };
+        if start < idx {
+            pieces.extend(find_formulas(&spans[start..idx]));
+        }
+        pieces.push(Piece::Math((**node).clone(), span.text.clone(), vec![span.clone()]));
+        start = idx + 1;
+    }
+    if start < spans.len() {
+        pieces.extend(find_formulas(&spans[start..]));
+    }
+    pieces
+}
+
+/// The pieces of `spans` (none of which carries its formula): the
+/// formulas are found in their styles.
+fn find_formulas(spans: &[Span]) -> Vec<Piece> {
     let mut tokens = tokenize(spans);
     let mut pieces: Vec<Piece> = Vec::new();
     let mut text: Vec<Span> = Vec::new();
@@ -186,7 +210,7 @@ fn trimmed_spans(run: &[Token]) -> Vec<Span> {
 
 /// Whether `spans` hold a formula at all (a quick test before [`split`]).
 pub(crate) fn has_math(spans: &[Span]) -> bool {
-    spans.iter().any(|span| span.style & MATH != 0)
+    spans.iter().any(|span| span.style & MATH != 0 || span.math.is_some())
 }
 
 /// The spans cut into tokens: plain text into words, symbol runs and

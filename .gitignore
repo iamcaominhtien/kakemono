@@ -23,3 +23,6 @@ __pycache__/
 *.so
 *.pyd
 benchmark-results/
+
+# Word documents and the PDFs Word made of them (scripts/fetch-word-corpus.sh)
+/tests/data/word-corpus/

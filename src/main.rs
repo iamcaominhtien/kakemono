@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF or a Word document into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -63,7 +63,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
+    about = "Convert scientific-paper PDFs (arXiv) and Word documents into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -75,7 +75,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL) or a Word document (.docx, .doc) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -87,8 +87,15 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF file, arXiv id or arXiv URL
+        /// Local PDF or Word file, arXiv id or arXiv URL
         input: String,
+    },
+    /// Print the text lines of a PDF with their baselines, as tab-separated
+    /// page, baseline, left, right and text (for comparing layouts).
+    #[command(hide = true)]
+    Lines {
+        /// A PDF file
+        input: PathBuf,
     },
     /// Read pictures of formulas (black on white, as LaTeX renders them) and
     /// print them as MathML. With several pictures, each line is the file
@@ -146,6 +153,8 @@ enum FormatArg {
     Epub,
     /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
     Json,
+    /// A PDF (.pdf) of a Word document, laid out in pages as Word lays it out
+    Pdf,
 }
 
 /// Values of `--images`; the doc comments are the help texts.
@@ -228,7 +237,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF file, arXiv id (1706.03762) or arXiv URL
+    /// Local PDF or Word file (.docx, .doc), arXiv id (1706.03762) or arXiv URL
     input: String,
     /// Fidelity mode
     #[arg(short, long, value_enum, default_value = "friendly")]
@@ -343,6 +352,26 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Inspect { input } => inspect(&input),
+        Command::Lines { input } => {
+            let data = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
+            let (lines, pages) = kakemono::layout::lines::pdf_lines(data)?;
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            let written = writeln!(out, "pages\t{pages}").and_then(|()| {
+                for line in lines {
+                    writeln!(
+                        out,
+                        "{}\t{:.2}\t{:.2}\t{:.2}\t{}",
+                        line.page, line.baseline, line.left, line.right, line.text
+                    )?;
+                }
+                out.flush()
+            });
+            // A reader that stops early (`| head`) is not an error.
+            match written {
+                Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.into()),
+                _ => Ok(()),
+            }
+        }
         Command::Formula { images, scores } => formula(&images, scores),
     }
 }
@@ -391,18 +420,15 @@ fn write_file(path: &Path, data: &[u8]) -> Result<()> {
     std::fs::write(path, data).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The `convert` subcommand: analyses the paper once, then writes the HTML
-/// of each requested mode or the Word document and, with `--json`, the
-/// document as JSON.
+/// Checks the options of `convert` and returns the output format.
 ///
 /// # Errors
-/// When `--scale` is out of range, `--all` is given for a Word, Markdown or LaTeX document, `--images inline` for
-/// LaTeX, the input cannot be loaded or an output file cannot be written.
-fn convert(args: ConvertArgs) -> Result<()> {
+/// When options cannot be used together, or a value is out of range.
+fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     if !(args.scale > MIN_SCALE && args.scale <= MAX_SCALE) {
         bail!("--scale must be between 0.2 and 8");
     }
-    let format = output_format(&args);
+    let format = output_format(args);
     if format != FormatArg::Html && args.all {
         bail!("--all produces the HTML modes; it cannot be used with --format docx, md, tex, epub or json");
     }
@@ -420,8 +446,42 @@ fn convert(args: ConvertArgs) -> Result<()> {
     {
         bail!("--image-dir must be a relative folder inside the output directory");
     }
+    Ok(format)
+}
+
+/// Writes a Word document laid out in pages as a PDF.
+///
+/// # Errors
+/// When the input is not a Word document, or the file cannot be written.
+fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
+    let started = Instant::now();
+    let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
+    let data = paper.to_pdf()?;
+    write_file(&file, &data)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB, {:.2}s)",
+        "pdf",
+        file.display(),
+        data.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// The `convert` subcommand: analyses the paper once, then writes the HTML
+/// of each requested mode or the Word document and, with `--json`, the
+/// document as JSON.
+///
+/// # Errors
+/// When `--scale` is out of range, `--all` is given for a Word, Markdown or LaTeX document, `--images inline` for
+/// LaTeX, the input cannot be loaded or an output file cannot be written.
+fn convert(args: ConvertArgs) -> Result<()> {
+    let format = check_args(&args)?;
     let (paper, stem) = load(&args.input)?;
     let paper = paper.with_png_compression(args.png_compression.into());
+    if format == FormatArg::Pdf {
+        return write_pdf(&paper, &args, &stem);
+    }
     let started = Instant::now();
     let jobs = kakemono::common::parallel::resolve_jobs(args.jobs);
     let mut analysis = paper.analyze_with(AnalyzeOptions {
@@ -430,12 +490,20 @@ fn convert(args: ConvertArgs) -> Result<()> {
         ..Default::default()
     });
     let tables = analysis.doc.blocks.iter().filter(|block| block.table.is_some()).count();
-    eprintln!(
-        "analysed {} pages ({jobs} threads), {} blocks, {tables} tables rebuilt in {:.2}s",
-        paper.page_count(),
-        analysis.doc.blocks.len(),
-        started.elapsed().as_secs_f32()
-    );
+    if paper.format().has_pages() {
+        eprintln!(
+            "analysed {} pages ({jobs} threads), {} blocks, {tables} tables rebuilt in {:.2}s",
+            paper.page_count(),
+            analysis.doc.blocks.len(),
+            started.elapsed().as_secs_f32()
+        );
+    } else {
+        eprintln!(
+            "read {} document, {} blocks, {tables} tables",
+            paper.format().name(),
+            analysis.doc.blocks.len(),
+        );
+    }
     if let Some(content) = &args.content {
         apply_content(&paper, &mut analysis, content)?;
     }
@@ -448,6 +516,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
         FormatArg::Html => write_html(&paper, &analysis, &args, jobs, &paths, &stem)?,
+        FormatArg::Pdf => unreachable!("written above"),
     }
 
     if args.json {
@@ -478,6 +547,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "tex" | "latex" => FormatArg::Latex,
             "epub" => FormatArg::Epub,
             "json" => FormatArg::Json,
+            "pdf" => FormatArg::Pdf,
             _ => FormatArg::Html,
         }
     })
@@ -947,13 +1017,14 @@ fn kind_label(kind: &BlockKind) -> String {
         BlockKind::Paragraph { .. } => "P".into(),
         BlockKind::Code => "CODE".into(),
         BlockKind::ContentsEntry { level, page } => format!("TOC{level} {page}"),
-        BlockKind::ListItem { marker } => format!("LI {}", marker.clone().unwrap_or_default()),
+        BlockKind::ListItem { marker, level } => format!("LI{level} {}", marker.clone().unwrap_or_default()),
         BlockKind::ListContinuation => "LI+".to_string(),
         BlockKind::Equation { number, image } => format!(
-            "EQ {} [{:.0}x{:.0}]",
+            "EQ {} {}",
             number.clone().unwrap_or_default(),
-            image.rect.width(),
-            image.rect.height()
+            image
+                .map(|spec| format!("[{:.0}x{:.0}]", spec.rect.width(), spec.rect.height()))
+                .unwrap_or_else(|| "[math]".into())
         ),
         BlockKind::Figure { kind, image, label } => format!(
             "{:?} {} {}",

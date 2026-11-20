@@ -130,7 +130,7 @@ pub(crate) const STYLES: &str = concat!(
 
 /// `docProps/core.xml`: the title and, when known, the arXiv identifier
 /// of the paper. No dates, so that the same paper gives the same file.
-pub(crate) fn core_props(title: &str, meta: &Meta) -> String {
+pub(crate) fn core_props(title: &str, meta: &Meta, source: &str) -> String {
     let identifier = meta
         .arxiv_id
         .as_ref()
@@ -139,7 +139,7 @@ pub(crate) fn core_props(title: &str, meta: &Meta) -> String {
     format!(
         "{XML_DECL}<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" \
 xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\
-<dc:title>{}</dc:title>{identifier}<dc:description>Converted from PDF by kakemono</dc:description></cp:coreProperties>",
+<dc:title>{}</dc:title>{identifier}<dc:description>Converted from {source} by kakemono</dc:description></cp:coreProperties>",
         esc(title)
     )
 }

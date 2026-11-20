@@ -422,6 +422,7 @@ fn cluster_html(
             style: source.map_or(0, |span| span.style) & !(SUP | SUB),
             href: source.and_then(|span| span.href.clone()),
             color: glyph.color,
+            math: None,
         };
         let mut css = format!(
             "width:{};top:{};font-size:{}",
@@ -506,12 +507,7 @@ mod tests {
             glyph.text = text.to_string();
             glyph.space_before = false;
         }
-        let spans = [Span {
-            text: "≤c √d−1".to_string(),
-            style: 0,
-            href: None,
-            color: [0; 3],
-        }];
+        let spans = [Span::plain("≤c √d−1")];
         let map = glyph_of_chars(&fraction, &spans).expect("the text is the glyphs reordered");
         assert_eq!(map, vec![Some(0), Some(3), None, Some(1), Some(2), Some(4), Some(5)]);
     }

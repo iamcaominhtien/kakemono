@@ -164,7 +164,7 @@ fn block_kind_name(kind: &BlockKind) -> &'static str {
 /// The region and kind of the picture of a block, if it has one.
 fn picture(block: &Block) -> Option<(Rect, &'static str)> {
     match &block.kind {
-        BlockKind::Equation { image, .. } => Some((image.rect, "equation")),
+        BlockKind::Equation { image: Some(image), .. } => Some((image.rect, "equation")),
         BlockKind::Figure { image: Some(image), .. } if block.table.is_none() => Some((image.rect, "figure")),
         _ => None,
     }
@@ -215,7 +215,7 @@ fn own_ink(block: &Block) -> Rect {
 
 /// Sets the picture region (and box) of an equation block.
 fn set_region(block: &mut Block, rect: Rect) {
-    if let BlockKind::Equation { image, .. } = &mut block.kind {
+    if let BlockKind::Equation { image: Some(image), .. } = &mut block.kind {
         image.rect = rect;
     }
     block.bbox = rect;
@@ -274,7 +274,7 @@ fn overlapping_equations(
     let is_eq = |idx: usize| matches!(doc.blocks[idx].kind, BlockKind::Equation { .. });
     for &idx in &blocks.on[page] {
         let block = &doc.blocks[idx];
-        let BlockKind::Equation { image, .. } = &block.kind else {
+        let BlockKind::Equation { image: Some(image), .. } = &block.kind else {
             continue;
         };
         let own = own_ink(block);
@@ -303,7 +303,10 @@ fn merge_equations(doc: &mut Document, keep: usize, absorb: usize) {
     let gone = doc.blocks.remove(absorb);
     let block = &mut doc.blocks[keep];
     let (gone_rect, gone_number) = match gone.kind {
-        BlockKind::Equation { image, number } => (image.rect, number),
+        BlockKind::Equation {
+            image: Some(image),
+            number,
+        } => (image.rect, number),
         _ => return,
     };
     let rect = block.bbox.union(&gone_rect);
@@ -336,7 +339,7 @@ fn trim_regions(doc: &mut Document, loose: &[Vec<PLine>], blocks: &PageBlocks, p
             trim_figure(&mut doc.blocks[idx], idx, &glyphs);
             continue;
         }
-        let BlockKind::Equation { image, .. } = &block.kind else {
+        let BlockKind::Equation { image: Some(image), .. } = &block.kind else {
             continue;
         };
         let own = own_ink(block);

@@ -1,8 +1,6 @@
 //! HTML for text: escaping, styled spans, captions and small attributes.
 
 use crate::model::*;
-use regex::Regex;
-use std::sync::LazyLock;
 
 /// Extra bytes reserved when escaping a string, so that a few entities fit
 /// without the output growing again.
@@ -12,12 +10,13 @@ const ESCAPE_SLACK_BYTES: usize = 8;
 /// to its alt text (enough to identify it, short enough for screen readers).
 const FIGURE_ALT_MAX_CHARS: usize = 240;
 
-/// The label at the start of a caption ("Figure 3:", "Table 2.",
-/// "Extended Data Fig. 1 |", "Figure 3.18:", "Table 1.12" without
-/// punctuation), emphasised in the HTML.
-pub(crate) static CAP_LABEL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:Supplementary\s+|Extended\s+Data\s+)?(?:Figure|Fig\.?|FIGURE|FIG\.?|Table|TABLE|Tab\.|Algorithm|ALGORITHM|Listing|Scheme|Chart|Plate)\s*(?:\d+(?:\.\d+)*[a-z]?|S\d+|[A-Z]\.?\d*(?:\.\d+)*|[IVXLC]+)(?:\s*[:.|—–-]|\s|$)").unwrap()
-});
+pub(crate) use crate::common::patterns::CAP_LABEL;
+
+/// What the document was converted from, as the colophons say it: `PDF`,
+/// or `Word` for a document without pages.
+pub(crate) fn source_label(doc: &Document) -> &'static str {
+    if doc.pages.is_empty() { "Word" } else { "PDF" }
+}
 
 /// Escapes `text` for use in HTML text and in double-quoted attribute
 /// values (`&`, `<`, `>` and `"`).

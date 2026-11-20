@@ -69,6 +69,53 @@ pub(crate) struct ImageStore<'r> {
 /// A drawn picture: (data, mime type, file extension, name hint).
 type DrawnImage = (Vec<u8>, &'static str, &'static str, String);
 
+/// Where the pictures of a document come from: the pages of its PDF, and
+/// the picture files stored in the document (a Word document has only
+/// those).
+#[derive(Clone, Copy)]
+pub(crate) struct Pictures<'a> {
+    /// The PDF the pages and page areas are drawn from; `None` for a Word
+    /// document.
+    pub(crate) pdf: Option<&'a PdfFile>,
+    /// The stored pictures ([`Document::pictures`]).
+    pub(crate) stored: &'a [Picture],
+}
+
+impl<'a> Pictures<'a> {
+    /// The pictures of `doc`, drawn from `pdf` when it has one.
+    pub(crate) fn new(pdf: Option<&'a PdfFile>, doc: &'a Document) -> Self {
+        Self {
+            pdf,
+            stored: &doc.pictures,
+        }
+    }
+
+    /// A renderer of the pages of the PDF, for one thread; `None` without a
+    /// PDF.
+    pub(crate) fn renderer(&self) -> Option<PageRenderer<'a>> {
+        self.pdf.map(PdfFile::renderer)
+    }
+
+    /// The picture of `spec` at `scale` pixels per point: a stored picture
+    /// as it is, or the area of the page drawn by `renderer`. Returns the
+    /// data and whether it is a JPEG (a PNG otherwise), or `None` when it
+    /// cannot be drawn.
+    pub(crate) fn region(
+        &self,
+        renderer: Option<&PageRenderer<'_>>,
+        spec: &ImageSpec,
+        scale: f32,
+    ) -> Option<(Vec<u8>, bool)> {
+        match spec.embedded {
+            Some(index) => self
+                .stored
+                .get(index)
+                .map(|picture| (picture.data.clone(), picture.jpeg)),
+            None => renderer?.region_picture(spec.page, spec.rect, scale, spec.transparent),
+        }
+    }
+}
+
 impl ImageStore<'_> {
     /// Records a picture and returns the placeholder that stands for its
     /// `src` until [`ImageStore::finish`].
@@ -109,34 +156,43 @@ impl ImageStore<'_> {
 
     /// Draws one picture: (data, mime type, file extension, name hint).
     /// Returns `None` when the backend cannot draw it.
-    pub(crate) fn draw(&self, renderer: &PageRenderer<'_>, job: &ImageJob) -> Option<DrawnImage> {
+    pub(crate) fn draw(
+        &self,
+        pictures: &Pictures<'_>,
+        renderer: Option<&PageRenderer<'_>>,
+        job: &ImageJob,
+    ) -> Option<DrawnImage> {
         let page_hint = |page: usize| format!("page-{}", page + 1);
         match job {
             ImageJob::Region(spec, hint) => {
-                let (data, jpeg) = renderer.region_picture(spec.page, spec.rect, self.opts.scale, spec.transparent)?;
+                let (data, jpeg) = pictures.region(renderer, spec, self.opts.scale)?;
                 Some(if jpeg {
                     (data, "image/jpeg", "jpg", hint.clone())
                 } else {
                     (data, "image/png", "png", hint.clone())
                 })
             }
-            ImageJob::Page(page) => match self.opts.page_image {
-                PageImage::Svg | PageImage::SvgOnly => {
-                    let svg = renderer.page_svg(*page)?;
-                    if self.too_heavy(&svg)
-                        && let Some((png, _, _)) = renderer.page_png(*page, HEAVY_PAGE_PNG_SCALE)
-                        && png.len() < svg.len()
-                    {
-                        return Some((png, "image/png", "png", page_hint(*page)));
+            ImageJob::Page(page) => {
+                let renderer = renderer?;
+                match self.opts.page_image {
+                    PageImage::Svg | PageImage::SvgOnly => {
+                        let svg = renderer.page_svg(*page)?;
+                        if self.too_heavy(&svg)
+                            && let Some((png, _, _)) = renderer.page_png(*page, HEAVY_PAGE_PNG_SCALE)
+                            && png.len() < svg.len()
+                        {
+                            return Some((png, "image/png", "png", page_hint(*page)));
+                        }
+                        Some((svg.into_bytes(), "image/svg+xml", "svg", page_hint(*page)))
                     }
-                    Some((svg.into_bytes(), "image/svg+xml", "svg", page_hint(*page)))
+                    PageImage::Png => {
+                        let (png, _, _) = renderer.page_png(*page, self.opts.scale.min(MAX_PAGE_PNG_SCALE))?;
+                        Some((png, "image/png", "png", page_hint(*page)))
+                    }
                 }
-                PageImage::Png => {
-                    let (png, _, _) = renderer.page_png(*page, self.opts.scale.min(MAX_PAGE_PNG_SCALE))?;
-                    Some((png, "image/png", "png", page_hint(*page)))
-                }
-            },
+            }
             ImageJob::PageWithoutText(page, drawn) => {
+                let renderer = renderer?;
                 // A glyph is removed when its origin, or a grid position next
                 // to it, was drawn as HTML (rounding may differ by a step).
                 let remove = |x: f32, y: f32| {
@@ -171,10 +227,10 @@ impl ImageStore<'_> {
     ///
     /// When `html` contains a placeholder that is not closed or whose index
     /// is not a number (it was not written by [`ImageStore::add`]).
-    pub(crate) fn finish(self, pdf: &PdfFile, html: String) -> HtmlOutput {
+    pub(crate) fn finish(self, pictures: Pictures<'_>, html: String) -> HtmlOutput {
         let mut out = Vec::with_capacity(html.len());
         let mut files = Vec::new();
-        self.finish_into(pdf, &html, &mut out, &mut |name, data| {
+        self.finish_into(pictures, &html, &mut out, &mut |name, data| {
             files.push((name, data));
             Ok(())
         })
@@ -202,7 +258,7 @@ impl ImageStore<'_> {
     /// is not a number (it was not written by [`ImageStore::add`]).
     pub(crate) fn finish_into(
         self,
-        pdf: &PdfFile,
+        pictures: Pictures<'_>,
         html: &str,
         out: &mut dyn Write,
         file: &mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
@@ -212,6 +268,7 @@ impl ImageStore<'_> {
             out,
             file,
             files: 0,
+            written: HashMap::new(),
             base64: String::new(),
         };
         let mut rest = html;
@@ -221,8 +278,8 @@ impl ImageStore<'_> {
                 self.jobs.len(),
                 self.opts.jobs,
                 threads * DRAW_AHEAD_PER_THREAD,
-                || pdf.renderer(),
-                |renderer, i| self.draw(renderer, &self.jobs[i]),
+                || pictures.renderer(),
+                |renderer, i| self.draw(&pictures, renderer.as_ref(), &self.jobs[i]),
                 |_, image| -> io::Result<()> {
                     let (before, _, after) = next_placeholder(rest).expect("one placeholder per picture");
                     writer.out.write_all(before.as_bytes())?;
@@ -235,8 +292,8 @@ impl ImageStore<'_> {
             let drawn = crate::common::parallel::map(
                 self.jobs.len(),
                 self.opts.jobs,
-                || pdf.renderer(),
-                |renderer, i| self.draw(renderer, &self.jobs[i]),
+                || pictures.renderer(),
+                |renderer, i| self.draw(&pictures, renderer.as_ref(), &self.jobs[i]),
             );
             let mut drawn: Vec<_> = drawn.into_iter().map(Some).collect();
             while let Some((before, index, after)) = next_placeholder(rest) {
@@ -288,6 +345,9 @@ struct SourceWriter<'a, 'r> {
     file: &'a mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
     /// Picture files written so far (they are numbered).
     files: usize,
+    /// The files written, by the hash and length of their contents: a
+    /// picture used again refers to its file.
+    written: HashMap<(u64, usize), String>,
     /// Buffer for the base64 text of an inlined picture.
     base64: String,
 }
@@ -309,12 +369,25 @@ impl SourceWriter<'_, '_> {
             base64::engine::general_purpose::STANDARD.encode_string(&data, &mut self.base64);
             self.out.write_all(self.base64.as_bytes())
         } else {
+            let key = (content_hash(&data), data.len());
+            if let Some(name) = self.written.get(&key) {
+                return self.out.write_all(name.as_bytes());
+            }
             self.files += 1;
             let name = format!("{}/{:03}-{}.{}", opts.asset_dir, self.files, hint, ext);
             self.out.write_all(name.as_bytes())?;
+            self.written.insert(key, name.clone());
             (self.file)(name, data)
         }
     }
+}
+
+/// A hash of the bytes `data`.
+fn content_hash(data: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Replaces the pictures of a single pixel stretched over an area, which

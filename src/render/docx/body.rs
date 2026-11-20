@@ -10,8 +10,8 @@ use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style
 use crate::render::assets::MARK;
 use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::{
-    CAP_LABEL, Equations, code, code_run, figure_alt, float_class, is_abstract_text, is_scene_break, plain,
-    stray_equation_number,
+    CAP_LABEL, Equations, caption_first, code, code_run, equation_math, figure_alt, float_class, is_abstract_text,
+    is_scene_break, plain, stray_equation_number,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -20,6 +20,9 @@ use std::collections::{HashMap, HashSet};
 /// scaled by this over the body size of the paper, so that they match the
 /// text around them.
 const BODY_SIZE_PT: f32 = 11.0;
+/// Indent of a list item, in twips (the `ListItem` style's), and of each
+/// level of nesting.
+const LIST_INDENT_TWIPS: u32 = 425;
 /// Tallest picture, in points: a little less than the text height of a
 /// page, so that a picture and a line of caption fit on one page.
 const MAX_IMAGE_HEIGHT_PT: f32 = 600.0;
@@ -127,7 +130,7 @@ impl<'a> Body<'a> {
             if let BlockKind::Equation { image, number: None } = &block.kind
                 && let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next))
             {
-                self.equation(block, image, Some(&number));
+                self.equation(block, image.as_ref(), Some(&number));
                 idx += 2;
                 continue;
             }
@@ -148,7 +151,7 @@ impl<'a> Body<'a> {
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => self.simple("SceneBreak", block),
             BlockKind::Paragraph { in_abstract: true } => self.simple("Abstract", block),
             BlockKind::Paragraph { .. } => self.simple("Normal", block),
-            BlockKind::ListItem { marker } => self.list_item(block, marker.as_deref()),
+            BlockKind::ListItem { marker, level } => self.list_item(block, marker.as_deref(), *level),
             BlockKind::ListContinuation => self.simple("ListContinue", block),
             BlockKind::Reference { label } => self.reference(block, label.as_deref()),
             BlockKind::Footnote { marker } => {
@@ -160,7 +163,7 @@ impl<'a> Body<'a> {
                 let content = mark + &self.runs(&block.spans);
                 self.paragraph("FootnoteText", "", anchor, &content);
             }
-            BlockKind::Equation { image, number } => self.equation(block, image, number.as_deref()),
+            BlockKind::Equation { image, number } => self.equation(block, image.as_ref(), number.as_deref()),
             BlockKind::Figure { kind, image, label } => self.figure(block, *kind, image.as_ref(), label),
             BlockKind::ContentsEntry { level, page } => {
                 // The title, then a right-aligned tab with dot leaders up to
@@ -330,7 +333,7 @@ impl<'a> Body<'a> {
 
     /// Writes a list item with its marker (a bullet when it has none)
     /// hanging in the margin.
-    fn list_item(&mut self, block: &Block, marker: Option<&str>) {
+    fn list_item(&mut self, block: &Block, marker: Option<&str>, level: u8) {
         let content = match marker {
             Some(marker) => match strip_label(&block.spans, marker) {
                 Some(rest) => text_runs(marker, "") + TAB_RUN + &self.runs(&rest),
@@ -338,7 +341,14 @@ impl<'a> Body<'a> {
             },
             None => text_runs(BULLET, "") + TAB_RUN + &self.runs(&block.spans),
         };
-        self.paragraph("ListItem", "", block.anchor.as_deref(), &content);
+        // A nested item is indented by one more step per level.
+        let props = if level > 0 {
+            let left = LIST_INDENT_TWIPS * (u32::from(level) + 1);
+            format!("<w:ind w:left=\"{left}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>")
+        } else {
+            String::new()
+        };
+        self.paragraph("ListItem", &props, block.anchor.as_deref(), &content);
     }
 
     /// Writes a bibliography entry with its label ("[12]", "12.") hanging
@@ -373,11 +383,11 @@ impl<'a> Body<'a> {
     /// Writes a displayed formula: as an Office Math equation when its
     /// structure is known (and wanted), as a picture otherwise; with its
     /// number at the right margin.
-    fn equation(&mut self, block: &Block, image: &ImageSpec, number: Option<&str>) {
+    fn equation(&mut self, block: &Block, image: Option<&ImageSpec>, number: Option<&str>) {
         let anchor = block.anchor.as_deref();
-        let content = match &block.math {
-            Some(math) if self.opts.equations == Equations::MathMl => display_math(math),
-            _ => {
+        let content = match (equation_math(block, image, self.opts.equations), image) {
+            (Some(math), _) => display_math(math),
+            (None, Some(image)) => {
                 let room = if number.is_some() {
                     EQ_MIDDLE_TWIPS
                 } else {
@@ -386,6 +396,7 @@ impl<'a> Body<'a> {
                 let scale = self.eq_scale;
                 self.image_run(image, &plain(&block.spans), room as f32 / TWIPS_PER_PT, scale, "eq")
             }
+            (None, None) => self.runs(&block.spans),
         };
         let Some(number) = number else {
             return self.paragraph("Equation", "", anchor, &content);
@@ -434,10 +445,7 @@ impl<'a> Body<'a> {
             }
             return self.listing(&lines, anchor);
         }
-        let caption_first = match (image, block.lines.first()) {
-            (Some(spec), Some(line)) => line.bbox.cy() < spec.rect.cy(),
-            _ => false,
-        };
+        let caption_first = caption_first(block, image);
         if caption_first && let Some(caption) = &caption {
             self.paragraph("Caption", "<w:keepNext/>", anchor.take(), caption);
         }

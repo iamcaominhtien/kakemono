@@ -428,6 +428,7 @@ fn rotated_run_html(run: &RotatedRun, units: &Units) -> String {
         style: run.style,
         href: None,
         color: run.color,
+        math: None,
     };
     format!(
         "<span class=\"rt\" style=\"left:{};top:{};font-size:{};transform:rotate({:.2}deg)\" data-w=\"{}\">{}</span>",
@@ -1090,6 +1091,7 @@ fn equation(block: &Block, units: &Units) -> String {
             style: run.style | MATH,
             href: None,
             color: run.color,
+            math: None,
         };
         let mut html = span_html(&span, &run.text, &mut [].iter());
         // A tall glyph (a big delimiter, an integral sign) stays in the page

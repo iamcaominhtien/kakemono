@@ -178,6 +178,7 @@ pub(crate) fn build_document(
         // Set by the pipeline, which counts the math glyphs of each page
         // before it drops its lines (see `count_math_glyphs`).
         math_font: String::new(),
+        pictures: Vec::new(),
         blocks,
     };
     (doc, loose)
@@ -280,7 +281,7 @@ impl Assembler<'_> {
                     let text = spans_text(&built.spans);
                     LIST_LABEL.find(&text).map(|label| label.as_str().trim().to_string())
                 };
-                (BlockKind::ListItem { marker }, built)
+                (BlockKind::ListItem { marker, level: 0 }, built)
             }
             Class::ListContinuation => (BlockKind::ListContinuation, self.text.build(lines, 0, 0)),
             Class::Reference => {
@@ -436,13 +437,9 @@ impl Assembler<'_> {
                 kind: "eqno",
             });
         }
-        let image = ImageSpec {
-            page: loc.page,
-            rect,
-            transparent: true,
-        };
+        let image = ImageSpec::region(loc.page, rect, true);
         let kind = BlockKind::Equation {
-            image,
+            image: Some(image),
             number: equation.number,
         };
         let mut block = new_block(id, kind, loc, rect);
@@ -495,11 +492,7 @@ impl Assembler<'_> {
         let region = float.region.map(|rect| self.cover_region(float.page, rect));
         let kind = BlockKind::Figure {
             kind: float.kind,
-            image: region.map(|rect| ImageSpec {
-                page: float.page,
-                rect,
-                transparent: false,
-            }),
+            image: region.map(|rect| ImageSpec::region(float.page, rect, false)),
             label: float.label.clone(),
         };
         let mut block = block_with_text(id, kind, loc, float.bbox, built);
@@ -569,22 +562,10 @@ fn furniture_lines(furniture: Vec<Vec<Line>>, n_pages: usize, text: &TextBuilder
 /// content.
 fn new_block(id: usize, kind: BlockKind, loc: Loc, bbox: Rect) -> Block {
     Block {
-        id,
-        kind,
         page: loc.page,
         bbox,
-        spans: Vec::new(),
-        rows: Vec::new(),
-        anchor: None,
         loc,
-        lines: Vec::new(),
-        line_texts: Vec::new(),
-        hlines: Vec::new(),
-        table: None,
-        inner_lines: Vec::new(),
-        inner_spans: Vec::new(),
-        eq_runs: Vec::new(),
-        math: None,
+        ..Block::new(id, kind)
     }
 }
 
@@ -608,7 +589,7 @@ fn spans_text(spans: &[Span]) -> String {
 }
 
 /// The label of a reference entry ("12" of `[12]` or "12."), if it has one.
-fn reference_label(text: &str) -> Option<String> {
+pub(crate) fn reference_label(text: &str) -> Option<String> {
     REF_LABEL
         .captures(text.trim())
         .map(|captures| captures.name("a").or(captures.name("b")).unwrap().as_str().to_string())
@@ -616,7 +597,7 @@ fn reference_label(text: &str) -> Option<String> {
 
 /// Anchor-safe form of a footnote mark: symbols are spelled out, letters
 /// and digits kept, anything else replaced by "x".
-fn slug_marker(marker: &str) -> String {
+pub(crate) fn slug_marker(marker: &str) -> String {
     marker
         .chars()
         .map(|ch| match ch {
@@ -633,7 +614,7 @@ fn slug_marker(marker: &str) -> String {
 
 /// Links the cross-references in every block (except equations, titles and
 /// headings) and the footnote marks in every non-footnote block.
-fn link_blocks(blocks: &mut [Block], cfg: &AssembleConfig) {
+pub(crate) fn link_blocks(blocks: &mut [Block], cfg: &AssembleConfig) {
     let targets = LinkTargets::new(
         blocks
             .iter()
@@ -691,7 +672,7 @@ fn link_blocks(blocks: &mut [Block], cfg: &AssembleConfig) {
 /// [`title_key`](super::contents::title_key)) after the one the previous
 /// entry was linked to, so that the many "Summary" sections each get
 /// their entry.
-fn link_contents(blocks: &mut [Block]) {
+pub(crate) fn link_contents(blocks: &mut [Block]) {
     let headings: Vec<(usize, String)> = blocks
         .iter()
         .enumerate()

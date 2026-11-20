@@ -60,6 +60,12 @@ jobs:
         if: steps.papers.outputs.cache-hit != 'true'
         run: scripts/fetch-test-pdfs.sh
 
+      # A few Word documents of the fidelity corpus, with Word's PDFs, for
+      # tests/word_layout.rs (public gov.uk documents, downloaded, not
+      # committed).
+      - name: Download the Word layout fixtures
+        run: scripts/fetch-word-corpus.sh 8 $(cat tests/data/word-layout-fixtures.txt)
+
       - name: cargo test
         run: cargo test
         env:
@@ -85,3 +91,43 @@ jobs:
           node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html out/files/*.friendly.html
         env:
           KAKEMONO_CHROME_CHANNEL: chrome
+
+  word-fidelity:
+    name: Word layout fidelity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: fidelity
+      # The metric-compatible open fonts Word documents need (Liberation for
+      # Arial, Times New Roman and Courier New; Carlito and Caladea for
+      # Calibri and Cambria), and fonts for other scripts.
+      - name: Fonts
+        run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fonts-freefont-ttf
+      # Word documents with the PDFs Word made of them, downloaded once from
+      # their public sources, then restored from the repository's cache.
+      - name: Restore the Word corpus
+        id: corpus
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: tests/data/word-corpus
+          key: word-corpus-${{ hashFiles('tests/data/word-corpus.tsv') }}
+      - name: Download the Word corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: scripts/fetch-word-corpus.sh 8
+      - run: cargo build --release --locked
+      # Lines broken where Word breaks them, and documents with as many
+      # pages as Word's: the minimums are the levels reached, so that a
+      # change that lowers them fails.
+      - name: Compare with Word's PDFs
+        run: python3 scripts/word-fidelity.py --min-lines 0.95 --min-pages 0.87 --json word-fidelity.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: word-fidelity
+          path: word-fidelity.json

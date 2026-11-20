@@ -325,3 +325,60 @@ fn edited_json_gives_latex_that_compiles_in_vietnamese() {
     assert!(!hard.status.success());
     assert!(String::from_utf8_lossy(&hard.stderr).contains("hard mode"));
 }
+
+/// The sample Word document of `tests/data/word`.
+const WORD_SAMPLE: &str = "tests/data/word/sample.docx";
+
+#[test]
+fn word_document_converts_to_friendly_html() {
+    let dir = scratch("cli-word");
+    let html = dir.join("sample.friendly.html");
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--fonts",
+        "system",
+        "-o",
+        html.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("read docx document"));
+    let text = std::fs::read_to_string(&html).unwrap();
+    assert!(text.contains("Converted from Word by kakemono · friendly mode"));
+}
+
+#[test]
+fn word_document_has_every_mode() {
+    let dir = scratch("cli-word-modes");
+    let out = kakemono(&[
+        "convert",
+        WORD_SAMPLE,
+        "--all",
+        "--fonts",
+        "system",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut written: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "sample.friendly.html",
+            "sample.hard-95.html",
+            "sample.hard.html",
+            "sample.medium.html"
+        ]
+    );
+    // hard and hard-95 show the pages Word would print; medium shows Word's
+    // formatting on one continuous sheet.
+    let hard95 = std::fs::read_to_string(dir.join("sample.hard-95.html")).unwrap();
+    assert!(hard95.contains("pages") || hard95.contains("page"));
+    let medium = std::fs::read_to_string(dir.join("sample.medium.html")).unwrap();
+    assert!(medium.contains("class=\"sheet\""), "medium is one sheet");
+    assert!(medium.contains("font-family:"), "medium keeps Word's fonts");
+}
