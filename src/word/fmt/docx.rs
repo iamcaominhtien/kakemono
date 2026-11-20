@@ -491,6 +491,46 @@ impl Reader<'_> {
         (para, run)
     }
 
+    /// The indents of a paragraph that turns off the list its style sets:
+    /// those of its base style replace those the style sets with the list.
+    fn unlisted_indents(&self, style_id: Option<&str>, para_raw: &mut RawPara) {
+        let (inherited, own) = self.styles.paragraph_layers(style_id);
+        if own
+            .numbering
+            .as_ref()
+            .is_some_and(|(id, _)| !id.is_empty() && id != "0")
+        {
+            if own.left.is_some() {
+                para_raw.left = inherited.left;
+            }
+            if own.first_line.is_some() {
+                para_raw.first_line = inherited.first_line;
+            }
+        }
+    }
+
+    /// The next number of list `num_id` at `level`, in the format of the
+    /// paragraph mark `mark_raw` and the level.
+    fn number_mark(&mut self, num_id: &str, level: u8, mark_raw: &RawRun) -> Option<NumberMark> {
+        let (def, text) = self.numbering.next(num_id, level, self.styles)?;
+        let mut fmt_raw = mark_raw.clone();
+        // Underline and highlight of the mark do not reach the number.
+        fmt_raw.underline = None;
+        fmt_raw.overlay(&def.run);
+        let mut fmt = fmt_raw.resolve();
+        let text = if def.format == NumFormat::Bullet {
+            symbol_text(&text, &mut fmt)
+        } else {
+            text
+        };
+        (def.format != NumFormat::None || !text.is_empty()).then_some(NumberMark {
+            text,
+            fmt,
+            suffix: def.suffix,
+            align: def.align,
+        })
+    }
+
     /// A paragraph with its resolved properties and content.
     fn paragraph(&mut self, node: Node<'_, '_>) -> Para {
         let props = child(node, WORD_NS, "pPr");
@@ -513,19 +553,7 @@ impl Reader<'_> {
         // indents that style sets itself (Word writes the list's indents
         // there): those of its base style apply, then the paragraph's own.
         if direct.numbering.as_ref().is_some_and(|(id, _)| id == "0") {
-            let (inherited, own) = self.styles.paragraph_layers(style_id);
-            if own
-                .numbering
-                .as_ref()
-                .is_some_and(|(id, _)| !id.is_empty() && id != "0")
-            {
-                if own.left.is_some() {
-                    para_raw.left = inherited.left;
-                }
-                if own.first_line.is_some() {
-                    para_raw.first_line = inherited.first_line;
-                }
-            }
+            self.unlisted_indents(style_id, &mut para_raw);
         }
         let mut number = None;
         if let Some((num_id, level)) = numbering.filter(|(id, _)| !id.is_empty() && id != "0") {
@@ -542,27 +570,8 @@ impl Reader<'_> {
                 } else {
                     para_raw.overlay(&def.para);
                 }
-                let hidden = mark_raw.hidden == Some(true);
-                if !hidden && let Some((def, text)) = self.numbering.next(&num_id, level, self.styles) {
-                    let mut fmt_raw = mark_raw.clone();
-                    // Underline and highlight of the mark do not reach the
-                    // number.
-                    fmt_raw.underline = None;
-                    fmt_raw.overlay(&def.run);
-                    let mut fmt = fmt_raw.resolve();
-                    let text = if def.format == NumFormat::Bullet {
-                        symbol_text(&text, &mut fmt)
-                    } else {
-                        text
-                    };
-                    if def.format != NumFormat::None || !text.is_empty() {
-                        number = Some(NumberMark {
-                            text,
-                            fmt,
-                            suffix: def.suffix,
-                            align: def.align,
-                        });
-                    }
+                if mark_raw.hidden != Some(true) {
+                    number = self.number_mark(&num_id, level, &mark_raw);
                 }
             }
         }

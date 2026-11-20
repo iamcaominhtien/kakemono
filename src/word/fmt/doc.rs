@@ -533,56 +533,30 @@ fn level(bytes: &[u8], fonts: &[String]) -> Option<(Level, usize)> {
     Some((level, text_at + 2 + len * 2))
 }
 
+/// The paragraph and character properties of style `istd` with what it
+/// inherits (`depth` bounds the chain of base styles).
+fn resolve_style(istd: u16, kinds: &StyleKinds, fonts: &[String], depth: usize) -> (RawPara, RawRun) {
+    let Some((_, base, papx, chpx)) = kinds.get(&istd) else {
+        return (RawPara::default(), RawRun::default());
+    };
+    let (mut para, mut run) = if *base != NO_BASE && depth < 16 {
+        resolve_style(*base, kinds, fonts, depth + 1)
+    } else {
+        (RawPara::default(), RawRun::default())
+    };
+    apply_para(papx, &mut para);
+    let inherited = run.clone();
+    apply_chars(chpx, &mut run, &inherited, fonts);
+    (para, run)
+}
+
 impl Reader<'_> {
     /// Resolves every style with what it inherits.
     fn resolve_styles(&mut self, kinds: &StyleKinds) {
-        fn resolve(istd: u16, kinds: &StyleKinds, fonts: &[String], depth: usize) -> (RawPara, RawRun) {
-            let Some((_, base, papx, chpx)) = kinds.get(&istd) else {
-                return (RawPara::default(), RawRun::default());
-            };
-            let (mut para, mut run) = if *base != NO_BASE && depth < 16 {
-                resolve(*base, kinds, fonts, depth + 1)
-            } else {
-                (RawPara::default(), RawRun::default())
-            };
-            apply_para(papx, &mut para);
-            let inherited = run.clone();
-            apply_chars(chpx, &mut run, &inherited, fonts);
-            (para, run)
-        }
         for (&istd, (kind, _, _, _)) in kinds {
-            let (para, run) = resolve(istd, kinds, self.fonts, 0);
+            let (para, run) = resolve_style(istd, kinds, self.fonts, 0);
             if *kind != StyleKind::Character {
-                // Normal (style 0), and what the styles above it set.
-                let mut chain = vec![istd];
-                while let Some(&(_, base, _, _)) = chain.last().and_then(|at| kinds.get(at)) {
-                    if base == NO_BASE || chain.len() > 16 {
-                        break;
-                    }
-                    chain.push(base);
-                }
-                let normal = if chain.contains(&0) && istd != 0 {
-                    resolve(0, kinds, self.fonts, 1).0
-                } else {
-                    RawPara::default()
-                };
-                let mut own = RawPara::default();
-                for at in chain.iter().rev().filter(|&&at| at != 0 || istd == 0) {
-                    if let Some((_, _, papx, _)) = kinds.get(at) {
-                        apply_para(papx, &mut own);
-                    }
-                }
-                self.style_layers.insert(istd, (normal, own));
-                if let Some(&(_, base, papx, _)) = kinds.get(&istd).as_ref() {
-                    let inherited = if *base == NO_BASE {
-                        RawPara::default()
-                    } else {
-                        resolve(*base, kinds, self.fonts, 1).0
-                    };
-                    let mut own_only = RawPara::default();
-                    apply_para(papx, &mut own_only);
-                    self.style_own.insert(istd, (inherited, own_only));
-                }
+                self.record_style_layers(istd, kinds);
             }
             match kind {
                 StyleKind::Character => {
@@ -600,6 +574,41 @@ impl Reader<'_> {
                     self.para_styles.insert(istd, (para, run));
                 }
             }
+        }
+    }
+
+    /// Notes the layers of paragraph style `istd`: Normal (style 0) and
+    /// what the styles above it set, then what it inherits and what it sets
+    /// itself.
+    fn record_style_layers(&mut self, istd: u16, kinds: &StyleKinds) {
+        let mut chain = vec![istd];
+        while let Some(&(_, base, _, _)) = chain.last().and_then(|at| kinds.get(at)) {
+            if base == NO_BASE || chain.len() > 16 {
+                break;
+            }
+            chain.push(base);
+        }
+        let normal = if chain.contains(&0) && istd != 0 {
+            resolve_style(0, kinds, self.fonts, 1).0
+        } else {
+            RawPara::default()
+        };
+        let mut own = RawPara::default();
+        for at in chain.iter().rev().filter(|&&at| at != 0 || istd == 0) {
+            if let Some((_, _, papx, _)) = kinds.get(at) {
+                apply_para(papx, &mut own);
+            }
+        }
+        self.style_layers.insert(istd, (normal, own));
+        if let Some(&(_, base, papx, _)) = kinds.get(&istd).as_ref() {
+            let inherited = if *base == NO_BASE {
+                RawPara::default()
+            } else {
+                resolve_style(*base, kinds, self.fonts, 1).0
+            };
+            let mut own_only = RawPara::default();
+            apply_para(papx, &mut own_only);
+            self.style_own.insert(istd, (inherited, own_only));
         }
     }
 
