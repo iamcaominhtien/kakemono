@@ -6,11 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-
-### Changed
-
-- *(chunks)* Cut a table too long for a chunk between rows, with its caption and header repeated in each chunk. Chunk ids after such a table shift, so stored embeddings of those papers need re-indexing.
-
 ## [0.13.1](https://github.com/iamcaominhtien/kakemono/compare/v0.13.0...v0.13.1) - 2026-11-20
 
 ### Added
