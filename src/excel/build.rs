@@ -5,26 +5,25 @@
 
 use super::ExcelConfig;
 use super::grid::{CellKind, Grid, Merge};
-use super::regions::{self, is_blank};
-use crate::model::{Block, BlockKind, FloatKind, Span, Table, TableCell, TableGeom};
+use super::regions::{self, Visible, is_blank};
+use crate::model::{Block, BlockKind, FloatKind, Span, Table, TableCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Rule above the first row and below the last of a table: heavy, as for
-/// the tables of a Word document.
-const HEAVY_RULE: u8 = 2;
-/// Rule under the header of a table: thin.
-const THIN_RULE: u8 = 1;
 /// Between two lines of a caption. The renderers show a newline in a
 /// caption as a space, so the lines are joined by a dash instead.
 const CAPTION_SEPARATOR: &str = " — ";
 
 /// The rows of a region, by index on the sheet, as they are read: the
 /// caption, the header rows and the body of its table, and the notes under
-/// it. A region without a row of two cells or more (paragraphs) has all
-/// its rows in `body`.
+/// it. A region read as paragraphs (no row of two cells or more, or a
+/// body too sparse for a table) has all its rows in `body`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Parts {
-    /// The leading rows with one text cell: a title, a unit line.
+    /// The leading rows with one text cell above the caption: paragraphs
+    /// before the table.
+    pub(crate) lead: Vec<u32>,
+    /// The last leading rows with one text cell (at most
+    /// `max_caption_rows`): a title, a unit line.
     pub(crate) caption: Vec<u32>,
     /// The header rows of the table.
     pub(crate) header: Vec<u32>,
@@ -32,6 +31,9 @@ pub(crate) struct Parts {
     pub(crate) body: Vec<u32>,
     /// The trailing rows with one text cell: `Source:`, `注:`.
     pub(crate) notes: Vec<u32>,
+    /// The region is text laid out in cells, not a table: all its rows are
+    /// in `body`, each to be one paragraph.
+    pub(crate) paragraphs: bool,
 }
 
 /// The blocks of the sheet `name`: a level-1 heading, then its regions in
@@ -45,14 +47,11 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, config: &ExcelConfig) -> Vec
             continue;
         }
         let parts = parts_of(grid, &region, &cells, config);
-        if cells.is_paragraphs() {
-            for &row in &parts.body {
-                for (_, cell) in cells.row(row) {
-                    blocks.push(paragraph(cell.spans.to_vec()));
-                }
-            }
+        if parts.paragraphs {
+            blocks.extend(parts.body.iter().map(|&row| paragraph(cells.row_text(row))));
             continue;
         }
+        blocks.extend(parts.lead.iter().map(|&row| paragraph(cells.row_text(row))));
         let mut figure = Block::new(
             0,
             BlockKind::Figure {
@@ -72,9 +71,7 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, config: &ExcelConfig) -> Vec
         }
         figure.table = Some(table(&cells, &parts, config));
         blocks.push(figure);
-        for &row in &parts.notes {
-            blocks.extend(cells.row(row).map(|(_, cell)| paragraph(cell.spans.to_vec())));
-        }
+        blocks.extend(parts.notes.iter().map(|&row| paragraph(cells.row_text(row))));
     }
     if grid.truncated_rows > 0 {
         let rows = grid.truncated_rows;
@@ -106,40 +103,76 @@ pub(crate) fn parts(grid: &Grid, region: &Merge, config: &ExcelConfig) -> Parts 
 /// [`parts`], with the cells of the region already read.
 fn parts_of(grid: &Grid, region: &Merge, cells: &RegionCells<'_>, config: &ExcelConfig) -> Parts {
     let rows = cells.rows.clone();
+    let text = |rows: Vec<u32>| Parts {
+        body: rows,
+        paragraphs: true,
+        ..Parts::default()
+    };
     if cells.is_paragraphs() {
-        return Parts {
-            body: rows,
-            ..Parts::default()
-        };
+        return text(rows);
     }
     let single = |row: &u32| {
         let mut row = cells.row(*row);
         matches!((row.next(), row.next()), (Some((_, cell)), None) if cell.kind == CellKind::Text)
     };
-    let captions = rows.iter().take_while(|row| single(row)).count();
-    let notes = rows[captions..].iter().rev().take_while(|row| single(row)).count();
-    let table = &rows[captions..rows.len() - notes];
+    let leading = rows.iter().take_while(|row| single(row)).count();
+    let lead = leading - leading.min(config.max_caption_rows);
+    let notes = rows[leading..].iter().rev().take_while(|row| single(row)).count();
+    let table = &rows[leading..rows.len() - notes];
     let header = header_rows(grid, region, cells, table, config);
-    Parts {
-        caption: rows[..captions].to_vec(),
-        header: table[..header].to_vec(),
-        body: table[header..].to_vec(),
-        notes: rows[rows.len() - notes..].to_vec(),
+    let body = &table[header..];
+    if fill(grid, region, cells, body) < config.table_min_fill_ratio {
+        return text(rows);
     }
+    Parts {
+        lead: rows[..lead].to_vec(),
+        caption: rows[lead..leading].to_vec(),
+        header: table[..header].to_vec(),
+        body: body.to_vec(),
+        notes: rows[rows.len() - notes..].to_vec(),
+        paragraphs: false,
+    }
+}
+
+/// The share of the positions of the body rows `body` (from the first to
+/// the last, by the columns of `region`, hidden ones left out) that a cell
+/// covers: a merge or a centred text covers its whole area. 1 without a
+/// body.
+fn fill(grid: &Grid, region: &Merge, cells: &RegionCells<'_>, body: &[u32]) -> f32 {
+    let (Some(&first), Some(&last)) = (body.first(), body.last()) else {
+        return 1.0;
+    };
+    let rows = Visible::new(&grid.hidden_rows);
+    let cols = Visible::new(&grid.hidden_cols);
+    let positions = rows.count(first, last) * cols.count(region.left, region.right);
+    if positions == 0 {
+        return 1.0;
+    }
+    let covered: u64 = cells
+        .cells
+        .iter()
+        .filter(|&(&(row, _), cell)| row <= last && cell.bottom >= first)
+        .map(|(&(row, col), cell)| rows.count(row.max(first), cell.bottom.min(last)) * cols.count(col, cell.right))
+        .sum();
+    covered as f32 / positions as f32
 }
 
 /// How many of the rows `table` (those after the caption rows) are the
 /// header, the first rule that applies deciding: the number the user gives;
 /// what the file declares; the types of the columns; else one. Merges
-/// reaching into the header extend it. A table of one row has none.
+/// reaching into the header extend it. A table of one row has none, and
+/// any other keeps at least one body row.
 fn header_rows(grid: &Grid, region: &Merge, cells: &RegionCells<'_>, table: &[u32], config: &ExcelConfig) -> usize {
     if table.len() <= 1 {
         return 0;
     }
+    // The header of a table leaves it a body row.
+    let most = table.len() - 1;
     if let Some(rows) = config.header_rows {
-        return rows.min(table.len());
+        return rows.min(most);
     }
     let found = declared_header(grid, region, table)
+        .map(|rows| rows.min(most))
         .or_else(|| header_by_types(cells, table, config))
         .unwrap_or(1);
     if found == 0 {
@@ -178,7 +211,7 @@ fn declared_header(grid: &Grid, region: &Merge, table: &[u32]) -> Option<usize> 
             if *header_rows == 0 {
                 return Some(0);
             }
-            last_rows.push(area.top + header_rows - 1);
+            last_rows.push(area.top.saturating_add(header_rows - 1));
         }
     }
     if let Some(area) = declared.auto_filter.filter(|area| area.overlaps(region)) {
@@ -313,25 +346,7 @@ fn table(cells: &RegionCells<'_>, parts: &Parts, config: &ExcelConfig) -> Table 
             }
         })
         .collect();
-    let header_rows = parts.header.len();
-    let mut rule_above = vec![vec![0u8; n_cols]; built.len()];
-    if let Some(first) = rule_above.first_mut() {
-        first.fill(HEAVY_RULE);
-    }
-    if let Some(under_header) = rule_above.get_mut(header_rows).filter(|_| header_rows > 0) {
-        under_header.fill(THIN_RULE);
-    }
-    Table {
-        n_cols,
-        header_rows,
-        col_align,
-        rule_above,
-        rule_bottom: vec![HEAVY_RULE; n_cols],
-        rule_left: vec![vec![false; n_cols]; built.len()],
-        rule_right: vec![false; built.len()],
-        rows: built,
-        geom: TableGeom::default(),
-    }
+    Table::ruled(built, n_cols, parts.header.len(), col_align)
 }
 
 /// A paragraph of the text `spans`.
@@ -430,6 +445,18 @@ impl<'g> RegionCells<'g> {
             .map(|(&(_, col), cell)| (col, cell))
     }
 
+    /// The text of the cells of `row`, left to right, joined by a space.
+    fn row_text(&self, row: u32) -> Vec<Span> {
+        let mut spans = Vec::new();
+        for (_, cell) in self.row(row) {
+            if !spans.is_empty() {
+                spans.push(Span::plain(" "));
+            }
+            spans.extend(cell.spans.iter().cloned());
+        }
+        spans
+    }
+
     /// Whether the region is a list of single values: no row has two
     /// cells.
     fn is_paragraphs(&self) -> bool {
@@ -441,6 +468,7 @@ impl<'g> RegionCells<'g> {
 mod tests {
     use super::*;
     use crate::excel::grid::GridCell;
+    use crate::model::{HEAVY_RULE, THIN_RULE};
 
     /// A grid of the rows `rows`: an empty string is no cell, a number is a
     /// number cell, anything else text.
@@ -532,10 +560,12 @@ mod tests {
         assert_eq!(
             parts,
             Parts {
+                lead: vec![],
                 caption: vec![0, 1],
                 header: vec![2],
                 body: vec![3, 4],
                 notes: vec![],
+                paragraphs: false,
             }
         );
         let blocks = sheet_blocks("Data", &grid, &config);
@@ -685,6 +715,104 @@ mod tests {
         grid.merges = vec![area(0, 0, 2, 0)];
         let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
         assert_eq!(only_table(&blocks).header_rows, 1);
+    }
+
+    #[test]
+    fn declared_header_keeps_a_body() {
+        let mut grid = grid(&[&["Name", "City"], &["Ann", "Oslo"]]);
+        grid.declared.frozen_rows = 5;
+        let parts = only_parts(&grid, &ExcelConfig::default());
+        assert_eq!((parts.header, parts.body), (vec![0], vec![1]));
+    }
+
+    #[test]
+    fn user_header_rows_keep_a_body() {
+        let config = ExcelConfig {
+            header_rows: Some(5),
+            ..ExcelConfig::default()
+        };
+        let grid = grid(&[&["Name", "City"], &["Ann", "Oslo"]]);
+        let parts = only_parts(&grid, &config);
+        assert_eq!((parts.header, parts.body), (vec![0], vec![1]));
+    }
+
+    #[test]
+    fn damaged_header_row_count_does_not_overflow() {
+        let mut grid = grid(&[&[], &[], &["Name", "City"], &["Ann", "Oslo"], &["Bob", "Rome"]]);
+        grid.declared.tables.push((area(2, 0, 4, 1), u32::MAX));
+        let parts = only_parts(&grid, &ExcelConfig::default());
+        assert_eq!(parts.body, [4]);
+    }
+
+    #[test]
+    fn only_the_last_single_rows_are_the_caption() {
+        let grid = grid(&[
+            &["Read this first."],
+            &["Then this."],
+            &["Table 1"],
+            &["(units)"],
+            &["Region", "Count"],
+            &["North", "5"],
+            &["South", "7"],
+        ]);
+        let config = ExcelConfig {
+            max_caption_rows: 2,
+            ..ExcelConfig::default()
+        };
+        let parts = only_parts(&grid, &config);
+        assert_eq!(parts.lead, [0, 1]);
+        assert_eq!(parts.caption, [2, 3]);
+        let blocks = sheet_blocks("Data", &grid, &config);
+        let texts: Vec<String> = blocks.iter().map(Block::text).collect();
+        assert_eq!(
+            texts[..4],
+            ["Data", "Read this first.", "Then this.", "Table 1 — (units)"]
+        );
+        assert!(matches!(blocks[1].kind, BlockKind::Paragraph { .. }));
+        assert!(blocks[3].table.is_some());
+    }
+
+    #[test]
+    fn sparse_region_is_paragraphs() {
+        // A form: labels and values scattered over a wide grid, 6 of its
+        // 15 places filled.
+        let grid = grid(&[
+            &["Name", "Ann", "", "", ""],
+            &["", "", "Address", "Oslo", ""],
+            &["Date", "", "", "", "2024"],
+        ]);
+        let config = ExcelConfig {
+            table_min_fill_ratio: 0.5,
+            ..ExcelConfig::default()
+        };
+        let blocks = sheet_blocks("Form", &grid, &config);
+        let texts: Vec<String> = blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Form", "Name Ann", "Address Oslo", "Date 2024"]);
+        assert!(
+            blocks[1..]
+                .iter()
+                .all(|block| matches!(block.kind, BlockKind::Paragraph { .. }))
+        );
+        // A full table stays a table.
+        let full = super::tests::grid(&[&["Name", "City"], &["Ann", "Oslo"], &["Bob", "Rome"]]);
+        assert_eq!(only_table(&sheet_blocks("Data", &full, &config)).rows.len(), 3);
+    }
+
+    #[test]
+    fn a_merge_fills_its_area() {
+        // The merged labels cover their rows: the body is full.
+        let mut grid = grid(&[
+            &["Group", "Name", "Count"],
+            &["A", "North", "5"],
+            &["", "South", "7"],
+            &["", "East", "8"],
+        ]);
+        grid.merges = vec![area(1, 0, 3, 0)];
+        let config = ExcelConfig {
+            table_min_fill_ratio: 0.9,
+            ..ExcelConfig::default()
+        };
+        assert!(sheet_blocks("Data", &grid, &config)[1].table.is_some());
     }
 
     #[test]

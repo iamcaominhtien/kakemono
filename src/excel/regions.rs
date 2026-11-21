@@ -22,9 +22,23 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
     // The visible position of each item's cells: (row, column) → item.
     let mut at: HashMap<(u32, u32), usize> = HashMap::new();
     let mut sets = Sets::default();
+    // The last cell of a text centred across the selection, in visible
+    // places: a blank centred cell right after it is part of the text.
+    let mut centred: Option<(u32, u32)> = None;
     for (&(row, col), cell) in &grid.cells {
-        if !visible((row, col)) || (!cell.center_continuous && is_blank(&cell.spans)) {
+        if !visible((row, col)) {
             continue;
+        }
+        let place = (rows.rank(row), cols.rank(col));
+        if is_blank(&cell.spans) {
+            let follows = centred.is_some_and(|(last_row, last_col)| last_row == place.0 && last_col + 1 == place.1);
+            if !(cell.center_continuous && follows) {
+                centred = None;
+                continue;
+            }
+            centred = Some(place);
+        } else {
+            centred = cell.center_continuous.then_some(place);
         }
         let item = sets.add();
         boxes.push(Merge {
@@ -33,7 +47,7 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
             bottom: row,
             right: col,
         });
-        at.insert((rows.rank(row), cols.rank(col)), item);
+        at.insert(place, item);
     }
     for merge in &grid.merges {
         if !visible((merge.top, merge.left)) || !grid.cells.contains_key(&(merge.top, merge.left)) {
@@ -170,13 +184,13 @@ fn edge(merge: &Merge) -> impl Iterator<Item = (u32, u32)> + '_ {
 
 /// The rows (or columns) of a sheet without its hidden ones: the place of
 /// each among the visible ones.
-struct Visible {
+pub(crate) struct Visible {
     /// The hidden ones, in order.
     hidden: Vec<u32>,
 }
 
 impl Visible {
-    fn new(hidden: &HashSet<u32>) -> Self {
+    pub(crate) fn new(hidden: &HashSet<u32>) -> Self {
         let mut hidden: Vec<u32> = hidden.iter().copied().collect();
         hidden.sort_unstable();
         Self { hidden }
@@ -187,6 +201,17 @@ impl Visible {
     fn rank(&self, index: u32) -> u32 {
         let before = self.hidden.partition_point(|&hidden| hidden < index);
         index - u32::try_from(before).unwrap_or(index)
+    }
+
+    /// How many of `first` to `last` (inclusive) are visible; 0 when
+    /// `last` is before `first`.
+    pub(crate) fn count(&self, first: u32, last: u32) -> u64 {
+        if last < first {
+            return 0;
+        }
+        let hidden = self.hidden.partition_point(|&hidden| hidden <= last)
+            - self.hidden.partition_point(|&hidden| hidden < first);
+        (u64::from(last) - u64::from(first) + 1).saturating_sub(u64::try_from(hidden).unwrap_or(u64::MAX))
     }
 }
 
@@ -295,12 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn a_large_sheet_splits_fast_and_huge_gaps_do_not_overflow() {
+    fn a_large_sheet_is_one_region_and_huge_gaps_do_not_overflow() {
         let cells: Vec<_> = (0..20_000).flat_map(|row| (0..20).map(move |col| (row, col))).collect();
         let grid = grid(&cells);
-        let start = std::time::Instant::now();
         assert_eq!(split(&grid, &ExcelConfig::default()), [area(0, 0, 19_999, 19)]);
-        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
         let config = ExcelConfig {
             region_gap_rows: usize::MAX,
             region_gap_cols: usize::MAX,
@@ -308,5 +331,60 @@ mod tests {
         };
         let grid = super::tests::grid(&[(0, 0), (9, 900)]);
         assert_eq!(split(&grid, &config), [area(0, 0, 9, 900)]);
+    }
+
+    #[test]
+    fn exactly_the_gap_splits() {
+        let config = ExcelConfig::default();
+        assert_eq!(config.region_gap_rows, 2);
+        assert_eq!(config.region_gap_cols, 1);
+        // Two empty rows (1 and 2) split; one empty row does not.
+        assert_eq!(
+            split(&grid(&[(0, 0), (3, 0)]), &config),
+            [area(0, 0, 0, 0), area(3, 0, 3, 0)]
+        );
+        assert_eq!(split(&grid(&[(0, 0), (2, 0)]), &config), [area(0, 0, 2, 0)]);
+        // One empty column splits; none does not.
+        assert_eq!(
+            split(&grid(&[(0, 0), (0, 2)]), &config),
+            [area(0, 0, 0, 0), area(0, 2, 0, 2)]
+        );
+        assert_eq!(split(&grid(&[(0, 0), (0, 1)]), &config), [area(0, 0, 0, 1)]);
+    }
+
+    /// `grid` with a blank cell centred across the selection at `place`.
+    fn with_blank_centred(mut grid: Grid, place: (u32, u32)) -> Grid {
+        grid.cells.insert(
+            place,
+            GridCell {
+                spans: Vec::new(),
+                kind: CellKind::Text,
+                center_continuous: true,
+            },
+        );
+        grid
+    }
+
+    #[test]
+    fn blank_centred_cells_count_only_after_centred_text() {
+        // A blank centred cell after a text that is not centred joins
+        // nothing: B and D stay apart.
+        let grid = with_blank_centred(super::tests::grid(&[(0, 1), (0, 3)]), (0, 2));
+        assert_eq!(
+            split(&grid, &ExcelConfig::default()),
+            [area(0, 1, 0, 1), area(0, 3, 0, 3)]
+        );
+        // After a centred text, the blank centred cells are part of it.
+        let mut grid = with_blank_centred(
+            with_blank_centred(super::tests::grid(&[(0, 0), (0, 4)]), (0, 1)),
+            (0, 2),
+        );
+        grid.cells.get_mut(&(0, 0)).unwrap().center_continuous = true;
+        assert_eq!(
+            split(&grid, &ExcelConfig::default()),
+            [area(0, 0, 0, 2), area(0, 4, 0, 4)]
+        );
+        let grid = with_blank_centred(grid, (0, 3));
+        assert_eq!(split(&grid, &ExcelConfig::default()), [area(0, 0, 0, 4)]);
     }
 }

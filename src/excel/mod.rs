@@ -57,6 +57,19 @@ pub struct ExcelConfig {
     /// A column is right-aligned when more than this share of its body
     /// cells are numbers or dates.
     pub numeric_column_ratio: f32,
+    /// At most this many rows of one text cell directly above a table are
+    /// its caption; the single-cell rows above them are paragraphs before
+    /// the table.
+    pub max_caption_rows: usize,
+    /// A region whose body rows have less than this share of their
+    /// positions (rows × columns, hidden ones left out) covered by a cell
+    /// is not a table but text laid out in cells (a form, a prose sheet):
+    /// it becomes one paragraph per row. A merge or a centred text covers
+    /// its whole area. 0, the default, keeps every region a table: on the
+    /// corpus, the fill of forms and prose sheets (0.29 to 0.50) is that
+    /// of many sparse financial tables (0.11 to 0.60), so no share parts
+    /// them.
+    pub table_min_fill_ratio: f32,
     /// The most rows read from one sheet; the rest are left out, with a
     /// paragraph saying how many.
     pub max_rows: usize,
@@ -75,6 +88,8 @@ impl Default for ExcelConfig {
             header_type_match_ratio: 0.75,
             header_lookahead_rows: 20,
             numeric_column_ratio: 0.5,
+            max_caption_rows: 3,
+            table_min_fill_ratio: 0.0,
             max_rows: 100_000,
             max_cols: 1_000,
             header_rows: None,

@@ -94,6 +94,44 @@ pub struct Table {
     pub geom: TableGeom,
 }
 
+/// Rule above the first row and below the last of a table rebuilt from a
+/// document without page geometry (Word, Excel): heavy.
+pub(crate) const HEAVY_RULE: u8 = 2;
+/// Rule under the header of such a table: thin.
+pub(crate) const THIN_RULE: u8 = 1;
+
+impl Table {
+    /// A table of the cells `rows` (on `n_cols` columns, the first
+    /// `header_rows` of them the header) ruled as a document without page
+    /// geometry shows it: a heavy rule above and below, a thin one under
+    /// the header, no vertical rules.
+    pub(crate) fn ruled(
+        rows: Vec<Vec<TableCell>>,
+        n_cols: usize,
+        header_rows: usize,
+        col_align: Vec<&'static str>,
+    ) -> Self {
+        let mut rule_above = vec![vec![0u8; n_cols]; rows.len()];
+        if let Some(first) = rule_above.first_mut() {
+            first.fill(HEAVY_RULE);
+        }
+        if let Some(under_header) = rule_above.get_mut(header_rows).filter(|_| header_rows > 0) {
+            under_header.fill(THIN_RULE);
+        }
+        Self {
+            n_cols,
+            header_rows,
+            col_align,
+            rule_above,
+            rule_bottom: vec![HEAVY_RULE; n_cols],
+            rule_left: vec![vec![false; n_cols]; rows.len()],
+            rule_right: vec![false; rows.len()],
+            rows,
+            geom: TableGeom::default(),
+        }
+    }
+}
+
 /// Where the grid of a [`Table`] lies on the page, so that the
 /// position-preserving renderer can place the HTML table over the original.
 #[derive(Debug, Clone, Default)]

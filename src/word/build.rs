@@ -13,7 +13,7 @@ use crate::analysis::semantics::text::slug;
 use crate::common::geom::Rect;
 use crate::common::patterns::CAP_LABEL;
 use crate::model::{
-    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Span, Table, TableCell, TableGeom,
+    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Span, Table, TableCell,
 };
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -29,10 +29,6 @@ const OFFICE_MATH_FONT: &str = "Cambria Math";
 const PT_PER_PX: f32 = 0.75;
 /// Size of a picture whose size is unknown, in points.
 const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
-/// Rule above the first row and below the last of a rebuilt table: heavy.
-const HEAVY_RULE: u8 = 2;
-/// Rule under the header of a rebuilt table: thin.
-const THIN_RULE: u8 = 1;
 
 /// The number of an equation as it is set next to it: "(3)", "(2.1a)".
 static EQUATION_NUMBER: LazyLock<Regex> =
@@ -633,24 +629,7 @@ impl Builder<'_> {
         } else {
             usize::from(rows.len() > 1)
         };
-        let mut rule_above = vec![vec![0u8; n_cols]; rows.len()];
-        if let Some(first) = rule_above.first_mut() {
-            first.fill(HEAVY_RULE);
-        }
-        if let Some(under_header) = rule_above.get_mut(header_rows).filter(|_| header_rows > 0) {
-            under_header.fill(THIN_RULE);
-        }
-        Table {
-            n_cols,
-            header_rows,
-            col_align: vec!["left"; n_cols],
-            rule_above,
-            rule_bottom: vec![HEAVY_RULE; n_cols],
-            rule_left: vec![vec![false; n_cols]; rows.len()],
-            rule_right: vec![false; rows.len()],
-            rows,
-            geom: TableGeom::default(),
-        }
+        Table::ruled(rows, n_cols, header_rows, vec!["left"; n_cols])
     }
 
     /// The text of a table cell: its paragraphs one after another.
