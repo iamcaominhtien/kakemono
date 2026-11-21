@@ -140,6 +140,15 @@ locale-dependent built-ins). The locale comes from a new option (`--locale`, def
 on a machine with comma decimals and dot grouping (Vietnamese-style), so the fidelity script
 passes that locale for them; the corpus manifests record each reference's locale.
 
+Scope of the locale data (no ICU, no new dependency): a small built-in table keyed by BCP-47
+tag — at least `en-US`, `en-GB`, `vi-VN`, `fr-FR`, `de-DE`, `ja-JP`, `zh-CN` — each with its
+separators, month/day names, AM/PM strings and the built-in formats that depend on the locale
+(14, 15–17, 22, 37–40, …). A `[$-…]` tag in a format code switches to a table entry when there is
+one and is otherwise ignored (other calendars are out of scope). The option takes a tag and may
+override the two separators, because the reference machine mixes them: its PDFs print English
+month and day names (`Monday`, `21 January 2025`, `1:37 PM`) with comma decimals and dot grouping
+(`1.234,57`). The option is public API (crate, CLI, Python).
+
 `General` depends on the column width (Excel shortens numbers to fit, then shows `#####` /
 scientific); the engine takes an optional available width to do the same in the layout.
 
@@ -185,8 +194,16 @@ picks the behaviour and documents it):
    centre-across-selection; vertical; indent; rotation; wrap; shrink-to-fit), overflow into empty
    neighbours (left, right, both for centred), clipping at non-empty neighbours, `####` for
    numbers that do not fit; merged cells drawn once; conditional formats applied (fills, fonts,
-   colour scales, data bars, icon sets); pictures at their anchors; row/column headings if
+   colour scales, data bars, icon sets — see the subset below); pictures at their anchors; row/column headings if
    printed.
+   Conditional formats without a formula engine (formulas stay out of scope): every rule that
+   needs only the cell values is drawn — cell-value comparisons whose operands are constants,
+   colour scales, data bars, icon sets, top/bottom N and %, above/below average, duplicate and
+   unique values, text contains/begins/ends, blanks/non-blanks, errors. Expression rules and
+   operands that are formulas are drawn only when they fall in a small evaluator: numbers,
+   strings, booleans, relative and absolute references to cells of the same sheet, `ROW`,
+   `COLUMN`, `MOD`, `AND`, `OR`, `NOT`, `ISBLANK`, `LEN`, comparisons and `+ - * /`; any other rule
+   is skipped (not drawn) and counted in `inspect`.
 5. **Headers and footers.** Excel's codes (`&L &C &R`, `&P &N &D &T &F &A &Z`, `&"font,style"`,
    size, `&B &I &U &S &X &Y`, `&&`), odd/even/first, scaled with the sheet or not per
    `scaleWithDoc`, aligned with margins per `alignWithMargins`.
@@ -216,6 +233,8 @@ picks the behaviour and documents it):
    producer is Excel, from the open-data portals (gov.uk, data.gov.au, open.canada.ca), kept
    only when the PDF's text matches the cells; listed in `tests/data/excel-corpus.tsv` with
    URLs, sha256 and the PDF's locale. Expected: about 100–200 pairs (not yet verified).
+   Collecting them is part of this work (phase 2) but does not block it: phase 2 ships with
+   minimums on the samples alone, and minimums on the pairs are added once the pairs exist.
 3. **Crash corpus (downloaded):** the 694 public workbooks of
    `kakemono/kakemono-excel-corpus/manifest.tsv` (576 `.xlsx`, 118 `.xls`, open licences), plus
    more `.xls` from public corpora if needed; every output of every file, no panic, no timeout.
@@ -227,6 +246,13 @@ size equal and the set of words with their positions (tolerance a fraction of th
 matched. Totals: share of workbooks with the same page count, share of words on the same page,
 share of words placed within tolerance. CI minimums start at what the first working layout
 reaches and only go up.
+
+### Edited text (`--content`)
+
+As for Word: the edited JSON changes the structure outputs only; the PDF and the
+`hard`/`hard-95`/`medium` modes show the workbook as it is. The layout and the structure stay
+independent. Showing edited (for example translated) text in the printed layout is a possible
+later addition, not part of this work.
 
 ## Phases
 
@@ -256,6 +282,10 @@ Each phase is its own PR.
 - One table per sheet in the structure outputs to start with.
 - `.xlsb`, `.ods`, `.csv` out of scope for now.
 - The sample PDFs are committed (they are ours), with a `.gitignore` exception.
+- Conditional formats: the rule subset and small evaluator above, no formula engine.
+- Locale: a small built-in table plus separator overrides.
+- The online pairs do not block phase 2.
+- `--content` changes the structure outputs only, as for Word.
 
 ## Left to the builder
 
