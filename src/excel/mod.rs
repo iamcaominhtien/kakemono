@@ -5,7 +5,9 @@
 //! Each visible sheet becomes a section: a heading with the sheet's name,
 //! then its content. A workbook has no pages, like a Word document.
 
+mod numfmt;
 mod strings;
+mod styles;
 mod workbook;
 
 use crate::model::{Block, BlockKind, Document, Meta, Span};
