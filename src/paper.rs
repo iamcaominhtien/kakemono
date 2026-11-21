@@ -1,9 +1,10 @@
-//! High-level entry points: PDF or Word bytes in, structured document and
+//! High-level entry points: PDF, Word or Excel bytes in, structured document and
 //! HTML (or Word, Markdown, LaTeX or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
-use crate::config::AnalyzeOptions;
+use crate::config::{AnalyzeOptions, ExcelConfig};
+use crate::excel;
 use crate::model::{Document, Meta};
 use crate::render::{
     Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions,
@@ -24,16 +25,19 @@ pub enum InputFormat {
     Docx,
     /// A Word 97–2003 document (`.doc`).
     Doc,
+    /// An Excel workbook in Office Open XML (`.xlsx`).
+    Xlsx,
 }
 
 impl InputFormat {
-    /// The usual file extension (`pdf`, `docx`, `doc`), also the name of the
+    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`), also the name of the
     /// format in the JSON output.
     pub fn name(self) -> &'static str {
         match self {
             InputFormat::Pdf => "pdf",
             InputFormat::Docx => "docx",
             InputFormat::Doc => "doc",
+            InputFormat::Xlsx => "xlsx",
         }
     }
 
@@ -51,9 +55,13 @@ enum Source {
     /// A Word document, read into its structure when loaded, with its file
     /// (read again with its formatting for the layout).
     Word(Box<Document>, InputFormat, Vec<u8>),
+    /// An Excel workbook, read into its structure when loaded (no file is
+    /// kept: there is no layout to make).
+    Sheet(Box<Document>),
 }
 
-/// A loaded PDF or Word document, ready to be analysed and rendered.
+/// A loaded PDF, Word document or Excel workbook, ready to be analysed and
+/// rendered.
 ///
 /// Typical use: [`Paper::from_bytes`], [`Paper::analyze`], then
 /// [`Paper::to_html`] once per output mode (the analysis does not depend on
@@ -83,14 +91,28 @@ struct Laid {
 }
 
 impl Paper {
-    /// Loads a PDF or a Word document (`.docx`, `.doc`) from its bytes; the
-    /// format is recognised from the bytes.
+    /// Loads a PDF, a Word document (`.docx`, `.doc`) or an Excel workbook
+    /// (`.xlsx`) from its bytes; the format is recognised from the bytes.
     ///
     /// # Errors
-    /// When the data is not a readable PDF or Word document, or the PDF has
-    /// no pages.
+    /// When the data is not a readable PDF, Word document or workbook, or
+    /// the PDF has no pages.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        Self::from_bytes_with(data, &ExcelConfig::default())
+    }
+
+    /// Loads a file like [`Paper::from_bytes`], reading a workbook with
+    /// the thresholds `excel` (they do not apply to the other formats).
+    ///
+    /// # Errors
+    /// As [`Paper::from_bytes`].
+    pub fn from_bytes_with(data: Vec<u8>, excel: &ExcelConfig) -> Result<Self> {
         let sha256 = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
+        // Both are ZIP packages: each looks for its own main part.
+        if excel::detect(&data) {
+            let doc = excel::read(&data, excel, None)?;
+            return Ok(Self::loaded(Source::Sheet(Box::new(doc)), sha256));
+        }
         let file = match word::detect(&data) {
             Some(format) => {
                 let doc = word::read(&data, format, None)?;
@@ -102,12 +124,17 @@ impl Paper {
             }
             None => Source::Pdf(PdfFile::open(data)?),
         };
-        Ok(Self {
+        Ok(Self::loaded(file, sha256))
+    }
+
+    /// A paper of `file`, whose bytes have the SHA-256 `sha256`.
+    fn loaded(file: Source, sha256: String) -> Self {
+        Self {
             file,
             source: None,
             sha256,
             laid: std::sync::OnceLock::new(),
-        })
+        }
     }
 
     /// The format of the file.
@@ -115,6 +142,7 @@ impl Paper {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
             Source::Word(_, format, _) => *format,
+            Source::Sheet(_) => InputFormat::Xlsx,
         }
     }
 
@@ -122,14 +150,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) => None,
+            Source::Word(..) | Source::Sheet(_) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) => None,
+            Source::Pdf(_) | Source::Sheet(_) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -177,13 +205,16 @@ impl Paper {
     }
 
     /// The document laid out in pages as Word lays it out, as a PDF: only
-    /// for a Word document (a PDF already has its pages).
+    /// for a Word document (a PDF already has its pages, a workbook has
+    /// none).
     ///
     /// # Errors
-    /// When the paper is a PDF, or the layout cannot be written.
+    /// When the paper is a PDF or a workbook, or the layout cannot be
+    /// written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
+            Source::Sheet(_) => anyhow::bail!("a workbook has no page layout"),
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,
@@ -215,7 +246,8 @@ impl Paper {
         self
     }
 
-    /// Number of pages; 0 for a Word document, which has none.
+    /// Number of pages; 0 for a Word document or a workbook, which have
+    /// none.
     pub fn page_count(&self) -> usize {
         self.pdf().map_or(0, PdfFile::page_count)
     }
@@ -229,12 +261,12 @@ impl Paper {
     ///
     /// Pages are read, and their lines built, on `opts.jobs` threads; the
     /// result does not depend on the number of threads.
-    /// A Word document needs no analysis: its structure, read when it was
-    /// loaded, is returned (`opts` does not apply to it).
+    /// A Word document or a workbook needs no analysis: its structure, read
+    /// when it was loaded, is returned (`opts` does not apply to it).
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 return Analysis {
@@ -259,7 +291,7 @@ impl Paper {
     }
 
     /// A renderer for pictures of pages and page regions, or `None` for a
-    /// Word document, which has no pages. Not thread-safe: every thread
+    /// Word document or a workbook, which have no pages. Not thread-safe: every thread
     /// that draws needs its own.
     pub fn renderer(&self) -> Option<PageRenderer<'_>> {
         self.pdf().map(PdfFile::renderer)

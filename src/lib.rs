@@ -1,5 +1,6 @@
-//! kakemono: convert scientific-paper PDFs (such as those on arXiv), and
-//! Word documents (`.docx`, `.doc`), into clean HTML, Word documents,
+//! kakemono: convert scientific-paper PDFs (such as those on arXiv), Word
+//! documents (`.docx`, `.doc`) and Excel workbooks (`.xlsx`) into clean HTML,
+//! Word documents,
 //! Markdown, LaTeX or EPUB books.
 //!
 //! The pipeline is: PDF access -> layout analysis and structuring ->
@@ -34,6 +35,8 @@ pub mod analysis;
 pub mod backend;
 #[doc(hidden)]
 pub mod common;
+#[doc(hidden)]
+pub mod excel;
 #[doc(hidden)]
 pub mod layout;
 #[doc(hidden)]

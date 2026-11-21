@@ -208,7 +208,7 @@ pub(crate) fn rel_types_of(zip: &ZipArchive<'_>, part: &str) -> Vec<(String, Str
 }
 
 /// The relationships of `part`: (id, last word of the type, relationship).
-fn read_rels(zip: &ZipArchive<'_>, part: &str) -> Result<Vec<(String, String, Rel)>> {
+pub(crate) fn read_rels(zip: &ZipArchive<'_>, part: &str) -> Result<Vec<(String, String, Rel)>> {
     let (dir, name) = part.rsplit_once('/').unwrap_or(("", part));
     let rels_path = if dir.is_empty() {
         format!("_rels/{name}.rels")

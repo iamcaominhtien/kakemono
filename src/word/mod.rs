@@ -8,7 +8,7 @@
 
 mod build;
 pub(crate) mod doc;
-mod docx;
+pub(crate) mod docx;
 pub mod fmt;
 mod ir;
 pub(crate) mod metafile;
@@ -17,7 +17,7 @@ pub(crate) mod omml;
 mod pictures;
 mod styles;
 mod symbols;
-mod xml;
+pub(crate) mod xml;
 pub(crate) mod zip;
 
 use crate::model::Document;
