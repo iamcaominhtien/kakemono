@@ -3,7 +3,8 @@
 //!
 //! Chunks follow the structure of the document: blocks are grouped by
 //! section, a chunk never holds two sections, and a block is cut only when
-//! it does not fit in one chunk (at sentence ends, else between words).
+//! it does not fit in one chunk (at sentence ends, else between words; a
+//! table between rows, with its caption and header repeated).
 //! Each chunk starts with its section path ("3 Model > 3.2 Attention"), so
 //! that a piece of text keeps the context a reader has. The paper title is
 //! not repeated in the text: retrieval within one paper gains nothing from
@@ -21,7 +22,7 @@ pub use tokens::{NAMED_TOKENIZERS, TokenCounter, estimate};
 
 use super::json::plain_text::{block_plain, plain_of};
 use super::plain;
-use crate::model::{Block, BlockKind, Document};
+use crate::model::{Block, BlockKind, Document, Table};
 use serde::Serialize;
 
 /// Separator of the parts of a section path in a chunk's text.
@@ -125,16 +126,75 @@ fn block_text(block: &Block) -> String {
     };
     let mut parts = vec![plain_of(&block.spans)];
     match &block.table {
-        Some(table) => parts.extend(table.rows.iter().map(|row| {
-            row.iter()
-                .map(|cell| plain_of(&cell.spans))
-                .collect::<Vec<_>>()
-                .join(CELL_SEPARATOR)
-        })),
+        Some(table) => parts.extend(table_rows(table)),
         None => parts.extend(block.rows.first().map(|row| plain(row))),
     }
     parts.retain(|part| !part.trim().is_empty());
     parts.join("\n").trim().to_string()
+}
+
+/// The rows of `table` as text, one string per row, cells joined by
+/// [`CELL_SEPARATOR`].
+fn table_rows(table: &Table) -> Vec<String> {
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| plain_of(&cell.spans))
+                .collect::<Vec<_>>()
+                .join(CELL_SEPARATOR)
+        })
+        .collect()
+}
+
+/// Cuts the text of a rebuilt table into pieces of at most `room` tokens,
+/// between rows, each piece starting with the caption and the header rows
+/// (dropped when they take more than half of `room`). A row that does not
+/// fit even alone is cut between words, the head repeated on each part.
+/// `None` when `block` has no rebuilt table, or no row to cut at.
+fn table_pieces(block: &Block, room: usize, counter: &TokenCounter) -> Option<Vec<String>> {
+    let table = block.table.as_ref()?;
+    let rows = table_rows(table);
+    let (header, body) = rows.split_at(table.header_rows.min(rows.len()));
+    let mut head_lines = vec![plain_of(&block.spans)];
+    head_lines.extend(header.iter().cloned());
+    head_lines.retain(|line| !line.trim().is_empty());
+    let mut head = head_lines.join("\n");
+    if counter.count(&head) * 2 > room {
+        head.clear();
+    }
+    let with_head = |text: &str| {
+        if head.is_empty() {
+            text.to_string()
+        } else {
+            format!("{head}\n{text}")
+        }
+    };
+    let mut pieces = Vec::new();
+    // The body rows of the piece being built.
+    let mut current: Vec<&str> = Vec::new();
+    for row in body.iter().filter(|row| !row.trim().is_empty()) {
+        current.push(row);
+        if counter.count(&with_head(&current.join("\n"))) <= room {
+            continue;
+        }
+        current.pop();
+        if !current.is_empty() {
+            pieces.push(with_head(&current.join("\n")));
+            current.clear();
+        }
+        if counter.count(&with_head(row)) <= room {
+            current.push(row);
+            continue;
+        }
+        let budget = room.saturating_sub(counter.count(&format!("{head}\n"))).max(1);
+        pieces.extend(split_long(row, budget, counter).iter().map(|part| with_head(part)));
+    }
+    if !current.is_empty() {
+        pieces.push(with_head(&current.join("\n")));
+    }
+    (!pieces.is_empty()).then_some(pieces)
 }
 
 /// Builds the chunks one block at a time.
@@ -201,7 +261,8 @@ impl<'a> Builder<'a> {
             .saturating_sub(self.head_tokens() + JOIN_SLACK_TOKENS)
             .max(1);
         let pieces = if self.count(text) > room {
-            split_long(text, room, &self.opts.counter)
+            // A table too long for a chunk is cut between rows.
+            table_pieces(block, room, &self.opts.counter).unwrap_or_else(|| split_long(text, room, &self.opts.counter))
         } else {
             vec![text.to_string()]
         };
@@ -442,6 +503,116 @@ mod tests {
         assert_eq!(
             sentences("See e.g. the table. Then go."),
             ["See e.g. the table.", "Then go."]
+        );
+    }
+
+    /// A table float: caption `caption` (none when empty), `header_rows`
+    /// header rows ["Year", "Price"] and `body` rows ["2000+i", "i.5"].
+    fn table_block(caption: &str, header_rows: usize, body: usize) -> Block {
+        use crate::model::{FloatKind, Table, TableCell, TableGeom};
+        let cell = |text: &str, col: usize| TableCell {
+            col,
+            colspan: 1,
+            rowspan: 1,
+            spans: vec![Span::plain(text)],
+        };
+        let mut rows: Vec<Vec<TableCell>> = (0..header_rows)
+            .map(|_| vec![cell("Year", 0), cell("Price", 1)])
+            .collect();
+        rows.extend((0..body).map(|i| vec![cell(&format!("{}", 2000 + i), 0), cell(&format!("{i}.5"), 1)]));
+        let kind = BlockKind::Figure {
+            kind: FloatKind::Table,
+            image: None,
+            label: None,
+        };
+        let mut block = block(0, kind, caption);
+        block.table = Some(Table {
+            n_cols: 2,
+            header_rows,
+            col_align: vec!["left", "right"],
+            rows,
+            rule_above: Vec::new(),
+            rule_bottom: Vec::new(),
+            rule_left: Vec::new(),
+            rule_right: Vec::new(),
+            geom: TableGeom::default(),
+        });
+        block
+    }
+
+    /// Options with chunks of at most `max_tokens`.
+    fn opts(max_tokens: usize) -> ChunkOptions {
+        ChunkOptions {
+            max_tokens,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_long_table_is_cut_between_rows_and_repeats_its_header() {
+        let chunks = render_chunks(&doc(vec![table_block("Table 1: Prices", 1, 200)]), &opts(64));
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.text.contains("Table 1: Prices\nYear | Price\n"), "{}", chunk.text);
+            assert!(chunk.tokens <= 64, "{}", chunk.text);
+            assert!(
+                chunk
+                    .text
+                    .lines()
+                    .filter(|line| line.contains(" | "))
+                    .all(|line| line.split(" | ").count() == 2)
+            );
+        }
+        let rows: usize = chunks
+            .iter()
+            .map(|chunk| chunk.text.lines().filter(|line| line.starts_with('2')).count())
+            .sum();
+        assert_eq!(rows, 200);
+    }
+
+    #[test]
+    fn a_table_without_header_is_still_cut_between_rows() {
+        let chunks = render_chunks(&doc(vec![table_block("", 0, 200)]), &opts(64));
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(
+                chunk.text.lines().all(|line| line.split(" | ").count() == 2),
+                "{}",
+                chunk.text
+            );
+            assert!(!chunk.text.contains("Year"));
+        }
+        let rows: usize = chunks.iter().map(|chunk| chunk.text.lines().count()).sum();
+        assert_eq!(rows, 200);
+    }
+
+    #[test]
+    fn a_row_longer_than_a_chunk_is_cut_between_words() {
+        let mut block = table_block("", 1, 1);
+        let long = vec!["word"; 300].join(" ");
+        block.table.as_mut().expect("a table").rows[1][1].spans = vec![Span::plain(&long)];
+        let chunks = render_chunks(&doc(vec![block]), &opts(64));
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.text.starts_with("Year | Price\n"), "{}", chunk.text);
+            assert!(chunk.tokens <= 64, "{}", chunk.text);
+        }
+        let words: usize = chunks
+            .iter()
+            .map(|chunk| chunk.text.split_whitespace().filter(|word| *word == "word").count())
+            .sum();
+        assert_eq!(words, 300);
+    }
+
+    #[test]
+    fn a_table_that_fits_stays_whole_beside_its_paragraphs() {
+        let para = block(1, BlockKind::Paragraph { in_abstract: false }, "Before.");
+        let chunks = render_chunks(&doc(vec![para, table_block("Table 1", 1, 3)]), &ChunkOptions::default());
+        assert_eq!(chunks.len(), 1);
+        assert!(
+            chunks[0]
+                .text
+                .ends_with("Table 1\nYear | Price\n2000 | 0.5\n2001 | 1.5\n2002 | 2.5")
         );
     }
 }
