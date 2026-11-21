@@ -640,8 +640,9 @@ cargo test --release
   are laid out and compared with Word's PDFs on every CI run, with a minimum per document; they
   are downloaded first (`scripts/fetch-word-corpus.sh 8 $(cat tests/data/word-layout-fixtures.txt)`)
   and skipped when missing.
-- **Crash test**: `scripts/word-crash-test.py DIR...` converts every Word file found to every
-  output and reports panics and timeouts (run on 4,300 public Word files: none).
+- **Crash test**: `scripts/word-crash-test.py DIR...` converts every Word file and every Excel
+  workbook found to every output and reports panics and timeouts (run on 4,300 public Word files
+  and on the 90 public workbooks of `scripts/fetch-excel-corpus.sh`: none).
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):

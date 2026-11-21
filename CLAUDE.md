@@ -46,7 +46,8 @@ node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
 scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layout vs Word's own PDFs (CI minimums in ci.yml)
-python3 scripts/word-crash-test.py DIR...                            # every output of every Word file: panics, timeouts
+python3 scripts/word-crash-test.py DIR...                            # every output of every Word file and Excel workbook: panics, timeouts
+scripts/fetch-excel-corpus.sh 8                                      # the public workbooks of tests/data/excel-corpus.tsv
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
