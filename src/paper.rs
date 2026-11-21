@@ -16,8 +16,10 @@ use crate::word::{self, WordFormat};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
-/// The format of the file a [`Paper`] was loaded from.
+/// The format of the file a [`Paper`] was loaded from. More formats may
+/// be read in a later version: a `match` on it needs a `_` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InputFormat {
     /// A PDF.
     Pdf,
