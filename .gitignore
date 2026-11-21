@@ -32,3 +32,5 @@ benchmark-results/
 
 # Word documents and the PDFs Word made of them (scripts/fetch-word-corpus.sh)
 /tests/data/word-corpus/
+# Public Excel workbooks (tests/data/excel-corpus.tsv)
+/tests/data/excel-corpus/

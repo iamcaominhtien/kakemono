@@ -1,6 +1,6 @@
 # Excel input (`.xlsx`) — design
 
-Date: 2026-11-21. Status: draft, waiting for approval.
+Date: 2026-11-21. Status: approved by the user (2026-11-21).
 
 ## Intent
 
@@ -34,7 +34,10 @@ so that a spreadsheet can be:
   rule for documents without pages (`InputFormat::has_pages` is false → the
   `friendly` page is given). No `-o x.pdf` for a workbook.
 - Charts, pictures, pivot tables, comments, conditional formatting, cell
-  colours. Charts/pictures may come later.
+  colours, form controls. Charts/pictures may come later.
+- The look of forms (Japanese 方眼紙 sheets, 様式, flows drawn with shapes):
+  v1 extracts their **text** in reading order (cells and text boxes), it does
+  not rebuild the form (decided with the user).
 - Recomputing formulas: the value cached in the file is used.
 
 ## Anti-goals (failure even if it "works")
@@ -99,6 +102,13 @@ New `src/excel/` (sibling of `src/word/`, public like `word` with
   strings, `[colour]`/`[condition]` ignored, dates/times (`yyyy mm dd hh mm
   ss AM/PM`, `m` as minute after `h`). Unknown parts → fall back to the
   general format. This is the piece that most needs unit tests.
+  **Dates and times are always written ISO** (decided by the user):
+  `2024-01-31`, `14:05`, `2024-01-31 14:05`, whatever the built-in or custom
+  date code (built-in ids 14–22, 45–47, and custom codes made of date/time
+  tokens). Numbers follow the cell's code (`12.5%`, `1,234.50`, with `.` as
+  decimal and `,` as thousands separator); a currency symbol is kept only when
+  it is written in a custom code (`"¥"#,##0`, `[$€-407]`); built-in currency
+  ids 5–8 give the number without a symbol.
 - `sheet.rs`: a streaming read of `xl/worksheets/sheetN.xml`: cells
   (`r`, `t` = `s`/`str`/`inlineStr`/`b`/`e`/`n`/`d`, `s` style), `mergeCells`,
   hyperlinks (via the sheet's rels → `Span::href`), hidden rows/columns.
@@ -116,20 +126,52 @@ New `src/excel/` (sibling of `src/word/`, public like `word` with
     2), **and** by fully empty columns at least `region_gap_cols` wide
     (default 1) — a 2-D split (connected blocks of cells, then their bounding
     boxes; *builder's call made by the designer*: side-by-side tables are
-    common) — regions in reading order (top to bottom, then left to right), one `Figure { kind: Table }` block per region, `label: None`, no
-    caption;
-  - a region of a single column of text, or of one cell, becomes paragraphs
-    instead of a table (a title or note typed above the data);
-  - an empty sheet gives only… nothing (no heading either).
+    common) — regions in reading order (top to bottom, then left to right);
+  - each region is read top to bottom into, in this order:
+    - **caption rows**: the leading rows with a single non-empty cell (a
+      title, a unit line such as `(in millions of dollars)`) → the table's
+      caption (`Block::spans`, one line each);
+    - **header rows** (see below);
+    - **body rows**;
+    - **note rows**: trailing rows with a single non-empty cell (`Source:`,
+      `注:`) → paragraphs after the table;
+  - a region with fewer than two columns of data (only single-cell rows: a
+    form, a notes or cover sheet) becomes **paragraphs** instead of a table,
+    one per row, cells of a row joined `label: value` style when a row has
+    two cells;
+  - text in shapes and text boxes of the sheet's drawing (`xl/drawings/`,
+    `a:t` in `xdr:sp`) becomes paragraphs after the sheet's cells, in their
+    anchor order (top-left cell, row then column). Pictures, charts,
+    connectors and form controls (checkboxes) are left out in v1;
+  - an empty sheet gives nothing (no heading either).
 - Hidden rows and columns are left out.
 - Merged cells → `colspan`/`rowspan` on the top-left cell; the others dropped.
-- **Header rows**: the first row of a region is a header row when every
-  non-empty cell of it is text and the region has more than one row
-  (`header_rows = 1`); otherwise 0. Rows of a merged header (a merge that spans
-  the first row) extend the header down to the merge's last row.
+  `centerContinuous` (centre across selection, common in Japanese statistics
+  instead of a merge) → the text's cell spans the empty cells to its right
+  that have the same alignment.
+- **Header rows** — decided in this order, first that applies wins:
+  1. `--header-rows N` (CLI) / `ExcelOptions::header_rows` given by the user.
+  2. What the file declares, mapped onto the region: an Excel Table's
+     `headerRowCount`; the first row of an `autoFilter` range; frozen rows
+     (`pane ySplit`); print titles (`_xlnm.Print_Titles` rows). The rows of the
+     region down to the declared last header row, minus the caption rows.
+  3. Column types: the first row (after the captions) whose non-empty cells
+     have, in at least `header_type_match_ratio` (config, prototype: 0.75) of
+     them, the majority type (number / date / text / boolean) of their column
+     in the next `header_lookahead_rows` (config, prototype: 20) rows is the
+     first body row; the rows before it are the header (0 to many). A merge
+     reaching into the header extends it down to the merge's last row.
+  4. Otherwise (a table of text only, nothing declared): the first row.
+  A region of one row has no header.
+  The prototype of this rule on the 99-file corpus got the stats tables right
+  (multi-row headers of e-Stat-style Japanese tables, ONS, Destatis), and the
+  all-text Japanese spec sheets are covered by their declared freeze/print
+  titles.
 - Column alignment: right for a column whose non-header cells are mostly
   numbers (`numeric_column_ratio`, config), left otherwise.
-- Cell text: formatted value; booleans `TRUE`/`FALSE`; errors as written
+- Cell text: formatted value; shared and inline strings **without furigana**
+  (`rPh` runs are skipped, nearly every Japanese workbook has them; `phoneticPr`
+  ignored); rich-text runs keep bold/italic/sub/superscript; booleans `TRUE`/`FALSE`; errors as written
   (`#N/A`); formula cells use their cached value (`<v>`), empty when absent.
 - Limits (config): maximum rows and columns read per sheet; past them the
   reader stops that sheet and adds a paragraph saying how many rows were left
@@ -158,6 +200,16 @@ between words as today). Each piece starts with the section path, the caption
 if any, and the header rows (` | `-joined), then as many body rows as fit.
 Applies to every input format, so PDF/Word chunk snapshots will change where a
 table was cut: intended, to be reviewed and updated.
+
+## Corpus
+
+`tests/data/excel-corpus.tsv` (URL, publisher, category, note), like
+`tests/data/word-corpus.tsv`: about 100 public workbooks (UK ONS, US Census,
+BEA, OMB, Destatis, INSEE, Vietnam NSO, SEC EDGAR, Smartsheet templates; e-Stat,
+stat.go.jp, 厚労省, デジタル庁, IPA, 日本政策金融公庫, city 様式), downloaded by a
+script, never committed. A crash/timeout run over all of it, and a report
+(sheets → tables, header rows found, by declaration or by types) to compare
+before/after a change of the rules.
 
 ## Tests
 
