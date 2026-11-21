@@ -6,6 +6,7 @@
 //! then its content. A workbook has no pages, like a Word document.
 
 mod build;
+mod drawing;
 mod grid;
 mod numfmt;
 mod pull;
@@ -19,6 +20,7 @@ use crate::model::{Block, Document, Meta};
 use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
+use drawing::Shape;
 use grid::{Grid, Table};
 use sheet::SheetContext;
 use std::collections::HashMap;
@@ -34,6 +36,8 @@ const STYLES_REL: &str = "styles";
 const HYPERLINK_REL: &str = "hyperlink";
 /// Relationship type of an Excel Table part.
 const TABLE_REL: &str = "table";
+/// Relationship type of the drawing part of a sheet.
+const DRAWING_REL: &str = "drawing";
 /// Header rows of an Excel Table without `headerRowCount`.
 const DEFAULT_HEADER_ROW_COUNT: u32 = 1;
 
@@ -124,7 +128,11 @@ pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result
 ///
 /// # Errors
 /// When the shared strings or the styles are damaged.
-fn read_sheets<'w>(zip: &ZipArchive<'_>, workbook: &'w Workbook, config: &ExcelConfig) -> Result<Vec<(&'w str, Grid)>> {
+fn read_sheets<'w>(
+    zip: &ZipArchive<'_>,
+    workbook: &'w Workbook,
+    config: &ExcelConfig,
+) -> Result<Vec<(&'w str, Grid, Vec<Shape>)>> {
     // A workbook without string cells has no shared strings part.
     let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
         Some(xml) => strings::read(&xml)?,
@@ -144,8 +152,10 @@ fn read_sheets<'w>(zip: &ZipArchive<'_>, workbook: &'w Workbook, config: &ExcelC
         } else {
             zip.read_text(&sheet.part).ok().flatten()
         };
+        let mut shapes = Vec::new();
         let grid = match xml {
             Some(xml) => {
+                shapes = sheet_shapes(zip, &sheet.part);
                 let (links, tables) = sheet_rels(zip, &sheet.part);
                 let ctx = SheetContext {
                     strings: &strings,
@@ -160,7 +170,7 @@ fn read_sheets<'w>(zip: &ZipArchive<'_>, workbook: &'w Workbook, config: &ExcelC
             }
             None => Grid::default(),
         };
-        sheets.push((sheet.name.as_str(), grid));
+        sheets.push((sheet.name.as_str(), grid, shapes));
     }
     Ok(sheets)
 }
@@ -182,6 +192,20 @@ fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec
     (links, tables)
 }
 
+/// The text of the shapes and text boxes in the drawings of the sheet part
+/// `part`, by position. A missing or damaged drawing part is left out.
+fn sheet_shapes(zip: &ZipArchive<'_>, part: &str) -> Vec<Shape> {
+    let mut shapes: Vec<Shape> = Vec::new();
+    for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
+        if kind == DRAWING_REL && !rel.external {
+            let drawing = zip.read_text(&rel.target).ok().flatten();
+            shapes.extend(drawing.and_then(|xml| drawing::texts(&xml).ok()).unwrap_or_default());
+        }
+    }
+    shapes.sort_by_key(|(anchor, _)| *anchor);
+    shapes
+}
+
 /// The range and header rows of the table part `part`; `None` when it is
 /// missing or damaged.
 fn table(zip: &ZipArchive<'_>, part: &str) -> Option<Table> {
@@ -200,10 +224,15 @@ fn table(zip: &ZipArchive<'_>, part: &str) -> Option<Table> {
 
 /// The document of a workbook: one section per visible sheet, given with
 /// its grid, read with the thresholds `config`.
-fn build(workbook: &Workbook, sheets: &[(&str, Grid)], config: &ExcelConfig, source: Option<String>) -> Document {
+fn build(
+    workbook: &Workbook,
+    sheets: &[(&str, Grid, Vec<Shape>)],
+    config: &ExcelConfig,
+    source: Option<String>,
+) -> Document {
     let mut blocks: Vec<Block> = sheets
         .iter()
-        .flat_map(|(name, grid)| build::sheet_blocks(name, grid, config))
+        .flat_map(|(name, grid, shapes)| build::sheet_blocks(name, grid, shapes, config))
         .collect();
     for (id, block) in blocks.iter_mut().enumerate() {
         block.id = id;
@@ -330,7 +359,7 @@ mod tests {
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
         let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
-        let read: Vec<_> = sheets.iter().map(|(name, grid)| (*name, grid.cells.len())).collect();
+        let read: Vec<_> = sheets.iter().map(|(name, grid, _)| (*name, grid.cells.len())).collect();
         assert_eq!(read, [("Bad", 0), ("Good", 1)]);
         let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
         // The damaged sheet is empty: it gives no blocks, not even its
@@ -360,7 +389,7 @@ mod tests {
         let workbook = Workbook::read(&zip).unwrap();
         let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
         assert_eq!(sheets.len(), 1);
-        let (name, grid) = &sheets[0];
+        let (name, grid, _) = &sheets[0];
         assert_eq!(*name, "Data");
         assert_eq!(
             grid.cells[&(0, 0)].spans[0].href.as_deref(),
@@ -395,5 +424,42 @@ mod tests {
             .map(|sheet| (sheet.name.as_str(), sheet.visible, sheet.part.as_str()))
             .collect();
         assert_eq!(sheets, [("Data", true, "xl/worksheets/sheet1.xml"), ("Old", false, "")]);
+    }
+
+    /// The relationships of a sheet with a drawing.
+    const SHEET_DRAWING_RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#;
+    /// A drawing with a text box of two lines at C3.
+    const DRAWING: &str = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:row>2</xdr:row></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>4</xdr:row></xdr:to><xdr:sp><xdr:txBody><a:p><a:r><a:t>Emergency</a:t></a:r></a:p><a:p><a:r><a:t>03-1234</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"#;
+
+    fn drawing_package(drawing: Option<&str>) -> Vec<u8> {
+        let mut parts = vec![
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS),
+            ("xl/worksheets/sheet1.xml", ONE_CELL_SHEET),
+            ("xl/worksheets/_rels/sheet1.xml.rels", SHEET_DRAWING_RELS),
+        ];
+        if let Some(drawing) = drawing {
+            parts.push(("xl/drawings/drawing1.xml", drawing));
+        }
+        package(&parts)
+    }
+
+    #[test]
+    fn shape_text_follows_the_cells_of_its_sheet() {
+        let data = drawing_package(Some(DRAWING));
+        let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
+        let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Data", "7", "Emergency", "03-1234"]);
+    }
+
+    #[test]
+    fn a_damaged_or_missing_drawing_is_left_out() {
+        for drawing in [None, Some("<xdr:wsDr")] {
+            let data = drawing_package(drawing);
+            let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
+            let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+            assert_eq!(texts, ["Data", "7"]);
+        }
     }
 }

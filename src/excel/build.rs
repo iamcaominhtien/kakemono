@@ -4,6 +4,7 @@
 //! (a form, a cover or notes sheet).
 
 use super::ExcelConfig;
+use super::drawing::Shape;
 use super::grid::{CellKind, Grid, Merge};
 use super::regions::{self, Visible, is_blank};
 use crate::model::{Block, BlockKind, FloatKind, Span, Table, TableCell};
@@ -37,9 +38,9 @@ pub(crate) struct Parts {
 }
 
 /// The blocks of the sheet `name`: a level-1 heading, then its regions in
-/// reading order. An empty sheet has none. The blocks are numbered from 0;
+/// reading order, then the text of its shapes `shapes` (sorted by anchor), one paragraph per line. A sheet with neither has none. The blocks are numbered from 0;
 /// the caller numbers them in the whole document.
-pub(crate) fn sheet_blocks(name: &str, grid: &Grid, config: &ExcelConfig) -> Vec<Block> {
+pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &ExcelConfig) -> Vec<Block> {
     let mut blocks = Vec::new();
     for region in regions::split(grid, config) {
         let cells = RegionCells::new(grid, &region);
@@ -81,6 +82,16 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, config: &ExcelConfig) -> Vec
             format!("{rows} more rows are not shown.")
         };
         blocks.push(paragraph(vec![Span::plain(text)]));
+    }
+    // The text of the shapes, in anchor order, after the cells: one
+    // paragraph per line (a paragraph or a line break of the shape), since
+    // a line feed inside a span is not a break in every output.
+    for (_, text) in shapes {
+        blocks.extend(
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| paragraph(vec![Span::plain(line)])),
+        );
     }
     if blocks.is_empty() {
         return blocks;
@@ -568,7 +579,7 @@ mod tests {
                 paragraphs: false,
             }
         );
-        let blocks = sheet_blocks("Data", &grid, &config);
+        let blocks = sheet_blocks("Data", &grid, &[], &config);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].text(), "Data");
         assert!(matches!(blocks[0].kind, BlockKind::Heading { level: 1 }));
@@ -592,7 +603,7 @@ mod tests {
         let parts = only_parts(&grid, &config);
         assert_eq!(parts.notes, [4]);
         assert_eq!(parts.body, [1, 2]);
-        let blocks = sheet_blocks("Data", &grid, &config);
+        let blocks = sheet_blocks("Data", &grid, &[], &config);
         assert_eq!(blocks.len(), 3);
         assert!(blocks[1].spans.is_empty());
         assert!(matches!(blocks[2].kind, BlockKind::Paragraph { .. }));
@@ -670,7 +681,7 @@ mod tests {
     #[test]
     fn one_column_region_is_paragraphs() {
         let grid = grid(&[&["Application form"], &["Name"], &["", ""], &["2024"]]);
-        let blocks = sheet_blocks("Form", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Form", &grid, &[], &ExcelConfig::default());
         let texts: Vec<String> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts, ["Form", "Application form", "Name", "2024"]);
         assert!(
@@ -689,7 +700,7 @@ mod tests {
             &["South", "3", "4"],
         ]);
         grid.merges = vec![area(0, 0, 1, 0), area(0, 1, 0, 2)];
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         let table = only_table(&blocks);
         // The years have the type of the body, but the merge of "Region"
         // takes their row into the header.
@@ -713,7 +724,7 @@ mod tests {
         // the header would leave no body.
         let mut grid = grid(&[&["Group", "Name", "Count"], &["", "North", "5"], &["", "South", "7"]]);
         grid.merges = vec![area(0, 0, 2, 0)];
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         assert_eq!(only_table(&blocks).header_rows, 1);
     }
 
@@ -762,7 +773,7 @@ mod tests {
         let parts = only_parts(&grid, &config);
         assert_eq!(parts.lead, [0, 1]);
         assert_eq!(parts.caption, [2, 3]);
-        let blocks = sheet_blocks("Data", &grid, &config);
+        let blocks = sheet_blocks("Data", &grid, &[], &config);
         let texts: Vec<String> = blocks.iter().map(Block::text).collect();
         assert_eq!(
             texts[..4],
@@ -785,7 +796,7 @@ mod tests {
             table_min_fill_ratio: 0.5,
             ..ExcelConfig::default()
         };
-        let blocks = sheet_blocks("Form", &grid, &config);
+        let blocks = sheet_blocks("Form", &grid, &[], &config);
         let texts: Vec<String> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts, ["Form", "Name Ann", "Address Oslo", "Date 2024"]);
         assert!(
@@ -795,7 +806,7 @@ mod tests {
         );
         // A full table stays a table.
         let full = super::tests::grid(&[&["Name", "City"], &["Ann", "Oslo"], &["Bob", "Rome"]]);
-        assert_eq!(only_table(&sheet_blocks("Data", &full, &config)).rows.len(), 3);
+        assert_eq!(only_table(&sheet_blocks("Data", &full, &[], &config)).rows.len(), 3);
     }
 
     #[test]
@@ -812,7 +823,7 @@ mod tests {
             table_min_fill_ratio: 0.9,
             ..ExcelConfig::default()
         };
-        assert!(sheet_blocks("Data", &grid, &config)[1].table.is_some());
+        assert!(sheet_blocks("Data", &grid, &[], &config)[1].table.is_some());
     }
 
     #[test]
@@ -831,7 +842,7 @@ mod tests {
         grid.cells.get_mut(&(0, 0)).unwrap().center_continuous = true;
         grid.cells.insert((0, 1), centred.clone());
         grid.cells.insert((0, 2), centred);
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         let table = only_table(&blocks);
         let first: Vec<_> = table.rows[0].iter().map(|cell| (cell.col, cell.colspan)).collect();
         assert_eq!(first, [(0, 3), (3, 1)]);
@@ -846,7 +857,7 @@ mod tests {
             &["South", "7", "8"],
             &["East", "x", "b"],
         ]);
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         let table = only_table(&blocks);
         assert_eq!(table.col_align, ["left", "right", "left"]);
         assert_eq!(texts(table)[1], ["North", "5", "a"]);
@@ -862,7 +873,7 @@ mod tests {
         ]);
         grid.hidden_cols.insert(1);
         grid.hidden_rows.insert(2);
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         assert_eq!(
             texts(only_table(&blocks)),
             [["Region", "Count"], ["North", "5"], ["South", "7"]]
@@ -871,10 +882,10 @@ mod tests {
 
     #[test]
     fn empty_sheet_has_no_blocks_and_a_truncated_one_says_so() {
-        assert!(sheet_blocks("Empty", &Grid::default(), &ExcelConfig::default()).is_empty());
+        assert!(sheet_blocks("Empty", &Grid::default(), &[], &ExcelConfig::default()).is_empty());
         let mut grid = grid(&[&["Region", "Count"], &["North", "5"]]);
         grid.truncated_rows = 40;
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         assert_eq!(blocks.last().unwrap().text(), "40 more rows are not shown.");
     }
 
@@ -885,7 +896,7 @@ mod tests {
             &["1", "2", "", "3", "4"],
             &["5", "6", "", "7", "8"],
         ]);
-        let blocks = sheet_blocks("Data", &grid, &ExcelConfig::default());
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         let tables: Vec<_> = blocks
             .iter()
             .filter_map(|block| block.table.as_ref())
@@ -893,5 +904,24 @@ mod tests {
             .collect();
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[1][0], ["C", "D"]);
+    }
+
+    #[test]
+    fn shape_text_follows_the_regions_one_paragraph_per_line() {
+        let grid = grid(&[&["A", "B"], &["1", "2"]]);
+        let shapes = [((0, 0), "Emergency\n03-1234".to_string()), ((9, 9), "Last".to_string())];
+        let blocks = sheet_blocks("Data", &grid, &shapes, &ExcelConfig::default());
+        let texts: Vec<_> = blocks.iter().map(Block::text).collect();
+        assert_eq!(texts[2..], ["Emergency", "03-1234", "Last"]);
+        assert!(matches!(blocks[2].kind, BlockKind::Paragraph { .. }));
+        assert_eq!(blocks[4].id, 4);
+    }
+
+    #[test]
+    fn a_sheet_with_only_shapes_has_a_heading() {
+        let shapes = [((0, 0), "Org chart".to_string())];
+        let blocks = sheet_blocks("Chart", &Grid::default(), &shapes, &ExcelConfig::default());
+        let texts: Vec<_> = blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Chart", "Org chart"]);
     }
 }
