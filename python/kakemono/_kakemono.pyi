@@ -15,6 +15,7 @@ def convert(
     jobs: int = 0,
     png_compression: str = "balanced",
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
 ) -> List[str]: ...
 def to_docx(
     pdf: bytes,
@@ -27,6 +28,7 @@ def to_docx(
     png_compression: str = "balanced",
     image_dir: Optional[str] = None,
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
 ) -> Tuple[bytes, List[Tuple[str, bytes]]]: ...
 def to_markdown(
     pdf: bytes,
@@ -40,6 +42,7 @@ def to_markdown(
     image_dir: str = "images",
     inline_images: bool = False,
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
     mode: str = "friendly",
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_json(
@@ -54,6 +57,7 @@ def to_json(
     image_dir: str = "images",
     inline_images: bool = False,
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_latex(
     pdf: bytes,
@@ -66,6 +70,7 @@ def to_latex(
     png_compression: str = "balanced",
     image_dir: str = "images",
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
 ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
 def to_epub(
     pdf: bytes,
@@ -80,7 +85,8 @@ def to_epub(
     cover: bool = True,
     modified: Optional[str] = None,
     content: Optional[str] = None,
+    header_rows: Optional[int] = None,
 ) -> bytes: ...
-def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0) -> str: ...
+def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None) -> str: ...
 def parse_arxiv_id(text: str) -> Optional[str]: ...
 def fetch_arxiv(id: str) -> bytes: ...

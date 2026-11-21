@@ -1,4 +1,4 @@
-"""Convert PDF papers and books, and Word documents (.docx, .doc), into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
+"""Convert PDF papers and books, Word documents (.docx, .doc) and Excel workbooks (.xlsx), into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -12,6 +12,7 @@
 >>> chunks = kakemono.to_chunks("paper.pdf")             # chunks for retrieval (RAG), a list of dicts
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 >>> md = kakemono.to_markdown("report.docx", "out/report.md")  # a Word document as input
+>>> md = kakemono.to_markdown("sales.xlsx", header_rows=1)     # an Excel workbook as input
 
 The work is done by the kakemono Rust library; the GIL is released while it
 runs, so conversions can run in parallel threads.
@@ -53,15 +54,16 @@ Mode = Literal["hard", "hard-95", "medium", "friendly"]
 PngCompression = Literal["fast", "balanced", "high"]
 #: A path to a file, or a string.
 PathArg = Union[str, "os.PathLike[str]"]
-#: A PDF or a Word document (.docx, .doc): its bytes, a path to a file, or
-#: an arXiv id or URL. A Word document has only the friendly HTML mode.
+#: A PDF, a Word document (.docx, .doc) or an Excel workbook (.xlsx): its bytes,
+#: a path to a file, or an arXiv id or URL. A Word document or a workbook has
+#: only the friendly HTML mode.
 Source = Union[bytes, bytearray, memoryview, PathArg]
 #: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
 Content = Union[Dict[str, Any], PathArg]
 
 
 def _load(source: Source) -> tuple[bytes, str | None]:
-    """The bytes of `source` (PDF or Word), and the name recorded in the output."""
+    """The bytes of `source` (PDF, Word or Excel), and the name recorded in the output."""
     if isinstance(source, (bytes, bytearray, memoryview)):
         return bytes(source), None
     path = os.fspath(source)
@@ -98,8 +100,9 @@ def convert_all(
     jobs: int = 0,
     png_compression: PngCompression = "balanced",
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> Dict[str, str]:
-    """Convert a PDF or Word document to HTML in several modes, analysing it only once.
+    """Convert a PDF, Word document or Excel workbook to HTML in several modes, analysing it only once.
 
     Returns a dict from mode name to a self-contained HTML document (images
     and fonts embedded). The options are those of the command line:
@@ -117,6 +120,9 @@ def convert_all(
       PDF (a dict, its text or a path): the output shows its text. The
       ``hard`` mode cannot. A block whose edited text cannot be read keeps
       its own, with a ``UserWarning``.
+    - ``header_rows``: the number of header rows of every table of an Excel
+      workbook (0 for none); by default they are found from the cells. It
+      has no effect on a PDF or a Word document.
 
     Raises ``ValueError`` when the data is not a readable PDF, an option is
     wrong or `content` does not fit the PDF, and ``FileNotFoundError`` when
@@ -136,12 +142,13 @@ def convert_all(
         jobs=jobs,
         png_compression=png_compression,
         content=_content(content),
+        header_rows=header_rows,
     )
     return dict(zip(modes, pages))
 
 
 def convert(source: Source, mode: Mode = "friendly", **options: Any) -> str:
-    """Convert a PDF or Word document to one self-contained HTML document.
+    """Convert a PDF, Word document or Excel workbook to one self-contained HTML document.
 
     `source` is the PDF's bytes, a path, or an arXiv id or URL. `mode` is one
     of :data:`MODES`; the other options are those of :func:`convert_all`.
@@ -187,8 +194,9 @@ def to_docx(
     image_dir: Optional[str] = None,
     save_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> bytes:
-    """Convert a PDF or Word document to a Word document (``.docx``) and return its bytes.
+    """Convert a PDF, Word document or Excel workbook to a Word document (``.docx``) and return its bytes.
 
     When `path` is given, the document is also written there; with
     ``save_images=True`` its pictures are also written as files to
@@ -206,6 +214,7 @@ def to_docx(
     docx, files = _kakemono.to_docx(
         data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
         png_compression=png_compression, content=_content(content),
+        header_rows=header_rows,
     )
     if path is not None:
         _write(path, docx, files)
@@ -224,9 +233,10 @@ def to_markdown(
     image_dir: Optional[str] = None,
     inline_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
     mode: Literal["friendly", "medium"] = "friendly",
 ) -> str:
-    """Convert a PDF or Word document to Markdown and return the text.
+    """Convert a PDF, Word document or Excel workbook to Markdown and return the text.
 
     Headings, lists, captions and references get their Markdown syntax,
     rebuilt tables become pipe tables, and formulas whose structure is
@@ -257,6 +267,7 @@ def to_markdown(
         image_dir=folder,
         inline_images=inline,
         content=_content(content),
+        header_rows=header_rows,
         mode=mode,
     )
     if path is not None:
@@ -276,8 +287,9 @@ def to_json(
     image_dir: Optional[str] = None,
     inline_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Convert a PDF or Word document to the editable JSON and return it as a dict.
+    """Convert a PDF, Word document or Excel workbook to the editable JSON and return it as a dict.
 
     The blocks come in reading order, each with its ``type``, ``section``,
     ``layout`` and ``text``: one string whose tags (``<i>``, ``<b>``,
@@ -314,6 +326,7 @@ def to_json(
         image_dir=folder,
         inline_images=inline,
         content=_content(content),
+        header_rows=header_rows,
     )
     if path is not None:
         _write(path, text, files)
@@ -331,8 +344,9 @@ def to_latex(
     png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> str:
-    """Convert a PDF or Word document to a LaTeX document (``.tex``) and return its source.
+    """Convert a PDF, Word document or Excel workbook to a LaTeX document (``.tex``) and return its source.
 
     The document compiles with pdfLaTeX, XeLaTeX or LuaLaTeX. Headings
     become sections, the abstract and lists their environments, rebuilt
@@ -350,6 +364,7 @@ def to_latex(
     text, files = _kakemono.to_latex(
         data, source=name, tables=tables, equations=equations, scale=scale, jobs=jobs, image_dir=folder,
         png_compression=png_compression, content=_content(content),
+        header_rows=header_rows,
     )
     if path is not None:
         _write(path, text, files)
@@ -369,8 +384,9 @@ def to_epub(
     cover: bool = True,
     modified: Optional[str] = None,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> bytes:
-    """Convert a PDF or Word document to an EPUB 3 book (``.epub``) and return its bytes.
+    """Convert a PDF, Word document or Excel workbook to an EPUB 3 book (``.epub``) and return its bytes.
 
     When `path` is given, the book is also written there. It has one
     chapter per top-level section and a table of contents; formulas whose
@@ -401,6 +417,7 @@ def to_epub(
         cover=cover,
         modified=modified,
         content=_content(content),
+        header_rows=header_rows,
     )
     if path is not None:
         _write(path, book)
@@ -416,6 +433,7 @@ def to_chunks(
     tables: bool = True,
     jobs: int = 0,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Cut a PDF into chunks for retrieval (RAG) and return them as dicts.
 
@@ -440,13 +458,16 @@ def to_chunks(
         tables=tables,
         jobs=jobs,
         content=_content(content),
+        header_rows=header_rows,
     )
     if path is not None:
         _write(path, text)
     return [json.loads(line) for line in text.split("\n") if line]
 
 
-def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:
+def analyze(
+    source: Source, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None
+) -> Dict[str, Any]:
     """The structure of a PDF: its blocks in reading order, as a dict.
 
     This is the document that ``kakemono convert --json`` writes, with every
@@ -455,7 +476,7 @@ def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, 
     its ``page``, ``bbox`` and ``spans`` of text.
     """
     data, _ = _load(source)
-    return json.loads(_kakemono.analyze(data, tables=tables, jobs=jobs))
+    return json.loads(_kakemono.analyze(data, tables=tables, jobs=jobs, header_rows=header_rows))
 
 
 def fetch_arxiv(arxiv_id: str) -> bytes:

@@ -1,6 +1,6 @@
 # kakemono for Python
 
-Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
+Convert PDF papers and books (a local file or an arXiv id), Word documents (`.docx`, `.doc`) and Excel workbooks (`.xlsx`) into clean, readable HTML, Word
 documents, Markdown, LaTeX, EPUB books or editable JSON, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
@@ -20,6 +20,7 @@ tex = kakemono.to_latex("paper.pdf", "paper.tex")          # LaTeX, pictures in 
 book = kakemono.to_epub("paper.pdf", "paper.epub")         # an EPUB book (also returns its bytes)
 content = kakemono.to_json("paper.pdf", "paper.json")      # the editable JSON, as a dict
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
+sheet = kakemono.to_markdown("sales.xlsx", header_rows=1)  # an Excel workbook: one table per region of each sheet
 ```
 
 | Mode | What you get |

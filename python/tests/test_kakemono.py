@@ -208,3 +208,25 @@ def test_word_document_is_an_input(tmp_path):
     assert (tmp_path / "sample_assets").is_dir()
     with pytest.raises(ValueError, match="no pages"):
         kakemono.convert(WORD_SAMPLE, mode="hard")
+
+
+EXCEL_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "excel" / "sample.xlsx"
+
+
+def test_excel_workbook_converts_to_markdown_tables():
+    text = kakemono.to_markdown(EXCEL_SAMPLE)
+    assert "## Prices" in text
+    assert "| **Year** | **Date** | **Price** | **Change** |" in text
+    assert "| 1995 | 1995-01-01 |" in text
+
+
+def _prices_header_rows(**options):
+    doc = kakemono.analyze(EXCEL_SAMPLE, **options)
+    table = next(block["table"] for block in doc["blocks"] if block.get("table"))
+    return table["header_rows"]
+
+
+def test_header_rows_sets_the_header_of_workbook_tables():
+    assert _prices_header_rows() == 1
+    assert _prices_header_rows(header_rows=0) == 0
+    assert _prices_header_rows(header_rows=2) == 2

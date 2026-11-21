@@ -1,8 +1,9 @@
-//! The native part of the `kakemono` Python package: PDF or Word bytes in, HTML, a
+//! The native part of the `kakemono` Python package: PDF, Word or Excel bytes in, HTML, a
 //! Word document, Markdown, LaTeX, an EPUB book, the editable JSON, chunks for retrieval or the document structure (as JSON) out.
 //! Every output can show the text of an edited JSON file (`content`). `kakemono/__init__.py` wraps it with
 //! path and arXiv handling.
 
+use kakemono::config::ExcelConfig;
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
@@ -65,11 +66,11 @@ fn parse_png_compression(name: &str) -> PyResult<PngCompression> {
     }
 }
 
-/// Converts a PDF or a Word document (`.docx`, `.doc`) to HTML in each of
-/// `modes`; returns one HTML string per mode. A Word document has only the
-/// friendly mode.
+/// Converts a PDF, a Word document (`.docx`, `.doc`) or an Excel workbook (`.xlsx`) to HTML in each of
+/// `modes`; returns one HTML string per mode. A Word document or a workbook
+/// has only the friendly mode.
 #[pyfunction]
-#[pyo3(signature = (pdf, modes, *, source=None, tables=true, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0, jobs=0, png_compression="balanced", content=None))]
+#[pyo3(signature = (pdf, modes, *, source=None, tables=true, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0, jobs=0, png_compression="balanced", content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
     py: Python<'_>,
@@ -84,6 +85,7 @@ fn convert(
     jobs: usize,
     png_compression: &str,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<Vec<String>> {
     let modes = modes
         .iter()
@@ -99,10 +101,10 @@ fn convert(
         ));
     }
     let (pages, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         if !paper.format().has_pages() && modes.iter().any(|mode| *mode != Mode::Friendly) {
             return Err(value_error(
-                "a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
+                "a Word document or workbook has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
             ));
         }
         let pages = modes
@@ -129,7 +131,7 @@ fn convert(
 /// Picture files as Python values: (relative path, bytes).
 type PyFiles<'py> = Vec<(String, Bound<'py, PyBytes>)>;
 
-/// Loads and analyses a PDF or Word document, without the GIL being needed, and applies the
+/// Loads and analyses a PDF, Word document or Excel workbook, without the GIL being needed, and applies the
 /// edited JSON `content` to the analysis. Returns the warnings of applying
 /// it (blocks that kept their text), to be given to Python with
 /// [`warn_all`] once the GIL is held again.
@@ -140,8 +142,15 @@ fn load(
     jobs: usize,
     png: PngCompression,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<(Paper, kakemono::Analysis, Vec<String>)> {
-    let mut paper = Paper::from_bytes(pdf).map_err(value_error)?.with_png_compression(png);
+    let excel = ExcelConfig {
+        header_rows,
+        ..Default::default()
+    };
+    let mut paper = Paper::from_bytes_with(pdf, &excel)
+        .map_err(value_error)?
+        .with_png_compression(png);
     if let Some(source) = source {
         paper = paper.with_source(source);
     }
@@ -181,10 +190,10 @@ fn check_scale(scale: f32) -> PyResult<()> {
     }
 }
 
-/// Converts a PDF or Word document to a Word document; returns the bytes of the `.docx` file
+/// Converts a PDF, Word document or Excel workbook to a Word document; returns the bytes of the `.docx` file
 /// and, when `image_dir` is given, its pictures as files in that folder.
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir=None, content=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir=None, content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_docx<'py>(
     py: Python<'py>,
@@ -197,12 +206,13 @@ fn to_docx<'py>(
     png_compression: &str,
     image_dir: Option<String>,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<(Bound<'py, PyBytes>, PyFiles<'py>)> {
     let equations = parse_equations(equations)?;
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
     let (data, files, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         let opts = DocxOptions { scale, jobs, equations };
         let (data, files) = match image_dir {
             Some(dir) => {
@@ -217,10 +227,10 @@ fn to_docx<'py>(
     Ok((PyBytes::new(py, &data), py_files(py, files)))
 }
 
-/// Converts a PDF or Word document to Markdown; returns the text and its picture files
+/// Converts a PDF, Word document or Excel workbook to Markdown; returns the text and its picture files
 /// (none when `inline_images`: the pictures are then data URIs).
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None, mode="friendly"))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None, mode="friendly", header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_markdown<'py>(
     py: Python<'py>,
@@ -235,6 +245,7 @@ fn to_markdown<'py>(
     inline_images: bool,
     content: Option<String>,
     mode: &str,
+    header_rows: Option<usize>,
 ) -> PyResult<(String, PyFiles<'py>)> {
     let mode = match parse_mode(mode)? {
         mode @ (Mode::Medium | Mode::Friendly) => mode,
@@ -248,7 +259,7 @@ fn to_markdown<'py>(
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
     let (out, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         let opts = MarkdownOptions {
             inline_images,
             asset_dir: image_dir,
@@ -263,10 +274,10 @@ fn to_markdown<'py>(
     Ok((out.markdown, py_files(py, out.files)))
 }
 
-/// Converts a PDF or Word document to the editable JSON; returns the text and its picture
+/// Converts a PDF, Word document or Excel workbook to the editable JSON; returns the text and its picture
 /// files (none when `inline_images`: the pictures are then data URIs).
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), inline_images=false, content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_json<'py>(
     py: Python<'py>,
@@ -280,12 +291,13 @@ fn to_json<'py>(
     image_dir: String,
     inline_images: bool,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<(String, PyFiles<'py>)> {
     let equations = parse_equations(equations)?;
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
     let (out, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         let opts = JsonOptions {
             inline_images,
             asset_dir: image_dir,
@@ -299,10 +311,10 @@ fn to_json<'py>(
     Ok((out.json, py_files(py, out.files)))
 }
 
-/// Converts a PDF or Word document to LaTeX; returns the source of the `.tex` file and its
+/// Converts a PDF, Word document or Excel workbook to LaTeX; returns the source of the `.tex` file and its
 /// picture files (in `image_dir`).
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), content=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", image_dir="images".to_string(), content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_latex<'py>(
     py: Python<'py>,
@@ -315,12 +327,13 @@ fn to_latex<'py>(
     png_compression: &str,
     image_dir: String,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<(String, PyFiles<'py>)> {
     let equations = parse_equations(equations)?;
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
     let (out, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         let opts = LatexOptions {
             asset_dir: image_dir,
             scale,
@@ -333,10 +346,10 @@ fn to_latex<'py>(
     Ok((out.latex, py_files(py, out.files)))
 }
 
-/// Converts a PDF or Word document to an EPUB book; returns the bytes of the `.epub` file.
+/// Converts a PDF, Word document or Excel workbook to an EPUB book; returns the bytes of the `.epub` file.
 /// `modified` is its date (`CCYY-MM-DDThh:mm:ssZ`), fixed when `None`.
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", max_math_width_em=20.0, cover=true, modified=None, content=None))]
+#[pyo3(signature = (pdf, *, source=None, tables=true, equations="mathml", scale=3.0, jobs=0, png_compression="balanced", max_math_width_em=20.0, cover=true, modified=None, content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_epub<'py>(
     py: Python<'py>,
@@ -351,12 +364,13 @@ fn to_epub<'py>(
     cover: bool,
     modified: Option<String>,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let equations = parse_equations(equations)?;
     let png = parse_png_compression(png_compression)?;
     check_scale(scale)?;
     let (data, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content)?;
+        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, png, content, header_rows)?;
         let opts = EpubOptions {
             scale,
             jobs,
@@ -379,12 +393,12 @@ fn py_files(py: Python<'_>, files: Vec<(String, Vec<u8>)>) -> PyFiles<'_> {
         .collect()
 }
 
-/// Cuts a PDF or Word document into chunks for retrieval; returns them as JSON Lines (one
+/// Cuts a PDF, Word document or Excel workbook into chunks for retrieval; returns them as JSON Lines (one
 /// object per line). `tokenizer` is the path of a Hugging Face
 /// `tokenizer.json` or the name of an OpenAI tokenizer; without it, tokens
 /// are estimated.
 #[pyfunction]
-#[pyo3(signature = (pdf, *, source=None, max_tokens=512, tokenizer=None, tables=true, jobs=0, content=None))]
+#[pyo3(signature = (pdf, *, source=None, max_tokens=512, tokenizer=None, tables=true, jobs=0, content=None, header_rows=None))]
 #[allow(clippy::too_many_arguments)]
 fn to_chunks(
     py: Python<'_>,
@@ -395,13 +409,22 @@ fn to_chunks(
     tables: bool,
     jobs: usize,
     content: Option<String>,
+    header_rows: Option<usize>,
 ) -> PyResult<String> {
     let counter = match tokenizer {
         Some(spec) => TokenCounter::load(&spec).map_err(|err| value_error(format!("{err:#}")))?,
         None => TokenCounter::estimate(),
     };
     let (jsonl, warnings) = py.detach(move || {
-        let (paper, analysis, warnings) = load(pdf, source, tables, jobs, PngCompression::default(), content)?;
+        let (paper, analysis, warnings) = load(
+            pdf,
+            source,
+            tables,
+            jobs,
+            PngCompression::default(),
+            content,
+            header_rows,
+        )?;
         let chunks = paper.to_chunks(&analysis, &ChunkOptions { max_tokens, counter });
         Ok::<_, PyErr>((kakemono::chunks_jsonl(&chunks), warnings))
     })?;
@@ -409,13 +432,17 @@ fn to_chunks(
     Ok(jsonl)
 }
 
-/// Analyses a PDF or Word document and returns its structure (blocks in reading order) as a
+/// Analyses a PDF, Word document or Excel workbook and returns its structure (blocks in reading order) as a
 /// JSON string, the same document as `kakemono convert --json`.
 #[pyfunction]
-#[pyo3(signature = (pdf, *, tables=true, jobs=0))]
-fn analyze(py: Python<'_>, pdf: Vec<u8>, tables: bool, jobs: usize) -> PyResult<String> {
+#[pyo3(signature = (pdf, *, tables=true, jobs=0, header_rows=None))]
+fn analyze(py: Python<'_>, pdf: Vec<u8>, tables: bool, jobs: usize, header_rows: Option<usize>) -> PyResult<String> {
     py.detach(move || {
-        let paper = Paper::from_bytes(pdf).map_err(value_error)?;
+        let excel = ExcelConfig {
+            header_rows,
+            ..Default::default()
+        };
+        let paper = Paper::from_bytes_with(pdf, &excel).map_err(value_error)?;
         let analysis = paper.analyze_with(AnalyzeOptions {
             tables,
             jobs,

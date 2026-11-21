@@ -8,7 +8,11 @@
 //! ```
 
 use kakemono::model::{Block, BlockKind, FloatKind, Table};
-use kakemono::{Analysis, InputFormat, Paper};
+use kakemono::{
+    Analysis, ChunkOptions, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions,
+    MarkdownOptions, Mode, Paper, chunks_jsonl,
+};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// The sample workbook.
@@ -177,4 +181,69 @@ fn sample_blocks_are_numbered_in_order() {
     let (_, analysis) = load(SAMPLE_XLSX);
     let ids: Vec<usize> = analysis.doc.blocks.iter().map(|block| block.id).collect();
     assert_eq!(ids, (0..ids.len()).collect::<Vec<_>>());
+}
+
+#[test]
+fn excel_outputs_match_their_snapshot() {
+    let (paper, analysis) = load(SAMPLE_XLSX);
+    let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();
+    for (name, mode) in [
+        ("hard", Mode::Hard),
+        ("hard-95", Mode::Hard95),
+        ("medium", Mode::Medium),
+        ("friendly", Mode::Friendly),
+    ] {
+        let options = HtmlOptions {
+            mode,
+            embed_fonts: false,
+            ..Default::default()
+        };
+        outputs.push((
+            format!("html-{name}"),
+            paper.to_html(&analysis, &options).html.into_bytes(),
+        ));
+    }
+    outputs.push(("docx".into(), paper.to_docx(&analysis, &DocxOptions::default())));
+    outputs.push((
+        "markdown".into(),
+        paper
+            .to_markdown(&analysis, &MarkdownOptions::default())
+            .markdown
+            .into_bytes(),
+    ));
+    outputs.push((
+        "latex".into(),
+        paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+    ));
+    outputs.push(("epub".into(), paper.to_epub(&analysis, &EpubOptions::default())));
+    outputs.push((
+        "content".into(),
+        paper.to_json(&analysis, &JsonOptions::default()).json.into_bytes(),
+    ));
+    outputs.push((
+        "chunks".into(),
+        chunks_jsonl(&paper.to_chunks(&analysis, &ChunkOptions::default())).into_bytes(),
+    ));
+    let mut text = String::new();
+    for (output, bytes) in outputs {
+        let bytes = String::from_utf8_lossy(&bytes)
+            .replace(env!("CARGO_PKG_VERSION"), "VERSION")
+            .into_bytes();
+        let hash: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        text.push_str(&format!("{SAMPLE_XLSX} {output} {hash}\n"));
+    }
+    let file = data("snapshots/excel-sample.txt");
+    if std::env::var("KAKEMONO_UPDATE_SNAPSHOTS").is_ok_and(|value| value == "1") {
+        std::fs::write(&file, &text).unwrap();
+        return;
+    }
+    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    assert_eq!(
+        old, text,
+        "the output of the sample workbook changed; if this is intended, run \
+         KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test excel"
+    );
 }
