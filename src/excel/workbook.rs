@@ -10,11 +10,11 @@ use roxmltree::Node;
 use std::collections::HashMap;
 
 /// Namespace of SpreadsheetML.
-const SML_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+pub(crate) const SML_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 /// Namespace of SpreadsheetML in a Strict Office Open XML file.
-const SML_STRICT_NS: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
+pub(crate) const SML_STRICT_NS: &str = "http://purl.oclc.org/ooxml/spreadsheetml/main";
 /// Namespace of relationship ids in a Strict Office Open XML file.
-const REL_STRICT_NS: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";
+pub(crate) const REL_STRICT_NS: &str = "http://purl.oclc.org/ooxml/officeDocument/relationships";
 /// Relationship type of the main part of a package.
 const OFFICE_DOCUMENT_REL: &str = "officeDocument";
 /// Relationship type of the shared strings part.
@@ -138,7 +138,7 @@ impl Workbook {
 }
 
 /// The relationship id (`r:id`) of a `sheet` element.
-pub(crate) fn rel_id<'a>(sheet: Node<'a, '_>) -> Option<&'a str> {
+fn rel_id<'a>(sheet: Node<'a, '_>) -> Option<&'a str> {
     sheet
         .attribute((REL_NS, "id"))
         .or_else(|| sheet.attribute((REL_STRICT_NS, "id")))

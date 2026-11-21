@@ -62,6 +62,10 @@ pub(crate) enum CellKind {
     Error,
 }
 
+/// An Excel Table: its range and its number of header rows
+/// (`headerRowCount`).
+pub(crate) type Table = (Merge, u32);
+
 /// A range of cells, inclusive: a merge, a table, an autofilter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Merge {
@@ -89,7 +93,7 @@ impl Merge {
 pub(crate) struct Declared {
     /// The Excel Tables (`xl/tables/`) of the sheet: their range and their
     /// number of header rows (`headerRowCount`).
-    pub(crate) tables: Vec<(Merge, u32)>,
+    pub(crate) tables: Vec<Table>,
     /// The range of the sheet's autofilter: its first row is a header.
     pub(crate) auto_filter: Option<Merge>,
     /// The rows frozen at the top (`pane ySplit`, `state="frozen"`).

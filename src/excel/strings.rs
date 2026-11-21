@@ -80,7 +80,7 @@ pub(crate) fn text(node: Node<'_, '_>) -> String {
 
 /// `text` with every `_xHHHH_` escape replaced by its character (`_x005F_`
 /// is the escape of `_` itself).
-fn unescape(text: &str) -> String {
+pub(crate) fn unescape(text: &str) -> String {
     /// Length of an escape: `_x`, four hexadecimal digits, `_`.
     const ESCAPE_LEN: usize = 7;
     if !text.contains("_x") {

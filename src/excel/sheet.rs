@@ -3,26 +3,32 @@
 //! the merged ranges, the hyperlinks, the hidden rows and columns, and
 //! what the sheet declares about its tables (autofilter, frozen rows).
 //!
-//! The declared size of the sheet (`dimension`) is not trusted: only the
-//! cells there are take memory, and only up to the limits of rows and
-//! columns of [`ExcelConfig`].
+//! The part is read as a stream ([`pull`](super::pull)), not as a tree:
+//! a sheet can hold millions of cells. Its declared size (`dimension`) is
+//! not trusted: only the cells there are take memory, and only up to the
+//! limits of rows and columns of [`ExcelConfig`].
 
 use crate::model::Span;
 use crate::model::style::{BOLD, ITALIC};
 use crate::word::docx::parse;
+use crate::word::xml::REL_NS;
 use anyhow::{Context, Result};
-use roxmltree::Node;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::ExcelConfig;
-use super::grid::{CellKind, Declared, Grid, GridCell, Merge};
+use super::grid::{CellKind, Grid, GridCell, Merge, Table};
 use super::numfmt;
+use super::pull::{Event, Reader, Tag};
 use super::strings;
 use super::styles::Styles;
-use super::workbook::{is_sml, rel_id};
+use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
+/// Rows and columns of a square of the sheet that the merges are filed
+/// by, so that a merge is compared only with those in the squares it
+/// covers.
+const MERGE_BUCKET_CELLS: u32 = 64;
 
 /// What a sheet's cells refer to outside the sheet part.
 pub(crate) struct SheetContext<'a> {
@@ -36,7 +42,7 @@ pub(crate) struct SheetContext<'a> {
     /// relationship id (a `hyperlink`'s `r:id`).
     pub(crate) links: HashMap<String, String>,
     /// The Excel Tables of the sheet: range and header rows.
-    pub(crate) tables: Vec<(Merge, u32)>,
+    pub(crate) tables: Vec<Table>,
     /// The print title rows of the sheet.
     pub(crate) print_title_rows: Option<(u32, u32)>,
     /// The limits of rows and columns.
@@ -60,129 +66,414 @@ impl Limits {
     }
 }
 
+/// The namespace prefixes the root element of a part declares.
+struct Prefixes<'a> {
+    /// The prefixes of SpreadsheetML (`""` for the default namespace).
+    sml: Vec<&'a str>,
+    /// The prefixes of relationship ids.
+    rel: Vec<&'a str>,
+    /// The namespace declarations of the root, as written, to read a
+    /// piece of the part on its own.
+    declarations: String,
+}
+
+impl<'a> Prefixes<'a> {
+    /// The prefixes `root` declares.
+    fn of(root: &Tag<'a>) -> Self {
+        let mut prefixes = Self {
+            sml: Vec::new(),
+            rel: Vec::new(),
+            declarations: String::new(),
+        };
+        for (name, uri) in root.attributes() {
+            let prefix = match name.strip_prefix("xmlns") {
+                Some("") => "",
+                Some(rest) => match rest.strip_prefix(':') {
+                    Some(prefix) => prefix,
+                    None => continue,
+                },
+                None => continue,
+            };
+            if matches!(uri.as_ref(), SML_NS | SML_STRICT_NS) {
+                prefixes.sml.push(prefix);
+            } else if matches!(uri.as_ref(), REL_NS | REL_STRICT_NS) {
+                prefixes.rel.push(prefix);
+            }
+            // Written again with the value as it was read.
+            let quoted = uri.replace('&', "&amp;").replace('"', "&quot;");
+            prefixes.declarations.push_str(&format!(" {name}=\"{quoted}\""));
+        }
+        prefixes
+    }
+
+    /// Whether `tag` is a SpreadsheetML element.
+    fn is_sml(&self, tag: &Tag<'_>) -> bool {
+        self.sml.contains(&tag.prefix())
+    }
+
+    /// The relationship id (`r:id`) of `tag`.
+    fn rel_id(&self, tag: &Tag<'_>) -> Option<String> {
+        tag.attributes()
+            .find(|(name, _)| {
+                name.split_once(':')
+                    .is_some_and(|(prefix, local)| local == "id" && self.rel.contains(&prefix))
+            })
+            .map(|(_, value)| value.into_owned())
+    }
+}
+
+/// Where an element is, for the elements the reader acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// The root element.
+    Root,
+    /// `sheetData`.
+    SheetData,
+    /// A row.
+    Row,
+    /// A cell.
+    Cell,
+    /// The value of a cell.
+    Value,
+    /// `cols`.
+    Cols,
+    /// `mergeCells`.
+    MergeCells,
+    /// `sheetViews`.
+    SheetViews,
+    /// The first `sheetView`.
+    SheetView,
+    /// `hyperlinks`.
+    Hyperlinks,
+    /// Any other element.
+    Other,
+}
+
+/// A cell being read.
+#[derive(Debug, Default)]
+struct RawCell {
+    /// Where it is; `None` when it is past the limits.
+    at: Option<(u32, u32)>,
+    /// Its type (`t`).
+    kind: Option<String>,
+    /// Its style index (`s`).
+    style: usize,
+    /// Its value (`v`).
+    value: Option<String>,
+    /// Its inline string (`is`).
+    inline: Option<Vec<Span>>,
+}
+
+/// What the reader of a sheet has read so far.
+struct SheetReader<'c, 'a> {
+    /// The context of the sheet.
+    ctx: &'c SheetContext<'a>,
+    /// The limits of rows and columns.
+    limits: Limits,
+    /// The grid read so far.
+    grid: Grid,
+    /// The index of the row a row without a reference has.
+    next_row: u32,
+    /// The current row is past the limit of rows.
+    row_past_limit: bool,
+    /// The current row has a value.
+    row_has_value: bool,
+    /// The index of the column a cell without a reference has.
+    next_col: u32,
+    /// The current row's index.
+    row: u32,
+    /// The cell being read.
+    cell: Option<RawCell>,
+    /// The text of the value being read.
+    value: String,
+    /// The merged ranges, in the order of the file.
+    merges: Vec<Merge>,
+    /// The external hyperlinks: range and URL.
+    links: Vec<(Merge, String)>,
+    /// A sheet view has been read (only the first counts).
+    seen_view: bool,
+}
+
 /// Reads the worksheet `xml`.
 ///
 /// # Errors
-/// When `xml` is not well-formed.
+/// When `xml` is not well-formed, or has a document type declaration.
 pub(crate) fn read(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
-    let doc = parse(xml).context("reading a worksheet")?;
-    let root = doc.root_element();
-    let limits = Limits {
-        rows: u32::try_from(ctx.config.max_rows).unwrap_or(u32::MAX),
-        cols: u32::try_from(ctx.config.max_cols).unwrap_or(u32::MAX),
-    };
-    let mut grid = Grid::default();
-    let mut frozen_rows = 0;
-    let mut auto_filter = None;
-    for node in root.children().filter(Node::is_element) {
-        if is_sml(node, "sheetData") {
-            read_rows(node, ctx, limits, &mut grid);
-        } else if is_sml(node, "cols") {
-            for col in node.children().filter(|col| is_sml(*col, "col")) {
-                if !is_on(col.attribute("hidden")) {
-                    continue;
-                }
-                let bound = |name| col.attribute(name).and_then(|value| value.parse::<u32>().ok());
-                let (Some(min), Some(max)) = (bound("min"), bound("max")) else {
-                    continue;
-                };
-                // `min` and `max` are one-based.
-                let first = min.saturating_sub(1);
-                let last = max.min(limits.cols);
-                grid.hidden_cols.extend(first..last);
-            }
-        } else if is_sml(node, "mergeCells") {
-            grid.merges = merges(node, limits);
-        } else if is_sml(node, "sheetViews") {
-            frozen_rows = frozen(node);
-        } else if is_sml(node, "autoFilter") {
-            auto_filter = node.attribute("ref").and_then(range);
-        } else if is_sml(node, "hyperlinks") {
-            link(node, ctx, &mut grid.cells);
-        }
-    }
-    grid.declared = Declared {
-        tables: ctx.tables.clone(),
-        auto_filter,
-        frozen_rows,
-        print_title_rows: ctx.print_title_rows,
-    };
-    Ok(grid)
+    read_part(xml, ctx).context("reading a worksheet")
 }
 
-/// Reads the rows of `sheetData` into `grid`.
-fn read_rows(data: Node<'_, '_>, ctx: &SheetContext<'_>, limits: Limits, grid: &mut Grid) {
-    // A row or cell without a reference follows the previous one.
-    let mut next_row = 0;
-    for row in data.children().filter(|row| is_sml(*row, "row")) {
-        let index = row
-            .attribute("r")
+/// Reads the worksheet `xml` (see [`read`]).
+fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
+    let mut reader = Reader::new(xml);
+    let root = loop {
+        match reader.next_event()? {
+            Some(Event::Start(tag)) => break tag,
+            Some(_) => {}
+            None => return Ok(Grid::default()),
+        }
+    };
+    let prefixes = Prefixes::of(&root);
+    let mut sheet = SheetReader {
+        ctx,
+        limits: Limits {
+            rows: u32::try_from(ctx.config.max_rows).unwrap_or(u32::MAX),
+            cols: u32::try_from(ctx.config.max_cols).unwrap_or(u32::MAX),
+        },
+        grid: Grid::default(),
+        next_row: 0,
+        row_past_limit: false,
+        row_has_value: false,
+        next_col: 0,
+        row: 0,
+        cell: None,
+        value: String::new(),
+        merges: Vec::new(),
+        links: Vec::new(),
+        seen_view: false,
+    };
+    let mut stack = vec![Place::Root];
+    if root.empty {
+        stack.clear();
+    }
+    while let Some(event) = reader.next_event()? {
+        match event {
+            Event::Start(tag) => {
+                let parent = stack.last().copied().unwrap_or(Place::Other);
+                let place = if prefixes.is_sml(&tag) {
+                    if parent == Place::Cell && tag.local() == "is" {
+                        let spans = inline_string(&mut reader, &tag, &prefixes)?;
+                        sheet.row_has_value = true;
+                        if let Some(cell) = &mut sheet.cell {
+                            cell.inline.get_or_insert(spans);
+                        }
+                        continue;
+                    }
+                    sheet.start(&tag, parent, &prefixes)
+                } else {
+                    Place::Other
+                };
+                if tag.empty {
+                    sheet.finish(place);
+                } else {
+                    stack.push(place);
+                }
+            }
+            Event::End(_) => {
+                if let Some(place) = stack.pop() {
+                    sheet.finish(place);
+                }
+            }
+            Event::Text(text) => {
+                if stack.last() == Some(&Place::Value) {
+                    sheet.value.push_str(&text);
+                }
+            }
+        }
+    }
+    Ok(sheet.done())
+}
+
+/// The spans of an inline string (`is`), whose start tag `tag` the reader
+/// has just given: the element is read on its own as a tree, as a shared
+/// string is. The reader is left after its end tag.
+fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>) -> Result<Vec<Span>> {
+    if tag.empty {
+        return Ok(Vec::new());
+    }
+    let mut depth = 1usize;
+    let end = loop {
+        match reader.next_event()?.context("damaged XML: an unclosed inline string")? {
+            Event::Start(inner) if !inner.empty => depth += 1,
+            Event::End(end) => {
+                depth -= 1;
+                if depth == 0 {
+                    break end;
+                }
+            }
+            _ => {}
+        }
+    };
+    let piece = format!("<x{}>{}</x>", prefixes.declarations, reader.slice(tag.start, end));
+    let doc = parse(&piece)?;
+    Ok(doc
+        .root_element()
+        .children()
+        .find(|node| is_sml(*node, "is"))
+        .map(strings::string_item)
+        .unwrap_or_default())
+}
+
+impl SheetReader<'_, '_> {
+    /// Acts on the start tag `tag`, a SpreadsheetML element in `parent`:
+    /// where it is.
+    fn start(&mut self, tag: &Tag<'_>, parent: Place, prefixes: &Prefixes<'_>) -> Place {
+        match (parent, tag.local()) {
+            (Place::Root, "sheetData") => Place::SheetData,
+            (Place::Root, "cols") => Place::Cols,
+            (Place::Root, "mergeCells") => Place::MergeCells,
+            (Place::Root, "sheetViews") => Place::SheetViews,
+            (Place::Root, "hyperlinks") => Place::Hyperlinks,
+            (Place::Root, "autoFilter") => {
+                self.grid.declared.auto_filter = tag.attr("ref").and_then(|area| range(&area));
+                Place::Other
+            }
+            (Place::SheetData, "row") => {
+                self.start_row(tag);
+                Place::Row
+            }
+            (Place::Row, "c") => {
+                self.start_cell(tag);
+                Place::Cell
+            }
+            (Place::Cell, "v") => {
+                self.row_has_value = true;
+                if self.cell.as_ref().is_some_and(|cell| cell.value.is_none()) {
+                    self.value.clear();
+                    Place::Value
+                } else {
+                    Place::Other
+                }
+            }
+            (Place::Cols, "col") => {
+                self.hide_cols(tag);
+                Place::Other
+            }
+            (Place::MergeCells, "mergeCell") => {
+                if let Some(merge) = tag.attr("ref").and_then(|area| range(&area)) {
+                    self.merges.push(merge);
+                }
+                Place::Other
+            }
+            (Place::SheetViews, "sheetView") if !self.seen_view => {
+                self.seen_view = true;
+                Place::SheetView
+            }
+            (Place::SheetView, "pane") => {
+                self.grid.declared.frozen_rows = frozen(tag);
+                Place::Other
+            }
+            (Place::Hyperlinks, "hyperlink") => {
+                // An internal link (`location`, a place in the workbook)
+                // has no relationship.
+                let url = prefixes.rel_id(tag).and_then(|id| self.ctx.links.get(&id));
+                let area = tag.attr("ref").and_then(|area| range(&area));
+                if let (Some(url), Some(area)) = (url, area) {
+                    self.links.push((area, url.clone()));
+                }
+                Place::Other
+            }
+            _ => Place::Other,
+        }
+    }
+
+    /// Starts the row `tag`.
+    fn start_row(&mut self, tag: &Tag<'_>) {
+        let index = tag
+            .attr("r")
             .and_then(|value| value.parse::<u32>().ok())
             .and_then(|value| value.checked_sub(1))
-            .unwrap_or(next_row);
-        next_row = index.saturating_add(1);
-        let cells = row.children().filter(|cell| is_sml(*cell, "c"));
-        if index >= limits.rows {
-            let has_value = cells
-                .clone()
-                .any(|cell| cell.children().any(|item| is_sml(item, "v") || is_sml(item, "is")));
-            grid.truncated_rows = grid.truncated_rows.saturating_add(u32::from(has_value));
-            continue;
+            .unwrap_or(self.next_row);
+        self.next_row = index.saturating_add(1);
+        self.row = index;
+        self.next_col = 0;
+        self.row_has_value = false;
+        self.row_past_limit = index >= self.limits.rows;
+        if !self.row_past_limit && is_on(tag.attr("hidden").as_deref()) {
+            self.grid.hidden_rows.insert(index);
         }
-        if is_on(row.attribute("hidden")) {
-            grid.hidden_rows.insert(index);
+    }
+
+    /// Starts the cell `tag`.
+    fn start_cell(&mut self, tag: &Tag<'_>) {
+        let at = tag
+            .attr("r")
+            .and_then(|reference| cell_ref(&reference))
+            .unwrap_or((self.row, self.next_col));
+        self.next_col = at.1.saturating_add(1);
+        self.cell = Some(RawCell {
+            at: (!self.row_past_limit && self.limits.contain(at)).then_some(at),
+            kind: tag.attr("t").map(|kind| kind.into_owned()),
+            style: tag.attr("s").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0),
+            value: None,
+            inline: None,
+        });
+    }
+
+    /// Records the hidden columns of `col` (one-based `min` and `max`).
+    fn hide_cols(&mut self, tag: &Tag<'_>) {
+        if !is_on(tag.attr("hidden").as_deref()) {
+            return;
         }
-        let mut next_col = 0;
-        for cell in cells {
-            let at = cell.attribute("r").and_then(cell_ref).unwrap_or((index, next_col));
-            next_col = at.1.saturating_add(1);
-            if !limits.contain(at) {
-                continue;
+        let bound = |name| tag.attr(name).and_then(|value| value.parse::<u32>().ok());
+        if let (Some(min), Some(max)) = (bound("min"), bound("max")) {
+            let last = max.min(self.limits.cols);
+            self.grid.hidden_cols.extend(min.saturating_sub(1)..last);
+        }
+    }
+
+    /// Ends an element at `place`.
+    fn finish(&mut self, place: Place) {
+        match place {
+            Place::Row => {
+                if self.row_past_limit && self.row_has_value {
+                    self.grid.truncated_rows = self.grid.truncated_rows.saturating_add(1);
+                }
             }
-            if let Some(value) = read_cell(cell, ctx) {
-                grid.cells.entry(at).or_insert(value);
+            Place::Value => {
+                if let Some(cell) = &mut self.cell {
+                    cell.value = Some(strings::unescape(&self.value));
+                }
             }
+            Place::Cell => {
+                let Some(raw) = self.cell.take() else {
+                    return;
+                };
+                if let Some(at) = raw.at
+                    && let Some(cell) = read_cell(raw, self.ctx)
+                {
+                    self.grid.cells.entry(at).or_insert(cell);
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// The grid, with the merges, hyperlinks and declarations.
+    fn done(mut self) -> Grid {
+        self.grid.merges = merges(&self.merges, self.limits);
+        link(&self.links, &mut self.grid.cells);
+        self.grid.declared.tables.clone_from(&self.ctx.tables);
+        self.grid.declared.print_title_rows = self.ctx.print_title_rows;
+        self.grid
     }
 }
 
-/// The value of a cell (`c`); `None` when it has none (a formula without
-/// its cached value, an empty string), unless it centres across the
+/// The value of a cell; `None` when it has none (a formula without its
+/// cached value, an empty string), unless it centres across the
 /// selection.
-fn read_cell(cell: Node<'_, '_>, ctx: &SheetContext<'_>) -> Option<GridCell> {
-    let xf = ctx.styles.get(
-        cell.attribute("s")
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0),
-    );
-    let value = || cell.children().find(|item| is_sml(*item, "v")).map(strings::text);
-    let (mut spans, kind) = match cell.attribute("t").unwrap_or("n") {
+fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
+    let xf = ctx.styles.get(raw.style);
+    let value = raw.value;
+    let (mut spans, kind) = match raw.kind.as_deref().unwrap_or("n") {
         "s" => {
-            let index = value()?.trim().parse::<usize>().ok();
+            let index = value?.trim().parse::<usize>().ok();
             let spans = index.and_then(|index| ctx.strings.get(index)).cloned();
             (spans.unwrap_or_default(), CellKind::Text)
         }
-        "inlineStr" => {
-            let spans = cell
-                .children()
-                .find(|item| is_sml(*item, "is"))
-                .map(strings::string_item)
-                .unwrap_or_default();
-            (spans, CellKind::Text)
-        }
-        "str" => (plain(value().unwrap_or_default()), CellKind::Text),
+        "inlineStr" => (raw.inline.unwrap_or_default(), CellKind::Text),
+        "str" => (plain(value.unwrap_or_default()), CellKind::Text),
         "b" => {
-            let text = match value()?.trim() {
+            let text = match value?.trim() {
                 "1" | "true" => "TRUE",
                 _ => "FALSE",
             };
             (plain(text.to_string()), CellKind::Bool)
         }
-        "e" => (plain(value().unwrap_or_default()), CellKind::Error),
+        "e" => (plain(value.unwrap_or_default()), CellKind::Error),
         "d" => {
             // An ISO date and time: the date part, as written (the time
             // when there is no date part).
-            let text = value().unwrap_or_default();
+            let text = value.unwrap_or_default();
             let text = text.trim();
             let date = match text.split_once('T') {
                 Some((date, _)) if !date.is_empty() => date,
@@ -191,7 +482,7 @@ fn read_cell(cell: Node<'_, '_>, ctx: &SheetContext<'_>) -> Option<GridCell> {
             };
             (plain(date.to_string()), CellKind::Date)
         }
-        _ => match value() {
+        _ => match value {
             Some(raw) => match raw.trim().parse::<f64>() {
                 Ok(number) => {
                     let kind = if numfmt::is_date(&xf.num_fmt) {
@@ -235,69 +526,86 @@ fn is_on(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true"))
 }
 
-/// The merged ranges of `mergeCells`, cut to the limits; of two that
-/// overlap, the first.
-fn merges(list: Node<'_, '_>, limits: Limits) -> Vec<Merge> {
+/// The merged ranges `list`, cut to the limits; of two that overlap, the
+/// first. Each kept range is filed in the squares of the sheet
+/// ([`MERGE_BUCKET_CELLS`]) it covers, and a new one is compared only with
+/// those of its squares: since kept ranges never overlap, a square holds
+/// few of them.
+fn merges(list: &[Merge], limits: Limits) -> Vec<Merge> {
     let mut kept: Vec<Merge> = Vec::new();
-    // The kept ranges by first row, and the most rows one spans, so that
-    // only those that can reach a new range are compared with it.
-    let mut by_top: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    let mut tallest = 0;
-    for node in list.children().filter(|node| is_sml(*node, "mergeCell")) {
-        let Some(merge) = node.attribute("ref").and_then(range) else {
-            continue;
-        };
+    let mut buckets: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let squares = |merge: &Merge| {
+        let rows = merge.top / MERGE_BUCKET_CELLS..=merge.bottom / MERGE_BUCKET_CELLS;
+        let cols = merge.left / MERGE_BUCKET_CELLS..=merge.right / MERGE_BUCKET_CELLS;
+        rows.flat_map(move |row| cols.clone().map(move |col| (row, col)))
+    };
+    for merge in list {
         if !limits.contain((merge.top, merge.left)) {
             continue;
         }
         let merge = Merge {
             bottom: merge.bottom.min(limits.rows - 1),
             right: merge.right.min(limits.cols - 1),
-            ..merge
+            ..*merge
         };
-        let overlaps = by_top
-            .range(merge.top.saturating_sub(tallest)..=merge.bottom)
-            .flat_map(|(_, indices)| indices)
+        let overlaps = squares(&merge)
+            .filter_map(|square| buckets.get(&square))
+            .flatten()
             .any(|&index| kept[index].overlaps(&merge));
         if overlaps {
             continue;
         }
-        tallest = tallest.max(merge.bottom - merge.top);
-        by_top.entry(merge.top).or_default().push(kept.len());
+        for square in squares(&merge) {
+            buckets.entry(square).or_default().push(kept.len());
+        }
         kept.push(merge);
     }
     kept
 }
 
-/// The rows frozen at the top of the first sheet view.
-fn frozen(views: Node<'_, '_>) -> u32 {
-    views
-        .children()
-        .find(|view| is_sml(*view, "sheetView"))
-        .and_then(|view| view.children().find(|pane| is_sml(*pane, "pane")))
-        .filter(|pane| matches!(pane.attribute("state"), Some("frozen" | "frozenSplit")))
-        .and_then(|pane| pane.attribute("ySplit")?.parse::<f64>().ok())
+/// The rows frozen at the top by a sheet view's `pane`.
+fn frozen(pane: &Tag<'_>) -> u32 {
+    if !matches!(pane.attr("state").as_deref(), Some("frozen" | "frozenSplit")) {
+        return 0;
+    }
+    pane.attr("ySplit")
+        .and_then(|rows| rows.parse::<f64>().ok())
         .filter(|rows| rows.is_finite() && *rows >= 0.0)
         // A count of rows, written as a number.
         .map_or(0, |rows| rows.min(f64::from(u32::MAX)) as u32)
 }
 
-/// Points the cells of each external hyperlink of `list` to its URL; an
-/// internal link (`location`, to a place in the workbook) is left out.
-fn link(list: Node<'_, '_>, ctx: &SheetContext<'_>, cells: &mut BTreeMap<(u32, u32), GridCell>) {
-    for node in list.children().filter(|node| is_sml(*node, "hyperlink")) {
-        let Some(url) = rel_id(node).and_then(|id| ctx.links.get(id)) else {
-            continue;
-        };
-        let Some(area) = node.attribute("ref").and_then(range) else {
-            continue;
-        };
-        for (_, cell) in cells
-            .range_mut((area.top, area.left)..=(area.bottom, area.right))
-            .filter(|((_, col), _)| (area.left..=area.right).contains(col))
-        {
-            for span in &mut cell.spans {
-                span.href = Some(url.clone());
+/// Points the cells of each hyperlink of `links` (range, URL) to its URL;
+/// a cell in two keeps the last, as when each overwrites the one before. Only the cells there are visited, by
+/// column: a range as wide as the sheet costs no more than the cells in
+/// it.
+fn link(links: &[(Merge, String)], cells: &mut BTreeMap<(u32, u32), GridCell>) {
+    if links.is_empty() {
+        return;
+    }
+    // The cells not linked yet, by column.
+    let mut unlinked: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for &(row, col) in cells.keys() {
+        unlinked.entry(col).or_default().insert(row);
+    }
+    // The last first, so that a cell already linked keeps its link.
+    for (area, url) in links.iter().rev() {
+        let cols: Vec<u32> = unlinked.range(area.left..=area.right).map(|(col, _)| *col).collect();
+        for col in cols {
+            let Some(rows) = unlinked.get_mut(&col) else {
+                continue;
+            };
+            let hit: Vec<u32> = rows.range(area.top..=area.bottom).copied().collect();
+            for row in hit {
+                rows.remove(&row);
+                if let Some(cell) = cells.get_mut(&(row, col)) {
+                    for span in &mut cell.spans {
+                        span.href = Some(url.clone());
+                    }
+                }
+            }
+            if rows.is_empty() {
+                unlinked.remove(&col);
             }
         }
     }
@@ -492,9 +800,10 @@ mod tests {
     fn hidden_rows_and_columns_are_recorded() {
         let grid = grid(concat!(
             r#"<cols><col min="1" max="1" width="9"/><col min="2" max="3" hidden="1"/></cols>"#,
-            r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2" hidden="1"><c r="A2"><v>2</v></c></row></sheetData>"#,
+            r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2" hidden="1"><c r="A2"><v>2</v></c></row>"#,
+            r#"<row r="4" hidden="true"/><row r="5" hidden="0"/></sheetData>"#,
         ));
-        assert_eq!(grid.hidden_rows, [1].into());
+        assert_eq!(grid.hidden_rows, [1, 3].into());
         assert_eq!(grid.hidden_cols, [1, 2].into());
         assert_eq!(grid.cells.len(), 2);
     }
@@ -512,6 +821,84 @@ mod tests {
             right,
         };
         assert_eq!(grid.merges, [merge(0, 0, 1, 1), merge(0, 2, 0, 3), merge(4, 0, 8, 0)]);
+    }
+
+    /// The longest a test of a large sheet may take, in seconds: an
+    /// unoptimised build is many times slower.
+    const LARGE_SHEET_SECONDS: f64 = if cfg!(debug_assertions) { 20.0 } else { 1.0 };
+
+    #[test]
+    fn many_merges_after_a_tall_one_are_fast() {
+        let mut body = String::from(r#"<sheetData/><mergeCells><mergeCell ref="A1:A100000"/>"#);
+        for row in 1..=50_000 {
+            body.push_str(&format!(r#"<mergeCell ref="B{row}:C{row}"/>"#));
+        }
+        // Overlaps the tall one.
+        body.push_str(r#"<mergeCell ref="A70000:B70000"/></mergeCells>"#);
+        let start = std::time::Instant::now();
+        let grid = grid(&body);
+        let seconds = start.elapsed().as_secs_f64();
+        assert_eq!(grid.merges.len(), 50_001);
+        assert!(seconds < LARGE_SHEET_SECONDS, "{seconds} s");
+    }
+
+    #[test]
+    fn many_hyperlinks_over_the_whole_sheet_are_fast() {
+        let mut body = String::from("<sheetData>");
+        for row in 1..=20_000 {
+            body.push_str(&format!(r#"<row r="{row}">"#));
+            for col in ["A", "B", "C", "D", "E"] {
+                body.push_str(&format!(r#"<c r="{col}{row}"><v>{row}</v></c>"#));
+            }
+            body.push_str("</row>");
+        }
+        body.push_str("</sheetData><hyperlinks>");
+        for _ in 0..20_000 {
+            body.push_str(r#"<hyperlink ref="A1:XFD1048576" r:id="rId1"/>"#);
+        }
+        body.push_str("</hyperlinks>");
+        let start = std::time::Instant::now();
+        let grid = read_with(&body, &[("rId1", "https://example.com/")], &ExcelConfig::default());
+        let seconds = start.elapsed().as_secs_f64();
+        assert_eq!(grid.cells.len(), 100_000);
+        assert!(grid.cells.values().all(|cell| cell.spans[0].href.is_some()));
+        assert!(seconds < LARGE_SHEET_SECONDS, "{seconds} s");
+    }
+
+    #[test]
+    fn prefixed_and_strict_sheets_are_read() {
+        let strings = Vec::new();
+        let styles = Styles::default();
+        let config = ExcelConfig::default();
+        let ctx = SheetContext {
+            strings: &strings,
+            styles: &styles,
+            date1904: false,
+            links: [("rId1".to_string(), "https://example.com/".to_string())].into(),
+            tables: Vec::new(),
+            print_title_rows: None,
+            config: &config,
+        };
+        let xml = concat!(
+            r#"<x:worksheet xmlns:x="http://purl.oclc.org/ooxml/spreadsheetml/main" xmlns:rel="http://purl.oclc.org/ooxml/officeDocument/relationships">"#,
+            r#"<x:sheetData><x:row><x:c t="inlineStr"><x:is><x:t>A &amp; B</x:t></x:is></x:c><x:c><x:v><![CDATA[4]]><!-- two -->2</x:v></x:c></x:row></x:sheetData>"#,
+            r#"<x:hyperlinks><x:hyperlink ref="A1" rel:id="rId1"/></x:hyperlinks></x:worksheet>"#,
+        );
+        let grid = read(xml, &ctx).unwrap();
+        assert_eq!(
+            cells(&grid),
+            [
+                cell((0, 0), "A & B", CellKind::Text),
+                cell((0, 1), "42", CellKind::Number)
+            ]
+        );
+        assert_eq!(
+            grid.cells[&(0, 0)].spans[0].href.as_deref(),
+            Some("https://example.com/")
+        );
+        // Elements of another namespace are not cells.
+        let xml = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:o="urn:other"><sheetData><o:row><c><v>1</v></c></o:row></sheetData></worksheet>"#;
+        assert!(read(xml, &ctx).unwrap().cells.is_empty());
     }
 
     #[test]
@@ -588,6 +975,19 @@ mod tests {
             [Some("https://example.com/"), None, Some("https://example.com/")]
         );
         assert_eq!(grid.cells[&(0, 1)].spans[0].text, "b");
+        // A cell in two hyperlinks keeps the last.
+        let grid = read_with(
+            concat!(
+                r#"<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>"#,
+                r#"<hyperlinks><hyperlink ref="A1" r:id="rId1"/><hyperlink ref="A1:B2" r:id="rId2"/></hyperlinks>"#,
+            ),
+            &[("rId1", "https://one.example/"), ("rId2", "https://two.example/")],
+            &ExcelConfig::default(),
+        );
+        assert_eq!(
+            grid.cells[&(0, 0)].spans[0].href.as_deref(),
+            Some("https://two.example/")
+        );
     }
 
     #[test]
@@ -618,5 +1018,7 @@ mod tests {
             config: &config,
         };
         assert!(read("<worksheet", &ctx).is_err());
+        let dtd = r#"<!DOCTYPE worksheet [<!ENTITY e "x">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>"#;
+        assert!(read(dtd, &ctx).is_err());
     }
 }
