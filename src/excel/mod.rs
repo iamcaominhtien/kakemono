@@ -77,8 +77,17 @@ pub struct ExcelConfig {
     /// The most rows read from one sheet; the rest are left out, with a
     /// paragraph saying how many.
     pub max_rows: usize,
-    /// The most columns read from one sheet.
+    /// The most columns read from one sheet; the rest are left out, with a
+    /// paragraph saying how many.
     pub max_cols: usize,
+    /// The most cells kept from one sheet: once a row takes the count to
+    /// this many, the rows after it are left out, with a paragraph saying
+    /// how many. Rows and columns alone bound a sheet to `max_rows` ×
+    /// `max_cols` cells (100 million), far more than memory holds; a cell
+    /// takes a few hundred bytes from the reading to the outputs. 2.5
+    /// million keeps whole the largest sheet of the corpus (2.12 million
+    /// cells, an e-Stat census table, about 1.5 GB at its peak).
+    pub max_cells: usize,
     /// The number of header rows of every table, when the user gives it;
     /// `None` to find them from the file and the cells.
     pub header_rows: Option<usize>,
@@ -96,6 +105,7 @@ impl Default for ExcelConfig {
             table_min_fill_ratio: 0.0,
             max_rows: 100_000,
             max_cols: 1_000,
+            max_cells: 2_500_000,
             header_rows: None,
         }
     }
@@ -124,10 +134,12 @@ pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result
 
 /// The grid of each visible sheet of `workbook`, with its name. A sheet
 /// whose part is missing or damaged has no cells; its damaged
-/// relationships or table parts are left out.
+/// relationships or table parts are left out. Damaged styles give the
+/// default ones: the cells keep their text, with General formats.
 ///
 /// # Errors
-/// When the shared strings or the styles are damaged.
+/// When the shared strings are damaged: the text of every string cell
+/// would be lost without a word.
 fn read_sheets<'w>(
     zip: &ZipArchive<'_>,
     workbook: &'w Workbook,
@@ -138,10 +150,12 @@ fn read_sheets<'w>(
         Some(xml) => strings::read(&xml)?,
         None => Vec::new(),
     };
-    let styles = match zip.read_text(&related_part(zip, &workbook.part, STYLES_REL))? {
-        Some(xml) => styles::read(&xml)?,
-        None => styles::Styles::default(),
-    };
+    let styles = zip
+        .read_text(&related_part(zip, &workbook.part, STYLES_REL))
+        .ok()
+        .flatten()
+        .and_then(|xml| styles::read(&xml).ok())
+        .unwrap_or_default();
     let mut sheets = Vec::new();
     for (index, sheet) in workbook.sheets.iter().enumerate() {
         if !sheet.visible {
@@ -328,6 +342,36 @@ mod tests {
         assert_eq!(sheets[0].1.cells.len(), 1);
         assert!(sheets[0].1.declared.tables.is_empty());
         assert!(read(&data, &ExcelConfig::default(), None).is_ok());
+    }
+
+    #[test]
+    fn damaged_styles_are_skipped() {
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+        let data = package(&[
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", workbook_rels),
+            ("xl/styles.xml", "<styleSheet><cellXfs>"),
+            ("xl/worksheets/sheet1.xml", ONE_CELL_SHEET),
+        ]);
+        // The cells are read with the default styles.
+        let doc = read(&data, &ExcelConfig::default(), None).unwrap();
+        let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Data", "7"]);
+    }
+
+    #[test]
+    fn damaged_shared_strings_are_an_error() {
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>"#;
+        let data = package(&[
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", workbook_rels),
+            ("xl/sharedStrings.xml", "<sst><si>"),
+            ("xl/worksheets/sheet1.xml", ONE_CELL_SHEET),
+        ]);
+        // The text of the string cells would be lost without a word.
+        assert!(read(&data, &ExcelConfig::default(), None).is_err());
     }
 
     #[test]

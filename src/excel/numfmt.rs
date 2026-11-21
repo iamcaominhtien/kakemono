@@ -45,6 +45,8 @@ const MAX_FRACTION_DIGITS: usize = 3;
 /// The longest format code Excel accepts, in characters; a longer one is
 /// read as General.
 const MAX_CODE_CHARS: usize = 255;
+/// The most decimals of the seconds a time shows (`ss.000`).
+const MAX_SECOND_DECIMALS: usize = 3;
 /// Seconds in a day.
 const DAY_SECONDS: i64 = 86_400;
 /// Days from 1970-01-01 back to 1899-12-30, the day before serial 1 that
@@ -172,6 +174,8 @@ enum DatePart {
     Day,
     /// `h` or `hh`.
     Hour,
+    /// `m` or `mm` read as the minutes.
+    Minute,
     /// `s` or `ss`.
     Second,
     /// `AM/PM` or `A/P`.
@@ -307,8 +311,7 @@ fn date_parts(tokens: &[Token]) -> Vec<DatePart> {
             let after_hours = at > 0 && matches!(parts[at - 1], DatePart::Hour | DatePart::Elapsed);
             let before_seconds = parts.get(at + 1) == Some(&DatePart::Second);
             if part == DatePart::MonthOrMinute && (after_hours || before_seconds) {
-                // Minutes are a time part, as hours are.
-                DatePart::Hour
+                DatePart::Minute
             } else {
                 part
             }
@@ -328,21 +331,30 @@ fn date_time(value: f64, tokens: &[Token], date1904: bool) -> Option<String> {
         .iter()
         .any(|part| matches!(part, DatePart::Year | DatePart::MonthOrMinute | DatePart::Day));
     let has_seconds = parts.contains(&DatePart::Second);
+    let has_minutes = parts.contains(&DatePart::Minute);
+    let elapsed = parts.contains(&DatePart::Elapsed);
+    let has_hours = elapsed || parts.contains(&DatePart::Hour);
     let has_time = has_seconds
+        || has_minutes
         || parts
             .iter()
             .any(|part| matches!(part, DatePart::Hour | DatePart::AmPm | DatePart::Elapsed));
-    let elapsed = parts.contains(&DatePart::Elapsed);
-    // The serial in seconds, rounded to what the code shows.
+    // The decimals of the seconds (`ss.0`), in tenths, hundredths or
+    // thousandths.
+    let decimals = if has_seconds { second_decimals(tokens) } else { 0 };
+    let scale = 10i64.pow(decimals);
+    // The serial in ticks (a second divided by `scale`), rounded to what
+    // the code shows.
     let unit: i64 = if has_seconds {
         1
     } else if has_time {
-        60
+        60 * scale
     } else {
-        1
+        scale
     };
     #[allow(clippy::cast_possible_truncation)] // below 2958466 days
-    let seconds = ((value * DAY_SECONDS as f64 / unit as f64).round() as i64) * unit;
+    let ticks = ((value * (DAY_SECONDS * scale) as f64 / unit as f64).round() as i64) * unit;
+    let (seconds, fraction) = (ticks.div_euclid(scale), ticks.rem_euclid(scale));
     let (days, time) = (seconds.div_euclid(DAY_SECONDS), seconds.rem_euclid(DAY_SECONDS));
     let mut out = Vec::new();
     if has_date {
@@ -351,13 +363,46 @@ fn date_time(value: f64, tokens: &[Token], date1904: bool) -> Option<String> {
     }
     if has_time {
         let hours = if elapsed { seconds / 3600 } else { time / 3600 };
-        let mut clock = format!("{hours:02}:{:02}", time % 3600 / 60);
+        let minutes = time % 3600 / 60;
+        // A code without hours (`mm:ss`) shows the minutes and seconds of
+        // the hour, as Excel does; one with only seconds, the seconds.
+        let mut clock = if has_hours || !(has_minutes || has_seconds) {
+            format!("{hours:02}:{minutes:02}")
+        } else if has_minutes {
+            format!("{minutes:02}")
+        } else {
+            String::new()
+        };
         if has_seconds {
-            clock.push_str(&format!(":{:02}", time % 60));
+            if !clock.is_empty() {
+                clock.push(':');
+            }
+            clock.push_str(&format!("{:02}", time % 60));
+            if decimals > 0 {
+                let width = decimals as usize;
+                clock.push_str(&format!(".{fraction:0width$}"));
+            }
         }
         out.push(clock);
     }
     Some(out.join(" "))
+}
+
+/// How many decimals of the seconds a date section shows: the `0`s right
+/// after the point that follows the seconds (`ss.00`), at most 3, as
+/// Excel allows.
+fn second_decimals(tokens: &[Token]) -> u32 {
+    let Some(at) = tokens.iter().position(|token| *token == Token::Date(DatePart::Second)) else {
+        return 0;
+    };
+    if tokens.get(at + 1) != Some(&Token::Point) {
+        return 0;
+    }
+    let zeros = tokens[at + 2..]
+        .iter()
+        .take_while(|token| **token == Token::Digit('0'))
+        .count();
+    u32::try_from(zeros.min(MAX_SECOND_DECIMALS)).unwrap_or(0)
 }
 
 /// The calendar date of a day serial.
@@ -850,11 +895,24 @@ mod tests {
     #[test]
     fn minutes_after_hours_are_not_months() {
         assert_eq!(code(0.5856, "h \"h\" m \"min\""), "14:03");
-        assert_eq!(code(0.585601, "mm:ss"), "14:03:16");
+        assert_eq!(code(0.585601, "mm:ss"), "03:16");
         assert!(is_date(&NumFmt::Code("mmm-yy".into())));
         assert!(!is_date(&NumFmt::Code("0.00E+00".into())));
         assert!(!is_date(&NumFmt::Code("\"day\" 0".into())));
         assert!(!is_date(&NumFmt::General));
+    }
+
+    #[test]
+    fn a_time_without_hours_shows_minutes_and_seconds() {
+        let seconds = |seconds: f64| seconds / 86_400.0;
+        assert_eq!(format(seconds(308.0), &builtin(45), false), "05:08");
+        assert_eq!(format(seconds(308.44), &builtin(47), false), "05:08.4");
+        assert_eq!(format(seconds(308.96), &builtin(47), false), "05:09.0");
+        // An hour and more: the minutes of the hour, as Excel shows them.
+        assert_eq!(format(seconds(3_908.0), &builtin(45), false), "05:08");
+        assert_eq!(code(seconds(8.126), "ss.00"), "08.13");
+        assert_eq!(code(seconds(3_908.25), "hh:mm:ss.000"), "01:05:08.250");
+        assert_eq!(format(seconds(3_908.0), &builtin(46), false), "01:05:08");
     }
 
     #[test]
@@ -943,6 +1001,6 @@ mod tests {
         assert_eq!(format(0.5, &builtin(18), false), "12:00");
         assert_eq!(format(45322.25, &builtin(22), false), "2024-01-31 06:00");
         assert_eq!(format(1.0 + 1.0 / 24.0, &builtin(46), false), "25:00:00");
-        assert_eq!(format(1.0 / 1440.0, &builtin(45), false), "00:01:00");
+        assert_eq!(format(1.0 / 1440.0, &builtin(45), false), "01:00");
     }
 }

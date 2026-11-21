@@ -4,7 +4,8 @@
 
 use super::ExcelConfig;
 use super::grid::{Grid, Merge};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 /// The regions of `grid`, as bounding boxes sorted by (top, left).
 ///
@@ -148,24 +149,68 @@ fn bounding(a: &Merge, b: &Merge) -> Merge {
 }
 
 /// `regions` with every two that overlap made one, sorted by (top, left).
+///
+/// A pass sweeps the regions down the sheet, by top: the open ones, those
+/// reaching down to the top of the next, all hold its first row, so two
+/// open ones that overlap share columns, and open ones are kept apart by
+/// joining them as they come, filed by their left column. A joined region
+/// is taller and wider: one already closed may overlap it now, which the
+/// next pass finds. A pass is near-linear, and there are few (two, when
+/// nothing overlaps once joined).
 fn join_overlapping(mut regions: Vec<Merge>) -> Vec<Merge> {
     loop {
-        let mut joined: Vec<Merge> = Vec::with_capacity(regions.len());
-        let mut changed = false;
-        for region in regions {
-            match joined.iter_mut().find(|other| other.overlaps(&region)) {
-                Some(other) => {
-                    *other = bounding(other, &region);
-                    changed = true;
+        regions.sort_by_key(|region| (region.top, region.left));
+        let count = regions.len();
+        let mut closed: Vec<Merge> = Vec::with_capacity(count);
+        // The open regions by left column; their columns do not overlap.
+        let mut open: BTreeMap<u32, Merge> = BTreeMap::new();
+        // The open regions by bottom row, lowest first; one joined since
+        // it was filed here is no longer open as it was.
+        let mut ends: BinaryHeap<Reverse<(u32, u32, u32, u32)>> = BinaryHeap::new();
+        for mut region in regions {
+            // Close those that end above this region.
+            while let Some(&Reverse((bottom, left, top, right))) = ends.peek() {
+                if bottom >= region.top {
+                    break;
                 }
-                None => joined.push(region),
+                ends.pop();
+                let filed = Merge {
+                    top,
+                    left,
+                    bottom,
+                    right,
+                };
+                if open.get(&left) == Some(&filed) {
+                    open.remove(&left);
+                    closed.push(filed);
+                }
             }
+            // Join the open ones that share its columns, until none does.
+            loop {
+                let hits: Vec<u32> = open
+                    .range(..=region.right)
+                    .rev()
+                    .take_while(|(_, other)| other.right >= region.left)
+                    .map(|(&left, _)| left)
+                    .collect();
+                if hits.is_empty() {
+                    break;
+                }
+                for left in hits {
+                    if let Some(other) = open.remove(&left) {
+                        region = bounding(&region, &other);
+                    }
+                }
+            }
+            open.insert(region.left, region);
+            ends.push(Reverse((region.bottom, region.left, region.top, region.right)));
         }
-        joined.sort_by_key(|region| (region.top, region.left));
-        if !changed {
-            return joined;
+        closed.extend(open.into_values());
+        if closed.len() == count {
+            closed.sort_by_key(|region| (region.top, region.left));
+            return closed;
         }
-        regions = joined;
+        regions = closed;
     }
 }
 

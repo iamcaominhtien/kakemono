@@ -5,7 +5,7 @@
 
 use super::ExcelConfig;
 use super::drawing::Shape;
-use super::grid::{CellKind, Grid, Merge};
+use super::grid::{CellKind, Grid, Merge, MergeIndex};
 use super::regions::{self, Visible, is_blank};
 use crate::model::{Block, BlockKind, FloatKind, Span, Table, TableCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -42,8 +42,10 @@ pub(crate) struct Parts {
 /// the caller numbers them in the whole document.
 pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &ExcelConfig) -> Vec<Block> {
     let mut blocks = Vec::new();
+    // The merges, filed once: each region looks only at those near it.
+    let merges = MergeIndex::new(&grid.merges);
     for region in regions::split(grid, config) {
-        let cells = RegionCells::new(grid, &region);
+        let cells = RegionCells::new(grid, &merges, &region);
         if cells.cells.is_empty() {
             continue;
         }
@@ -74,14 +76,18 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
         blocks.push(figure);
         blocks.extend(parts.notes.iter().map(|&row| paragraph(cells.row_text(row))));
     }
-    if grid.truncated_rows > 0 {
-        let rows = grid.truncated_rows;
-        let text = if rows == 1 {
-            "1 more row is not shown.".to_string()
-        } else {
-            format!("{rows} more rows are not shown.")
-        };
-        blocks.push(paragraph(vec![Span::plain(text)]));
+    for (count, one, many) in [
+        (grid.truncated_rows, "row is", "rows are"),
+        (grid.truncated_cols, "column is", "columns are"),
+    ] {
+        if count > 0 {
+            let text = if count == 1 {
+                format!("1 more {one} not shown.")
+            } else {
+                format!("{count} more {many} not shown.")
+            };
+            blocks.push(paragraph(vec![Span::plain(text)]));
+        }
     }
     // The text of the shapes, in anchor order, after the cells: one
     // paragraph per line (a paragraph or a line break of the shape), since
@@ -108,7 +114,12 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
 /// The rows of `region`, read into caption, header, body and notes.
 #[cfg(test)]
 pub(crate) fn parts(grid: &Grid, region: &Merge, config: &ExcelConfig) -> Parts {
-    parts_of(grid, region, &RegionCells::new(grid, region), config)
+    parts_of(
+        grid,
+        region,
+        &RegionCells::new(grid, &MergeIndex::new(&grid.merges), region),
+        config,
+    )
 }
 
 /// [`parts`], with the cells of the region already read.
@@ -390,11 +401,12 @@ struct RegionCells<'g> {
 }
 
 impl<'g> RegionCells<'g> {
-    fn new(grid: &'g Grid, region: &Merge) -> Self {
+    /// The cells of `region` of `grid`, whose merges are `merges`.
+    fn new(grid: &'g Grid, merges: &MergeIndex, region: &Merge) -> Self {
         let visible_col = |col: u32| !grid.hidden_cols.contains(&col);
         let mut merged: HashMap<(u32, u32), Merge> = HashMap::new();
         let mut covered: HashSet<(u32, u32)> = HashSet::new();
-        for merge in grid.merges.iter().filter(|merge| merge.overlaps(region)) {
+        for merge in merges.overlapping(region) {
             let clipped = Merge {
                 top: merge.top.max(region.top),
                 left: merge.left.max(region.left),
@@ -887,6 +899,46 @@ mod tests {
         grid.truncated_rows = 40;
         let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
         assert_eq!(blocks.last().unwrap().text(), "40 more rows are not shown.");
+    }
+
+    #[test]
+    fn columns_past_the_limit_say_so() {
+        let mut grid = grid(&[&["Region", "Count"], &["North", "5"]]);
+        grid.truncated_cols = 1;
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
+        assert_eq!(blocks.last().unwrap().text(), "1 more column is not shown.");
+        grid.truncated_rows = 2;
+        grid.truncated_cols = 30;
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
+        let texts: Vec<_> = blocks.iter().rev().take(2).map(Block::text).collect();
+        assert_eq!(texts, ["30 more columns are not shown.", "2 more rows are not shown."]);
+    }
+
+    #[test]
+    fn many_regions_with_merges_are_fast() {
+        // 200,000 regions, one merged cell each, 400 to a band of rows:
+        // every merge compared with every region, as the split and the
+        // cells of a region once did, is 4e10 comparisons (minutes even in
+        // release); the run is now near-linear (about a second in release).
+        let mut grid = Grid::default();
+        for band in 0..500u32 {
+            for slot in 0..400u32 {
+                let (row, col) = (band * 3, slot * 3);
+                grid.cells.insert(
+                    (row, col),
+                    GridCell {
+                        spans: vec![Span::plain("x")],
+                        kind: CellKind::Text,
+                        center_continuous: false,
+                    },
+                );
+                grid.merges.push(area(row, col, row, col + 1));
+            }
+        }
+        let blocks = sheet_blocks("Data", &grid, &[], &ExcelConfig::default());
+        // The heading, then one paragraph per region.
+        assert_eq!(blocks.len(), 200_001);
+        assert_eq!(regions::split(&grid, &ExcelConfig::default())[1], area(0, 3, 0, 4));
     }
 
     #[test]

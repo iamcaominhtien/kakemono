@@ -3,7 +3,11 @@
 //! its tables. Rows and columns are zero-based.
 
 use crate::model::Span;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Rows and columns of a square of the sheet that [`MergeIndex`] files
+/// ranges by.
+const SQUARE_CELLS: u32 = 64;
 
 /// The cells and declarations of one sheet.
 #[derive(Debug, Clone, Default)]
@@ -24,6 +28,9 @@ pub(crate) struct Grid {
     /// The rows with a value left out because they are past the limit of
     /// rows (`ExcelConfig::max_rows`).
     pub(crate) truncated_rows: u32,
+    /// The columns with a value left out because they are past the limit
+    /// of columns (`ExcelConfig::max_cols`), in the rows read.
+    pub(crate) truncated_cols: u32,
 }
 
 /// One cell: its text as Excel shows it, and what kind of value it holds.
@@ -76,6 +83,63 @@ impl Merge {
     pub(crate) fn overlaps(&self, other: &Self) -> bool {
         self.top <= other.bottom && other.top <= self.bottom && self.left <= other.right && other.left <= self.right
     }
+}
+
+/// Ranges filed by the squares of the sheet ([`SQUARE_CELLS`]) they cover,
+/// so that those overlapping a range are found among the ranges of its
+/// squares, not among all of them: a sheet's merges, which do not overlap
+/// each other, are few in a square.
+#[derive(Default)]
+pub(crate) struct MergeIndex {
+    /// The ranges, in the order they were added.
+    ranges: Vec<Merge>,
+    /// The ranges of each square, by (row, column) of the square.
+    squares: HashMap<(u32, u32), Vec<usize>>,
+}
+
+impl MergeIndex {
+    /// The ranges `ranges`, filed.
+    pub(crate) fn new(ranges: &[Merge]) -> Self {
+        let mut index = Self::default();
+        for range in ranges {
+            index.add(*range);
+        }
+        index
+    }
+
+    /// Files `range`.
+    pub(crate) fn add(&mut self, range: Merge) {
+        for square in squares(&range) {
+            self.squares.entry(square).or_default().push(self.ranges.len());
+        }
+        self.ranges.push(range);
+    }
+
+    /// The ranges filed, in the order they were added.
+    pub(crate) fn into_ranges(self) -> Vec<Merge> {
+        self.ranges
+    }
+
+    /// The ranges that overlap `area`, each once, in the order they were
+    /// added.
+    pub(crate) fn overlapping(&self, area: &Merge) -> Vec<Merge> {
+        let mut found: Vec<usize> = squares(area)
+            .filter_map(|square| self.squares.get(&square))
+            .flatten()
+            .copied()
+            .filter(|&index| self.ranges[index].overlaps(area))
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found.into_iter().map(|index| self.ranges[index]).collect()
+    }
+}
+
+/// The squares of the sheet that `range` covers.
+fn squares(range: &Merge) -> impl Iterator<Item = (u32, u32)> + use<> {
+    let rows = range.top / SQUARE_CELLS..=range.bottom / SQUARE_CELLS;
+    let cols = range.left / SQUARE_CELLS..=range.right / SQUARE_CELLS;
+    rows.flat_map(move |row| cols.clone().map(move |col| (row, col)))
 }
 
 /// What the file declares about the tables of a sheet, from which their

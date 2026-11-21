@@ -13,10 +13,10 @@ use crate::model::style::{BOLD, ITALIC};
 use crate::word::docx::parse;
 use crate::word::xml::REL_NS;
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::ExcelConfig;
-use super::grid::{CellKind, Grid, GridCell, Merge, Table};
+use super::grid::{CellKind, Grid, GridCell, Merge, MergeIndex, Table};
 use super::numfmt;
 use super::pull::{Event, Reader, Tag};
 use super::strings;
@@ -25,10 +25,6 @@ use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
-/// Rows and columns of a square of the sheet that the merges are filed
-/// by, so that a merge is compared only with those in the squares it
-/// covers.
-const MERGE_BUCKET_CELLS: u32 = 64;
 
 /// What a sheet's cells refer to outside the sheet part.
 pub(crate) struct SheetContext<'a> {
@@ -50,13 +46,15 @@ pub(crate) struct SheetContext<'a> {
 }
 
 /// The limits of a sheet, as cell indices: rows and columns at or past
-/// them are not read.
+/// them are not read, nor the rows after the one that fills `cells`.
 #[derive(Clone, Copy)]
 struct Limits {
     /// The first row not read.
     rows: u32,
     /// The first column not read.
     cols: u32,
+    /// The most cells kept.
+    cells: usize,
 }
 
 impl Limits {
@@ -154,6 +152,8 @@ enum Place {
 struct RawCell {
     /// Where it is; `None` when it is past the limits.
     at: Option<(u32, u32)>,
+    /// Its column, when it is in a row read but past the limit of columns.
+    past_col: Option<u32>,
     /// Its type (`t`).
     kind: Option<String>,
     /// Its style index (`s`).
@@ -192,6 +192,8 @@ struct SheetReader<'c, 'a> {
     links: Vec<(Merge, String)>,
     /// A sheet view has been read (only the first counts).
     seen_view: bool,
+    /// The columns past the limit with a value, in the rows read.
+    cols_past_limit: HashSet<u32>,
 }
 
 /// Reads the worksheet `xml`.
@@ -218,6 +220,7 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         limits: Limits {
             rows: u32::try_from(ctx.config.max_rows).unwrap_or(u32::MAX),
             cols: u32::try_from(ctx.config.max_cols).unwrap_or(u32::MAX),
+            cells: ctx.config.max_cells,
         },
         grid: Grid::default(),
         next_row: 0,
@@ -230,6 +233,7 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         merges: Vec::new(),
         links: Vec::new(),
         seen_view: false,
+        cols_past_limit: HashSet::new(),
     };
     let mut stack = vec![Place::Root];
     if root.empty {
@@ -377,7 +381,8 @@ impl SheetReader<'_, '_> {
         self.row = index;
         self.next_col = 0;
         self.row_has_value = false;
-        self.row_past_limit = index >= self.limits.rows;
+        // A row is read whole: the one that fills the cells is the last.
+        self.row_past_limit = index >= self.limits.rows || self.grid.cells.len() >= self.limits.cells;
         if !self.row_past_limit && is_on(tag.attr("hidden").as_deref()) {
             self.grid.hidden_rows.insert(index);
         }
@@ -390,8 +395,10 @@ impl SheetReader<'_, '_> {
             .and_then(|reference| cell_ref(&reference))
             .unwrap_or((self.row, self.next_col));
         self.next_col = at.1.saturating_add(1);
+        let in_row = !self.row_past_limit;
         self.cell = Some(RawCell {
-            at: (!self.row_past_limit && self.limits.contain(at)).then_some(at),
+            at: (in_row && self.limits.contain(at)).then_some(at),
+            past_col: (in_row && at.1 >= self.limits.cols).then_some(at.1),
             kind: tag.attr("t").map(|kind| kind.into_owned()),
             style: tag.attr("s").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0),
             value: None,
@@ -428,6 +435,14 @@ impl SheetReader<'_, '_> {
                 let Some(raw) = self.cell.take() else {
                     return;
                 };
+                if let Some(col) = raw.past_col {
+                    // Counted as a column with a value, as a row is: an
+                    // empty string or a formula without its value too.
+                    if raw.value.is_some() || raw.inline.is_some() {
+                        self.cols_past_limit.insert(col);
+                    }
+                    return;
+                }
                 if let Some(at) = raw.at
                     && let Some(cell) = read_cell(raw, self.ctx)
                 {
@@ -441,6 +456,7 @@ impl SheetReader<'_, '_> {
     /// The grid, with the merges, hyperlinks and declarations.
     fn done(mut self) -> Grid {
         self.grid.merges = merges(&self.merges, self.limits);
+        self.grid.truncated_cols = u32::try_from(self.cols_past_limit.len()).unwrap_or(u32::MAX);
         link(&self.links, &mut self.grid.cells);
         self.grid.declared.tables.clone_from(&self.ctx.tables);
         self.grid.declared.print_title_rows = self.ctx.print_title_rows;
@@ -470,18 +486,7 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
             (plain(text.to_string()), CellKind::Bool)
         }
         "e" => (plain(value.unwrap_or_default()), CellKind::Error),
-        "d" => {
-            // An ISO date and time: the date part, as written (the time
-            // when there is no date part).
-            let text = value.unwrap_or_default();
-            let text = text.trim();
-            let date = match text.split_once('T') {
-                Some((date, _)) if !date.is_empty() => date,
-                Some((_, time)) => time,
-                None => text,
-            };
-            (plain(date.to_string()), CellKind::Date)
-        }
+        "d" => (plain(iso_date_time(value.unwrap_or_default().trim())), CellKind::Date),
         _ => match value {
             Some(raw) => match raw.trim().parse::<f64>() {
                 Ok(number) => {
@@ -512,6 +517,37 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
     })
 }
 
+/// An ISO date and time (`t="d"`, `2024-01-31T14:05:09.5Z`) written as the
+/// dates of number cells are: `2024-01-31 14:05`, the seconds only when
+/// they are not 0, the time left out at midnight; a time alone
+/// (`T14:05:00`) as `14:05`. A text that is not one is kept as written.
+fn iso_date_time(text: &str) -> String {
+    let (date, time) = match text.split_once('T') {
+        Some((date, time)) => (date, Some(time)),
+        None => (text, None),
+    };
+    // Hours, minutes and whole seconds, without a fraction or a zone.
+    let clock = time.and_then(|time| {
+        fn digits(part: &str) -> Option<&str> {
+            (part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_digit())).then_some(part)
+        }
+        let mut parts = time.splitn(3, ':');
+        let hours = digits(parts.next()?)?;
+        let minutes = digits(parts.next()?)?;
+        let seconds = parts.next().map_or(Some("00"), |rest| rest.get(..2).and_then(digits))?;
+        Some(match seconds {
+            "00" => format!("{hours}:{minutes}"),
+            _ => format!("{hours}:{minutes}:{seconds}"),
+        })
+    });
+    match (date.is_empty(), clock) {
+        (true, Some(clock)) => clock,
+        (false, Some(clock)) if clock != "00:00" => format!("{date} {clock}"),
+        (false, _) => date.to_string(),
+        (true, None) => time.unwrap_or_default().to_string(),
+    }
+}
+
 /// `text` as one unstyled span, none when it is empty.
 fn plain(text: String) -> Vec<Span> {
     if text.is_empty() {
@@ -527,18 +563,11 @@ fn is_on(value: Option<&str>) -> bool {
 }
 
 /// The merged ranges `list`, cut to the limits; of two that overlap, the
-/// first. Each kept range is filed in the squares of the sheet
-/// ([`MERGE_BUCKET_CELLS`]) it covers, and a new one is compared only with
-/// those of its squares: since kept ranges never overlap, a square holds
-/// few of them.
+/// first. A new range is compared only with the kept ones of the squares of
+/// the sheet it covers ([`MergeIndex`]): since kept ranges never overlap, a
+/// square holds few of them.
 fn merges(list: &[Merge], limits: Limits) -> Vec<Merge> {
-    let mut kept: Vec<Merge> = Vec::new();
-    let mut buckets: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-    let squares = |merge: &Merge| {
-        let rows = merge.top / MERGE_BUCKET_CELLS..=merge.bottom / MERGE_BUCKET_CELLS;
-        let cols = merge.left / MERGE_BUCKET_CELLS..=merge.right / MERGE_BUCKET_CELLS;
-        rows.flat_map(move |row| cols.clone().map(move |col| (row, col)))
-    };
+    let mut kept = MergeIndex::default();
     for merge in list {
         if !limits.contain((merge.top, merge.left)) {
             continue;
@@ -548,19 +577,11 @@ fn merges(list: &[Merge], limits: Limits) -> Vec<Merge> {
             right: merge.right.min(limits.cols - 1),
             ..*merge
         };
-        let overlaps = squares(&merge)
-            .filter_map(|square| buckets.get(&square))
-            .flatten()
-            .any(|&index| kept[index].overlaps(&merge));
-        if overlaps {
-            continue;
+        if kept.overlapping(&merge).is_empty() {
+            kept.add(merge);
         }
-        for square in squares(&merge) {
-            buckets.entry(square).or_default().push(kept.len());
-        }
-        kept.push(merge);
     }
-    kept
+    kept.into_ranges()
 }
 
 /// The rows frozen at the top by a sheet view's `pane`.
@@ -957,6 +978,62 @@ mod tests {
             &config,
         );
         assert_eq!(grid.cells.len(), 2);
+    }
+
+    #[test]
+    fn a_sheet_of_many_cells_stops_at_max_cells() {
+        let rows: String = (1..=8)
+            .map(|row| format!(r#"<row r="{row}"><c><v>1</v></c><c><v>2</v></c><c><v>3</v></c></row>"#))
+            .collect();
+        let config = ExcelConfig {
+            max_cells: 7,
+            ..ExcelConfig::default()
+        };
+        let grid = read_with(&format!("<sheetData>{rows}</sheetData>"), &[], &config);
+        // A row is read whole: the third row starts with 6 cells read, under
+        // the limit, and takes the count to 9; the five rows after it are
+        // counted, not read.
+        assert_eq!(grid.cells.len(), 9);
+        assert_eq!(grid.truncated_rows, 5);
+        assert_eq!(grid.truncated_cols, 0);
+    }
+
+    #[test]
+    fn columns_past_the_limit_are_counted_not_read() {
+        let config = ExcelConfig {
+            max_cols: 2,
+            ..ExcelConfig::default()
+        };
+        // Columns C and E have a value past the limit; D only an empty cell.
+        let grid = read_with(
+            concat!(
+                r#"<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="C1"><v>3</v></c><c r="D1" s="2"/></row>"#,
+                r#"<row r="2"><c r="C2"><v>3</v></c><c r="E2" t="inlineStr"><is><t>e</t></is></c></row></sheetData>"#,
+            ),
+            &[],
+            &config,
+        );
+        assert_eq!(grid.cells.len(), 1);
+        assert_eq!(grid.truncated_cols, 2);
+    }
+
+    #[test]
+    fn an_iso_date_keeps_its_time() {
+        let grid = grid(concat!(
+            r#"<sheetData><row r="1"><c r="A1" t="d"><v>2024-01-31T14:05:00</v></c>"#,
+            r#"<c r="B1" t="d"><v>2024-01-31T14:05:09.000</v></c><c r="C1" t="d"><v>2024-01-31T00:00:00Z</v></c>"#,
+            r#"<c r="D1" t="d"><v>2024-01-31</v></c><c r="E1" t="d"><v>T14:05:00</v></c></row></sheetData>"#,
+        ));
+        assert_eq!(
+            cells(&grid),
+            [
+                cell((0, 0), "2024-01-31 14:05", CellKind::Date),
+                cell((0, 1), "2024-01-31 14:05:09", CellKind::Date),
+                cell((0, 2), "2024-01-31", CellKind::Date),
+                cell((0, 3), "2024-01-31", CellKind::Date),
+                cell((0, 4), "14:05", CellKind::Date),
+            ]
+        );
     }
 
     #[test]
