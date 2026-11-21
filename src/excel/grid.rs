@@ -14,20 +14,15 @@ pub(crate) struct Grid {
     pub(crate) cells: BTreeMap<(u32, u32), GridCell>,
     /// The merged ranges, none overlapping another (of two that overlap,
     /// the first in the file is kept).
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) merges: Vec<Merge>,
     /// The hidden rows.
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) hidden_rows: HashSet<u32>,
     /// The hidden columns.
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) hidden_cols: HashSet<u32>,
     /// What the file says about the tables of the sheet.
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) declared: Declared,
     /// The rows with a value left out because they are past the limit of
     /// rows (`ExcelConfig::max_rows`).
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) truncated_rows: u32,
 }
 
@@ -38,16 +33,13 @@ pub(crate) struct GridCell {
     /// runs) and its hyperlink.
     pub(crate) spans: Vec<Span>,
     /// The kind of value.
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) kind: CellKind,
     /// The cell's text is centred across the selection
     /// (`centerContinuous`).
-    #[allow(dead_code)] // used by build (Task 5)
     pub(crate) center_continuous: bool,
 }
 
 /// The kind of value of a cell.
-#[allow(dead_code)] // matched by build (Task 5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CellKind {
     /// A number (not a date).
@@ -88,7 +80,6 @@ impl Merge {
 
 /// What the file declares about the tables of a sheet, from which their
 /// header rows are found.
-#[allow(dead_code)] // read by build (Task 5)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Declared {
     /// The Excel Tables (`xl/tables/`) of the sheet: their range and their

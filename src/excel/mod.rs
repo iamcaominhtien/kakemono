@@ -5,15 +5,17 @@
 //! Each visible sheet becomes a section: a heading with the sheet's name,
 //! then its content. A workbook has no pages, like a Word document.
 
+mod build;
 mod grid;
 mod numfmt;
 mod pull;
+mod regions;
 mod sheet;
 mod strings;
 mod styles;
 mod workbook;
 
-use crate::model::{Block, BlockKind, Document, Meta, Span};
+use crate::model::{Block, Document, Meta};
 use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
@@ -52,8 +54,8 @@ pub struct ExcelConfig {
     /// How many rows below a row are looked at to find the types of the
     /// columns.
     pub header_lookahead_rows: usize,
-    /// A column is right-aligned when at least this share of its body
-    /// cells are numbers.
+    /// A column is right-aligned when more than this share of its body
+    /// cells are numbers or dates.
     pub numeric_column_ratio: f32,
     /// The most rows read from one sheet; the rest are left out, with a
     /// paragraph saying how many.
@@ -98,7 +100,7 @@ pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result
     let zip = ZipArchive::new(data)?;
     let workbook = Workbook::read(&zip)?;
     let sheets = read_sheets(&zip, &workbook, config)?;
-    Ok(build(&workbook, &sheets, source))
+    Ok(build(&workbook, &sheets, config, source))
 }
 
 /// The grid of each visible sheet of `workbook`, with its name. A sheet
@@ -182,18 +184,15 @@ fn table(zip: &ZipArchive<'_>, part: &str) -> Option<Table> {
 }
 
 /// The document of a workbook: one section per visible sheet, given with
-/// its grid.
-fn build(workbook: &Workbook, sheets: &[(&str, Grid)], source: Option<String>) -> Document {
-    // Only the headings for now: the cells become tables in the builder.
-    let blocks = sheets
+/// its grid, read with the thresholds `config`.
+fn build(workbook: &Workbook, sheets: &[(&str, Grid)], config: &ExcelConfig, source: Option<String>) -> Document {
+    let mut blocks: Vec<Block> = sheets
         .iter()
-        .enumerate()
-        .map(|(id, (name, _grid))| {
-            let mut block = Block::new(id, BlockKind::Heading { level: 1 });
-            block.spans = vec![Span::plain(name.to_string())];
-            block
-        })
+        .flat_map(|(name, grid)| build::sheet_blocks(name, grid, config))
         .collect();
+    for (id, block) in blocks.iter_mut().enumerate() {
+        block.id = id;
+    }
     Document {
         meta: Meta {
             title: workbook.title.clone(),
@@ -253,9 +252,10 @@ mod tests {
         ]);
         assert!(detect(&data));
         let doc = read(&data, &ExcelConfig::default(), None).unwrap();
-        assert_eq!(doc.blocks[0].text(), "Data");
         // The string the cell points to is not there: the cell has no
-        // text, so it is left out of the grid, as an empty cell is.
+        // text, so it is left out of the grid, as an empty cell is, and
+        // the empty sheet gives no blocks.
+        assert!(doc.blocks.is_empty());
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
         let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
@@ -318,8 +318,10 @@ mod tests {
         let read: Vec<_> = sheets.iter().map(|(name, grid)| (*name, grid.cells.len())).collect();
         assert_eq!(read, [("Bad", 0), ("Good", 1)]);
         let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
-        let headings: Vec<_> = doc.blocks.iter().map(Block::text).collect();
-        assert_eq!(headings, ["Bad", "Good"]);
+        // The damaged sheet is empty: it gives no blocks, not even its
+        // heading.
+        let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Good", "7"]);
     }
 
     #[test]
