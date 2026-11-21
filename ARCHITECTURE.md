@@ -58,7 +58,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | `lib.rs` | Public API (the semver promise of the crate on crates.io): `Paper`, `convert`, `Analysis`, the Options types, `config`, `model`, `source`. The other modules are `#[doc(hidden)]` internals, public only for the CLI, examples and tests |
 | `main.rs` | CLI: only reads the arguments, then calls the API |
 | `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
-| `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
+| `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm), `ExcelConfig` (the thresholds of the Excel reader, re-exported from `excel/`) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
 | `excel/` | Excel workbooks as input, read without layout analysis (a workbook has no pages: `Source::Sheet` keeps no file): `workbook` (sheets in order, date system, print titles, title), `strings` (shared strings with rich-text runs, furigana left out), `styles` (cell formats, bold and italic fonts), `numfmt` (a number or date as Excel shows it; dates always ISO), `pull` (a pull reader of XML, so a sheet is never held as a tree), `sheet` (a worksheet part → `Grid`: cells, merges, hyperlinks, hidden rows and columns, declared tables), `grid`, `regions` (blocks of cells cut by empty rows and columns), `drawing` (text of shapes and text boxes), `build` (`Grid` → blocks: sheet heading, captioned tables with their header rows, notes, or paragraphs for a form); the thresholds are `ExcelConfig` (`config.rs`) |
@@ -86,7 +86,7 @@ Dependencies run in one direction only:
 ```
 main → paper → analysis → backend → common
               → word    → analysis (the linking of `semantics`)
-              → excel   → word (`zip`), model
+              → excel   → word (`zip`, `docx` for parts and relationships, `xml`), model
               → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping)
               → render  → model   → common
 ```

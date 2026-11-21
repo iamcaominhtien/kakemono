@@ -38,7 +38,7 @@ cargo build --release
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word   # when output changes ON PURPOSE
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test excel   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
@@ -47,6 +47,7 @@ node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
 scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layout vs Word's own PDFs (CI minimums in ci.yml)
 python3 scripts/word-crash-test.py DIR...                            # every output of every Word file and Excel workbook: panics, timeouts
+python3 -I scripts/excel-report.py DIR... [--out FILE]               # per sheet: tables, header rows, paragraphs (to compare rules)
 scripts/fetch-excel-corpus.sh 8                                      # the public workbooks of tests/data/excel-corpus.tsv
 ```
 
@@ -127,7 +128,9 @@ committing.
   the HTML modes other than friendly give the friendly page. Dates are always written ISO, and
   `--header-rows` (`ExcelConfig::header_rows`) overrides the header rules.
 - The rules are tried on the corpus of `tests/data/excel-corpus.tsv` (downloaded, not committed):
-  a change to the header or region rules should be compared on it, like a rule of the analysis.
+  a change to the header or region rules should be compared on it, like a rule of the analysis:
+  `python3 -I scripts/excel-report.py DIR... --out before.tsv` (sheets, tables, header rows of each
+  table, paragraphs), before and after the change, then `diff` the two reports.
   `table_min_fill_ratio` stays 0 because no value separates forms from sparse financial tables there.
 
 ## Public API and packages

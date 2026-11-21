@@ -79,7 +79,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) a Word document (.docx, .doc) or an Excel workbook (.xlsx) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (a local file, an arXiv id or an arXiv URL), a Word document (.docx, .doc) or an Excel workbook (.xlsx) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {

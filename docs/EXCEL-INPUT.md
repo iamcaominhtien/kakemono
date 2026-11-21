@@ -48,8 +48,9 @@ rows and hidden columns are left out; an empty sheet gives nothing, not even a h
    in the order of the anchors (row, then column). Pictures, charts, connectors and form controls
    are not read.
 
-A region with fewer than two columns of data, such as a cover, a list of notes or a form of
-label and value, becomes **paragraphs**, one per row; a row of two cells reads `label: value`.
+A region with fewer than two columns of data (no row with two cells or more), such as a cover or a
+list of notes, becomes **paragraphs**, one per row. (When `table_min_fill_ratio` is raised above 0,
+a sparse region becomes paragraphs too, one per row, the text of its cells joined by a space.)
 
 ### Forms
 
@@ -87,7 +88,9 @@ The text is the value **as Excel shows it**, not the stored number:
 
 - **Dates and times are always ISO**, whatever the cell's format: `2024-01-31`, `14:05`,
   `2024-01-31 14:05` (with seconds, `14:05:09`, only when the format shows seconds). The 1900 and
-  1904 date systems are both read.
+  1904 date systems are both read. A time format without hours (`mm:ss`, `mm:ss.0`) gives the
+  minutes and seconds, `05:08` or `05:08.4`; a date cell stored as ISO text (`t="d"`) gives
+  `2024-01-31 14:05` too, without the time at midnight.
 - **Numbers** follow the cell's format code, with `.` as decimal separator and `,` as thousands
   separator: `1,234.50`, `12.5%`, `1.5E+3`, negative and zero sections, fractions. Colours and
   conditions in a format code (`[Red]`, `[>100]`) are ignored. A code kakemono cannot read falls
@@ -103,10 +106,16 @@ The text is the value **as Excel shows it**, not the stored number:
 ### Limits
 
 A sheet is read as a stream, not as a tree, so a large sheet does not take many times its size in
-memory. At most `max_rows` (100,000) rows and `max_cols` (1,000) columns are read from a sheet: the
-rest is left out, with a paragraph saying how many rows. The declared size of a sheet is not
+memory. At most `max_rows` (100,000) rows and `max_cols` (1,000) columns are read from a sheet,
+and at most `max_cells` (2,500,000) cells: rows are read whole, and once a row takes the count of
+cells to the limit, the rows after it are left out. What is left out is said in a paragraph at the
+end of the sheet: `N more rows are not shown.`, `N more columns are not shown.` The cell limit
+bounds the memory (a cell takes a few hundred bytes from the reading to the outputs; the largest
+sheet of the corpus, 2.12 million cells, is read whole). The declared size of a sheet is not
 trusted, and the ZIP and XML limits are those of the Word reader. A part that is damaged but
-optional (styles, a drawing) is skipped rather than failing the whole file.
+optional (the styles, whose cells then get the General format; a drawing; a table part) is skipped
+rather than failing the whole file. Damaged shared strings fail it: the text of every string cell
+would be lost without a word.
 
 ## Outputs
 
@@ -116,7 +125,7 @@ optional (styles, a drawing) is skipped rather than failing the whole file.
 | `-m hard`, `hard-95`, `medium` (`--all`) | the friendly page: there are no pages to copy or place, as for a Word document without layout |
 | Word, Markdown, LaTeX, EPUB | the same document; with `-m medium`, Markdown keeps HTML tables |
 | editable JSON (`--content` applies it back) | the blocks and tables; `source.format` is `xlsx` |
-| chunks (`.jsonl`) | the text cut along the sheets; a table is cut only between rows, and **every chunk of a table repeats its caption and header rows** |
+| chunks (`.jsonl`) | the text cut along the sheets; a table is cut only between rows, and **every chunk of a table repeats its caption and header rows**, unless together they would take more than half of a chunk: then no chunk of the table has them |
 | PDF (`-o x.pdf`) | an error: a workbook has no page layout |
 
 `kakemono inspect book.xlsx` prints the blocks found; it takes `--header-rows` too.
@@ -137,7 +146,14 @@ optional (styles, a drawing) is skipped rather than failing the whole file.
   format; the snapshot is `tests/data/snapshots/excel-sample.txt`. To make the workbook again:
   `soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`.
 - `tests/data/excel-corpus.tsv`: public workbooks (statistics offices, regulators, companies,
-  Japanese government forms, templates) to try the reader on; downloaded, never committed.
+  Japanese government forms, templates) to try the reader on; downloaded
+  (`scripts/fetch-excel-corpus.sh`), never committed.
+- `scripts/excel-report.py DIR... [--out FILE]` converts every workbook found to JSON and writes a
+  TSV, one line per sheet: the file, the sheet, its tables, the header rows of each table and its
+  paragraphs. Run it before and after a change of the header or region rules, on the corpus, and
+  compare the two reports. It does not say yet where each header came from (the file's
+  declaration, the types of the columns, or the default of one row): that needs the reader to
+  record it, a follow-up.
 
 ## Left out
 

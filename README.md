@@ -642,7 +642,8 @@ cargo test --release
   and skipped when missing.
 - **Crash test**: `scripts/word-crash-test.py DIR...` converts every Word file and every Excel
   workbook found to every output and reports panics and timeouts (run on 4,300 public Word files
-  and on the 90 public workbooks of `scripts/fetch-excel-corpus.sh`: none).
+  and on the 90 public workbooks listed by `scripts/fetch-excel-corpus.sh`, of which 84 download
+  from a typical network, 6 being blocked or changed at their source: none).
 
 Only the LIGO paper (CC BY 4.0) is in the repository; tests skip papers that are not downloaded.
 The JavaScript is checked in a browser (needs `playwright`):

@@ -137,8 +137,9 @@ New `src/excel/` (sibling of `src/word/`, public like `word` with
       `注:`) → paragraphs after the table;
   - a region with fewer than two columns of data (only single-cell rows: a
     form, a notes or cover sheet) becomes **paragraphs** instead of a table,
-    one per row, cells of a row joined `label: value` style when a row has
-    two cells;
+    one per row (such a region has no row of two cells; a region made
+    paragraphs because it is too sparse, `table_min_fill_ratio`, joins the
+    cells of a row with a space);
   - text in shapes and text boxes of the sheet's drawing (`xl/drawings/`,
     `a:t` in `xdr:sp`) becomes paragraphs after the sheet's cells, in their
     anchor order (top-left cell, row then column). Pictures, charts,
