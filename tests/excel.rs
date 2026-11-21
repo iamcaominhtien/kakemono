@@ -247,3 +247,26 @@ fn excel_outputs_match_their_snapshot() {
          KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test excel"
     );
 }
+
+#[test]
+fn an_edited_cell_of_the_json_shows_in_markdown() {
+    let (paper, mut analysis) = load(SAMPLE_XLSX);
+    let content = paper.to_json(&analysis, &JsonOptions::default());
+    let mut json: serde_json::Value = serde_json::from_str(&content.json).unwrap();
+    // The first price of the Prices table, edited as a translator would.
+    let cell = json["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|block| block.get_mut("table"))
+        .unwrap()["rows"][1][2]
+        .as_object_mut()
+        .unwrap();
+    assert_eq!(cell["text"], "1,388.81 €");
+    cell.insert("text".into(), "1 388,81 €".into());
+    let report = paper.apply_content(&mut analysis, &json.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+    let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(markdown.contains("| 1 388,81 € |"), "{markdown}");
+    assert!(!markdown.contains("1,388.81"));
+}

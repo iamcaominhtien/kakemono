@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Converts every Word file (.doc, .docx) and every Excel workbook (.xlsx,
 .xlsm) under the given directories to every output (the 4 HTML modes, PDF,
-Word, Markdown, LaTeX, EPUB, JSON) and reports the files that make kakemono
+Word, Markdown, LaTeX, EPUB, JSON, chunks) and reports the files that make kakemono
 crash (a panic, a signal) or hang (a timeout). A workbook has no page layout:
 its PDF output is not tried.
 
@@ -38,6 +38,7 @@ OUTPUTS = [
     ('tex', ['-o', '{out}/x.tex']),
     ('epub', ['-o', '{out}/x.epub']),
     ('json', ['-o', '{out}/x.json']),
+    ('chunks', ['-o', '{out}/x.jsonl']),
 ]
 WORKBOOKS = ('.xlsx', '.xlsm')
 timings = {}  # path -> seconds over all its outputs
