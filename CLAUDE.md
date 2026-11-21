@@ -2,7 +2,7 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF) to HTML, in 4 modes, to a
+writes them as a PDF; and Excel workbooks, `.xlsx`, read by `src/excel/`) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
 LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
 retrieval (`.jsonl`, `src/render/chunks/`) or to editable JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
@@ -33,6 +33,8 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
+./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (all outputs but PDF)
+./target/release/kakemono convert <file.xlsx> --header-rows 1 -o out/x.md    # header rows of every table, given instead of found
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
@@ -110,6 +112,22 @@ committing.
   `tests/data/word-corpus.tsv` (downloaded, not committed). A change that raises the totals
   should raise the minimums in `.github/workflows/ci.yml` too; one that lowers them is a
   regression. `scripts/compare-layout.py REF.pdf OURS.pdf --diff` shows the lines that differ.
+
+## Excel input (`src/excel`)
+
+- `sheet.rs` streams a worksheet into a `Grid`; `regions.rs` cuts it into tables and `build.rs` alone
+  decides what each region is (caption, header rows, body, notes, or paragraphs). A rule about
+  header rows or regions goes there; its threshold is a documented field of `ExcelConfig`
+  (`src/excel/mod.rs`, re-exported by `src/config.rs`), with its unit in the name.
+- The test sample is `tests/data/excel/sample.xlsx`, made by LibreOffice from the hand-written
+  `sample.fods` (`soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`);
+  a change to the reading shows in `tests/data/snapshots/excel-sample.txt`.
+- A workbook has no pages (`Document::pages` is empty, `Paper::to_pdf` fails with "no page layout"):
+  the HTML modes other than friendly give the friendly page. Dates are always written ISO, and
+  `--header-rows` (`ExcelConfig::header_rows`) overrides the header rules.
+- The rules are tried on the corpus of `tests/data/excel-corpus.tsv` (downloaded, not committed):
+  a change to the header or region rules should be compared on it, like a rule of the analysis.
+  `table_min_fill_ratio` stays 0 because no value separates forms from sparse financial tables there.
 
 ## Public API and packages
 
