@@ -27,7 +27,7 @@ pub(crate) fn read(xml: &str) -> Result<Vec<Vec<Span>>> {
 }
 
 /// The runs of one string item (`si`): its `t`, or its `r` runs.
-fn string_item(item: Node<'_, '_>) -> Vec<Span> {
+pub(crate) fn string_item(item: Node<'_, '_>) -> Vec<Span> {
     let mut spans = Vec::new();
     for node in item.children() {
         if is_sml(node, "t") {

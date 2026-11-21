@@ -11,7 +11,6 @@ use super::numfmt::{NumFmt, builtin};
 use super::workbook::is_sml;
 
 /// The cell formats of a workbook, by the index a cell's `s` gives.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Styles {
     /// The cell formats (`cellXfs`), in order.
@@ -19,7 +18,6 @@ pub(crate) struct Styles {
 }
 
 /// A cell format: what of it shows in the text.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Xf {
     /// The number format.
@@ -41,7 +39,6 @@ static DEFAULT_XF: Xf = Xf {
     center_continuous: false,
 };
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl Styles {
     /// The cell format of index `index` (a cell's `s`); the default one
     /// when there is none.
@@ -54,7 +51,6 @@ impl Styles {
 ///
 /// # Errors
 /// When `xml` is not well-formed.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn read(xml: &str) -> Result<Styles> {
     let doc = parse(xml).context("reading the styles")?;
     let root = doc.root_element();

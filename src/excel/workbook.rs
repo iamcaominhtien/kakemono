@@ -138,7 +138,7 @@ impl Workbook {
 }
 
 /// The relationship id (`r:id`) of a `sheet` element.
-fn rel_id<'a>(sheet: Node<'a, '_>) -> Option<&'a str> {
+pub(crate) fn rel_id<'a>(sheet: Node<'a, '_>) -> Option<&'a str> {
     sheet
         .attribute((REL_NS, "id"))
         .or_else(|| sheet.attribute((REL_STRICT_NS, "id")))

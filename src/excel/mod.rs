@@ -5,20 +5,34 @@
 //! Each visible sheet becomes a section: a heading with the sheet's name,
 //! then its content. A workbook has no pages, like a Word document.
 
+mod grid;
 mod numfmt;
+mod sheet;
 mod strings;
 mod styles;
 mod workbook;
 
 use crate::model::{Block, BlockKind, Document, Meta, Span};
+use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::zip::ZipArchive;
-use anyhow::Result;
-use workbook::Workbook;
+use anyhow::{Context, Result};
+use grid::{Grid, Merge};
+use sheet::SheetContext;
+use std::collections::HashMap;
+use workbook::{Workbook, is_sml};
 
 /// Font size of the running text, in points: Excel's default font size.
 const BODY_SIZE_PT: f32 = 11.0;
 /// Distance between baselines, as a ratio of the font size.
 const LEADING_RATIO: f32 = 1.2;
+/// Relationship type of the styles part.
+const STYLES_REL: &str = "styles";
+/// Relationship type of a hyperlink.
+const HYPERLINK_REL: &str = "hyperlink";
+/// Relationship type of an Excel Table part.
+const TABLE_REL: &str = "table";
+/// Header rows of an Excel Table without `headerRowCount`.
+const DEFAULT_HEADER_ROW_COUNT: u32 = 1;
 
 /// How a workbook is read: the thresholds that cut a sheet into tables and
 /// find their header rows.
@@ -82,27 +96,101 @@ pub fn detect(data: &[u8]) -> bool {
 pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result<Document> {
     let zip = ZipArchive::new(data)?;
     let workbook = Workbook::read(&zip)?;
+    let sheets = read_sheets(&zip, &workbook, config)?;
+    Ok(build(&workbook, &sheets, source))
+}
+
+/// The grid of each visible sheet of `workbook`, with its name.
+///
+/// # Errors
+/// When a part of the workbook is damaged.
+fn read_sheets<'w>(zip: &ZipArchive<'_>, workbook: &'w Workbook, config: &ExcelConfig) -> Result<Vec<(&'w str, Grid)>> {
     // A workbook without string cells has no shared strings part.
-    let strings = match zip.read_text(&workbook.shared_strings_part(&zip))? {
+    let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
         Some(xml) => strings::read(&xml)?,
         None => Vec::new(),
     };
-    // The cells of the sheets, which the strings, the date system, the
-    // print titles and `config` are for, are not read yet.
-    let _ = (strings, workbook.date1904, &workbook.print_titles, config);
-    Ok(build(&workbook, source))
+    let styles = match zip.read_text(&related_part(zip, &workbook.part, STYLES_REL))? {
+        Some(xml) => styles::read(&xml)?,
+        None => styles::Styles::default(),
+    };
+    let mut sheets = Vec::new();
+    for (index, sheet) in workbook.sheets.iter().enumerate() {
+        if !sheet.visible {
+            continue;
+        }
+        // A sheet whose part is missing has no cells.
+        let xml = if sheet.part.is_empty() {
+            None
+        } else {
+            zip.read_text(&sheet.part)?
+        };
+        let grid = match xml {
+            Some(xml) => {
+                let (links, tables) = sheet_rels(zip, &sheet.part)?;
+                let ctx = SheetContext {
+                    strings: &strings,
+                    styles: &styles,
+                    date1904: workbook.date1904,
+                    links,
+                    tables,
+                    print_title_rows: workbook.print_titles.get(&index).copied(),
+                    config,
+                };
+                sheet::read(&xml, &ctx).with_context(|| format!("reading {}", sheet.part))?
+            }
+            None => Grid::default(),
+        };
+        sheets.push((sheet.name.as_str(), grid));
+    }
+    Ok(sheets)
 }
 
-/// The document of a workbook: one section per visible sheet.
-fn build(workbook: &Workbook, source: Option<String>) -> Document {
-    let blocks = workbook
-        .sheets
+/// An Excel Table: its range and its number of header rows.
+type Table = (Merge, u32);
+
+/// The relationships of a sheet part: the URLs of its external hyperlinks
+/// by relationship id, and its Excel Tables (range, header rows).
+///
+/// # Errors
+/// When the relationships or a table part are damaged.
+fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> Result<(HashMap<String, String>, Vec<Table>)> {
+    let mut links = HashMap::new();
+    let mut tables = Vec::new();
+    for (id, kind, rel) in read_rels(zip, part)? {
+        if kind == HYPERLINK_REL && rel.external {
+            links.insert(id, rel.target);
+        } else if kind == TABLE_REL && !rel.external {
+            let Some(xml) = zip.read_text(&rel.target)? else {
+                continue;
+            };
+            let doc = parse(&xml).with_context(|| format!("reading {}", rel.target))?;
+            let table = doc.root_element();
+            if !is_sml(table, "table") {
+                continue;
+            }
+            let header_rows = table
+                .attribute("headerRowCount")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(DEFAULT_HEADER_ROW_COUNT);
+            if let Some(area) = table.attribute("ref").and_then(sheet::range) {
+                tables.push((area, header_rows));
+            }
+        }
+    }
+    Ok((links, tables))
+}
+
+/// The document of a workbook: one section per visible sheet, given with
+/// its grid.
+fn build(workbook: &Workbook, sheets: &[(&str, Grid)], source: Option<String>) -> Document {
+    // Only the headings for now: the cells become tables in the builder.
+    let blocks = sheets
         .iter()
-        .filter(|sheet| sheet.visible)
         .enumerate()
-        .map(|(id, sheet)| {
+        .map(|(id, (name, _grid))| {
             let mut block = Block::new(id, BlockKind::Heading { level: 1 });
-            block.spans = vec![Span::plain(sheet.name.clone())];
+            block.spans = vec![Span::plain(name.to_string())];
             block
         })
         .collect();
@@ -165,6 +253,51 @@ mod tests {
         assert!(detect(&data));
         let doc = read(&data, &ExcelConfig::default(), None).unwrap();
         assert_eq!(doc.blocks[0].text(), "Data");
+        // The string the cell points to is not there: the cell has no
+        // text, so it is left out of the grid, as an empty cell is.
+        let zip = ZipArchive::new(&data).unwrap();
+        let workbook = Workbook::read(&zip).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        assert_eq!(sheets.len(), 1);
+        assert!(sheets[0].1.cells.is_empty());
+    }
+
+    #[test]
+    fn sheets_are_read_with_their_styles_links_tables_and_print_titles() {
+        let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Hidden" sheetId="2" state="hidden" r:id="rId2"/><sheet name="Data" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="_xlnm.Print_Titles" localSheetId="1">Data!$1:$1</definedName></definedNames></workbook>"#;
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#;
+        let styles = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs><xf numFmtId="0"/><xf numFmtId="10"/></cellXfs></styleSheet>"#;
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Site</t></is></c><c r="B1" s="1"><v>0.125</v></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rId1"/></hyperlinks><tableParts count="1"><tablePart r:id="rId2"/></tableParts></worksheet>"#;
+        let sheet_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/" TargetMode="External"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/></Relationships>"#;
+        let table = r#"<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="T" ref="A1:B4" headerRowCount="2"/>"#;
+        let data = package(&[
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", workbook),
+            ("xl/_rels/workbook.xml.rels", workbook_rels),
+            ("xl/styles.xml", styles),
+            ("xl/worksheets/sheet1.xml", sheet),
+            ("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels),
+            ("xl/tables/table1.xml", table),
+        ]);
+        let zip = ZipArchive::new(&data).unwrap();
+        let workbook = Workbook::read(&zip).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        assert_eq!(sheets.len(), 1);
+        let (name, grid) = &sheets[0];
+        assert_eq!(*name, "Data");
+        assert_eq!(
+            grid.cells[&(0, 0)].spans[0].href.as_deref(),
+            Some("https://example.com/")
+        );
+        assert_eq!(grid.cells[&(0, 1)].spans[0].text, "12.50%");
+        let area = Merge {
+            top: 0,
+            left: 0,
+            bottom: 3,
+            right: 1,
+        };
+        assert_eq!(grid.declared.tables, [(area, 2)]);
+        assert_eq!(grid.declared.print_title_rows, Some((0, 0)));
     }
 
     #[test]

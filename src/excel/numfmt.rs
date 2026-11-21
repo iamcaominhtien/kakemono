@@ -16,7 +16,6 @@
 //! and `,` the thousands separator, whatever the locale.
 
 /// The number format of a cell.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum NumFmt {
     /// Excel's `General`: the number as it is, up to 11 significant digits.
@@ -57,7 +56,6 @@ const EPOCH_1904_DAYS: i64 = -24_107;
 /// The number format of a built-in id, as Excel (en-US) defines it, except
 /// that dates and times are ISO and the currency formats have no symbol.
 /// An id Excel does not define is General.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn builtin(id: u32) -> NumFmt {
     let code = match id {
         1 => "0",
@@ -92,7 +90,6 @@ pub(crate) fn builtin(id: u32) -> NumFmt {
 }
 
 /// Whether `fmt` shows a date or a time.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_date(fmt: &NumFmt) -> bool {
     match fmt {
         NumFmt::General => false,
@@ -102,7 +99,6 @@ pub(crate) fn is_date(fmt: &NumFmt) -> bool {
 
 /// `value` as Excel shows it with the format `fmt`; `date1904` when the
 /// workbook counts dates from 1904.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format(value: f64, fmt: &NumFmt, date1904: bool) -> String {
     let NumFmt::Code(code) = fmt else {
         return general(value);
