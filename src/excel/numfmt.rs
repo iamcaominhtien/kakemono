@@ -43,6 +43,9 @@ const MAX_SERIAL_1904: f64 = MAX_SERIAL_1900 - 1462.0;
 const LEAP_DAY_1900: i64 = 60;
 /// The most digits a fraction's denominator is searched with (`???/???`).
 const MAX_FRACTION_DIGITS: usize = 3;
+/// The longest format code Excel accepts, in characters; a longer one is
+/// read as General.
+const MAX_CODE_CHARS: usize = 255;
 /// Seconds in a day.
 const DAY_SECONDS: i64 = 86_400;
 /// Days from 1970-01-01 back to 1899-12-30, the day before serial 1 that
@@ -104,10 +107,16 @@ pub(crate) fn format(value: f64, fmt: &NumFmt, date1904: bool) -> String {
     let NumFmt::Code(code) = fmt else {
         return general(value);
     };
-    if !value.is_finite() {
+    // An overlong code is not one Excel writes, and it would be slow.
+    if !value.is_finite() || code.chars().count() > MAX_CODE_CHARS {
         return general(value);
     }
     let sections = sections(code);
+    // An empty code is General; only an empty section of a longer code
+    // (`;;;`) hides the value.
+    if sections.len() == 1 && sections[0].is_empty() {
+        return general(value);
+    }
     if sections.first().is_some_and(|tokens| is_date_section(tokens)) {
         return date_time(value, &sections[0], date1904).unwrap_or_else(|| general(value));
     }
@@ -149,7 +158,8 @@ enum Token {
     Exponent { plus: bool },
     /// The bar of a fraction.
     Slash,
-    /// `General` inside a code.
+    /// `General` inside a code, or the text placeholder `@`, which shows
+    /// a number as General does.
     General,
     /// A date or time part.
     Date(DatePart),
@@ -213,7 +223,8 @@ fn sections(code: &str) -> Vec<Vec<Token>> {
             ',' => tokens.push(Token::Comma),
             '%' => tokens.push(Token::Percent),
             '/' => tokens.push(Token::Slash),
-            '@' => {}
+            // The text placeholder shows a number as General does.
+            '@' => tokens.push(Token::General),
             'E' | 'e' if matches!(chars.get(at), Some('+' | '-')) => {
                 tokens.push(Token::Exponent { plus: chars[at] == '+' });
                 at += 1;
@@ -910,6 +921,19 @@ mod tests {
         assert_eq!(format(0.333, &builtin(13), false), "1/3");
         assert_eq!(code(2.25, "# ?/100"), "2 25/100");
         assert_eq!(code(0.5, "?/8"), "4/8");
+    }
+
+    #[test]
+    fn text_and_empty_codes_show_the_number() {
+        assert_eq!(format(5.0, &builtin(49), false), "5");
+        assert_eq!(code(-2.5, "@"), "-2.5");
+        assert_eq!(code(5.0, ""), "5");
+        assert_eq!(code(5.0, ";;;"), "");
+    }
+
+    #[test]
+    fn overlong_codes_are_general() {
+        assert_eq!(code(1234.5, &"0".repeat(10_000)), "1234.5");
     }
 
     #[test]
