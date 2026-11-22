@@ -198,8 +198,9 @@ pub(crate) struct Series {
     /// accent colour of its index.
     pub(crate) color: Rgb,
     /// The colour of each point, when the group varies its colours by
-    /// point (a pie): a point's own fill (`c:dPt`), else the accent colour
-    /// of its index. Empty otherwise.
+    /// point (a pie: a point's own fill, `c:dPt`, else the accent colour of
+    /// its index) or some points have a fill of their own (else the series
+    /// colour). Empty when every point takes the series colour.
     pub(crate) point_colors: Vec<Rgb>,
     /// Points are marked (a line or scatter series with markers).
     pub(crate) markers: bool,
@@ -255,6 +256,18 @@ pub(crate) struct Axis {
     pub(crate) title: Option<String>,
     /// The id of the axis this one crosses.
     pub(crate) cross_axis: Option<u32>,
+    /// The distance between two ticks (`c:majorUnit`), when the file fixes
+    /// it.
+    pub(crate) major_unit: Option<f64>,
+    /// Only every this many category labels is shown (`c:tickLblSkip`),
+    /// when the file says so.
+    pub(crate) label_skip: Option<usize>,
+    /// The tick labels are shown (`c:tickLblPos` is not `none`).
+    pub(crate) tick_labels: bool,
+    /// The categories cross this value axis between their ticks
+    /// (`c:crossBetween="between"`, the default), rather than on them
+    /// (`midCat`: an area chart's points on the plot's edges).
+    pub(crate) cross_between: bool,
 }
 
 /// What an axis shows.

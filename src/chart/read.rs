@@ -228,7 +228,10 @@ fn plot_group(node: Node<'_, '_>, theme: &Theme, limits: &mut Limits<'_>) -> Opt
         }
         _ => return None,
     };
-    let vary_colors = flag(node, "varyColors").unwrap_or(false);
+    // Excel varies the colours by point in a round chart, or in a chart
+    // of a single series; it leaves the flag of other charts aside.
+    let round = matches!(kind, ChartKind::Pie { .. } | ChartKind::Doughnut { .. });
+    let vary_colors = flag(node, "varyColors").unwrap_or(false) && (round || c_children(node, "ser").nth(1).is_none());
     let mut series: Vec<(u32, Series)> = Vec::new();
     for (position, ser) in c_children(node, "ser").enumerate() {
         if !limits.take_series() {
@@ -242,7 +245,7 @@ fn plot_group(node: Node<'_, '_>, theme: &Theme, limits: &mut Limits<'_>) -> Opt
         three_d: name.contains("3D"),
         vary_colors,
         axis_ids: c_children(node, "axId")
-            .filter_map(|id| id.attribute("val")?.parse().ok())
+            .filter_map(|id| axis_id(id.attribute("val")?))
             .collect(),
         series: series.into_iter().map(|(_, series)| series).collect(),
     })
@@ -319,12 +322,8 @@ fn read_series(
     let automatic = theme.automatic(index as usize);
     let props = chart_el(ser, "spPr");
     let color = series_color(ser, props, line_like, theme, automatic);
-    let point_colors = if vary_colors {
-        let count = values.as_ref().map_or(0, |values| values.points.len());
-        point_colors(ser, count, theme)
-    } else {
-        Vec::new()
-    };
+    let count = values.as_ref().map_or(0, |values| values.points.len());
+    let point_colors = point_colors(ser, count, theme, (!vary_colors).then_some(color));
     let no_line = props
         .and_then(|props| child(props, DRAWING_NS, "ln"))
         .is_some_and(|ln| child(ln, DRAWING_NS, "noFill").is_some());
@@ -367,18 +366,24 @@ fn series_color(ser: Node<'_, '_>, props: Option<Node<'_, '_>>, line_like: bool,
     chosen.unwrap_or(automatic)
 }
 
-/// The colour of each of the `count` points of a series whose group
-/// varies its colours: a point's own fill (`c:dPt`), else the automatic
-/// colour of its index.
-fn point_colors(ser: Node<'_, '_>, count: usize, theme: &Theme) -> Vec<Rgb> {
-    let mut colors: Vec<Rgb> = (0..count).map(|index| theme.automatic(index)).collect();
-    for point in c_children(ser, "dPt") {
-        let Some(index) = val(point, "idx").and_then(|text| text.parse::<usize>().ok()) else {
-            continue;
-        };
-        let Some(slot) = colors.get_mut(index) else {
-            continue;
-        };
+/// The colour of each of the `count` points of a series: a point's own
+/// fill (`c:dPt`), else `series` (the series colour), or, when that is
+/// `None` (a group that varies its colours), the automatic colour of the
+/// point's index. Empty when the points take the series colour and none
+/// has a fill of its own.
+fn point_colors(ser: Node<'_, '_>, count: usize, theme: &Theme, series: Option<Rgb>) -> Vec<Rgb> {
+    let own: Vec<(usize, Node<'_, '_>)> = c_children(ser, "dPt")
+        .filter_map(|point| Some((val(point, "idx")?.parse::<usize>().ok()?, point)))
+        .filter(|(index, _)| *index < count)
+        .collect();
+    if series.is_some() && own.is_empty() {
+        return Vec::new();
+    }
+    let mut colors: Vec<Rgb> = (0..count)
+        .map(|index| series.unwrap_or_else(|| theme.automatic(index)))
+        .collect();
+    for (index, point) in own {
+        let slot = &mut colors[index];
         if let Some(rgb) = chart_el(point, "spPr").and_then(|props| fill_color(props, theme, *slot)) {
             *slot = rgb;
         }
@@ -537,7 +542,7 @@ fn axis(node: Node<'_, '_>, limits: &mut Limits<'_>) -> Option<Axis> {
         .and_then(|fmt| fmt.attribute("formatCode"))
         .map(num_fmt);
     Some(Axis {
-        id: val(node, "axId").and_then(|text| text.parse().ok()).unwrap_or(0),
+        id: val(node, "axId").and_then(axis_id).unwrap_or(0),
         kind,
         position: match val(node, "axPos") {
             Some("l") => AxisPosition::Left,
@@ -552,8 +557,22 @@ fn axis(node: Node<'_, '_>, limits: &mut Limits<'_>) -> Option<Axis> {
         format,
         major_gridlines: chart_el(node, "majorGridlines").is_some(),
         title: chart_el(node, "title").and_then(|title| title_text(title, limits)),
-        cross_axis: val(node, "crossAx").and_then(|text| text.parse().ok()),
+        cross_axis: val(node, "crossAx").and_then(axis_id),
+        major_unit: val(node, "majorUnit").and_then(number).filter(|unit| *unit > 0.0),
+        label_skip: val(node, "tickLblSkip")
+            .and_then(|text| text.parse().ok())
+            .filter(|skip| *skip > 0),
+        tick_labels: val(node, "tickLblPos") != Some("none"),
+        cross_between: val(node, "crossBetween") != Some("midCat"),
     })
+}
+
+/// The axis id `text`: an unsigned number as the schema says, or a
+/// negative one as some writers give it, kept as the same 32 bits.
+fn axis_id(text: &str) -> Option<u32> {
+    text.parse::<u32>()
+        .ok()
+        .or_else(|| text.parse::<i32>().ok().map(|id| id.cast_unsigned()))
 }
 
 /// The legend position `pos` (`c:legendPos`); Excel's default, the right,
@@ -798,6 +817,57 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn points_with_their_own_fill_keep_it_without_varied_colours() {
+        let point =
+            r#"<c:dPt><c:idx val="1"/><c:spPr><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></c:spPr></c:dPt>"#;
+        let plot = format!(
+            r#"<c:barChart><c:varyColors val="0"/>{}{}</c:barChart>"#,
+            ser(0, "A", &["a", "b", "c"], &["1", "2", "3"], point),
+            ser(1, "B", &["a", "b", "c"], &["1", "2", "3"], "")
+        );
+        let chart = chart(&space("", &plot));
+        let series = &chart.groups[0].series;
+        let own = series[0].color;
+        assert_eq!(series[0].point_colors, vec![own, [0, 255, 0], own]);
+        // A series whose points have no fill of their own: none.
+        assert!(series[1].point_colors.is_empty());
+    }
+
+    #[test]
+    fn varied_colours_need_a_single_series_except_in_round_charts() {
+        let bars = format!(
+            r#"<c:barChart><c:varyColors val="1"/>{}{}</c:barChart>"#,
+            ser(0, "A", &["a", "b"], &["1", "2"], ""),
+            ser(1, "B", &["a", "b"], &["1", "2"], "")
+        );
+        let read = chart(&space("", &bars));
+        assert!(!read.groups[0].vary_colors);
+        assert!(read.series().all(|series| series.point_colors.is_empty()));
+        let rings = bars.replace("barChart", "doughnutChart");
+        let read = chart(&space("", &rings));
+        assert!(read.groups[0].vary_colors);
+        assert!(read.series().all(|series| series.point_colors.len() == 2));
+    }
+
+    #[test]
+    fn negative_axis_ids_still_match() {
+        let axes = AXIS_PARTS.replace(r#"val="1""#, r#"val="-2102169416""#);
+        let plot = format!(
+            r#"<c:barChart>{}<c:axId val="-2102169416"/><c:axId val="2"/></c:barChart>{axes}"#,
+            ser(0, "a", &["x"], &["1"], "")
+        );
+        let read = chart(&space("", &plot));
+        let id = read.groups[0].axis_ids[0];
+        assert_eq!(read.groups[0].axis_ids.len(), 2);
+        assert!(
+            read.axes
+                .iter()
+                .any(|axis| axis.id == id && axis.kind == AxisKind::Category)
+        );
+        assert_eq!(read.axes[1].cross_axis, Some(id));
+    }
+
+    #[test]
     fn three_d_pie_is_a_pie_marked_three_d() {
         let plot = format!(
             r#"<c:pie3DChart><c:varyColors val="1"/>{}</c:pie3DChart>"#,
@@ -1007,6 +1077,30 @@ pub(super) mod tests {
         assert_eq!(bars[3].color, theme.automatic(6));
         // A line series is the colour of its line.
         assert_eq!(chart.groups[1].series[0].color, [0xAB, 0xCD, 0xEF]);
+    }
+
+    #[test]
+    fn axes_major_unit_label_position_skip_and_crossing() {
+        let axes = r#"<c:catAx><c:axId val="1"/><c:scaling/><c:axPos val="b"/><c:tickLblPos val="nextTo"/><c:crossAx val="2"/><c:tickLblSkip val="6"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling/><c:axPos val="l"/><c:tickLblPos val="none"/><c:crossAx val="1"/><c:crossBetween val="midCat"/><c:majorUnit val="40"/></c:valAx>"#;
+        let plot = format!(
+            r#"<c:areaChart>{}{AXES}</c:areaChart>{axes}"#,
+            ser(0, "a", &["x"], &["1"], "")
+        );
+        let read = chart(&space("", &plot));
+        let [cat, val] = &read.axes[..] else { panic!("two axes") };
+        assert_eq!((cat.label_skip, cat.major_unit), (Some(6), None));
+        assert!(cat.tick_labels && cat.cross_between);
+        assert_eq!((val.label_skip, val.major_unit), (None, Some(40.0)));
+        assert!(!val.tick_labels && !val.cross_between);
+        // Absent: labels next to the axis, crossing between categories.
+        let plain = chart_with_axes();
+        assert!(plain.axes.iter().all(|axis| axis.tick_labels && axis.cross_between));
+        // A unit that is not a positive number is none.
+        let odd = chart(&space(
+            "",
+            &plot.replace(r#"<c:majorUnit val="40"/>"#, r#"<c:majorUnit val="-1"/>"#),
+        ));
+        assert_eq!(odd.axes[1].major_unit, None);
     }
 
     #[test]
