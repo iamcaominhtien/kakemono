@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [**breaking**] Added notes in the editable JSON and every output ([#23](https://github.com/iamcaominhtien/kakemono/pull/23))
 
-A `<note>…</note>` tag in the text of the editable JSON is now a note added to the text when it is edited, for example a translator's note, an editor's or a reviewer's. `--content` carries the notes into every output that shows edited text, numbered in reading order:
+A `<note>…</note>` tag in the text of the editable JSON is a note added to the text when it is edited: a translator's note, an editor's or a reviewer's, for example. `--content` carries these added notes into every output that shows edited text, numbered in reading order:
 
 - **friendly and medium**: a raised number links to the note. The notes are listed in a small aside after their block (after the next block, for a heading), each with a link back.
 - **hard-95**: the raised number opens the note in a popup, and hovering shows it as a tooltip.
@@ -26,7 +26,7 @@ What a note may contain:
 - It may hold style tags and links, but no formula and no other note. An unclosed `<note>`, a formula or a note inside a note is read with warnings.
 - Its text is printed exactly as given.
 
-The JSON written back gives the `<note>` tag again. `plain` and the chunks leave the notes out. Outputs without notes are unchanged: the style and script for notes are added only to pages that have notes.
+The tag is unrelated to a block of type `note`. The JSON written back gives the `<note>` tag again. `plain` and the chunks leave the notes out. Outputs without added notes are unchanged: the style and script for notes are added only to pages that have notes.
 
 **Breaking change:** `model::Span` has a new public field, `note: Option<Vec<Span>>`, which holds the content of an added note; the span itself is the note's call. Code that builds a `Span` with a struct literal must set it.
 
