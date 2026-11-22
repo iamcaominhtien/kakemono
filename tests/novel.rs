@@ -19,10 +19,26 @@ fn text(font: &str, size: u32, x: u32, y: u32, line: &str) -> String {
     format!("BT /{font} {size} Tf {x} {y} Td ({line}) Tj ET\n")
 }
 
-/// A line centred on the page, its width estimated from its length.
+/// The advance of `ch` in thousandths of an em: the Times-Bold widths of
+/// capitals, figures and the ornament's characters (Times-Roman has the
+/// same for " " and "*"), else an average.
+fn advance(ch: char) -> u32 {
+    let capitals = [
+        722, 667, 722, 722, 667, 611, 778, 778, 389, 500, 778, 667, 944, 722, 778, 611, 778, 722, 556, 667, 722, 722,
+        1000, 722, 722, 667,
+    ];
+    match ch {
+        'A'..='Z' => capitals[ch as usize - 'A' as usize],
+        '0'..='9' | '*' => 500,
+        ' ' => 250,
+        _ => 600,
+    }
+}
+
+/// A line centred on the page, its width taken from [`advance`].
 fn centred(font: &str, size: u32, y: u32, line: &str) -> String {
-    let width = line.len() as u32 * size * 6 / 10;
-    text(font, size, 306 - width / 2, y, line)
+    let width = line.chars().map(advance).sum::<u32>() as f32 * size as f32 / 1000.0;
+    text_at(font, size, 306.0 - width / 2.0, y, line)
 }
 
 /// A page of the novel: the chapter heading (bold, centred), the ornament
@@ -105,8 +121,19 @@ fn blocks() -> Vec<(String, String)> {
     // since no chapter 11 or 13 is around it.
     let decoy = centred("F2", 16, 480, "12");
     let title = centred("F2", 24, 600, "THE NUMBERED CHAPTERS") + &centred("F1", 14, 560, "A. N. Author");
+    // An unnumbered prologue, its title on three lines with the ornament
+    // right under them in the same size, in the same block (four lines in
+    // all).
+    let mut prologue = centred("F2", 16, 700, "PROLOGUE");
+    prologue.push_str(&centred("F2", 16, 681, "THE NARRATOR SPEAKS"));
+    prologue.push_str(&centred("F2", 16, 662, "OF THE CRIMES"));
+    prologue.push_str(&centred("F1", 16, 643, "* * *"));
+    for (i, line) in TEXT.iter().enumerate() {
+        prologue.push_str(&text("F1", 11, 72, 610 - 14 * i as u32, line));
+    }
     let pages = [
         title,
+        prologue,
         chapter("1 ROGER", ""),
         chapter("2", ""),
         chapter("3 ANDOVER", &decoy),
@@ -128,6 +155,7 @@ fn bare_chapter_numbers_in_sequence_are_headings() {
     assert_eq!(
         headings,
         [
+            "PROLOGUE THE NARRATOR SPEAKS OF THE CRIMES * * *",
             "1 ROGER * * *",
             "2 * * *",
             "3 ANDOVER * * *",
@@ -312,4 +340,33 @@ fn drop_cap_over_three_lines_keeps_its_paragraph_whole() {
     assert_eq!(kind, "Paragraph { in_abstract: false }");
     assert!(text.starts_with("The letter came"), "{text}");
     assert!(text.ends_with("done at all, and of"), "{text}");
+}
+
+#[test]
+fn prologue_with_its_ornament_apart_is_a_heading() {
+    // The title of the prologue on three lines, the smaller ornament a
+    // block of its own under them.
+    let mut prologue = centred("F2", 16, 700, "PROLOGUE");
+    prologue.push_str(&centred("F2", 16, 681, "THE NARRATOR SPEAKS"));
+    prologue.push_str(&centred("F2", 16, 662, "OF THE CRIMES"));
+    prologue.push_str(&centred("F1", 12, 638, "* * *"));
+    for (i, line) in TEXT.iter().enumerate() {
+        prologue.push_str(&text("F1", 11, 72, 604 - 14 * i as u32, line));
+    }
+    let pages = [
+        centred("F2", 24, 600, "THE NUMBERED CHAPTERS"),
+        prologue,
+        chapter("1 ROGER", ""),
+    ];
+    let blocks = blocks_of(&pages);
+    let headings: Vec<&str> = blocks
+        .iter()
+        .filter(|(kind, _)| kind == "h1")
+        .map(|(_, text)| text.as_str())
+        .collect();
+    assert_eq!(
+        headings,
+        ["PROLOGUE THE NARRATOR SPEAKS OF THE CRIMES * * *", "1 ROGER * * *"],
+        "{blocks:#?}"
+    );
 }

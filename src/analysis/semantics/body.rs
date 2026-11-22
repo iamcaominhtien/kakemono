@@ -403,6 +403,7 @@ fn find_heading_candidates(
         }
         let is_heading = number.is_some()
             || label_title
+            || is_ornamented_heading(&features, block, ornament_after(nodes, idx, cfg), cfg)
             || is_known_heading(&features, &cfg.body)
             || is_styled_heading(&features, block, &cfg.body);
         if !is_heading || (number.is_none() && !features.known && is_embedded_title(node, block, &features, &cfg.body))
@@ -639,7 +640,13 @@ fn heading_features<'a>(
 ) -> Option<HeadingFeatures<'a>> {
     let body = &cfg.body;
     let nchars = text.chars().count();
-    if block.lines.len() > body.heading_max_lines_count
+    // The ornament under a chapter heading ("◄○►") is not a line of it.
+    let lines = block
+        .lines
+        .iter()
+        .filter(|line| !is_ornament(&line.text(), cfg.paragraphs.ornament_max_chars_count))
+        .count();
+    if lines > body.heading_max_lines_count
         || !(body.heading_min_chars_count..=body.heading_max_chars_count).contains(&nchars)
     {
         return None;
@@ -718,6 +725,47 @@ fn child_number(
     let ends_sentence = features.text.ends_with(['.', ':']);
     (lines_count == 1 && short && capital && !ends_sentence && numbers.contains(parent))
         .then(|| dotted_number(&captures["num"]))
+}
+
+/// Whether the node after `nodes[idx]`, on the same page, is an ornament
+/// ("◄○►") set apart from it.
+fn ornament_after(nodes: &[Node], idx: usize, cfg: &SemanticsConfig) -> bool {
+    nodes.get(idx + 1).is_some_and(|next| {
+        next.loc.page == nodes[idx].loc.page
+            && next
+                .text_block()
+                .is_some_and(|block| is_ornament(&block_text(&block.lines), cfg.paragraphs.ornament_max_chars_count))
+    })
+}
+
+/// A heading marked by the ornament set under it ("MỞ ĐẦU / LỜI KỂ CỦA ĐẠI
+/// ÚY ARTHUR HASTINGS / ◄○►", the prologue of a novel whose chapters are
+/// set so): its last line is an ornament, or the block after it is one
+/// (`ornament_after`); the lines above it are bold or in capitals, few
+/// words and not a sentence.
+fn is_ornamented_heading(
+    features: &HeadingFeatures<'_>,
+    block: &TextBlock,
+    ornament_after: bool,
+    cfg: &SemanticsConfig,
+) -> bool {
+    let ornament = |line: &Line| is_ornament(&line.text(), cfg.paragraphs.ornament_max_chars_count);
+    let title_lines = if block.lines.last().is_some_and(ornament) {
+        &block.lines[..block.lines.len() - 1]
+    } else if ornament_after {
+        &block.lines[..]
+    } else {
+        return false;
+    };
+    !title_lines.is_empty()
+        && !title_lines.iter().any(ornament)
+        && (features.strong || features.caps)
+        && features.words <= cfg.body.styled_heading_max_words_count
+        && !title_lines[title_lines.len() - 1]
+            .text()
+            .trim_end()
+            .trim_end_matches(CLOSING_QUOTES)
+            .ends_with(['.', '?', '!'])
 }
 
 /// "CHAPTER TWO", "Chapter 3": a chapter label set alone on one line, in

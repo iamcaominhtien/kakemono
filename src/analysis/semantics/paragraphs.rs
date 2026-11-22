@@ -198,7 +198,7 @@ fn join_heading_ornaments(nodes: &mut Vec<Node>, cfg: &ParagraphsConfig) {
             && nodes[i + 1].loc.page == nodes[i].loc.page
             && nodes[i + 1]
                 .text_block()
-                .is_some_and(|block| is_ornament(&block_text(&block.lines), cfg));
+                .is_some_and(|block| is_ornament(&block_text(&block.lines), cfg.ornament_max_chars_count));
         if joins {
             if let NodeKind::Text(ornament) = &nodes[i + 1].kind {
                 let bbox = ornament.bbox;
@@ -210,13 +210,6 @@ fn join_heading_ornaments(nodes: &mut Vec<Node>, cfg: &ParagraphsConfig) {
         }
         i += 1;
     }
-}
-
-/// Whether `text` is an ornament: a few characters, none a letter or a
-/// digit.
-fn is_ornament(text: &str, cfg: &ParagraphsConfig) -> bool {
-    let chars: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
-    !chars.is_empty() && chars.len() <= cfg.ornament_max_chars_count && chars.iter().all(|ch| !ch.is_alphanumeric())
 }
 
 /// The class of the heading made of the chapter label `label` and the
@@ -641,16 +634,17 @@ fn has_footnote_mark(block: &TextBlock) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParagraphsConfig, is_ornament};
+    use super::ParagraphsConfig;
+    use crate::analysis::semantics::is_ornament;
 
     #[test]
     fn ornaments_have_no_letters_or_digits() {
         let cfg = ParagraphsConfig::default();
         for ornament in ["◄○►", "* * *", "❦", "~ ~"] {
-            assert!(is_ornament(ornament, &cfg), "{ornament}");
+            assert!(is_ornament(ornament, cfg.ornament_max_chars_count), "{ornament}");
         }
         for text in ["2", "A", "* * * * * * * * * * * * *", "", "(1)"] {
-            assert!(!is_ornament(text, &cfg), "{text}");
+            assert!(!is_ornament(text, cfg.ornament_max_chars_count), "{text}");
         }
     }
 }
