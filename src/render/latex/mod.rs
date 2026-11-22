@@ -21,7 +21,7 @@ use super::{
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
-use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
+use crate::model::{BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
 use crate::paper::InputFormat;
 use crate::render::Pictures;
 use math::latex;
@@ -79,23 +79,26 @@ const CJK_FONTS: &str = r#"\ifLuaTeX
      \setCJKmonofont{HaranoAjiGothic-Medium.otf}}
 \fi
 "#;
-/// Body rows of a table from which it is a `longtable`, broken across
-/// pages with its header repeated, rather than one box shrunk to the width
-/// of the text: a box never breaks, so a table taller than the page is cut
-/// at its bottom, and a huge one exhausts TeX's memory. 30 rows of 11 pt
-/// text are about 410 pt high, under two thirds of the text height (650
-/// pt): a shorter table, with its caption, always fits on a page.
-const LONG_TABLE_MIN_BODY_ROWS: usize = 30;
+/// Most body rows of a table set as one box, shrunk to the width of the
+/// text; a table with more is a `longtable`, broken across pages with its
+/// header repeated: a box never breaks, so a table taller than the page is
+/// cut at its bottom, and a huge one exhausts TeX's memory. 30 rows of
+/// 11 pt text are about 410 pt high, under two thirds of the text height
+/// (650 pt): a table of at most 30 rows, with its caption, always fits on
+/// a page.
+const MAX_BOXED_TABLE_BODY_ROWS: usize = 30;
 /// The font and column spacing of a long table, which is not shrunk to the
 /// width of the text: (most columns, size command, font size in pt,
-/// `\tabcolsep` in pt) in order, the first that the table's column count
-/// fits deciding. The sizes are those of the 11 pt `article` class, whose
-/// `\tabcolsep` is 6 pt.
+/// `\tabcolsep` in pt). The first that the table's column count fits is
+/// tried first; when the table is then wider than the text, the next ones
+/// in turn. `\tiny` is only such a last resort. The sizes are those of the
+/// 11 pt `article` class, whose `\tabcolsep` is 6 pt.
 const LONG_TABLE_SIZES: &[(usize, &str, f32, f32)] = &[
     (4, "", 10.95, 6.0),
     (6, "\\small", 10.0, 4.0),
     (9, "\\footnotesize", 9.0, 3.0),
     (usize::MAX, "\\scriptsize", 8.0, 2.0),
+    (usize::MAX, "\\tiny", 6.0, 1.0),
 ];
 /// The height of the text in pt: letter paper with the 2.5 cm margins of
 /// [`PREAMBLE`]. Only used to guess whether the header of a long table is
@@ -115,15 +118,41 @@ const MIN_EVEN_SHARE_RATIO: f32 = 0.5;
 /// The width of the text in pt: letter paper with the 2.5 cm margins of
 /// [`PREAMBLE`]. Only used to guess whether a long table fits the line.
 const TEXT_WIDTH_PT: f32 = 472.0;
-/// The width guessed for a CJK character (fullwidth) in em, and for any
-/// other character.
+/// The width guessed for a CJK character (fullwidth) in em.
 const CJK_CHAR_EM: f32 = 1.0;
-/// See [`CJK_CHAR_EM`].
+/// The width guessed for a capital letter, `m` or `w` in em (those of
+/// Latin Modern are 0.68 to 0.83 em).
+const WIDE_CHAR_EM: f32 = 0.75;
+/// The width guessed for `f i j l r t`, punctuation and a space in em
+/// (0.28 to 0.39 em in Latin Modern).
+const NARROW_CHAR_EM: f32 = 0.33;
+/// The width guessed for any other character in em (a figure is 0.5 em).
 const OTHER_CHAR_EM: f32 = 0.5;
+/// How much wider the bold text of a header cell is.
+const BOLD_WIDTH_RATIO: f32 = 1.1;
+/// The narrowest a column of a long table is ever made, in em of its font:
+/// the room for one CJK character.
+const MIN_COLUMN_EM: f32 = 1.0;
+/// The share of the width of the text that the guessed widths of the
+/// columns of a long table may fill: the guesses run short by up to a
+/// tenth (bold cells, wide letters), and a table wider than the text runs
+/// off the page.
+const LONG_TABLE_FILL_RATIO: f32 = 0.9;
+/// How much more than [`LONG_TABLE_FILL_RATIO`] of the width of the text
+/// the columns of a long table may be guessed to take and still be taken
+/// to fit (rounding).
+const FIT_TOLERANCE_RATIO: f32 = 0.001;
+/// The share of the width of the text that the guessed widths of a group
+/// of columns may fill (see `column_groups`): the guesses run short in the
+/// smallest fonts, whose figures are relatively wider.
+const COLUMN_GROUP_FILL_RATIO: f32 = 0.85;
 /// The narrowest a wrapped column of a long table is made, in em of its font.
 const MIN_WRAPPED_COLUMN_EM: f32 = 4.0;
 /// The packages of a long table, loaded when the document has one.
 const LONG_TABLE_PACKAGES: &str = "\\usepackage{longtable}\n\\usepackage{array}\n";
+/// The package of a table on landscape pages, loaded when the document has
+/// one.
+const LANDSCAPE_PACKAGE: &str = "\\usepackage{pdflscape}\n";
 /// Where [`LONG_TABLE_PACKAGES`] go in [`PREAMBLE`].
 const TABLE_PACKAGES_END: &str = "\\usepackage{multirow}\n";
 /// Lists LaTeX can nest inside a list (it allows four levels in all).
@@ -256,9 +285,14 @@ fn document(doc: &Document, body: &str, input: InputFormat) -> String {
     };
     out = out.replacen("Converted from a PDF", &format!("Converted from {}", input.phrase()), 1);
     if body.contains("\\begin{longtable}") {
+        let landscape = if body.contains("\\begin{landscape}") {
+            LANDSCAPE_PACKAGE
+        } else {
+            ""
+        };
         out = out.replacen(
             TABLE_PACKAGES_END,
-            &format!("{TABLE_PACKAGES_END}{LONG_TABLE_PACKAGES}"),
+            &format!("{TABLE_PACKAGES_END}{LONG_TABLE_PACKAGES}{landscape}"),
             1,
         );
     }
@@ -835,8 +869,8 @@ impl Writer<'_, '_> {
         let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
             Some(
-                if table.rows.len().saturating_sub(table.header_rows) > LONG_TABLE_MIN_BODY_ROWS {
-                    self.longtable(table)
+                if table.rows.len().saturating_sub(table.header_rows) > MAX_BOXED_TABLE_BODY_ROWS {
+                    return self.paragraph(&self.longtable(table, caption.as_deref(), caption_first));
                 } else {
                     format!(
                         "\\begin{{center}}\n\\begin{{kakemonotable}}\n{}\n\\end{{kakemonotable}}\n\\end{{center}}",
@@ -915,14 +949,69 @@ impl Writer<'_, '_> {
     /// A rebuilt table as a `longtable`, which breaks across pages with
     /// its header rows repeated at the top of each, in a smaller font when
     /// it has many columns ([`LONG_TABLE_SIZES`]); its long columns wrap
-    /// when it would be wider than the text.
-    fn longtable(&self, table: &Table) -> String {
+    /// when it would be wider than the text. No column is ever cut off:
+    /// a table still too wide in the smallest font is set on landscape
+    /// pages, and one too wide even there is cut into groups of columns,
+    /// each a table of its own with the first column repeated. Its
+    /// `caption` (before it when `caption_first`) is kept on its page.
+    fn longtable(&self, table: &Table, caption: Option<&str>, caption_first: bool) -> String {
         let n_cols = table.n_cols.max(1);
-        let &(_, size, size_pt, tabcolsep_pt) = LONG_TABLE_SIZES
+        let start = LONG_TABLE_SIZES
             .iter()
-            .find(|(most, ..)| n_cols <= *most)
-            .expect("the last size takes any count");
-        let cols = Columns::fitted(table, size_pt, tabcolsep_pt);
+            .position(|(most, ..)| n_cols <= *most)
+            .expect("the last sizes take any count");
+        let portrait = LONG_TABLE_SIZES[start..].iter().find_map(|&size| {
+            let cols = Columns::fitted(table, size.2, size.3, TEXT_WIDTH_PT);
+            cols.fits().then_some((size, cols))
+        });
+        let (tables, landscape) = match portrait {
+            Some((size, cols)) => (self.longtable_part(table, &cols, size, TEXT_HEIGHT_PT), false),
+            None => {
+                // Turned, in the smallest font: the width of the text is
+                // the height of the page.
+                let size = *LONG_TABLE_SIZES.last().expect("sizes");
+                let cols = Columns::fitted(table, size.2, size.3, TEXT_HEIGHT_PT);
+                let tables = if cols.fits() {
+                    self.longtable_part(table, &cols, size, TEXT_WIDTH_PT)
+                } else {
+                    column_groups(&cols)
+                        .iter()
+                        .map(|group| {
+                            let part = table_columns(table, group);
+                            let cols = Columns::fitted(&part, size.2, size.3, TEXT_HEIGHT_PT);
+                            self.longtable_part(&part, &cols, size, TEXT_WIDTH_PT)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                };
+                (tables, true)
+            }
+        };
+        // `\nopagebreak` keeps the caption on the page of the first rows
+        // (or of the last ones, below the table).
+        let body = match caption {
+            Some(caption) if caption_first => format!("{caption}\n\n\\nopagebreak\n{tables}"),
+            Some(caption) => format!("{tables}\n\\nopagebreak\n\n{caption}"),
+            None => tables,
+        };
+        if landscape {
+            format!("\\begin{{landscape}}\n{body}\n\\end{{landscape}}")
+        } else {
+            body
+        }
+    }
+
+    /// One `longtable` of `table` in the columns `cols`, at `size` (a row of
+    /// [`LONG_TABLE_SIZES`]), on pages whose text is `page_height_pt` high.
+    fn longtable_part(
+        &self,
+        table: &Table,
+        cols: &Columns,
+        size: (usize, &str, f32, f32),
+        page_height_pt: f32,
+    ) -> String {
+        let (_, size, size_pt, tabcolsep_pt) = size;
+        let n_cols = table.n_cols.max(1);
         let spec: String = (0..n_cols).map(|col| cols.spec(col)).collect();
         let mut lines = Vec::new();
         if !size.is_empty() {
@@ -932,7 +1021,7 @@ impl Writer<'_, '_> {
         }
         lines.push(format!("\\begin{{longtable}}{{{spec}}}"));
         lines.push("\\toprule".to_string());
-        let rows = self.rows(table, &cols, true);
+        let rows = self.rows(table, cols, true);
         let header = table.header_rows.min(table.rows.len());
         if header > 0 && header < table.rows.len() {
             // The header rows and the rule under them: `rows` puts it
@@ -940,7 +1029,7 @@ impl Writer<'_, '_> {
             // only on the first page.
             lines.extend(rows[..=header].iter().cloned());
             if cols.header_lines(table) as f32 * size_pt * LINE_HEIGHT_RATIO
-                > LONG_TABLE_MAX_HEAD_RATIO * TEXT_HEIGHT_PT
+                > LONG_TABLE_MAX_HEAD_RATIO * page_height_pt
             {
                 lines.push("\\endfirsthead".to_string());
                 lines.push("\\toprule".to_string());
@@ -1010,7 +1099,7 @@ impl Writer<'_, '_> {
         let text = self.text.spans(&cell.spans);
         let text = if rowspan > 1 {
             // In a wrapped column, `=` sets the text at the column's width.
-            let width = if cols.wraps(col, colspan) { "=" } else { "*" };
+            let width = if cols.paragraph(col, colspan) { "=" } else { "*" };
             format!("\\multirow{{{rowspan}}}{{{width}}}{{{text}}}")
         } else {
             text
@@ -1035,6 +1124,9 @@ struct Columns {
     em_share: f32,
     /// See [`Columns::em_share`].
     pad_share: f32,
+    /// The least share of the width each column can take: its longest word
+    /// (at least 1 em) when it wraps, its text otherwise.
+    least: Vec<f32>,
 }
 
 impl Columns {
@@ -1047,7 +1139,13 @@ impl Columns {
             share: vec![0.0; n_cols],
             em_share: 0.0,
             pad_share: 0.0,
+            least: vec![0.0; n_cols],
         }
+    }
+
+    /// Whether the columns fit the width of the text they were fitted to.
+    fn fits(&self) -> bool {
+        self.share.iter().sum::<f32>() <= LONG_TABLE_FILL_RATIO + FIT_TOLERANCE_RATIO
     }
 
     /// The lines the header rows of `table` take, guessed: in each row,
@@ -1084,43 +1182,32 @@ impl Columns {
     /// share what the others leave in proportion to the mean width of
     /// their body cells, so that a typical row takes as many lines in each
     /// of them; each is at least [`MIN_WRAPPED_COLUMN_EM`] wide when there
-    /// is room for that ([`MIN_EVEN_SHARE_RATIO`]). The columns are
-    /// `tabcolsep_pt` apart on each side.
-    fn fitted(table: &Table, size_pt: f32, tabcolsep_pt: f32) -> Self {
+    /// is room for that ([`MIN_EVEN_SHARE_RATIO`]), and never under
+    /// [`MIN_COLUMN_EM`]. The columns are `tabcolsep_pt` apart on each side,
+    /// the text `width_pt` wide.
+    fn fitted(table: &Table, size_pt: f32, tabcolsep_pt: f32, width_pt: f32) -> Self {
         let mut cols = Self::plain(table);
         let n_cols = cols.align.len();
-        // The width of a column's longest body cell on one line, or of the
-        // longest word of a header cell (which may wrap); and the total
-        // width and count of its body cells with text.
-        let mut natural = vec![0.0f32; n_cols];
-        let mut body = vec![(0.0f32, 0usize); n_cols];
-        // The longest word of each column's body cells, and whether one of
-        // them has more than one word (a column of numbers or codes has
-        // none: it could not wrap).
-        let mut word = vec![0.0f32; n_cols];
-        let mut breaks = vec![false; n_cols];
-        for (row, cells) in table.rows.iter().enumerate() {
-            for cell in cells.iter().filter(|cell| cell.colspan <= 1 && cell.col < n_cols) {
-                let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
-                let em = if row < table.header_rows {
-                    word_em(&text)
-                } else {
-                    text_em(&text)
-                };
-                natural[cell.col] = natural[cell.col].max(em);
-                if row >= table.header_rows && em > 0.0 {
-                    body[cell.col].0 += em;
-                    body[cell.col].1 += 1;
-                    word[cell.col] = word[cell.col].max(word_em(&text));
-                    breaks[cell.col] |= word_em(&text) < em;
-                }
-            }
-        }
-        cols.em_share = size_pt / TEXT_WIDTH_PT;
-        cols.pad_share = tabcolsep_pt / TEXT_WIDTH_PT;
-        let share_of = |em: f32| (em * size_pt + 2.0 * tabcolsep_pt) / TEXT_WIDTH_PT;
+        let TextWidths {
+            natural,
+            body,
+            word,
+            breaks,
+        } = TextWidths::of(table, n_cols);
+        cols.em_share = size_pt / width_pt;
+        cols.pad_share = tabcolsep_pt / width_pt;
+        let share_of = |em: f32| (em * size_pt + 2.0 * tabcolsep_pt) / width_pt;
         cols.share = natural.iter().map(|&em| share_of(em)).collect();
-        if cols.share.iter().sum::<f32>() <= 1.0 {
+        cols.least = (0..n_cols)
+            .map(|col| {
+                if breaks[col] {
+                    share_of(word[col].max(MIN_COLUMN_EM))
+                } else {
+                    share_of(natural[col])
+                }
+            })
+            .collect();
+        if cols.share.iter().sum::<f32>() <= LONG_TABLE_FILL_RATIO {
             return cols;
         }
         let even = 1.0 / n_cols as f32;
@@ -1130,7 +1217,7 @@ impl Columns {
             .filter(|&col| !cols.wrap[col])
             .map(|col| cols.share[col])
             .sum();
-        let left = 1.0 - kept;
+        let left = LONG_TABLE_FILL_RATIO - kept;
         let weight = |col: usize| {
             let (sum, count) = body[col];
             (if count == 0 { 0.0 } else { sum / count as f32 }).max(MIN_WRAPPED_COLUMN_EM)
@@ -1147,7 +1234,13 @@ impl Columns {
         // is left when that is less. The others share the rest in
         // proportion to their weights.
         let even_left = left / wrapped.len() as f32;
-        let floor = |col: usize| share_of(MIN_WRAPPED_COLUMN_EM.max(word[col])).min(MIN_EVEN_SHARE_RATIO * even_left);
+        // Never under 1 em of text, whatever the room: a table that then
+        // does not fit is set smaller, turned or cut.
+        let floor = |col: usize| {
+            share_of(MIN_WRAPPED_COLUMN_EM.max(word[col]))
+                .min(MIN_EVEN_SHARE_RATIO * even_left)
+                .max(share_of(MIN_COLUMN_EM))
+        };
         let mut floored = vec![false; n_cols];
         loop {
             let free: Vec<usize> = wrapped.iter().copied().filter(|&col| !floored[col]).collect();
@@ -1186,12 +1279,21 @@ impl Columns {
         self.span_spec(col, 1)
     }
 
+    /// Whether the `width` columns from `col` are set as one `p` column:
+    /// when one of them wraps, or when they are a `\multicolumn` of a long
+    /// table, whose text could be wider than they are (its widths are not
+    /// counted in theirs).
+    fn paragraph(&self, col: usize, width: usize) -> bool {
+        let fitted = self.share.iter().any(|&share| share > 0.0);
+        self.wraps(col, width) || (width > 1 && fitted)
+    }
+
     /// The column specification of the `width` columns from `col` taken
-    /// together (a `\multicolumn`): the alignment of the first when none
-    /// wraps, else a `p` column as wide as all of them.
+    /// together (a `\multicolumn`): the alignment of the first, or a `p`
+    /// column as wide as all of them ([`Columns::paragraph`]).
     fn span_spec(&self, col: usize, width: usize) -> String {
         let align = self.align[col];
-        if !self.wraps(col, width) {
+        if !self.paragraph(col, width) {
             return align.to_string();
         }
         let share: f32 = self.share[col..col + width].iter().sum();
@@ -1201,6 +1303,114 @@ impl Columns {
             _ => "\\raggedright",
         };
         format!(">{{{ragged}\\arraybackslash}}p{{\\dimexpr{share:.4}\\linewidth-2\\tabcolsep\\relax}}")
+    }
+}
+
+/// The widths of the text of each column of a table, guessed in em.
+struct TextWidths {
+    /// The width of a column's longest cell on one line (a header cell is
+    /// bold).
+    natural: Vec<f32>,
+    /// The total width and the count of a column's body cells with text.
+    body: Vec<(f32, usize)>,
+    /// The longest word of a column's cells.
+    word: Vec<f32>,
+    /// One of a column's cells has more than one word (a column of numbers
+    /// or codes under one-word headers has none: it could not wrap).
+    breaks: Vec<bool>,
+}
+
+impl TextWidths {
+    /// The widths of the `n_cols` columns of `table`; a cell over several
+    /// columns counts in none.
+    fn of(table: &Table, n_cols: usize) -> Self {
+        let mut widths = Self {
+            natural: vec![0.0; n_cols],
+            body: vec![(0.0, 0); n_cols],
+            word: vec![0.0; n_cols],
+            breaks: vec![false; n_cols],
+        };
+        for (row, cells) in table.rows.iter().enumerate() {
+            for cell in cells.iter().filter(|cell| cell.colspan <= 1 && cell.col < n_cols) {
+                let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
+                let col = cell.col;
+                // A header cell is bold, and so may be a body cell.
+                let bold = row < table.header_rows || cell.spans.iter().any(|span| span.style & BOLD != 0);
+                let ratio = if bold { BOLD_WIDTH_RATIO } else { 1.0 };
+                let (em, word) = (text_em(&text) * ratio, word_em(&text) * ratio);
+                widths.natural[col] = widths.natural[col].max(em);
+                widths.word[col] = widths.word[col].max(word);
+                widths.breaks[col] |= word < em;
+                if row >= table.header_rows && em > 0.0 {
+                    widths.body[col].0 += em;
+                    widths.body[col].1 += 1;
+                }
+            }
+        }
+        widths
+    }
+}
+
+/// The columns of a table too wide for the text, in groups that each fit
+/// with its first column (repeated in each), by the least width of each
+/// column ([`Columns::least`]) and [`COLUMN_GROUP_FILL_RATIO`]; a column
+/// too wide even alone with the first is a group of its own.
+fn column_groups(cols: &Columns) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut width = 0.0;
+    for col in 1..cols.least.len() {
+        match groups.last_mut() {
+            Some(group) if width + cols.least[col] <= COLUMN_GROUP_FILL_RATIO => group.push(col),
+            _ => {
+                groups.push(vec![0, col]);
+                width = cols.least[0];
+            }
+        }
+        width += cols.least[col];
+    }
+    if groups.is_empty() {
+        groups.push(vec![0]);
+    }
+    groups
+}
+
+/// The table of the columns `keep` (in order) of `table`: a cell is at its
+/// first kept column and spans the kept columns it covered; a cell that
+/// covers none is left out.
+fn table_columns(table: &Table, keep: &[usize]) -> Table {
+    let rows = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .filter_map(|cell| {
+                    let covered: Vec<usize> = (0..keep.len())
+                        .filter(|&new| (cell.col..cell.col + cell.colspan.max(1)).contains(&keep[new]))
+                        .collect();
+                    let first = *covered.first()?;
+                    Some(TableCell {
+                        col: first,
+                        colspan: covered.len(),
+                        rowspan: cell.rowspan,
+                        spans: cell.spans.clone(),
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    Table {
+        n_cols: keep.len(),
+        header_rows: table.header_rows,
+        col_align: keep
+            .iter()
+            .map(|&col| table.col_align.get(col).copied().unwrap_or("left"))
+            .collect(),
+        rows,
+        rule_above: Vec::new(),
+        rule_bottom: Vec::new(),
+        rule_left: Vec::new(),
+        rule_right: Vec::new(),
+        geom: table.geom.clone(),
     }
 }
 
@@ -1216,7 +1426,12 @@ fn word_em(text: &str) -> f32 {
 /// The width of `text` set on one line, guessed in em.
 fn text_em(text: &str) -> f32 {
     text.chars()
-        .map(|ch| if is_cjk(ch) { CJK_CHAR_EM } else { OTHER_CHAR_EM })
+        .map(|ch| match ch {
+            _ if is_cjk(ch) => CJK_CHAR_EM,
+            'A'..='Z' | 'm' | 'w' => WIDE_CHAR_EM,
+            'f' | 'i' | 'j' | 'l' | 'r' | 't' | ' ' | '.' | ',' | ':' | ';' | '\'' | '(' | ')' => NARROW_CHAR_EM,
+            _ => OTHER_CHAR_EM,
+        })
         .sum()
 }
 
@@ -1381,6 +1596,11 @@ mod tests {
             },
         );
         block.table = Some(table);
+        figure_latex(&block)
+    }
+
+    /// The LaTeX of the figure or table `block`.
+    fn figure_latex(block: &Block) -> String {
         let anchors = std::collections::HashSet::new();
         let html = HtmlOptions::default();
         let mut images = ImageStore {
@@ -1401,7 +1621,7 @@ mod tests {
             nested: 0,
             after_text: false,
         };
-        writer.figure(&block, FloatKind::Table, None);
+        writer.figure(block, FloatKind::Table, None);
         writer.out
     }
 
@@ -1470,6 +1690,139 @@ mod tests {
             format!("{row} {col} text {}", "word ".repeat(col))
         }));
         assert!(!short.contains("\\endfirsthead") && short.contains("\\endhead"));
+    }
+
+    /// The value of the cell at `row`, `col` of a wide table of numbers.
+    fn number(row: usize, col: usize) -> String {
+        format!("{}.{col:02}", (row * 1000 + col * 37) % 99_999)
+    }
+
+    #[test]
+    fn a_long_table_of_unbreakable_columns_too_wide_is_turned() {
+        // 20 columns of numbers: wider than the text even in \tiny.
+        let latex = table_latex(table_of(20, 31, number));
+        assert!(
+            latex.contains("\\begin{landscape}") && latex.contains("\\end{landscape}"),
+            "{latex}"
+        );
+        assert!(latex.contains("\\tiny"), "{latex}");
+        assert!(latex.contains(&number(31, 19)));
+    }
+
+    #[test]
+    fn a_long_table_too_wide_even_turned_is_cut_into_groups_of_columns() {
+        let latex = table_latex(table_of(60, 31, number));
+        let tables = latex.matches("\\begin{longtable}").count();
+        assert!(tables >= 2, "{tables} tables");
+        // Every column is in one of them, the first one repeated in each.
+        for col in 0..60 {
+            assert!(latex.contains(&number(31, col)), "column {col} lost");
+        }
+        assert_eq!(latex.matches(&format!("{} &", number(31, 0))).count(), tables);
+    }
+
+    #[test]
+    fn wrapped_columns_are_at_least_one_em_wide() {
+        let table = table_of(16, 40, |row, col| format!("{row} {col} {}", "語".repeat(10 + col * 20)));
+        for &(_, _, size_pt, tabcolsep_pt) in LONG_TABLE_SIZES {
+            let cols = Columns::fitted(&table, size_pt, tabcolsep_pt, TEXT_WIDTH_PT);
+            for col in (0..16).filter(|&col| cols.wrap[col]) {
+                let content_pt = cols.share[col] * TEXT_WIDTH_PT - 2.0 * tabcolsep_pt;
+                assert!(
+                    content_pt >= size_pt * 0.999,
+                    "column {col}: {content_pt} pt at {size_pt} pt"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_caption_of_a_long_table_stays_with_it() {
+        let mut block = Block::new(
+            0,
+            BlockKind::Figure {
+                kind: FloatKind::Table,
+                image: None,
+                label: None,
+            },
+        );
+        block.spans = vec![Span::plain("Table 1: Prices")];
+        block.caption_above = true;
+        block.table = Some(table_of(3, 31, |row, col| format!("r{row}c{col}")));
+        let latex = figure_latex(&block);
+        let caption = latex.find("Prices").unwrap();
+        let table = latex.find("\\begin{longtable}").unwrap();
+        assert!(latex[caption..table].contains("\\nopagebreak"), "{latex}");
+    }
+
+    /// Long tables compile with pdfLaTeX (when it is installed) and show
+    /// their last row and last column: one of wrapped columns, with a
+    /// `\multicolumn` over two of them and a `\multirow{..}{=}` in one, and
+    /// one of 20 columns of numbers, which needs landscape pages.
+    #[test]
+    fn long_tables_compile_and_keep_every_column() {
+        let mut wrapped = table_of(3, 40, |row, col| match col {
+            0 => format!("{row}"),
+            1 => format!("row {row} {}", "has a long description ".repeat(6)),
+            _ => format!("end{row} {}", "and some more words ".repeat(5)),
+        });
+        wrapped.header_rows = 2;
+        wrapped.rows[0] = vec![
+            TableCell {
+                col: 0,
+                colspan: 1,
+                rowspan: 2,
+                spans: vec![Span::plain("Key")],
+            },
+            TableCell {
+                col: 1,
+                colspan: 2,
+                rowspan: 1,
+                spans: vec![Span::plain("Both texts")],
+            },
+        ];
+        wrapped.rows[1].remove(0);
+        // A cell over three rows of the body, in a wrapped column.
+        wrapped.rows[5][1].rowspan = 3;
+        wrapped.rows[6].remove(1);
+        wrapped.rows[7].remove(1);
+        let first = table_latex(wrapped);
+        assert!(
+            first.contains("\\multicolumn{2}{>{\\raggedright\\arraybackslash}p{"),
+            "{first}"
+        );
+        assert!(first.contains("\\multirow{3}{=}"), "{first}");
+        let second = table_latex(table_of(20, 31, number));
+        let tex = document(&doc_of("x"), &format!("{first}\n\n{second}"), InputFormat::Pdf);
+        let dir = std::env::temp_dir().join(format!("kakemono-longtable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.tex"), tex).unwrap();
+        let compiled = std::process::Command::new("pdflatex")
+            .args(["-interaction=nonstopmode", "-halt-on-error", "t.tex"])
+            .current_dir(&dir)
+            .output();
+        let Ok(out) = compiled else {
+            eprintln!("pdflatex not run: the long tables were not compiled");
+            return;
+        };
+        assert!(
+            out.status.success() && dir.join("t.pdf").is_file(),
+            "pdflatex failed:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let Ok(text) = std::process::Command::new("pdftotext")
+            .args(["-layout", "t.pdf", "-"])
+            .current_dir(&dir)
+            .output()
+        else {
+            eprintln!("pdftotext not run: the PDF text was not checked");
+            return;
+        };
+        let text = String::from_utf8_lossy(&text.stdout);
+        for value in ["end40", "Both texts", &number(31, 19), &number(31, 0)] {
+            assert!(text.contains(value), "{value} is not in the PDF");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
