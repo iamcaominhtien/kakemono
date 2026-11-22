@@ -311,6 +311,7 @@ dialog.drawer .drawer-close{float:right;margin:-4px -4px 0 0}
 
 /* ---------- Layout: contents, text column, margin column ---------- */
 .layout{display:grid;grid-template-columns:var(--toc) minmax(0,var(--measure));column-gap:var(--s8);justify-content:center;padding:56px var(--s5) 96px}
+.layout.no-toc{grid-template-columns:minmax(0,var(--measure))}
 .layout>nav.toc{position:sticky;top:72px;align-self:start;max-height:calc(100vh - 96px);overflow:auto;scrollbar-width:thin}
 .layout>article{display:grid;grid-template-columns:[text-start] minmax(0,var(--measure)) [text-end];align-content:start;position:relative;min-width:0}
 article>*{grid-column:text;min-width:0}
@@ -319,6 +320,7 @@ article>*{grid-column:text;min-width:0}
 [data-toc="hidden"] .layout>article{grid-column:1;line-height:var(--lh-wide);grid-template-columns:[text-start] minmax(0,var(--measure-wide)) [text-end]}
 @media (min-width:1440px){
   .layout{grid-template-columns:var(--toc) auto}
+  .layout.no-toc{grid-template-columns:auto}
   .layout>article{column-gap:var(--s7);grid-template-columns:[text-start] var(--measure) [text-end margin-start] var(--margin) [margin-end]}
   [data-toc="hidden"] .layout{grid-template-columns:minmax(0,calc(var(--measure-wide) + var(--s7) + var(--margin)))}
   [data-toc="hidden"] .layout>article{grid-template-columns:[text-start] minmax(0,var(--measure-wide)) [text-end margin-start] var(--margin) [margin-end]}

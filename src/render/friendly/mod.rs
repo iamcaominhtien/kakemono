@@ -148,7 +148,8 @@ struct Page<'a> {
     title: &'a str,
     /// The running head.
     topbar: &'a str,
-    /// The contents column (may be empty).
+    /// The contents column (may be empty: the layout then has no column
+    /// for it).
     toc: &'a str,
     /// The head of the article (kicker, title, authors, notes).
     head: &'a str,
@@ -197,7 +198,7 @@ impl Page<'_> {
 {fonts}{math}{CSS}</style>
 </head>
 <body class="friendly">
-{topbar}<div class="layout">
+{topbar}<div class="{layout}">
 {toc}<article class="article" id="article">
 <header class="paper-head">
 {head}</header>
@@ -222,6 +223,8 @@ impl Page<'_> {
             math = self.math,
             topbar = self.topbar,
             toc = self.toc,
+            // Without a contents column, the article takes the text column.
+            layout = if self.toc.is_empty() { "layout no-toc" } else { "layout" },
             head = self.head,
             content = self.content,
         )
@@ -439,5 +442,61 @@ fn split_section_number(text: &str) -> (&str, &str) {
             (number, name.trim_start())
         }
         _ => ("", text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Block, BlockKind, Meta, Span};
+
+    /// The friendly page of a document with the blocks `blocks`.
+    fn page(blocks: Vec<Block>) -> String {
+        let doc = Document {
+            meta: Meta::default(),
+            pages: Vec::new(),
+            body_size: 10.0,
+            leading: 12.0,
+            body_font: String::new(),
+            math_font: String::new(),
+            blocks,
+            pictures: Vec::new(),
+        };
+        let opts = HtmlOptions {
+            embed_fonts: false,
+            ..Default::default()
+        };
+        let mut images = ImageStore {
+            opts: &opts,
+            jobs: Vec::new(),
+        };
+        render(&doc, &mut images)
+    }
+
+    fn block(id: usize, kind: BlockKind, text: &str, anchor: Option<&str>) -> Block {
+        let mut block = Block::new(id, kind);
+        block.spans = vec![Span::plain(text)];
+        block.anchor = anchor.map(str::to_string);
+        block
+    }
+
+    #[test]
+    fn a_document_without_contents_lays_the_article_in_the_text_column() {
+        let html = page(vec![
+            block(0, BlockKind::Heading { level: 1 }, "Sheet", None),
+            block(1, BlockKind::Paragraph { in_abstract: false }, "Some text.", None),
+        ]);
+        assert!(!html.contains("<nav class=\"toc\""));
+        assert!(html.contains("<div class=\"layout no-toc\">"), "no no-toc layout");
+    }
+
+    #[test]
+    fn a_document_with_contents_keeps_the_contents_column() {
+        let html = page(vec![
+            block(0, BlockKind::Heading { level: 1 }, "Sheet", Some("sec-sheet")),
+            block(1, BlockKind::Paragraph { in_abstract: false }, "Some text.", None),
+        ]);
+        assert!(html.contains("<nav class=\"toc\""));
+        assert!(html.contains("<div class=\"layout\">"));
     }
 }

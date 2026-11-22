@@ -9,7 +9,7 @@ use super::omml::plain_text;
 use crate::analysis::semantics::AssembleConfig;
 use crate::analysis::semantics::assemble::{link_blocks, link_contents, reference_label, slug_marker};
 use crate::analysis::semantics::patterns::{HEADING_LETTER, HEADING_NUM, HEADING_ROMAN, REF_HEADING};
-use crate::analysis::semantics::text::slug;
+use crate::analysis::semantics::text::{slug, unique_anchor};
 use crate::common::geom::Rect;
 use crate::common::patterns::CAP_LABEL;
 use crate::model::{
@@ -787,13 +787,7 @@ impl Builder<'_> {
 
     /// An anchor based on `base` that no block has yet.
     fn unique_anchor(&mut self, base: String) -> String {
-        let mut anchor = base.clone();
-        let mut k = 2;
-        while !self.anchors.insert(anchor.clone()) {
-            anchor = format!("{base}-{k}");
-            k += 1;
-        }
-        anchor
+        unique_anchor(&mut self.anchors, base)
     }
 
     /// The blocks, numbered, with the links to Word bookmarks pointed at

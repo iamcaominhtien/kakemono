@@ -746,6 +746,18 @@ pub(crate) fn slug(text: &str) -> String {
     out.trim_end_matches('-').chars().take(MAX_SLUG_CHARS).collect()
 }
 
+/// `base` if no anchor of `taken` is `base`, else the first of `base-2`,
+/// `base-3`, … that none is; the anchor returned is added to `taken`.
+pub(crate) fn unique_anchor(taken: &mut HashSet<String>, base: String) -> String {
+    let mut anchor = base.clone();
+    let mut k = 2;
+    while !taken.insert(anchor.clone()) {
+        anchor = format!("{base}-{k}");
+        k += 1;
+    }
+    anchor
+}
+
 /// The words of a text: maximal runs of letters and hyphens.
 pub(crate) fn tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|ch: char| !(ch.is_alphabetic() || ch == '-'))

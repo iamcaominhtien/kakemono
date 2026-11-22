@@ -16,14 +16,15 @@ mod strings;
 mod styles;
 mod workbook;
 
-use crate::model::{Block, Document, Meta};
+use crate::analysis::semantics::text::{slug, unique_anchor};
+use crate::model::{Block, BlockKind, Document, Meta};
 use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::Shape;
 use grid::{Grid, Table};
 use sheet::SheetContext;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use workbook::{Workbook, is_sml};
 
 /// Font size of the running text, in points: Excel's default font size.
@@ -248,8 +249,20 @@ fn build(
         .iter()
         .flat_map(|(name, grid, shapes)| build::sheet_blocks(name, grid, shapes, config))
         .collect();
+    // Each sheet's heading is a link target, as a Word heading is: the
+    // contents column lists the sheets.
+    let mut anchors = HashSet::new();
     for (id, block) in blocks.iter_mut().enumerate() {
         block.id = id;
+        if matches!(block.kind, BlockKind::Heading { .. }) {
+            let slug = slug(&block.text());
+            let base = if slug.is_empty() {
+                "sec".to_string()
+            } else {
+                format!("sec-{slug}")
+            };
+            block.anchor = Some(unique_anchor(&mut anchors, base));
+        }
     }
     Document {
         meta: Meta {

@@ -184,6 +184,23 @@ fn sample_blocks_are_numbered_in_order() {
 }
 
 #[test]
+fn friendly_sample_lists_its_sheets_in_the_contents() {
+    let (paper, analysis) = load(SAMPLE_XLSX);
+    let options = HtmlOptions {
+        mode: Mode::Friendly,
+        embed_fonts: false,
+        ..Default::default()
+    };
+    let html = paper.to_html(&analysis, &options).html;
+    assert!(html.contains("<nav class=\"toc\""), "no contents column");
+    assert!(
+        html.contains("<a href=\"#sec-two-tables\">"),
+        "no link to the sheet Two tables"
+    );
+    assert!(html.contains("<div class=\"layout\">"));
+}
+
+#[test]
 fn excel_outputs_match_their_snapshot() {
     let (paper, analysis) = load(SAMPLE_XLSX);
     let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();
