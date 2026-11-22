@@ -201,6 +201,17 @@ fn friendly_sample_lists_its_sheets_in_the_contents() {
 }
 
 #[test]
+fn latex_of_a_workbook_names_its_source() {
+    let (paper, analysis) = load(SAMPLE_XLSX);
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(
+        latex.starts_with("% Converted from an Excel workbook by kakemono."),
+        "{}",
+        latex.lines().next().unwrap_or_default()
+    );
+}
+
+#[test]
 fn excel_outputs_match_their_snapshot() {
     let (paper, analysis) = load(SAMPLE_XLSX);
     let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();

@@ -383,7 +383,7 @@ impl Paper {
     /// files. `analysis` must come from this paper, since the pictures are
     /// drawn from its PDF.
     pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
-        render_latex(analysis, self.pdf(), opts)
+        render_latex(analysis, self.pdf(), self.format(), opts)
     }
 
     /// Writes an analysis as an EPUB book (`.epub`) and returns the bytes of

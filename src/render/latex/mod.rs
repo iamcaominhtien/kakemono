@@ -22,6 +22,7 @@ use super::{
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
+use crate::paper::InputFormat;
 use crate::render::Pictures;
 use math::latex;
 use std::collections::BTreeSet;
@@ -29,6 +30,38 @@ use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
 /// The packages and commands that every document uses.
 const PREAMBLE: &str = include_str!("preamble.tex");
+/// The end of the opening comment of [`PREAMBLE`], where [`CJK_NOTE`] goes.
+const PREAMBLE_HEAD_END: &str = "folder next to this one.\n";
+/// Said at the top of a document with CJK text.
+const CJK_NOTE: &str = "% Its Chinese, Japanese or Korean text needs LuaLaTeX or XeLaTeX: pdfLaTeX\n\
+                        % has no font for it and writes a ? for each of its characters.\n";
+/// The end of the choice of fonts in [`PREAMBLE`], where [`CJK_FONTS`] go.
+const FONTS_END: &str = "  \\usepackage{fontspec}\n\\fi\n";
+/// The fonts of CJK text, for a document that has some. Noto Serif and
+/// Noto Sans CJK, when installed, have the letters of the four languages;
+/// otherwise Harano Aji, which TeX Live ships (LuaTeX-ja's own default,
+/// and given to xeCJK by file name so that it is found in any TeX Live),
+/// has Japanese only. Bold, sans-serif and monospaced text is in Gothic,
+/// as is usual in Japanese; the CJK fonts follow the Latin ones into
+/// sans-serif and monospaced text (`match`), and xeCJK keeps the spaces
+/// between CJK characters (Korean words are separated by spaces).
+const CJK_FONTS: &str = r"\ifLuaTeX
+  \usepackage[match]{luatexja-fontspec}
+  \IfFontExistsTF{Noto Serif CJK JP}{\setmainjfont{Noto Serif CJK JP}}{}
+  \IfFontExistsTF{Noto Sans CJK JP}{\setsansjfont{Noto Sans CJK JP}}{}
+\fi
+\ifXeTeX
+  \usepackage{xeCJK}
+  \xeCJKsetup{CJKspace=true}
+  \IfFontExistsTF{Noto Serif CJK JP}
+    {\setCJKmainfont{Noto Serif CJK JP}}
+    {\setCJKmainfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiMincho-Regular.otf}}
+  \IfFontExistsTF{Noto Sans CJK JP}
+    {\setCJKsansfont{Noto Sans CJK JP}\setCJKmonofont{Noto Sans CJK JP}}
+    {\setCJKsansfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Medium.otf}%
+     \setCJKmonofont{HaranoAjiGothic-Medium.otf}}
+\fi
+";
 /// Lists LaTeX can nest inside a list (it allows four levels in all).
 const MAX_LIST_NESTING: u8 = 3;
 /// The encoding of pdfLaTeX's fonts, in [`PREAMBLE`].
@@ -98,7 +131,12 @@ pub struct LatexOutput {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`LatexOutput::files`].
-pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOptions) -> LatexOutput {
+pub fn render_latex(
+    analysis: &Analysis,
+    pdf: Option<&PdfFile>,
+    input: InputFormat,
+    opts: &LatexOptions,
+) -> LatexOutput {
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,
@@ -132,14 +170,16 @@ pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOpti
     let body = writer.out.trim_end().to_string();
     let out = images.finish(Pictures::new(pdf, &analysis.doc), body);
     LatexOutput {
-        latex: document(doc, &out.html),
+        latex: document(doc, &out.html, input),
         files: out.files,
     }
 }
 
-/// The whole `.tex` file: the preamble, the characters that pdfLaTeX has no
-/// glyph for, the title of the PDF, and `body`.
-fn document(doc: &Document, body: &str) -> String {
+/// The whole `.tex` file: the preamble (naming the format `input` the
+/// document was read from, with the CJK fonts of XeLaTeX and LuaLaTeX when
+/// the text has CJK characters), the characters that pdfLaTeX has no glyph
+/// for, the title of the PDF, and `body`.
+fn document(doc: &Document, body: &str, input: InputFormat) -> String {
     let title = escape(&doc_title(doc));
     let (vietnamese, unknown): (Vec<char>, Vec<char>) = unknown_chars(&title, body)
         .into_iter()
@@ -150,8 +190,15 @@ fn document(doc: &Document, body: &str) -> String {
         // T1 stays the main encoding (the last one loaded).
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
-    if doc.pages.is_empty() {
-        out = out.replacen("Converted from a PDF", "Converted from a Word document", 1);
+    let source = match input {
+        InputFormat::Pdf => "a PDF",
+        InputFormat::Docx | InputFormat::Doc => "a Word document",
+        InputFormat::Xlsx => "an Excel workbook",
+    };
+    out = out.replacen("Converted from a PDF", &format!("Converted from {source}"), 1);
+    if title.chars().chain(body.chars()).any(is_cjk) {
+        out = out.replacen(PREAMBLE_HEAD_END, &format!("{PREAMBLE_HEAD_END}{CJK_NOTE}"), 1);
+        out = out.replacen(FONTS_END, &format!("{FONTS_END}{CJK_FONTS}"), 1);
     }
     if !vietnamese.is_empty() {
         out.push_str(&format!(
@@ -184,6 +231,31 @@ fn document(doc: &Document, body: &str) -> String {
     out.push_str(body);
     out.push_str("\n\n\\end{document}\n");
     out
+}
+
+/// Whether `ch` is Chinese, Japanese or Korean: a Han ideograph, kana,
+/// Hangul, Bopomofo, CJK punctuation or a fullwidth form. The fonts of
+/// [`PREAMBLE`] have none of them; [`CJK_FONTS`] gives them fonts.
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        u32::from(ch),
+        0x1100..=0x11FF // Hangul Jamo
+            | 0x2E80..=0x2FDF // CJK and Kangxi radicals
+            | 0x3000..=0x303F // CJK symbols and punctuation
+            | 0x3040..=0x30FF // Hiragana, Katakana
+            | 0x3100..=0x312F // Bopomofo
+            | 0x3130..=0x318F // Hangul compatibility Jamo
+            | 0x31A0..=0x31FF // Bopomofo extended, CJK strokes, Katakana extension
+            | 0x3200..=0x33FF // Enclosed CJK, CJK compatibility
+            | 0x3400..=0x4DBF // Han, extension A
+            | 0x4E00..=0x9FFF // Han
+            | 0xA960..=0xA97F // Hangul Jamo extended A
+            | 0xAC00..=0xD7FF // Hangul syllables, Jamo extended B
+            | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFE30..=0xFE4F // CJK compatibility forms
+            | 0xFF00..=0xFFEF // Halfwidth and fullwidth forms
+            | 0x20000..=0x3FFFF // Han, extensions B and after
+    )
 }
 
 /// The characters of `title` and `body` that pdfLaTeX's text fonts lack:
@@ -883,6 +955,41 @@ mod tests {
     fn unknown_characters_are_outside_latin() {
         let chars: Vec<char> = unknown_chars("Erdős", "é ž 中 ſ").into_iter().collect();
         assert_eq!(chars, vec!['ſ', '中']);
+    }
+
+    /// A document without pages whose only paragraph is `text`.
+    fn doc_of(text: &str) -> Document {
+        let mut block = Block::new(0, BlockKind::Paragraph { in_abstract: false });
+        block.spans = vec![Span::plain(text)];
+        Document {
+            meta: crate::model::Meta::default(),
+            pages: Vec::new(),
+            body_size: 10.0,
+            leading: 12.0,
+            body_font: String::new(),
+            math_font: String::new(),
+            blocks: vec![block],
+            pictures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cjk_text_gets_cjk_fonts_for_lualatex_and_xelatex() {
+        for text in ["一貫性のある操作", "ひらがな", "カタカナ", "한국어", "全角，"] {
+            let tex = document(&doc_of(text), text, InputFormat::Xlsx);
+            assert!(tex.contains("\\usepackage[match]{luatexja-fontspec}"), "{text}: {tex}");
+            assert!(tex.contains("\\usepackage{xeCJK}"), "{text}");
+            assert!(tex.contains("\\setCJKmainfont"), "{text}");
+            assert!(tex.contains("needs LuaLaTeX or XeLaTeX"), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_without_cjk_keeps_the_plain_preamble() {
+        let text = "Erdős café ž";
+        let tex = document(&doc_of(text), text, InputFormat::Pdf);
+        assert!(tex.starts_with(PREAMBLE), "{tex}");
+        assert!(!tex.contains("luatexja") && !tex.contains("xeCJK"));
     }
 
     #[test]
