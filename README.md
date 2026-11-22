@@ -302,6 +302,33 @@ Markdown `[^n1]` footnotes and EPUB popup footnotes at the end of each chapter (
 each chapter). `plain` and the chunks leave the notes out. A `<note>` that is not closed, or that
 holds a formula or another note, is read with a warning.
 
+**Translating the text inside a figure.** A figure whose picture has text in the PDF (labels,
+legends, the boxes of a diagram) lists it in `figure_lines`, as runs: a label, or the lines of one
+paragraph inside a box, each `{"text": "…", "box": [x0, y0, x1, y1], "size": pt}`, the `text`
+editable like a block's. An edited run is written in place: the figure is drawn again without the
+glyphs of the old text, and the new text is written in its box, in a sans-serif (or monospaced)
+font of the run's size and weight, broken into lines that fit the box (made smaller, down to 75%,
+when it needs more lines than the run had; a one-line label may grow to 1.6 times its width). The
+figure then becomes an SVG, as with `replace_image` below, which wins when both are given. Rotated
+text (an axis title written upwards) comes after the other runs, with its `rotation` in degrees,
+and is written back along the same line, centred on the old text. A tick label never joins the
+words of a label next to it.
+
+**Replacing a figure's picture.** A `figure` block may also get `"replace_image"`: a PNG, JPEG or
+SVG file, named by a path relative to the JSON file, or a data URI. Every output then draws it in
+place of the figure's picture (a translated or redrawn figure, say). An SVG stays an SVG in the
+HTML modes, EPUB, Markdown and JSON, with its text turned into paths so that it looks the same
+without its fonts; Word and LaTeX get it as a PNG at `--scale`. In `hard-95` the picture covers the
+figure's box on the page, and the figure's old text layer is left out. In every output a picture
+of another shape than the figure is fitted into its box and centred, never stretched, and the
+pictures an SVG names (relative to the SVG) are kept inside it.
+A picture whose shape differs from the figure's box, a file that cannot be read, or
+`replace_image` on a block that is not a figure with a picture is a warning; the figure then keeps
+its picture (except for the shape, where the new picture is still used). A JSON written again after
+`--content` has the new picture in `image` and no `replace_image`. With the library,
+`Paper::apply_content_in(&mut analysis, &json, folder)` reads relative paths from the JSON's folder;
+`Paper::apply_content`, which has no folder, takes only data URIs and absolute paths.
+
 In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
 text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them
 again. The `hard` mode shows the pages themselves and cannot show edited text. In LaTeX output,
@@ -428,7 +455,9 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
 prints the detected structure (headings, paragraphs, figures, formulas; `<math>` marks a formula
 rebuilt as MathML); `kakemono formula picture.png` reads pictures of LaTeX formulas and prints
-their MathML (experimental).
+their MathML (experimental); `kakemono render-svg picture.svg -o picture.png [--scale 2]` draws an
+SVG as a PNG the way kakemono draws the SVG pictures it is given (`replace_image`), with the
+pictures it names relative to the SVG.
 
 ## The analysis as JSON
 

@@ -325,7 +325,9 @@ impl PageLayer<'_> {
     /// Adds the content of a float that starts on this page: a table, or
     /// its text placed line by line.
     fn float_content(&mut self, block: &Block) {
-        if !block.inner_lines.first().is_some_and(|line| line.page == self.page_idx) {
+        if !block.inner_lines.first().is_some_and(|line| line.page == self.page_idx)
+            || replaced_picture(block).is_some()
+        {
             return;
         }
         match block.table.as_ref().filter(|table| table_fits(table)) {
@@ -375,10 +377,20 @@ impl PageLayer<'_> {
     /// drawn as visible text.
     fn rotated(&mut self, doc: &Document, rotated: &[RotatedRun]) {
         let figures = figure_regions(doc, self.page_idx);
+        let replaced: Vec<Rect> = doc
+            .blocks
+            .iter()
+            .filter_map(replaced_picture)
+            .filter(|spec| spec.page == self.page_idx)
+            .map(|spec| spec.rect)
+            .collect();
         let mut visible = String::new();
         let mut in_figure = String::new();
         for run in rotated {
             let html = rotated_run_html(run, self.units);
+            if replaced.iter().any(|rect| run_in_region(run, rect)) {
+                continue;
+            }
             if figures.iter().any(|rect| run_in_region(run, rect)) {
                 in_figure.push_str(&html);
             } else {
@@ -401,6 +413,28 @@ impl PageLayer<'_> {
     }
 }
 
+/// The picture of a figure of the PDF replaced with `replace_image` (a
+/// stored picture in place of its region of the page), if `block` is one.
+fn replaced_picture(block: &Block) -> Option<&ImageSpec> {
+    match &block.kind {
+        BlockKind::Figure { image: Some(spec), .. } if spec.embedded.is_some() => Some(spec),
+        _ => None,
+    }
+}
+
+/// A replaced figure's picture, in a white box over its region of the page
+/// (which still shows the original figure), fitted without stretching.
+fn replaced_figure(id: usize, spec: &ImageSpec, images: &mut ImageStore<'_>, units: &Units) -> String {
+    format!(
+        "<div class=\"b\" data-kind=\"figure-picture\" data-block=\"{id}\" style=\"position:absolute;left:{};top:{};width:{};height:{};background:#fff\"><img src=\"{}\" alt=\"\" style=\"display:block;width:100%;height:100%;object-fit:contain\"></div>\n",
+        units.x(spec.rect.x0),
+        units.y(spec.rect.y0),
+        units.x(spec.rect.width()),
+        units.y(spec.rect.height()),
+        images.region(spec, "fig"),
+    )
+}
+
 /// The picture regions of the figures on page `page_idx` (tables are not
 /// included: their text is drawn as HTML).
 fn figure_regions(doc: &Document, page_idx: usize) -> Vec<Rect> {
@@ -416,7 +450,7 @@ fn figure_regions(doc: &Document, page_idx: usize) -> Vec<Rect> {
 
 /// Whether the middle of a rotated run lies inside `rect` (grown by
 /// [`FIGURE_REGION_MARGIN_PT`]).
-fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
+pub(crate) fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
     let (sin, cos) = run.angle.to_radians().sin_cos();
     let half = run.length * 0.5;
     // The middle of the baseline, moved up by about the height of the
@@ -542,7 +576,14 @@ fn page_html(analysis: &Analysis, page_idx: usize, page: &PageInfo, images: &mut
     if let Some(rotated) = analysis.rotated.get(page_idx) {
         layer.rotated(doc, rotated);
     }
-    let PageLayer { html: layer, drawn, .. } = layer;
+    let PageLayer {
+        html: mut layer, drawn, ..
+    } = layer;
+    for block in &doc.blocks {
+        if let Some(spec) = replaced_picture(block).filter(|spec| spec.page == page_idx) {
+            layer.push_str(&replaced_figure(block.id, spec, images, &units));
+        }
+    }
 
     let bg = format!(
         "<img class=\"bg\" src=\"{}\" alt=\"\" width=\"{}\" height=\"{}\" loading=\"lazy\" decoding=\"async\">",

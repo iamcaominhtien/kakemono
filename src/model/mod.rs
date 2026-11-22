@@ -200,7 +200,9 @@ pub struct ImageSpec {
     /// Render on a transparent background (equations).
     pub transparent: bool,
     /// Index of the stored picture in [`Document::pictures`]; `None` for an
-    /// area of a page.
+    /// area of a page. A figure of a PDF whose picture was replaced (with
+    /// `replace_image` in an edited JSON) has one too: `page` and `rect`
+    /// still give its place on the page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedded: Option<usize>,
 }
@@ -221,7 +223,7 @@ impl ImageSpec {
 /// ready to be written as it is.
 #[derive(Debug, Clone)]
 pub struct Picture {
-    /// The PNG or JPEG data.
+    /// The PNG, JPEG or SVG data (an SVG is recognised by its content).
     pub data: Vec<u8>,
     /// The data is a JPEG (a PNG otherwise).
     pub jpeg: bool,
@@ -436,8 +438,9 @@ pub struct Document {
     pub math_font: String,
     /// All content, in reading order.
     pub blocks: Vec<Block>,
-    /// The pictures stored in the document (those of a Word document),
-    /// which [`ImageSpec::embedded`] refers to; empty for a PDF.
+    /// The pictures stored in the document (those of a Word document, and
+    /// the replacements of an edited JSON), which [`ImageSpec::embedded`]
+    /// refers to; empty for a PDF otherwise.
     #[serde(skip)]
     pub pictures: Vec<Picture>,
 }

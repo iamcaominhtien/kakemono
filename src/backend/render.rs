@@ -9,7 +9,7 @@ use hayro_interpret::InterpreterSettings;
 use hayro_interpret::util::TransformExt;
 use hayro_syntax::Pdf;
 use kurbo::Affine;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Largest width or height of a rendered bitmap, in pixels: the scale is
 /// reduced for regions that would exceed it, to keep memory use sane.
@@ -223,7 +223,27 @@ impl<'a> PageRenderer<'a> {
     /// `<use>` elements referring to `<path id="gN">` definitions. Lines are
     /// written without their leading indentation.
     pub fn page_svg_without_text(&self, page: usize, remove: &dyn Fn(f32, f32) -> bool) -> Option<String> {
+        self.page_svg_without_glyphs(page, remove, false)
+    }
+
+    /// [`PageRenderer::page_svg_without_text`], also removing the glyphs of
+    /// Type 3 fonts, which the SVG draws as groups (`<g id="e12">`) holding
+    /// the glyph's outline placed by its own transform, used without one.
+    /// For a figure drawn again with its edited text (matplotlib writes its
+    /// labels in Type 3 fonts).
+    pub fn page_svg_without_all_text(&self, page: usize, remove: &dyn Fn(f32, f32) -> bool) -> Option<String> {
+        self.page_svg_without_glyphs(page, remove, true)
+    }
+
+    /// The page without the glyphs whose origin `remove` accepts; with
+    /// `type3`, those drawn as groups too.
+    fn page_svg_without_glyphs(&self, page: usize, remove: &dyn Fn(f32, f32) -> bool, type3: bool) -> Option<String> {
         let svg = self.page_svg(page)?;
+        let group_origins = if type3 {
+            group_glyph_origins(&svg)
+        } else {
+            HashMap::new()
+        };
 
         // Blank glyphs (spaces) draw nothing and can always go.
         let blank: HashSet<&str> = svg
@@ -235,6 +255,12 @@ impl<'a> PageRenderer<'a> {
         let mut dropped_lines = Vec::new();
         let mut referenced: HashSet<&str> = HashSet::new();
         for line in svg.lines() {
+            if let Some(&(x, y)) = group_use(line).and_then(|id| group_origins.get(id))
+                && remove(x, y)
+            {
+                dropped_lines.push(true);
+                continue;
+            }
             match glyph_use(line) {
                 Some((id, x, y)) if blank.contains(id) || remove(x, y) => dropped_lines.push(true),
                 Some((id, _, _)) => {
@@ -275,7 +301,7 @@ impl<'a> PageRenderer<'a> {
 
 /// The fonts SVG text is drawn with: the system's, and those of the folders
 /// in `KAKEMONO_FONT_DIRS` (loaded once).
-fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
     static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> = std::sync::OnceLock::new();
     FONTS
         .get_or_init(|| {
@@ -308,21 +334,35 @@ fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
 /// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
 /// at `scale` pixels per point. Returns `None` when the SVG cannot be read.
 pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
+    svg_to_png_in(svg, scale, None).ok()
+}
+
+/// [`svg_to_png`] for an SVG whose pictures are named by paths relative to
+/// the folder `resources`. The error says why the SVG cannot be drawn.
+///
+/// # Errors
+/// When `svg` does not parse, or has no size.
+pub fn svg_to_png_in(svg: &str, scale: f32, resources: Option<&std::path::Path>) -> Result<Vec<u8>, String> {
     use resvg::{tiny_skia, usvg};
     let options = usvg::Options {
         fontdb: svg_fonts(),
+        resources_dir: resources.map(std::path::Path::to_path_buf),
         ..Default::default()
     };
-    let tree = usvg::Tree::from_str(svg, &options).ok()?;
-    let size = tree.size().to_int_size().scale_by(scale)?;
-    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
+    let tree = usvg::Tree::from_str(svg, &options).map_err(|err| err.to_string())?;
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .ok_or("the scaled size is empty")?;
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("the picture is too large")?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.encode_png().ok()
+    pixmap.encode_png().map_err(|err| err.to_string())
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are
@@ -385,6 +425,46 @@ fn glyph_use(line: &str) -> Option<(&str, f32, f32)> {
         .collect();
     let n = nums.len();
     (n >= 2).then(|| (id, nums[n - 2], nums[n - 1]))
+}
+
+/// The origins of the glyphs an SVG page draws as groups: for each
+/// `<g id="e12">` whose first child is a `<path ... transform="matrix(a b c
+/// d x y)">`, its id and (x, y).
+fn group_glyph_origins(svg: &str) -> HashMap<&str, (f32, f32)> {
+    let mut origins = HashMap::new();
+    let mut lines = svg.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(id) = line
+            .trim_start()
+            .strip_prefix("<g id=\"")
+            .and_then(|rest| rest.strip_suffix("\">"))
+        else {
+            continue;
+        };
+        let Some(child) = lines.peek().map(|child| child.trim_start()) else {
+            continue;
+        };
+        if !child.starts_with("<path ") {
+            continue;
+        }
+        if let Some(start) = child.find("transform=\"matrix(") {
+            let inner = &child[start + "transform=\"matrix(".len()..];
+            let nums: Vec<f32> = inner[..inner.find(')').unwrap_or(0)]
+                .split([' ', ','])
+                .filter_map(|part| part.parse().ok())
+                .collect();
+            if nums.len() == 6 {
+                origins.insert(id, (nums[4], nums[5]));
+            }
+        }
+    }
+    origins
+}
+
+/// The id of a group a line uses without a transform (`<use
+/// xlink:href="#e12"/>`), or `None`.
+fn group_use(line: &str) -> Option<&str> {
+    line.trim().strip_prefix("<use xlink:href=\"#")?.strip_suffix("\"/>")
 }
 
 /// Parses a line that defines a glyph outline (`<path id="g12" .../>`):

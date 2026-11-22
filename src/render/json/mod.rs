@@ -16,9 +16,11 @@
 
 pub(crate) mod apply;
 pub(crate) mod citation;
+pub(crate) mod figure_lines;
 pub(crate) mod front;
 pub(crate) mod markup;
 pub(crate) mod plain_text;
+pub(crate) mod replace;
 
 use super::latex::math::latex;
 use super::{Equations, HtmlOptions, ImageStore, Mode, PageImage, float_class, math_html, plain};
@@ -188,6 +190,10 @@ struct BlockOut {
     /// Text found inside a figure (axis labels, legends), as plain text.
     #[serde(skip_serializing_if = "Option::is_none")]
     figure_text: Option<String>,
+    /// The text inside a figure as runs, each editable (see
+    /// [`figure_lines`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    figure_lines: Option<Vec<figure_lines::RunOut>>,
     /// The text of a formula as the PDF gives it (alt text).
     #[serde(skip_serializing_if = "Option::is_none")]
     alt: Option<String>,
@@ -271,6 +277,7 @@ pub(crate) fn render_json(
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        vector: true,
     };
     let doc = &analysis.doc;
     let file = FileOut {
@@ -288,7 +295,7 @@ pub(crate) fn render_json(
             .iter()
             .map(|page| [round(page.width), round(page.height)])
             .collect(),
-        blocks: blocks_out(doc, opts, &mut images),
+        blocks: blocks_out(doc, &analysis.rotated, opts, &mut images),
     };
     let json = serde_json::to_string_pretty(&file).expect("the JSON output serialises");
     // serde_json writes the placeholder marks of the pictures as escapes;
@@ -305,12 +312,22 @@ pub(crate) fn render_json(
 const MARK_ESCAPED: &str = "\\u0001";
 
 /// The blocks of `doc` as JSON, with the section each one is in.
-fn blocks_out(doc: &Document, opts: &JsonOptions, images: &mut ImageStore<'_>) -> Vec<BlockOut> {
+fn blocks_out(
+    doc: &Document,
+    rotated: &[Vec<crate::model::RotatedRun>],
+    opts: &JsonOptions,
+    images: &mut ImageStore<'_>,
+) -> Vec<BlockOut> {
     // The headings open above the current block: (level, id).
     let mut headings: Vec<(u8, usize)> = Vec::new();
     let mut out = Vec::with_capacity(doc.blocks.len());
     for block in &doc.blocks {
         let mut json = block_out(block, opts, images);
+        // The text inside a figure's picture, rotated text included (which
+        // the analysis keeps by page).
+        if matches!(block.kind, BlockKind::Figure { .. }) && json.image.is_some() {
+            json.figure_lines = figure_lines::runs_out(block, &figure_lines::rotated_in(rotated, block));
+        }
         if let BlockKind::Heading { level } = block.kind {
             while headings.last().is_some_and(|&(open, _)| open >= level) {
                 headings.pop();

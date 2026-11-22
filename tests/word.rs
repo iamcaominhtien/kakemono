@@ -390,3 +390,44 @@ fn nested_list_items_keep_their_level() {
         ]
     );
 }
+
+/// A Word document's picture, already a stored picture, is replaced by a
+/// `replace_image` given as a data URI, like a PDF's figure.
+#[test]
+fn replace_image_works_on_a_word_picture() {
+    use base64::Engine;
+    let (paper, mut analysis) = load(SAMPLE_DOCX);
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let mut content: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(30, 20, image::Rgb([200, 30, 30]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png = png.into_inner();
+    let uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    );
+    let figure = content["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["type"] == "figure" && block.get("image").is_some())
+        .expect("the sample has a picture");
+    figure["replace_image"] = uri.into();
+    let report = paper.apply_content(&mut analysis, &content.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+    let out = paper.to_json(&analysis, &JsonOptions::default());
+    // The new picture is written (fitted into the figure's box, as an SVG
+    // when its shape differs): drawn, its red is in the middle.
+    let red = out.files.iter().any(|(_, data)| {
+        let png = match std::str::from_utf8(data) {
+            Ok(svg) => kakemono::backend::svg_to_png(svg, 1.0),
+            Err(_) => Some(data.clone()),
+        };
+        png.and_then(|png| image::load_from_memory(&png).ok())
+            .map(|picture| picture.to_rgb8())
+            .is_some_and(|picture| picture.get_pixel(picture.width() / 2, picture.height() / 2).0 == [200, 30, 30])
+    });
+    assert!(red, "the new picture is written");
+}

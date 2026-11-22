@@ -112,6 +112,18 @@ enum Command {
         #[arg(long, hide = true)]
         scores: bool,
     },
+    /// Draw an SVG as a PNG, the way kakemono draws the SVG pictures it is
+    /// given (fonts, pictures named relative to the SVG).
+    RenderSvg {
+        /// The SVG file
+        input: PathBuf,
+        /// The PNG file to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Pixels per SVG unit
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+    },
 }
 
 /// Values of `--mode`; the doc comments are the help texts.
@@ -384,7 +396,20 @@ fn run() -> Result<()> {
             }
         }
         Command::Formula { images, scores } => formula(&images, scores),
+        Command::RenderSvg { input, output, scale } => render_svg(&input, &output, scale),
     }
+}
+
+/// Draws the SVG file `input` as the PNG file `output` at `scale` pixels
+/// per SVG unit.
+///
+/// # Errors
+/// When `input` cannot be read or drawn, or `output` cannot be written.
+fn render_svg(input: &Path, output: &Path, scale: f32) -> Result<()> {
+    let svg = std::fs::read_to_string(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let png = kakemono::backend::svg_to_png_in(&svg, scale, input.parent())
+        .map_err(|why| anyhow::anyhow!("cannot read {} as SVG: {why}", input.display()))?;
+    std::fs::write(output, png).with_context(|| format!("writing {}", output.display()))
 }
 
 /// Loads the PDF named by `input` (an existing file, else an arXiv id or
@@ -469,14 +494,25 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     Ok(format)
 }
 
-/// Writes a Word document laid out in pages as a PDF.
+/// Writes a Word document laid out in pages as a PDF, with the text and
+/// pictures of `--content` when it is given.
 ///
 /// # Errors
 /// When the input is not a Word document, or the file cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
-    let data = paper.to_pdf()?;
+    let data = match &args.content {
+        // The layout engine reads a Word file: the edited text and pictures
+        // go into a Word document first, which is then laid out.
+        Some(content) => {
+            let mut analysis = paper.analyze();
+            apply_content(paper, &mut analysis, content)?;
+            let docx = paper.to_docx(&analysis, &kakemono::DocxOptions::default());
+            Paper::from_bytes(docx)?.to_pdf()?
+        }
+        None => paper.to_pdf()?,
+    };
     write_file(&file, &data)?;
     eprintln!(
         "{:<8} -> {} ({:.1} MB, {:.2}s)",
@@ -788,8 +824,9 @@ fn write_chunks(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, file: &P
 /// [`Paper::apply_content`]).
 fn apply_content(paper: &Paper, analysis: &mut Analysis, path: &Path) -> Result<()> {
     let json = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let base = path.parent().unwrap_or(Path::new("."));
     let report = paper
-        .apply_content(analysis, &json)
+        .apply_content_in(analysis, &json, base)
         .with_context(|| format!("applying {}", path.display()))?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");

@@ -16,14 +16,17 @@
 //! inside the block's box instead, and the hard mode (whose text layer is
 //! line by line) has no text for it.
 
+use super::figure_lines::{self, FigureEdit};
 use super::markup::{Parsed, from_markup, to_markup};
 use super::plain_text::block_plain;
+use super::replace::apply_replacement;
 use super::{FORMAT_NAME, FORMAT_VERSION, SourceInfo, kind_name};
 use crate::analysis::pipeline::Analysis;
 use crate::model::{Block, BlockKind, Span};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// What applying an edited JSON file did.
 #[derive(Debug, Clone, Default)]
@@ -82,6 +85,20 @@ struct BlockIn {
     /// A rebuilt table.
     #[serde(default)]
     table: Option<TableIn>,
+    /// A picture to draw in place of a figure's (see [`super::replace`]).
+    #[serde(default)]
+    replace_image: Option<String>,
+    /// The runs of text inside a figure (see [`super::figure_lines`]).
+    #[serde(default)]
+    figure_lines: Option<Vec<RunIn>>,
+}
+
+/// A run of text inside a figure, in the file.
+#[derive(Deserialize)]
+struct RunIn {
+    /// Its text with markup.
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// A table of the file.
@@ -108,7 +125,15 @@ struct CellIn {
 /// format version, was made from another source (its SHA-256 differs), or
 /// names a block that does not exist or has another type (the file was
 /// made with other analysis options or by another version of kakemono).
-pub(crate) fn apply_content(analysis: &mut Analysis, json: &str, source: &SourceInfo) -> Result<ContentReport> {
+///
+/// A `replace_image` that is a relative path is read from `base`, the
+/// folder of the JSON file; without it, such a path is a warning.
+pub(crate) fn apply_content(
+    analysis: &mut Analysis,
+    json: &str,
+    source: &SourceInfo,
+    base: Option<&Path>,
+) -> Result<(ContentReport, Vec<FigureEdit>)> {
     let file: FileIn = serde_json::from_str(json).map_err(|err| anyhow::anyhow!("reading the JSON: {err}"))?;
     check_header(&file, source)?;
     let index: HashMap<usize, usize> = analysis
@@ -137,12 +162,28 @@ pub(crate) fn apply_content(analysis: &mut Analysis, json: &str, source: &Source
         }
     }
     let mut report = ContentReport::default();
+    let mut edits = Vec::new();
     let mut title_edited = false;
     for block_in in &file.blocks {
-        let block = &mut analysis.doc.blocks[index[&block_in.id]];
-        if apply_block(block, block_in, &mut report) {
+        let idx = index[&block_in.id];
+        let block = &mut analysis.doc.blocks[idx];
+        let mut edited = apply_block(block, block_in, &mut report);
+        title_edited |= edited && matches!(block.kind, BlockKind::Title);
+        let figure_edit = figure_edit(&analysis.doc.blocks[idx], idx, block_in, &analysis.rotated, &mut report);
+        if let Some(value) = &block_in.replace_image {
+            edited |= apply_replacement(&mut analysis.doc, idx, value, base, &mut report);
+            if figure_edit.is_some() {
+                report.warnings.push(format!(
+                    "block {}: replace_image is used; the edited figure_lines are not",
+                    block_in.id
+                ));
+            }
+        } else if let Some(figure_edit) = figure_edit {
+            edits.push(figure_edit);
+            edited = true;
+        }
+        if edited {
             report.edited_blocks += 1;
-            title_edited |= matches!(block.kind, BlockKind::Title);
         }
     }
     if title_edited {
@@ -155,7 +196,48 @@ pub(crate) fn apply_content(analysis: &mut Analysis, json: &str, source: &Source
             .collect();
         analysis.doc.meta.title = Some(title.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
     }
-    Ok(report)
+    Ok((report, edits))
+}
+
+/// The edited runs of text of the figure `block` (at `idx`), or `None` when
+/// none of them was edited.
+fn figure_edit(
+    block: &Block,
+    idx: usize,
+    block_in: &BlockIn,
+    rotated: &[Vec<crate::model::RotatedRun>],
+    report: &mut ContentReport,
+) -> Option<FigureEdit> {
+    let runs_in = block_in.figure_lines.as_ref()?;
+    let mut runs = Vec::new();
+    let mut turned = Vec::new();
+    let flat = figure_lines::runs(block);
+    let count = flat.len();
+    for (pos, (run, run_in)) in flat.into_iter().zip(runs_in).enumerate() {
+        let place = format!("block {}, figure line {}", block.id, pos + 1);
+        if let Some(text) = &run_in.text
+            && let Some(spans) = edited_spans(&figure_lines::run_spans(block, &run), text, &place, report)
+        {
+            runs.push((run, spans));
+        }
+    }
+    for (pos, (run, run_in)) in figure_lines::rotated_in(rotated, block)
+        .into_iter()
+        .zip(runs_in.iter().skip(count))
+        .enumerate()
+    {
+        let place = format!("block {}, figure line {}", block.id, count + pos + 1);
+        if let Some(text) = &run_in.text
+            && let Some(spans) = edited_spans(&figure_lines::rotated_spans(run), text, &place, report)
+        {
+            turned.push((run.clone(), spans));
+        }
+    }
+    (!runs.is_empty() || !turned.is_empty()).then_some(FigureEdit {
+        block_idx: idx,
+        runs,
+        turned,
+    })
 }
 
 /// Checks the format, version and source of the file.

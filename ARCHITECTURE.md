@@ -4,7 +4,7 @@
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
 (`Document` → HTML, Word, Markdown, LaTeX, EPUB, JSON or chunks) meet at exactly one place: the `Document` model in `model`.
 A Word document (`.docx`, `.doc`) skips the analysis: `word/` reads it straight into a `Document`.
-An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before any output is written.
+An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figure's `replace_image` by `render/json/replace.rs`) before any output is written.
 
 ```
  PDF bytes
@@ -66,7 +66,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution |
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
-| `render/` | HTML output: a `Renderer` for each mode, the `assets` image store (pictures drawn from the pages of the PDF, or stored in the document for a Word input: `Pictures`), shared HTML parts |
+| `render/` | HTML output: a `Renderer` for each mode, the `assets` image store (pictures drawn from the pages of the PDF, or stored in the document for a Word input or as the `replace_image` of an edited JSON: `Pictures`; a stored picture may be an SVG, kept as one or drawn as a PNG by format), shared HTML parts |
 | `render/docx/` | Word output: `body` (blocks → `word/document.xml`), `omml` (`MathNode` → Office Math), `table` (Word tables), `parts` (styles, relationships, page); the package is written by `render/zip.rs` (a minimal ZIP writer shared with EPUB). Pictures are placeholders drawn afterwards on several threads, as in `assets`; `to_docx_with_images` also returns them as files |
 | `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math), Markdown and LaTeX (`$…$`) |
 | `render/notes.rs` | Added notes (`Span::note`, the `<note>` tag of the editable JSON) in the outputs: the HTML modes, Markdown and EPUB number a copy of the document (the call's text becomes its number, its link the note's anchor); the call and the asides of the flowing modes and EPUB. Word and LaTeX let the format number them (footnotes) |

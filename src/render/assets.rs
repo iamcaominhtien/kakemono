@@ -64,7 +64,38 @@ pub(crate) struct ImageStore<'r> {
     pub(crate) opts: &'r HtmlOptions,
     /// The pictures recorded so far; a placeholder holds an index into it.
     pub(crate) jobs: Vec<ImageJob>,
+    /// The format takes SVG pictures: a stored SVG stays one. Otherwise
+    /// (LaTeX) it is drawn as a PNG.
+    pub(crate) vector: bool,
 }
+
+/// The data of a picture, by kind.
+pub(crate) enum PictureData {
+    /// A PNG file.
+    Png(Vec<u8>),
+    /// A JPEG file.
+    Jpeg(Vec<u8>),
+    /// An SVG document.
+    Svg(String),
+}
+
+/// What kind of picture `picture` holds, with its data: a JPEG when it says
+/// so, a PNG by its signature, an SVG when its text parses as one; `None`
+/// for anything else.
+pub(crate) fn picture_data(picture: &Picture) -> Option<PictureData> {
+    if picture.jpeg {
+        return Some(PictureData::Jpeg(picture.data.clone()));
+    }
+    if picture.data.starts_with(PNG_SIGNATURE) {
+        return Some(PictureData::Png(picture.data.clone()));
+    }
+    let text = std::str::from_utf8(&picture.data).ok()?;
+    resvg::usvg::Tree::from_str(text, &resvg::usvg::Options::default()).ok()?;
+    Some(PictureData::Svg(text.to_string()))
+}
+
+/// The first bytes of every PNG file.
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 /// A drawn picture: (data, mime type, file extension, name hint).
 type DrawnImage = (Vec<u8>, &'static str, &'static str, String);
@@ -97,21 +128,40 @@ impl<'a> Pictures<'a> {
     }
 
     /// The picture of `spec` at `scale` pixels per point: a stored picture
-    /// as it is, or the area of the page drawn by `renderer`. Returns the
-    /// data and whether it is a JPEG (a PNG otherwise), or `None` when it
+    /// as it is, or the area of the page drawn by `renderer`; `None` when it
     /// cannot be drawn.
     pub(crate) fn region(
         &self,
         renderer: Option<&PageRenderer<'_>>,
         spec: &ImageSpec,
         scale: f32,
-    ) -> Option<(Vec<u8>, bool)> {
+    ) -> Option<PictureData> {
         match spec.embedded {
-            Some(index) => self
-                .stored
-                .get(index)
-                .map(|picture| (picture.data.clone(), picture.jpeg)),
-            None => renderer?.region_picture(spec.page, spec.rect, scale, spec.transparent),
+            Some(index) => picture_data(self.stored.get(index)?),
+            None => renderer?
+                .region_picture(spec.page, spec.rect, scale, spec.transparent)
+                .map(|(data, jpeg)| {
+                    if jpeg {
+                        PictureData::Jpeg(data)
+                    } else {
+                        PictureData::Png(data)
+                    }
+                }),
+        }
+    }
+
+    /// The picture of `spec` as a PNG or a JPEG (an SVG is drawn at
+    /// `scale`): the data and whether it is a JPEG.
+    pub(crate) fn raster_region(
+        &self,
+        renderer: Option<&PageRenderer<'_>>,
+        spec: &ImageSpec,
+        scale: f32,
+    ) -> Option<(Vec<u8>, bool)> {
+        match self.region(renderer, spec, scale)? {
+            PictureData::Png(data) => Some((data, false)),
+            PictureData::Jpeg(data) => Some((data, true)),
+            PictureData::Svg(svg) => Some((svg_to_png(&svg, scale)?, false)),
         }
     }
 }
@@ -164,14 +214,14 @@ impl ImageStore<'_> {
     ) -> Option<DrawnImage> {
         let page_hint = |page: usize| format!("page-{}", page + 1);
         match job {
-            ImageJob::Region(spec, hint) => {
-                let (data, jpeg) = pictures.region(renderer, spec, self.opts.scale)?;
-                Some(if jpeg {
-                    (data, "image/jpeg", "jpg", hint.clone())
-                } else {
-                    (data, "image/png", "png", hint.clone())
-                })
-            }
+            ImageJob::Region(spec, hint) => Some(match pictures.region(renderer, spec, self.opts.scale)? {
+                PictureData::Jpeg(data) => (data, "image/jpeg", "jpg", hint.clone()),
+                PictureData::Png(data) => (data, "image/png", "png", hint.clone()),
+                PictureData::Svg(svg) if self.vector => {
+                    (svg_with_paths(&svg)?.into_bytes(), "image/svg+xml", "svg", hint.clone())
+                }
+                PictureData::Svg(svg) => (svg_to_png(&svg, self.opts.scale)?, "image/png", "png", hint.clone()),
+            }),
             ImageJob::Page(page) => {
                 let renderer = renderer?;
                 match self.opts.page_image {
@@ -451,6 +501,17 @@ fn pixel_fill(payload: &str) -> Option<String> {
     Some(format!("fill=\"rgb({red},{green},{blue})\"{opacity}"))
 }
 
+/// `svg` written again with its text turned into paths, so that it looks the
+/// same where its fonts are missing; `None` when it does not parse.
+fn svg_with_paths(svg: &str) -> Option<String> {
+    let options = resvg::usvg::Options {
+        fontdb: crate::backend::render::svg_fonts(),
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_str(svg, &options).ok()?;
+    Some(tree.to_string(&resvg::usvg::WriteOptions::default()))
+}
+
 /// The key of a glyph origin (`x`, `y` in PDF points) in the sets of glyphs
 /// drawn as HTML: the origin rounded to the nearest quarter point.
 pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
@@ -462,7 +523,56 @@ pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MARK, next_placeholder, placeholders_in_order};
+    use super::{DrawnImage, HtmlOptions, ImageJob, ImageSpec, ImageStore, MARK, Picture, Pictures};
+    use super::{next_placeholder, placeholders_in_order};
+    use crate::common::geom::Rect;
+
+    /// Draws a stored picture of `data` as a figure, for a format that
+    /// takes SVG (`vector`) or not.
+    fn draw_stored(data: &[u8], vector: bool) -> Option<DrawnImage> {
+        let stored = [Picture {
+            data: data.to_vec(),
+            jpeg: false,
+        }];
+        let pictures = Pictures {
+            pdf: None,
+            stored: &stored,
+        };
+        let opts = HtmlOptions::default();
+        let store = ImageStore {
+            opts: &opts,
+            jobs: Vec::new(),
+            vector,
+        };
+        let spec = ImageSpec {
+            page: 0,
+            rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+            transparent: false,
+            embedded: Some(0),
+        };
+        store.draw(&pictures, None, &ImageJob::Region(spec, "fig".into()))
+    }
+
+    /// An SVG picture stays an SVG where the format takes one, its text
+    /// turned into paths so that it looks the same without its fonts.
+    #[test]
+    fn a_stored_svg_stays_vector_with_its_text_as_paths() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="2" y="15" font-size="12">Hồi quy</text></svg>"#;
+        let (data, mime, ext, _) = draw_stored(svg.as_bytes(), true).unwrap();
+        assert_eq!((mime, ext), ("image/svg+xml", "svg"));
+        let out = String::from_utf8(data).unwrap();
+        assert!(!out.contains("<text"), "text must be paths: {out}");
+        assert!(out.contains("<path"), "{out}");
+    }
+
+    /// Where the format takes no SVG (LaTeX, Word), it is drawn as a PNG.
+    #[test]
+    fn a_stored_svg_is_rasterized_where_the_format_takes_no_svg() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
+        let (data, mime, _, _) = draw_stored(svg.as_bytes(), false).unwrap();
+        assert_eq!(mime, "image/png");
+        assert!(data.starts_with(b"\x89PNG"));
+    }
 
     fn placeholder(index: usize) -> String {
         format!("{MARK}{index}{MARK}")

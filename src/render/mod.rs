@@ -38,6 +38,7 @@ pub(crate) use escape::*;
 pub(crate) use flow::*;
 pub use json::apply::ContentReport;
 pub(crate) use json::apply::apply_content;
+pub(crate) use json::figure_lines::figure_svg;
 pub use json::{JsonOptions, JsonOutput};
 pub(crate) use json::{SourceInfo, render_json};
 pub use latex::{LatexOptions, LatexOutput, render_latex};
@@ -87,7 +88,11 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// inlined as data URIs or returned in [`HtmlOutput::files`].
 pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) -> HtmlOutput {
-    let mut images = ImageStore { opts, jobs: Vec::new() };
+    let mut images = ImageStore {
+        opts,
+        jobs: Vec::new(),
+        vector: true,
+    };
     let numbered = notes::numbered_analysis(analysis);
     let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish(Pictures::new(pdf, &analysis.doc), html)
@@ -108,7 +113,11 @@ pub fn render_to(
     out: &mut dyn std::io::Write,
     file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    let mut images = ImageStore { opts, jobs: Vec::new() };
+    let mut images = ImageStore {
+        opts,
+        jobs: Vec::new(),
+        vector: true,
+    };
     let numbered = notes::numbered_analysis(analysis);
     let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish_into(Pictures::new(pdf, &analysis.doc), &html, out, file)

@@ -2454,3 +2454,56 @@ fn ligo_added_notes_reach_every_output() {
     assert!(!chunks.contains("In English"));
     assert!(chunks.contains(noted[0].split('<').next().unwrap().trim()));
 }
+
+/// The text inside a figure is edited in place: Adam's chart titles, given
+/// in Vietnamese in `figure_lines`, make the figure an SVG that draws the
+/// new titles and no longer the glyphs of the old ones; the other runs are
+/// left as they are.
+#[test]
+fn adam_chart_titles_are_translated_in_place() {
+    let Some(paper) = load("1412.6980v9") else { return };
+    let mut analysis = paper.analyze();
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let figure = value["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| {
+            block["figure_lines"].as_array().is_some_and(|runs| {
+                runs.iter().any(|run| {
+                    run["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("MNIST Logistic Regression"))
+                })
+            })
+        })
+        .expect("Adam's Figure 1 lists its titles");
+    let runs = figure["figure_lines"].as_array_mut().unwrap();
+    assert!(
+        runs.len() > 10,
+        "the ticks, legends and titles are runs: {}",
+        runs.len()
+    );
+    let title = runs
+        .iter_mut()
+        .find(|run| run["text"].as_str().unwrap().contains("MNIST Logistic Regression"))
+        .unwrap();
+    title["text"] = "Hồi quy logistic trên MNIST".into();
+    // The axis titles written upwards are runs too, after the others.
+    let axis = runs
+        .iter_mut()
+        .find(|run| run["rotation"].as_f64() == Some(-90.0))
+        .expect("the rotated axis title is a run");
+    assert!(axis["text"].as_str().unwrap().contains("training cost"));
+    axis["text"] = "chi phí huấn luyện".into();
+    let report = paper.apply_content(&mut analysis, &value.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let svg = String::from_utf8(analysis.doc.pictures.last().unwrap().data.clone()).unwrap();
+    assert!(svg.contains("Hồi quy logistic trên MNIST"));
+    assert!(svg.contains("rotate(-90)") && svg.contains("chi phí huấn luyện"));
+    // The JSON written afterwards still lists the text of the figure.
+    let again = paper.to_json(&analysis, &JsonOptions::default()).json;
+    assert!(again.contains("figure_lines"));
+}
