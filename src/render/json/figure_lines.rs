@@ -12,7 +12,7 @@
 
 use super::text_of;
 use crate::backend::PageRenderer;
-use crate::model::{BOLD, Block, ITALIC, Line, MONO, Span};
+use crate::model::{BOLD, Block, BlockKind, ITALIC, Line, MONO, RotatedRun, Span};
 use crate::render::assets::origin_key;
 use crate::render::escape::esc;
 use std::collections::HashSet;
@@ -81,11 +81,49 @@ fn same_run(prev: &Line, line: &Line) -> bool {
     let gap = line.baseline - prev.baseline;
     let left = (line.bbox.x0 - prev.bbox.x0).abs();
     let centre = ((line.bbox.x0 + line.bbox.x1) - (prev.bbox.x0 + prev.bbox.x1)).abs() / 2.0;
+    // A tick label (a number) never joins a label of words next to it.
+    let has_letters = |line: &Line| {
+        line.glyphs
+            .iter()
+            .any(|glyph| glyph.text.chars().any(char::is_alphabetic))
+    };
     prev.page == line.page
+        && has_letters(prev) == has_letters(line)
         && gap > 0.0
         && gap <= RUN_PITCH_MAX_EM * size
         && (prev.size - line.size).abs() <= RUN_SIZE_TOLERANCE_RATIO * size
         && left.min(centre) <= RUN_ALIGN_TOLERANCE_EM * size
+}
+
+/// The rotated runs of text (an axis title written upwards) inside the
+/// picture of the figure `block`, from the rotated text of the pages.
+pub(crate) fn rotated_in<'a>(rotated: &'a [Vec<RotatedRun>], block: &Block) -> Vec<&'a RotatedRun> {
+    let BlockKind::Figure { image: Some(spec), .. } = &block.kind else {
+        return Vec::new();
+    };
+    if block.table.is_some() || spec.embedded.is_some() {
+        return Vec::new();
+    }
+    rotated
+        .get(spec.page)
+        .map(|runs| {
+            runs.iter()
+                .filter(|run| crate::render::hard95::run_in_region(run, &spec.rect))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The styled text of a rotated run.
+pub(crate) fn rotated_spans(run: &RotatedRun) -> Vec<Span> {
+    vec![Span {
+        text: run.text.clone(),
+        style: run.style,
+        href: None,
+        color: run.color,
+        math: None,
+        note: None,
+    }]
 }
 
 /// The styled text of a run: its lines joined by spaces.
@@ -128,12 +166,17 @@ pub(crate) struct RunOut {
     bbox: [f32; 4],
     /// Its font size in points.
     size: f32,
+    /// The direction of its baseline in degrees, for rotated text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation: Option<f32>,
 }
 
-/// The runs of `block` as the JSON writes them; `None` when it has none.
-pub(crate) fn runs_out(block: &Block) -> Option<Vec<RunOut>> {
+/// The runs of `block` as the JSON writes them, its rotated runs
+/// (`rotated_in`) after the others; `None` when it has none.
+pub(crate) fn runs_out(block: &Block, rotated: &[&RotatedRun]) -> Option<Vec<RunOut>> {
     let runs = runs(block);
-    let out: Vec<RunOut> = runs
+    let round = |value: f32| (value * 100.0).round() / 100.0;
+    let mut out: Vec<RunOut> = runs
         .iter()
         .map(|run| {
             let lines = run.iter().map(|&idx| &block.inner_lines[idx]);
@@ -150,9 +193,25 @@ pub(crate) fn runs_out(block: &Block) -> Option<Vec<RunOut>> {
                 text: text_of(&run_spans(block, run)),
                 bbox: [round(x0), round(y0), round(x1), round(y1)],
                 size: round(block.inner_lines[run[0]].size),
+                rotation: None,
             }
         })
         .collect();
+    out.extend(rotated.iter().map(|run| {
+        let (sin, cos) = run.angle.to_radians().sin_cos();
+        let (x1, y1) = (run.x + cos * run.length, run.y + sin * run.length);
+        RunOut {
+            text: text_of(&rotated_spans(run)),
+            bbox: [
+                round(run.x.min(x1)),
+                round(run.y.min(y1)),
+                round(run.x.max(x1)),
+                round(run.y.max(y1)),
+            ],
+            size: round(run.size),
+            rotation: Some(round(run.angle)),
+        }
+    }));
     (!out.is_empty()).then_some(out)
 }
 
@@ -162,6 +221,8 @@ pub(crate) struct FigureEdit {
     pub(crate) block_idx: usize,
     /// Each edited run: its line indexes and its new text.
     pub(crate) runs: Vec<(Vec<usize>, Vec<Span>)>,
+    /// Each edited rotated run and its new text.
+    pub(crate) turned: Vec<(RotatedRun, Vec<Span>)>,
 }
 
 /// The figure `block` drawn again with its edited runs, as an SVG of its
@@ -178,6 +239,11 @@ pub(crate) fn figure_svg(
         return None;
     };
     let mut removed: HashSet<(i32, i32)> = HashSet::new();
+    for (run, _) in &edit.turned {
+        for &(x, y) in &run.origins {
+            removed.insert(origin_key(x, y));
+        }
+    }
     for (run, _) in &edit.runs {
         for &idx in run {
             for glyph in &block.inner_lines[idx].glyphs {
@@ -212,6 +278,9 @@ pub(crate) fn figure_svg(
     );
     for (run, spans) in &edit.runs {
         out.push_str(&run_text(block, run, spans, block.id, warnings));
+    }
+    for (run, spans) in &edit.turned {
+        out.push_str(&turned_text(run, spans));
     }
     out.push_str("</svg>");
     Some(out)
@@ -291,6 +360,31 @@ fn run_text(block: &Block, run: &[usize], spans: &[Span], id: usize, warnings: &
     }
     out.push_str("</text>");
     out
+}
+
+/// The SVG `<text>` of an edited rotated run: on its baseline, centred on
+/// the middle of the old text, at its size (smaller, down to
+/// [`RUN_MIN_SCALE_RATIO`], when much longer than the old text).
+fn turned_text(run: &RotatedRun, spans: &[Span]) -> String {
+    let font = TextFont::of(spans.first().map_or(run.style, |span| span.style));
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    let width = text_width(&text, run.size, &font);
+    let room = run.length * LABEL_MAX_GROWTH_RATIO;
+    let size = if width > room {
+        (run.size * room / width).max(run.size * RUN_MIN_SCALE_RATIO)
+    } else {
+        run.size
+    };
+    let (sin, cos) = run.angle.to_radians().sin_cos();
+    let (mid_x, mid_y) = (run.x + cos * run.length / 2.0, run.y + sin * run.length / 2.0);
+    format!(
+        "<text transform=\"translate({mid_x} {mid_y}) rotate({})\" font-family=\"{}\" font-size=\"{size}\" font-weight=\"{}\" font-style=\"{}\" text-anchor=\"middle\" fill=\"#000\">{}</text>",
+        run.angle,
+        font.family,
+        font.weight,
+        font.style,
+        esc(&text)
+    )
 }
 
 /// The font an edited run is written in, from the style of its first span.

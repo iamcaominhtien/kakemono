@@ -310,7 +310,9 @@ glyphs of the old text, and the new text is written in its box, in a sans-serif 
 font of the run's size and weight, broken into lines that fit the box (made smaller, down to 75%,
 when it needs more lines than the run had; a one-line label may grow to 1.6 times its width). The
 figure then becomes an SVG, as with `replace_image` below, which wins when both are given. Rotated
-text (an axis title written upwards) is not in `figure_lines` yet.
+text (an axis title written upwards) comes after the other runs, with its `rotation` in degrees,
+and is written back along the same line, centred on the old text. A tick label never joins the
+words of a label next to it.
 
 **Replacing a figure's picture.** A `figure` block may also get `"replace_image"`: a PNG, JPEG or
 SVG file, named by a path relative to the JSON file, or a data URI. Every output then draws it in

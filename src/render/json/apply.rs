@@ -169,7 +169,7 @@ pub(crate) fn apply_content(
         let block = &mut analysis.doc.blocks[idx];
         let mut edited = apply_block(block, block_in, &mut report);
         title_edited |= edited && matches!(block.kind, BlockKind::Title);
-        let figure_edit = figure_edit(&analysis.doc.blocks[idx], idx, block_in, &mut report);
+        let figure_edit = figure_edit(&analysis.doc.blocks[idx], idx, block_in, &analysis.rotated, &mut report);
         if let Some(value) = &block_in.replace_image {
             edited |= apply_replacement(&mut analysis.doc, idx, value, base, &mut report);
             if figure_edit.is_some() {
@@ -201,10 +201,19 @@ pub(crate) fn apply_content(
 
 /// The edited runs of text of the figure `block` (at `idx`), or `None` when
 /// none of them was edited.
-fn figure_edit(block: &Block, idx: usize, block_in: &BlockIn, report: &mut ContentReport) -> Option<FigureEdit> {
+fn figure_edit(
+    block: &Block,
+    idx: usize,
+    block_in: &BlockIn,
+    rotated: &[Vec<crate::model::RotatedRun>],
+    report: &mut ContentReport,
+) -> Option<FigureEdit> {
     let runs_in = block_in.figure_lines.as_ref()?;
     let mut runs = Vec::new();
-    for (pos, (run, run_in)) in figure_lines::runs(block).into_iter().zip(runs_in).enumerate() {
+    let mut turned = Vec::new();
+    let flat = figure_lines::runs(block);
+    let count = flat.len();
+    for (pos, (run, run_in)) in flat.into_iter().zip(runs_in).enumerate() {
         let place = format!("block {}, figure line {}", block.id, pos + 1);
         if let Some(text) = &run_in.text
             && let Some(spans) = edited_spans(&figure_lines::run_spans(block, &run), text, &place, report)
@@ -212,7 +221,23 @@ fn figure_edit(block: &Block, idx: usize, block_in: &BlockIn, report: &mut Conte
             runs.push((run, spans));
         }
     }
-    (!runs.is_empty()).then_some(FigureEdit { block_idx: idx, runs })
+    for (pos, (run, run_in)) in figure_lines::rotated_in(rotated, block)
+        .into_iter()
+        .zip(runs_in.iter().skip(count))
+        .enumerate()
+    {
+        let place = format!("block {}, figure line {}", block.id, count + pos + 1);
+        if let Some(text) = &run_in.text
+            && let Some(spans) = edited_spans(&figure_lines::rotated_spans(run), text, &place, report)
+        {
+            turned.push((run.clone(), spans));
+        }
+    }
+    (!runs.is_empty() || !turned.is_empty()).then_some(FigureEdit {
+        block_idx: idx,
+        runs,
+        turned,
+    })
 }
 
 /// Checks the format, version and source of the file.

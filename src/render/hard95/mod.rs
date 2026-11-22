@@ -450,7 +450,7 @@ fn figure_regions(doc: &Document, page_idx: usize) -> Vec<Rect> {
 
 /// Whether the middle of a rotated run lies inside `rect` (grown by
 /// [`FIGURE_REGION_MARGIN_PT`]).
-fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
+pub(crate) fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
     let (sin, cos) = run.angle.to_radians().sin_cos();
     let half = run.length * 0.5;
     // The middle of the baseline, moved up by about the height of the
