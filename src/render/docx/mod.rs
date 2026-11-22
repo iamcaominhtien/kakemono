@@ -17,7 +17,7 @@ mod xml;
 
 use super::assets::MARK;
 use super::zip::{Compression, ZipWriter};
-use super::{Equations, doc_title};
+use super::{Equations, InputFormat, doc_title};
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::ImageSpec;
@@ -92,8 +92,8 @@ struct Media {
 /// The pictures are drawn from `pdf` on `opts.jobs` threads; one that
 /// cannot be drawn is left out. The same document always gives the same
 /// bytes.
-pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> Vec<u8> {
-    write_package(analysis, pdf, opts).0
+pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputFormat, opts: &DocxOptions) -> Vec<u8> {
+    write_package(analysis, pdf, input, opts).0
 }
 
 /// Writes an analysed document as a `.docx` file, like [`render_docx`], and
@@ -103,10 +103,11 @@ pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOption
 pub fn render_docx_with_images(
     analysis: &Analysis,
     pdf: Option<&PdfFile>,
+    input: InputFormat,
     opts: &DocxOptions,
     image_dir: &str,
 ) -> DocxOutput {
-    let (docx, media) = write_package(analysis, pdf, opts);
+    let (docx, media) = write_package(analysis, pdf, input, opts);
     let files = media
         .files
         .into_iter()
@@ -120,8 +121,14 @@ pub fn render_docx_with_images(
     DocxOutput { docx, files }
 }
 
-/// Writes the `.docx` package and returns its bytes with the pictures in it.
-fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> (Vec<u8>, Media) {
+/// Writes the `.docx` package of a document read from a file of the format
+/// `input`, and returns its bytes with the pictures in it.
+fn write_package(
+    analysis: &Analysis,
+    pdf: Option<&PdfFile>,
+    input: InputFormat,
+    opts: &DocxOptions,
+) -> (Vec<u8>, Media) {
     let doc = &analysis.doc;
     let mut body = body::Body::new(doc, opts);
     body.write(doc);
@@ -148,7 +155,7 @@ fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions)
     text("_rels/.rels", &format!("{XML_DECL}{PACKAGE_RELS}"));
     text(
         "docProps/core.xml",
-        &core_props(&doc_title(doc), &doc.meta, crate::render::source_label(doc)),
+        &core_props(&doc_title(doc), &doc.meta, input.label()),
     );
     text("docProps/app.xml", &format!("{XML_DECL}{APP_PROPS}"));
     text("word/document.xml", &document);

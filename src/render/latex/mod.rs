@@ -237,12 +237,7 @@ fn document(doc: &Document, body: &str, input: InputFormat) -> String {
         // T1 stays the main encoding (the last one loaded).
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
-    let source = match input {
-        InputFormat::Pdf => "a PDF",
-        InputFormat::Docx | InputFormat::Doc => "a Word document",
-        InputFormat::Xlsx => "an Excel workbook",
-    };
-    out = out.replacen("Converted from a PDF", &format!("Converted from {source}"), 1);
+    out = out.replacen("Converted from a PDF", &format!("Converted from {}", input.phrase()), 1);
     if body.contains("\\begin{longtable}") {
         out = out.replacen(
             TABLE_PACKAGES_END,

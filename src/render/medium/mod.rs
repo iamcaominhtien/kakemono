@@ -50,7 +50,7 @@ const MARGIN_MIN_BLOCKS: usize = 2;
 pub(crate) struct Medium;
 
 impl Renderer for Medium {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, _input: InputFormat) -> String {
         render(&analysis.doc, images)
     }
 }

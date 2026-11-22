@@ -12,12 +12,6 @@ const FIGURE_ALT_MAX_CHARS: usize = 240;
 
 pub(crate) use crate::common::patterns::CAP_LABEL;
 
-/// What the document was converted from, as the colophons say it: `PDF`,
-/// or `Word` for a document without pages.
-pub(crate) fn source_label(doc: &Document) -> &'static str {
-    if doc.pages.is_empty() { "Word" } else { "PDF" }
-}
-
 /// Escapes `text` for use in HTML text and in double-quoted attribute
 /// values (`&`, `<`, `>` and `"`).
 pub(crate) fn esc(text: &str) -> String {

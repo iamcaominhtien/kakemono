@@ -43,6 +43,26 @@ impl InputFormat {
         }
     }
 
+    /// What a document of this format is called where an output says what
+    /// it was converted from: `PDF`, `Word` or `Excel`.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            InputFormat::Pdf => "PDF",
+            InputFormat::Docx | InputFormat::Doc => "Word",
+            InputFormat::Xlsx => "Excel",
+        }
+    }
+
+    /// [`InputFormat::label`] as a phrase: `a PDF`, `a Word document`, `an
+    /// Excel workbook`.
+    pub(crate) fn phrase(self) -> &'static str {
+        match self {
+            InputFormat::Pdf => "a PDF",
+            InputFormat::Docx | InputFormat::Doc => "a Word document",
+            InputFormat::Xlsx => "an Excel workbook",
+        }
+    }
+
     /// Whether a document of this format has pages to show: only a PDF.
     /// The `hard`, `hard-95` and `medium` modes need them.
     pub fn has_pages(self) -> bool {
@@ -201,7 +221,7 @@ impl Paper {
             }
             Mode::Hard | Mode::Hard95 => {
                 let laid = self.laid()?;
-                Some(render(&laid.analysis, Some(&laid.pdf), opts))
+                Some(render(&laid.analysis, Some(&laid.pdf), self.format(), opts))
             }
         }
     }
@@ -309,7 +329,7 @@ impl Paper {
         if let Some(output) = self.word_layout_html(opts) {
             return output;
         }
-        render(analysis, self.pdf(), &self.html_options(opts))
+        render(analysis, self.pdf(), self.format(), &self.html_options(opts))
     }
 
     /// `opts`, with the friendly mode for a document without pages.
@@ -344,14 +364,20 @@ impl Paper {
                     return out.write_all(output.html.as_bytes());
                 }
             } else if let Some(laid) = self.laid() {
-                return render_to(&laid.analysis, Some(&laid.pdf), opts, out, &mut |name, data| {
-                    file(&name, &data)
-                });
+                return render_to(
+                    &laid.analysis,
+                    Some(&laid.pdf),
+                    self.format(),
+                    opts,
+                    out,
+                    &mut |name, data| file(&name, &data),
+                );
             }
         }
         render_to(
             analysis,
             self.pdf(),
+            self.format(),
             &self.html_options(opts),
             out,
             &mut |name, data| file(&name, &data),
@@ -362,7 +388,7 @@ impl Paper {
     /// bytes of the file. `analysis` must come from this paper, since the
     /// pictures are drawn from its PDF.
     pub fn to_docx(&self, analysis: &Analysis, opts: &DocxOptions) -> Vec<u8> {
-        render_docx(analysis, self.pdf(), opts)
+        render_docx(analysis, self.pdf(), self.format(), opts)
     }
 
     /// Writes an analysis as a Word document, like [`Paper::to_docx`], and
@@ -370,7 +396,7 @@ impl Paper {
     /// `image_dir` (a relative path, such as `images`): the pictures stay
     /// embedded in the document too.
     pub fn to_docx_with_images(&self, analysis: &Analysis, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
-        render_docx_with_images(analysis, self.pdf(), opts, image_dir)
+        render_docx_with_images(analysis, self.pdf(), self.format(), opts, image_dir)
     }
 
     /// Writes an analysis as Markdown. `analysis` must come from this paper,
@@ -444,4 +470,23 @@ pub fn convert(data: Vec<u8>, opts: &HtmlOptions) -> Result<HtmlOutput> {
     let paper = Paper::from_bytes(data)?;
     let analysis = paper.analyze();
     Ok(paper.to_html(&analysis, opts))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The friendly page and the Word document of a workbook say what it
+    /// was converted from.
+    #[test]
+    fn outputs_name_the_format_of_a_workbook() {
+        let paper = Paper::from_bytes(std::fs::read("tests/data/excel/sample.xlsx").unwrap()).unwrap();
+        let analysis = paper.analyze();
+        let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+        assert!(html.contains("Converted from Excel by kakemono"), "friendly colophon");
+        let docx = paper.to_docx(&analysis, &DocxOptions::default());
+        let zip = crate::word::zip::ZipArchive::new(&docx).unwrap();
+        let core = zip.read_text("docProps/core.xml").unwrap().unwrap();
+        assert!(core.contains("Converted from Excel by kakemono"), "{core}");
+    }
 }

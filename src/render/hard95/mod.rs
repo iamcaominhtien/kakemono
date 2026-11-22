@@ -445,7 +445,7 @@ fn rotated_run_html(run: &RotatedRun, units: &Units) -> String {
 pub(crate) struct Hard95;
 
 impl Renderer for Hard95 {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, _input: InputFormat) -> String {
         render(analysis, images)
     }
 }

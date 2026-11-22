@@ -79,14 +79,15 @@ static MONO_FACES: LazyLock<String> = LazyLock::new(|| {
 pub(crate) struct Friendly;
 
 impl Renderer for Friendly {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
-        render(&analysis.doc, images)
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, input: InputFormat) -> String {
+        render(&analysis.doc, images, input)
     }
 }
 
-/// Writes the whole document in friendly mode. Pictures are requested from
-/// `images` in reading order (front matter first).
-pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
+/// Writes the whole document in friendly mode, read from a file of the
+/// format `input`. Pictures are requested from `images` in reading order
+/// (front matter first).
+pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>, input: InputFormat) -> String {
     let title = doc_title(doc);
     let all: Vec<&Block> = doc.blocks.iter().collect();
 
@@ -137,7 +138,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
         content: &content,
         fonts: &fonts,
         math: &math,
-        source: source_label(doc),
+        source: input.label(),
     };
     page.html()
 }
@@ -160,7 +161,7 @@ struct Page<'a> {
     /// Style of the MathML formulas, with the embedded math font (empty
     /// when the paper has no MathML).
     math: &'a str,
-    /// What the document was converted from (`PDF`, `Word`).
+    /// What the document was converted from (`PDF`, `Word`, `Excel`).
     source: &'a str,
 }
 
@@ -470,7 +471,7 @@ mod tests {
             opts: &opts,
             jobs: Vec::new(),
         };
-        render(&doc, &mut images)
+        render(&doc, &mut images, InputFormat::Docx)
     }
 
     fn block(id: usize, kind: BlockKind, text: &str, anchor: Option<&str>) -> Block {

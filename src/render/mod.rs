@@ -49,13 +49,14 @@ pub(crate) use table::*;
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::*;
+pub(crate) use crate::paper::InputFormat;
 
 /// One output mode: turns an analysed document into a complete HTML page.
 pub(crate) trait Renderer {
     /// Writes the HTML. Pictures (page backgrounds, figures, equations) are
     /// requested from `images`, which returns their `src` and draws them
     /// afterwards.
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String;
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, input: InputFormat) -> String;
 }
 
 /// One `@font-face` rule with the font `data` (woff2) embedded as a base64
@@ -84,9 +85,9 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 /// The HTML is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// inlined as data URIs or returned in [`HtmlOutput::files`].
-pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) -> HtmlOutput {
+pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputFormat, opts: &HtmlOptions) -> HtmlOutput {
     let mut images = ImageStore { opts, jobs: Vec::new() };
-    let html = renderer_for(opts.mode).render(analysis, &mut images);
+    let html = renderer_for(opts.mode).render(analysis, &mut images, input);
     images.finish(Pictures::new(pdf, &analysis.doc), html)
 }
 
@@ -101,11 +102,12 @@ pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) ->
 pub fn render_to(
     analysis: &Analysis,
     pdf: Option<&PdfFile>,
+    input: InputFormat,
     opts: &HtmlOptions,
     out: &mut dyn std::io::Write,
     file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut images = ImageStore { opts, jobs: Vec::new() };
-    let html = renderer_for(opts.mode).render(analysis, &mut images);
+    let html = renderer_for(opts.mode).render(analysis, &mut images, input);
     images.finish_into(Pictures::new(pdf, &analysis.doc), &html, out, file)
 }
