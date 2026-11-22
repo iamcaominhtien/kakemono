@@ -632,3 +632,41 @@ fn replace_image_swaps_a_figure_in_every_format() {
 fn ligo_abs() -> &'static str {
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/1602.03837v1.pdf")
 }
+
+/// In hard-95, a replaced figure is drawn over its box, and the old text of
+/// the figure (its transparent copy) is gone.
+#[test]
+fn hard95_draws_a_replaced_figure_over_its_box_without_its_old_text() {
+    let dir = scratch("cli-replace-hard95");
+    let (edited, _) = ligo_with_replacements(&dir);
+    let content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&edited).unwrap()).unwrap();
+    let id_of = |file: &str| {
+        content["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "figure" && block["replace_image"] == file)
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap()
+    };
+    // The first figure has no text of its own; the third (the square PNG) has.
+    let (replaced, with_text) = (id_of("vi/fig1.svg"), id_of("vi/square.png"));
+    let html = dir.join("x.hard-95.html");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-m",
+        "hard-95",
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        html.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let html = std::fs::read_to_string(&html).unwrap();
+    assert!(html.contains(&format!(r#"data-kind="figure-picture" data-block="{replaced}""#)));
+    assert!(html.contains(&format!(r#"data-kind="figure-picture" data-block="{with_text}""#)));
+    assert!(!html.contains(&format!(r#"data-kind="figure-text" data-block="{with_text}""#)));
+    assert!(html.contains("data:image/svg+xml"));
+}
