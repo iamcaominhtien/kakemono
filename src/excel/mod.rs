@@ -8,7 +8,7 @@
 mod build;
 mod drawing;
 mod grid;
-mod numfmt;
+pub(crate) mod numfmt;
 mod pull;
 mod regions;
 mod sheet;
