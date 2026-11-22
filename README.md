@@ -307,7 +307,9 @@ SVG file, named by a path relative to the JSON file, or a data URI. Every output
 place of the figure's picture (a translated or redrawn figure, say). An SVG stays an SVG in the
 HTML modes, EPUB, Markdown and JSON, with its text turned into paths so that it looks the same
 without its fonts; Word and LaTeX get it as a PNG at `--scale`. In `hard-95` the picture covers the
-figure's box on the page, fitted without stretching, and the figure's old text layer is left out.
+figure's box on the page, and the figure's old text layer is left out. In every output a picture
+of another shape than the figure is fitted into its box and centred, never stretched, and the
+pictures an SVG names (relative to the SVG) are kept inside it.
 A picture whose shape differs from the figure's box, a file that cannot be read, or
 `replace_image` on a block that is not a figure with a picture is a warning; the figure then keeps
 its picture (except for the shape, where the new picture is still used).

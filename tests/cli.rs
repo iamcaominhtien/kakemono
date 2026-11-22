@@ -516,6 +516,12 @@ fn zip_parts(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
     parts
 }
 
+/// The colour of the pixel in the middle of a picture file.
+fn middle_pixel(data: &[u8]) -> Option<[u8; 3]> {
+    let picture = image::load_from_memory(data).ok()?.to_rgb8();
+    Some(picture.get_pixel(picture.width() / 2, picture.height() / 2).0)
+}
+
 /// A 10 by 10 PNG.
 fn square_png() -> Vec<u8> {
     let mut out = std::io::Cursor::new(Vec::new());
@@ -574,7 +580,7 @@ fn ligo_with_replacements(dir: &Path) -> (PathBuf, String) {
 #[test]
 fn replace_image_swaps_a_figure_in_every_format() {
     let dir = scratch("cli-replace");
-    let (edited, svg) = ligo_with_replacements(&dir);
+    let (edited, _) = ligo_with_replacements(&dir);
     let edited = edited.to_str().unwrap();
     let elsewhere = std::env::temp_dir();
 
@@ -597,17 +603,12 @@ fn replace_image_swaps_a_figure_in_every_format() {
         &["convert", ligo_abs(), "--content", edited, "-o", docx.to_str().unwrap()],
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let png = kakemono::backend::svg_to_png(&svg, 3.0).unwrap();
+    // The SVG, drawn as a PNG: its light blue fill is in the middle.
     let parts = zip_parts(&std::fs::read(&docx).unwrap());
     assert!(
         parts
             .iter()
-            .any(|(name, data)| name.starts_with("word/media/") && data == &png)
-    );
-    assert!(
-        parts
-            .iter()
-            .any(|(name, data)| name.starts_with("word/media/") && data == &square_png())
+            .any(|(name, data)| name.starts_with("word/media/") && middle_pixel(data) == Some([238, 238, 255]))
     );
 
     let html = dir.join("out/x.friendly.html");
@@ -710,4 +711,121 @@ fn render_svg_writes_a_png_of_the_scaled_size() {
     ]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
+}
+
+/// The LIGO paper as an editable JSON in `dir`, with the first figure's
+/// `replace_image` set to `value`; returns the edited JSON's path and the
+/// figure's picture size (pixels of kakemono's own picture of it).
+fn ligo_with_one_replacement(dir: &Path, value: &str) -> (PathBuf, (u32, u32)) {
+    let json = dir.join("ligo.json");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", json.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let figure = content["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["type"] == "figure")
+        .unwrap();
+    let size = image::image_dimensions(dir.join(figure["image"].as_str().unwrap())).unwrap();
+    figure["replace_image"] = value.into();
+    let edited = dir.join("ligo.vi.json");
+    std::fs::write(&edited, serde_json::to_string(&content).unwrap()).unwrap();
+    (edited, size)
+}
+
+/// An SVG too large to draw is refused with a warning, and the Word
+/// document is still written, with the figure's own picture.
+#[test]
+fn a_huge_replacement_svg_is_refused_and_the_conversion_succeeds() {
+    let dir = scratch("cli-replace-huge");
+    std::fs::write(
+        dir.join("huge.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="400000" height="400000"/>"#,
+    )
+    .unwrap();
+    let (edited, _) = ligo_with_one_replacement(&dir, "huge.svg");
+    let docx = dir.join("x.docx");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        docx.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("too large"));
+    assert!(docx.is_file());
+}
+
+/// A picture that a replacement SVG names by a path relative to the SVG is
+/// found whatever folder kakemono runs from, and kept inside the SVG.
+#[test]
+fn a_replacement_svg_keeps_the_pictures_it_names() {
+    let dir = scratch("cli-replace-href");
+    std::fs::create_dir_all(dir.join("vi")).unwrap();
+    std::fs::write(dir.join("vi/square.png"), square_png()).unwrap();
+    let (edited, (width, height)) = ligo_with_one_replacement(&dir, "vi/fig.svg");
+    std::fs::write(
+        dir.join("vi/fig.svg"),
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><image href="square.png" width="{width}" height="{height}"/></svg>"#
+        ),
+    )
+    .unwrap();
+    let md = dir.join("out/x.md");
+    let out = kakemono_in(
+        &std::env::temp_dir(),
+        &[
+            "convert",
+            ligo_abs(),
+            "--content",
+            edited.to_str().unwrap(),
+            "-o",
+            md.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let svg = std::fs::read_dir(dir.join("out/x_assets"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "svg"))
+        .expect("the replaced figure is an SVG file");
+    // Drawn, the SVG shows the square picture it names.
+    let png = kakemono::backend::svg_to_png(&std::fs::read_to_string(svg).unwrap(), 1.0).unwrap();
+    assert_eq!(middle_pixel(&png), Some([0, 128, 255]));
+}
+
+/// A replacement of another shape than the figure's box is fitted into it,
+/// not stretched: in Word, the picture has the box's shape, the
+/// replacement centred in it.
+#[test]
+fn a_replacement_of_another_shape_is_fitted_not_stretched() {
+    let dir = scratch("cli-replace-shape");
+    std::fs::write(dir.join("square.png"), square_png()).unwrap();
+    let (edited, (width, height)) = ligo_with_one_replacement(&dir, "square.png");
+    let docx = dir.join("x.docx");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        docx.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let box_aspect = width as f32 / height as f32;
+    let parts = zip_parts(&std::fs::read(&docx).unwrap());
+    let fitted = parts
+        .iter()
+        .filter(|(name, _)| name.starts_with("word/media/"))
+        .any(|(_, data)| {
+            image::load_from_memory(data).is_ok_and(|picture| {
+                let aspect = picture.width() as f32 / picture.height() as f32;
+                (aspect / box_aspect - 1.0).abs() < 0.02
+                    && picture.to_rgb8().get_pixel(picture.width() / 2, picture.height() / 2).0 == [0, 128, 255]
+            })
+        });
+    assert!(fitted, "no picture of the box's shape with the square in its middle");
 }
