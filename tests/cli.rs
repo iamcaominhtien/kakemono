@@ -526,13 +526,12 @@ fn header_rows_option_sets_the_header_of_workbook_tables() {
 }
 
 #[test]
-fn workbook_cannot_be_written_as_pdf() {
+fn workbook_is_written_as_pdf() {
     let dir = scratch("cli-excel-pdf");
     let pdf = dir.join("sample.pdf");
     let out = kakemono(&["convert", EXCEL_SAMPLE, "-o", pdf.to_str().unwrap()]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("no page layout"));
-    assert!(!pdf.exists());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
 }
 
 #[test]

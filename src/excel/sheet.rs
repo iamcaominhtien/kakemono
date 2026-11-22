@@ -331,6 +331,13 @@ impl SheetReader<'_, '_> {
                 self.sheet_format(tag);
                 Place::Other
             }
+            (Place::Root, "pageSetup") => {
+                self.grid.paper_pt = tag
+                    .attr("paperSize")
+                    .and_then(|code| code.parse::<u32>().ok())
+                    .and_then(paper_pt);
+                Place::Other
+            }
             (Place::Root, "autoFilter") => {
                 self.grid.declared.auto_filter = tag.attr("ref").and_then(|area| range(&area));
                 Place::Other
@@ -702,6 +709,25 @@ fn link(links: &[(Merge, String)], cells: &mut BTreeMap<(u32, u32), GridCell>) {
     }
 }
 
+/// The size in points (width, height, portrait) of the paper of Excel's
+/// `paperSize` code `code` (ECMA-376, 18.3.1.63): Letter, Tabloid, Legal,
+/// Executive, A3, A4, A5, B4 and B5 (JIS); `None` for the others.
+fn paper_pt(code: u32) -> Option<(f32, f32)> {
+    let (width, height) = match code {
+        1 | 2 => (612.0, 792.0),
+        3 => (792.0, 1224.0),
+        5 => (612.0, 1008.0),
+        7 => (522.0, 756.0),
+        8 => (841.89, 1190.55),
+        9 | 10 => (595.28, 841.89),
+        11 => (419.53, 595.28),
+        12 => (728.5, 1031.81),
+        13 => (515.91, 728.5),
+        _ => return None,
+    };
+    Some((width, height))
+}
+
 /// A cell reference (`B2`, `$B$2`) as zero-based (row, column).
 pub(crate) fn cell_ref(reference: &str) -> Option<(u32, u32)> {
     let reference = reference.trim();
@@ -796,6 +822,19 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn page_setup_names_the_paper() {
+        let paper = |setup: &str| grid(&format!("<sheetData/>{setup}")).paper_pt;
+        assert_eq!(
+            paper(r#"<pageSetup paperSize="1" orientation="landscape"/>"#),
+            Some((612.0, 792.0))
+        );
+        assert_eq!(paper(r#"<pageSetup paperSize="9"/>"#), Some((595.28, 841.89)));
+        // No size, or one not known here: the layout's own.
+        assert_eq!(paper(r#"<pageSetup orientation="portrait"/>"#), None);
+        assert_eq!(paper(r#"<pageSetup paperSize="70"/>"#), None);
     }
 
     /// `(row, col)`, text, kind.

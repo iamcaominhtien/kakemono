@@ -162,7 +162,7 @@ enum FormatArg {
     Json,
     /// Chunks for retrieval (.jsonl): pieces of at most --chunk-tokens tokens that follow the sections, each headed by its section path, one JSON object per line
     Chunks,
-    /// A PDF (.pdf) of a Word document, laid out in pages as Word lays it out
+    /// A PDF (.pdf): a Word document laid out in pages as Word lays it out, or a workbook laid out as a document
     Pdf,
 }
 
@@ -483,10 +483,10 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     Ok(format)
 }
 
-/// Writes a Word document laid out in pages as a PDF.
+/// Writes a Word document or a workbook laid out in pages as a PDF.
 ///
 /// # Errors
-/// When the input is not a Word document, or the file cannot be written.
+/// When the input is a PDF, or the file cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");

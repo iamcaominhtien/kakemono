@@ -2,8 +2,8 @@
 """Converts every Word file (.doc, .docx) and every Excel workbook (.xlsx,
 .xlsm) under the given directories to every output (the 4 HTML modes, PDF,
 Word, Markdown, LaTeX, EPUB, JSON, chunks) and reports the files that make kakemono
-crash (a panic, a signal) or hang (a timeout). A workbook has no page layout:
-its PDF output is not tried.
+crash (a panic, a signal) or hang (a timeout). A workbook's PDF is laid out
+as a document.
 
 A clean error (a damaged or password-protected file) is not a crash: it is
 counted apart.
@@ -58,10 +58,7 @@ def check(path):
     failures = []
     began = time.time()
     with tempfile.TemporaryDirectory() as out:
-        workbook = path.lower().endswith(WORKBOOKS)
         for name, rest in OUTPUTS:
-            if workbook and name == 'pdf':
-                continue
             command = [args.kakemono, 'convert', path] + [part.format(out=out) for part in rest]
             try:
                 done = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout,

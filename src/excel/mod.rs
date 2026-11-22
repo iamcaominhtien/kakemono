@@ -132,11 +132,26 @@ pub fn detect(data: &[u8]) -> bool {
 /// # Errors
 /// When the file is damaged or is not a workbook.
 pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result<Document> {
+    Ok(read_with_paper(data, config, source)?.0)
+}
+
+/// Reads an Excel workbook like [`read`], with the paper its print
+/// settings name: width and height in points, from the first visible sheet
+/// that names a known paper size (`None` when none does).
+///
+/// # Errors
+/// As [`read`].
+pub fn read_with_paper(
+    data: &[u8],
+    config: &ExcelConfig,
+    source: Option<String>,
+) -> Result<(Document, Option<(f32, f32)>)> {
     let zip = ZipArchive::new(data)?;
     let workbook = Workbook::read(&zip)?;
     let mut pictures = Pictures::default();
     let sheets = read_sheets(&zip, &workbook, config, &mut pictures)?;
-    Ok(build(&workbook, &sheets, pictures.files, config, source))
+    let paper = sheets.iter().find_map(|(_, grid, _)| grid.paper_pt);
+    Ok((build(&workbook, &sheets, pictures.files, config, source), paper))
 }
 
 /// The grid of each visible sheet of `workbook`, with its name. A sheet

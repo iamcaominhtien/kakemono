@@ -537,6 +537,31 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
     }
 }
 
+/// The widths of paragraph `para`'s content, without indents: set on one
+/// line (the widest of its lines between line breaks), of its widest word
+/// (the narrowest it can be set without cutting a word), and of all its
+/// lines together; and the number of its line breaks.
+pub(crate) fn measure(ctx: &mut Ctx<'_>, para: &Para) -> (f32, f32, f32, usize) {
+    let (mut natural, mut line, mut widest, mut trailing, mut total) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut breaks = 0;
+    for atom in atoms(ctx, para) {
+        if matches!(atom, Atom::Break(_)) {
+            natural = natural.max(line - trailing);
+            total += line - trailing;
+            breaks += 1;
+            (line, trailing) = (0.0, 0.0);
+            continue;
+        }
+        let (body, after) = atom_width(&atom);
+        line += body + after;
+        widest = widest.max(body);
+        if body + after > 0.0 {
+            trailing = after;
+        }
+    }
+    (natural.max(line - trailing), widest, total + line - trailing, breaks)
+}
+
 /// Widths of an atom: its body and its trailing spaces.
 fn atom_width(atom: &Atom) -> (f32, f32) {
     match atom {

@@ -37,6 +37,10 @@ pub(crate) struct Grid {
     /// The cells that show a picture of their own (Excel 365's "Place in
     /// cell"): their place and their value metadata (`vm`, from 1).
     pub(crate) cell_pictures: Vec<((u32, u32), u32)>,
+    /// The paper the sheet is printed on (`pageSetup paperSize`): width
+    /// and height in points; `None` when the file names none, or one of
+    /// the sizes not known here.
+    pub(crate) paper_pt: Option<(f32, f32)>,
 }
 
 /// The widths of the columns and the heights of the rows of a sheet, as

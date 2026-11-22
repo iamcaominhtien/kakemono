@@ -3,7 +3,7 @@
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
-use crate::config::{AnalyzeOptions, ExcelConfig};
+use crate::config::{AnalyzeOptions, ExcelConfig, WorkbookPdfConfig};
 use crate::excel;
 use crate::model::{Document, Meta};
 use crate::render::{
@@ -78,8 +78,9 @@ enum Source {
     /// (read again with its formatting for the layout).
     Word(Box<Document>, InputFormat, Vec<u8>),
     /// An Excel workbook, read into its structure when loaded (no file is
-    /// kept: there is no layout to make).
-    Sheet(Box<Document>),
+    /// kept: its pages are laid out from that structure), with the paper
+    /// its print settings name (width and height in points).
+    Sheet(Box<Document>, Option<(f32, f32)>),
 }
 
 /// A loaded PDF, Word document or Excel workbook, ready to be analysed and
@@ -132,8 +133,8 @@ impl Paper {
         let sha256 = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
         // Both are ZIP packages: each looks for its own main part.
         if excel::detect(&data) {
-            let doc = excel::read(&data, excel, None)?;
-            return Ok(Self::loaded(Source::Sheet(Box::new(doc)), sha256));
+            let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
+            return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper), sha256));
         }
         let file = match word::detect(&data) {
             Some(format) => {
@@ -164,7 +165,7 @@ impl Paper {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
             Source::Word(_, format, _) => *format,
-            Source::Sheet(_) => InputFormat::Xlsx,
+            Source::Sheet(..) => InputFormat::Xlsx,
         }
     }
 
@@ -172,14 +173,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) | Source::Sheet(_) => None,
+            Source::Word(..) | Source::Sheet(..) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) | Source::Sheet(_) => None,
+            Source::Pdf(_) | Source::Sheet(..) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -226,17 +227,29 @@ impl Paper {
         }
     }
 
-    /// The document laid out in pages as Word lays it out, as a PDF: only
-    /// for a Word document (a PDF already has its pages, a workbook has
-    /// none).
+    /// The document laid out in pages, as a PDF: a Word document as Word
+    /// lays it out; a workbook as a document (each sheet after its heading,
+    /// its tables broken across pages with their header rows repeated) on
+    /// the paper its print settings name, else A4, as
+    /// [`WorkbookPdfConfig::default`] lays it out. A PDF already has its
+    /// pages.
     ///
     /// # Errors
-    /// When the paper is a PDF or a workbook, or the layout cannot be
-    /// written.
+    /// When the paper is a PDF, or the layout cannot be written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
+        self.to_pdf_with(&WorkbookPdfConfig::default())
+    }
+
+    /// The document laid out in pages, as [`Paper::to_pdf`] does; a
+    /// workbook with the page, fonts and table limits of `config` (they do
+    /// not apply to a Word document).
+    ///
+    /// # Errors
+    /// As [`Paper::to_pdf`].
+    pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
-            Source::Sheet(_) => anyhow::bail!("a workbook has no page layout"),
+            Source::Sheet(doc, paper) => crate::layout::workbook::to_pdf(doc, *paper, config),
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,
@@ -288,7 +301,7 @@ impl Paper {
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Sheet(doc) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, _) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 return Analysis {

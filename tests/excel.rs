@@ -59,11 +59,81 @@ fn sample_has_its_title_and_no_pages() {
     assert_eq!(analysis.doc.meta.title.as_deref(), Some("Sample workbook"));
 }
 
+/// The lines of text of a PDF, and its number of pages.
+fn pdf_text(pdf: Vec<u8>) -> (String, usize) {
+    let (lines, pages) = kakemono::layout::lines::pdf_lines(pdf).unwrap();
+    let text = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (text, pages)
+}
+
+/// Every cell of every table of `analysis`, and the last row of each, is
+/// in `text` (spaces left out: a cell may wrap).
+fn assert_cells_in(analysis: &Analysis, text: &str) {
+    let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+    let text = squeeze(text);
+    for block in &analysis.doc.blocks {
+        let Some(table) = &block.table else { continue };
+        for row in &table.rows {
+            for cell in row {
+                let cell: String = cell.spans.iter().map(|span| squeeze(&span.text)).collect();
+                assert!(text.contains(&cell), "{cell:?} is not in the PDF");
+            }
+        }
+    }
+}
+
+/// A workbook is laid out as a document: each sheet after its heading,
+/// every cell of its tables in the PDF, on A4 when the workbook names no
+/// paper.
 #[test]
-fn a_workbook_cannot_be_laid_out_as_pdf() {
-    let (paper, _) = load(SAMPLE_XLSX);
-    let err = paper.to_pdf().unwrap_err();
-    assert!(err.to_string().contains("a workbook has no page layout"), "{err}");
+fn a_workbook_is_laid_out_as_pdf() {
+    let (paper, analysis) = load(SAMPLE_XLSX);
+    let pdf = paper.to_pdf().unwrap();
+    assert!(pdf.starts_with(b"%PDF"));
+    let (pages, _) = kakemono::backend::PdfFile::open(pdf.clone()).unwrap().extract(1);
+    assert!((pages[0].width - 595.28).abs() < 0.1 && (pages[0].height - 841.89).abs() < 0.1);
+    let (text, pages) = pdf_text(pdf);
+    assert!(pages >= 1);
+    for heading in ["Prices", "Merged", "Two tables", "Form", "Links", "Frozen"] {
+        assert!(text.contains(heading), "{heading}");
+    }
+    assert_cells_in(&analysis, &text);
+    // The last row of the long table, and the form's paragraphs.
+    assert!(text.contains("2024 2024-06-08 1,377.02 € -0.8%"), "{text}");
+    assert!(text.contains("Name: Alice Martin"));
+}
+
+/// The charts of a workbook are drawn as vector, each with its data table
+/// whose cells are all in the PDF; the pictures are drawn as bitmaps.
+#[test]
+fn a_workbook_of_charts_is_laid_out_as_pdf() {
+    let (paper, analysis) = load(CHARTS_XLSX);
+    let pdf = paper.to_pdf().unwrap();
+    let raw = String::from_utf8_lossy(&pdf).into_owned();
+    let pngs = analysis
+        .doc
+        .pictures
+        .iter()
+        .filter(|picture| picture.format.extension() == "png")
+        .count();
+    assert!(
+        raw.matches("/Subtype/Image").count() <= pngs,
+        "a chart drawn as a bitmap"
+    );
+    let (text, _) = pdf_text(pdf);
+    assert_cells_in(&analysis, &text);
+    for caption in [
+        "Sales by quarter",
+        "Chart 2",
+        "Channels",
+        "The data of this chart is not stored in the file.",
+    ] {
+        assert!(text.contains(caption), "{caption}");
+    }
 }
 
 /// The table blocks of the sheet `name` of the sample, and the blocks of

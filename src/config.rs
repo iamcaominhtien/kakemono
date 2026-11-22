@@ -1,6 +1,7 @@
 //! Options and tuning parameters of the analysis. The config struct of each
 //! analysis stage is re-exported here: [`LayoutConfig`] holds one of each.
-//! [`ExcelConfig`] holds the thresholds of the reading of a workbook.
+//! [`ExcelConfig`] holds the thresholds of the reading of a workbook,
+//! [`WorkbookPdfConfig`] those of its layout in pages.
 
 pub use crate::analysis::blocks::BlocksConfig;
 pub use crate::analysis::floats::FloatsConfig;
@@ -12,6 +13,7 @@ pub use crate::analysis::page::PageConfig;
 pub use crate::analysis::semantics::SemanticsConfig;
 pub use crate::analysis::tables::TablesConfig;
 pub use crate::excel::ExcelConfig;
+pub use crate::layout::workbook::WorkbookPdfConfig;
 
 /// Options of the analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]
