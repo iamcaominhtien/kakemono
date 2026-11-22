@@ -159,7 +159,8 @@ fn table_rows(table: &Table) -> Vec<String> {
 /// Cuts the text of a rebuilt table into pieces of at most `room` tokens,
 /// between rows, each piece starting with the caption and the header rows
 /// (dropped when they take more than half of `room`). A row that does not
-/// fit even alone is cut between words, the head repeated on each part.
+/// fit even alone is cut between words, the head repeated on each part; a
+/// part with nothing but the separators of empty cells is left out.
 /// `None` when `block` has no rebuilt table, or no row to cut at.
 fn table_pieces(block: &Block, room: usize, counter: &TokenCounter) -> Option<Vec<String>> {
     let table = block.table.as_ref()?;
@@ -197,7 +198,13 @@ fn table_pieces(block: &Block, room: usize, counter: &TokenCounter) -> Option<Ve
             continue;
         }
         let budget = room.saturating_sub(counter.count(&format!("{head}\n"))).max(1);
-        pieces.extend(split_long(row, budget, counter).iter().map(|part| with_head(part)));
+        // A part made only of the separators of empty cells says nothing.
+        pieces.extend(
+            split_long(row, budget, counter)
+                .iter()
+                .filter(|part| part.chars().any(|ch| !(ch.is_whitespace() || ch == '|')))
+                .map(|part| with_head(part)),
+        );
     }
     if !current.is_empty() {
         pieces.push(with_head(&current.join("\n")));
@@ -604,6 +611,30 @@ mod tests {
                 "| Tốc độ | % | TCTK | Quý",
             ]
         );
+    }
+
+    #[test]
+    fn a_long_row_cut_between_words_gives_no_piece_of_separators_only() {
+        use crate::model::TableCell;
+        let mut block = table_block("", 0, 0);
+        let table = block.table.as_mut().unwrap();
+        table.n_cols = 40;
+        // One long cell, then 39 empty columns.
+        table.rows = vec![vec![TableCell {
+            col: 0,
+            colspan: 1,
+            rowspan: 1,
+            spans: vec![Span::plain("word ".repeat(60))],
+        }]];
+        let chunks = render_chunks(&doc(vec![block]), &opts(32));
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(
+                chunk.text.chars().any(|ch| !(ch.is_whitespace() || ch == '|')),
+                "a chunk of separators only: {:?}",
+                chunk.text
+            );
+        }
     }
 
     #[test]
