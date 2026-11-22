@@ -829,3 +829,38 @@ fn a_replacement_of_another_shape_is_fitted_not_stretched() {
         });
     assert!(fitted, "no picture of the box's shape with the square in its middle");
 }
+
+/// A Word document laid out as a PDF shows the text of `--content`.
+#[test]
+fn word_pdf_shows_the_edited_text() {
+    let dir = scratch("cli-word-pdf-content");
+    let sample = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/word/sample.docx");
+    let json = dir.join("sample.json");
+    assert!(
+        kakemono(&["convert", sample, "-o", json.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let mut content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let heading = content["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["type"] == "heading")
+        .unwrap();
+    heading["text"] = "An edited heading".into();
+    let edited = dir.join("sample.vi.json");
+    std::fs::write(&edited, serde_json::to_string(&content).unwrap()).unwrap();
+    let pdf = dir.join("sample.vi.pdf");
+    let out = kakemono(&[
+        "convert",
+        sample,
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        pdf.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let lines = kakemono(&["lines", pdf.to_str().unwrap()]);
+    assert!(String::from_utf8_lossy(&lines.stdout).contains("An edited heading"));
+}

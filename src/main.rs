@@ -494,14 +494,25 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     Ok(format)
 }
 
-/// Writes a Word document laid out in pages as a PDF.
+/// Writes a Word document laid out in pages as a PDF, with the text and
+/// pictures of `--content` when it is given.
 ///
 /// # Errors
 /// When the input is not a Word document, or the file cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
-    let data = paper.to_pdf()?;
+    let data = match &args.content {
+        // The layout engine reads a Word file: the edited text and pictures
+        // go into a Word document first, which is then laid out.
+        Some(content) => {
+            let mut analysis = paper.analyze();
+            apply_content(paper, &mut analysis, content)?;
+            let docx = paper.to_docx(&analysis, &kakemono::DocxOptions::default());
+            Paper::from_bytes(docx)?.to_pdf()?
+        }
+        None => paper.to_pdf()?,
+    };
     write_file(&file, &data)?;
     eprintln!(
         "{:<8} -> {} ({:.1} MB, {:.2}s)",
