@@ -283,6 +283,7 @@ fn push_piece(out: &mut Vec<Span>, piece: &str, href: Option<String>, like: &Spa
             href,
             color: like.color,
             math: None,
+            note: None,
         });
     }
 }

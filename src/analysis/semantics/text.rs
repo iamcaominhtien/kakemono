@@ -404,6 +404,7 @@ fn push_text(spans: &mut Vec<Span>, text: &str, style: u8, color: [u8; 3]) {
             href: None,
             color,
             math: None,
+            note: None,
         }),
     }
 }
@@ -483,6 +484,7 @@ impl TextBuilder<'_> {
                 href: glyph.link.as_deref().map(str::to_string),
                 color: glyph.color,
                 math: None,
+                note: None,
             });
         }
         if let Some(last) = order.len().checked_sub(1) {
@@ -944,6 +946,7 @@ fn running_spans(hlines: &[HLine], mask: u8) -> Vec<Span> {
                 href: span.href.clone(),
                 color: span.color,
                 math: None,
+                note: None,
             }),
         }
     }

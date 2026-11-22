@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.14.0](https://github.com/iamcaominhtien/kakemono/compare/v0.13.2...v0.14.0) - 2026-11-22
+
+### Added
+
+- [**breaking**] Added notes in the editable JSON and every output ([#23](https://github.com/iamcaominhtien/kakemono/pull/23))
+
+A `<note>…</note>` tag in the text of the editable JSON is a note added to the text when it is edited: a translator's note, an editor's or a reviewer's, for example. `--content` carries these added notes into every output that shows edited text, numbered in reading order:
+
+- **friendly and medium**: a raised number links to the note. The notes are listed in a small aside after their block (after the next block, for a heading), each with a link back.
+- **hard-95**: the raised number opens the note in a popup, and hovering shows it as a tooltip.
+- **Word**: real footnotes, in `word/footnotes.xml`.
+- **LaTeX**: `\footnote`, or `\footnotemark` with `\footnotetext` inside tables.
+- **Markdown**: `[^n1]` footnotes after the block.
+- **EPUB**: noteref links, and EPUB 3 popup footnotes at the end of each chapter, numbered again in each chapter.
+
+What a note may contain:
+
+- It may hold style tags and links, but no formula and no other note. An unclosed `<note>`, a formula or a note inside a note is read with warnings.
+- Its text is printed exactly as given.
+
+The tag is unrelated to a block of type `note`. The JSON written back gives the `<note>` tag again. `plain` and the chunks leave the notes out. Outputs without added notes are unchanged: the style and script for notes are added only to pages that have notes.
+
+**Breaking change:** `model::Span` has a new public field, `note: Option<Vec<Span>>`, which holds the content of an added note; the span itself is the note's call. Code that builds a `Span` with a struct literal must set it.
+
 ## [0.13.2](https://github.com/iamcaominhtien/kakemono/compare/v0.13.1...v0.13.2) - 2026-11-22
 
 ### Fixed

@@ -36,10 +36,15 @@ pub(crate) fn esc(text: &str) -> String {
 
 /// Styled spans as semantic HTML (`<code>`, `<strong>`, `<em>`, `<sup>`,
 /// `<sub>`), with links: internal ones (`#anchor`) get the `xref` class,
-/// external ones open in a new tab.
+/// external ones open in a new tab. The call of a numbered added
+/// note is a raised link to the note.
 pub(crate) fn spans_html(spans: &[Span]) -> String {
     let mut out = String::new();
     for span in spans {
+        if span.note.is_some() {
+            out.push_str(&super::notes::call_html(span));
+            continue;
+        }
         let mut open = String::new();
         let mut close = String::new();
         let mut tag = |name: &str| {
@@ -114,10 +119,12 @@ fn looks_like_address(text: &str) -> bool {
     !text.contains(' ') && (text.contains("://") || text.contains("www.") || text.contains('/') || text.contains('@'))
 }
 
-/// The text of `spans` without styling, trimmed.
+/// The text of `spans` without styling and without the calls of notes,
+/// trimmed.
 pub(crate) fn plain(spans: &[Span]) -> String {
     spans
         .iter()
+        .filter(|span| span.note.is_none())
         .map(|span| span.text.as_str())
         .collect::<String>()
         .trim()

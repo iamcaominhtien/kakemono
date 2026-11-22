@@ -23,7 +23,8 @@ use crate::backend::PdfFile;
 use crate::model::ImageSpec;
 use crate::render::Pictures;
 use parts::{
-    APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, PACKAGE_RELS, SETTINGS, STYLES, XML_DECL, core_props, document_rels,
+    APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, FOOTNOTES_REL, FOOTNOTES_TYPE, PACKAGE_RELS, SETTINGS, STYLES,
+    XML_DECL, core_props, document_rels, footnotes_xml,
 };
 
 /// Everything that controls how a document is written as a Word file.
@@ -142,9 +143,16 @@ fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions)
         .collect();
 
     let document = format!("{XML_DECL}<w:document {DOCUMENT_NAMESPACES}><w:body>{content}</w:body></w:document>");
+    // A document with added notes has a footnotes part too.
+    let mut content_types = format!("{XML_DECL}{CONTENT_TYPES}");
+    let mut rels = document_rels(&media.rels, &links);
+    if !body.notes.is_empty() {
+        content_types = content_types.replace("</Types>", &format!("{FOOTNOTES_TYPE}</Types>"));
+        rels = rels.replace("</Relationships>", &format!("{FOOTNOTES_REL}</Relationships>"));
+    }
     let mut zip = ZipWriter::default();
     let mut text = |name: &str, data: &str| zip.add(name, data.as_bytes(), Compression::Deflated);
-    text("[Content_Types].xml", &format!("{XML_DECL}{CONTENT_TYPES}"));
+    text("[Content_Types].xml", &content_types);
     text("_rels/.rels", &format!("{XML_DECL}{PACKAGE_RELS}"));
     text(
         "docProps/core.xml",
@@ -154,7 +162,10 @@ fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions)
     text("word/document.xml", &document);
     text("word/styles.xml", &format!("{XML_DECL}{STYLES}"));
     text("word/settings.xml", &format!("{XML_DECL}{SETTINGS}"));
-    text("word/_rels/document.xml.rels", &document_rels(&media.rels, &links));
+    text("word/_rels/document.xml.rels", &rels);
+    if !body.notes.is_empty() {
+        text("word/footnotes.xml", &footnotes_xml(&body.notes));
+    }
     for (name, data) in &media.files {
         zip.add(name, data, Compression::Stored);
     }

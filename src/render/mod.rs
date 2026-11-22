@@ -20,6 +20,7 @@ mod latex;
 mod markdown;
 pub(crate) mod mathml;
 mod medium;
+mod notes;
 mod options;
 mod table;
 pub(crate) mod zip;
@@ -80,13 +81,15 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 }
 
 /// Renders an analysed document as HTML in the mode chosen in `opts`.
+/// Added notes are numbered in reading order across the document.
 ///
 /// The HTML is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// inlined as data URIs or returned in [`HtmlOutput::files`].
 pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) -> HtmlOutput {
     let mut images = ImageStore { opts, jobs: Vec::new() };
-    let html = renderer_for(opts.mode).render(analysis, &mut images);
+    let numbered = notes::numbered_analysis(analysis);
+    let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish(Pictures::new(pdf, &analysis.doc), html)
 }
 
@@ -106,6 +109,7 @@ pub fn render_to(
     file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let mut images = ImageStore { opts, jobs: Vec::new() };
-    let html = renderer_for(opts.mode).render(analysis, &mut images);
+    let numbered = notes::numbered_analysis(analysis);
+    let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish_into(Pictures::new(pdf, &analysis.doc), &html, out, file)
 }

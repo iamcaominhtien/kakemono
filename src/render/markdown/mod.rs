@@ -20,7 +20,7 @@ use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, Table, TableCell};
 use crate::render::Pictures;
-use inline::{Inline, escape, escape_line_start, spans_html};
+use inline::{Inline, escape, escape_line_start, note_label, spans_html};
 use std::collections::HashSet;
 
 /// Code fences are at least this many backticks long.
@@ -101,7 +101,9 @@ pub fn render_markdown(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &Markdo
         opts: &html_opts,
         jobs: Vec::new(),
     };
-    let doc = &analysis.doc;
+    // Added notes are numbered across the document.
+    let numbered = super::notes::numbered_analysis(analysis);
+    let doc = &numbered.as_ref().unwrap_or(analysis).doc;
     let anchors = linked_anchors(doc);
     let mut writer = Writer {
         opts,
@@ -186,7 +188,9 @@ impl Writer<'_, '_> {
             }
             match &block.kind {
                 BlockKind::Title => {
+                    let start = idx;
                     idx = self.title(doc, &blocks, idx);
+                    blocks[start..idx].iter().for_each(|block| self.note_definitions(block));
                     continue;
                 }
                 BlockKind::Paragraph { in_abstract: true } => {
@@ -211,6 +215,7 @@ impl Writer<'_, '_> {
                 continue;
             }
             self.block(block);
+            self.note_definitions(block);
             idx += 1;
         }
         if !after_front {
@@ -268,6 +273,17 @@ impl Writer<'_, '_> {
                     .map(|row| row.iter().map(|span| span.text.as_str()).collect())
                     .collect();
                 self.fence(&lines);
+            }
+        }
+    }
+
+    /// Writes the added notes of `block` as footnote definitions
+    /// (`[^n1]: …`), after the block.
+    fn note_definitions(&mut self, block: &Block) {
+        for call in super::notes::calls(&[block]) {
+            let text = self.inline.spans(call.note.as_deref().unwrap_or_default());
+            if !call.text.is_empty() {
+                self.paragraph(&format!("[^{}]: {text}", note_label(call)));
             }
         }
     }
