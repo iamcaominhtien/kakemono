@@ -271,6 +271,7 @@ pub(crate) fn render_json(
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        vector: true,
     };
     let doc = &analysis.doc;
     let file = FileOut {

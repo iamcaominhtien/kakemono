@@ -113,6 +113,7 @@ pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOpti
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        vector: false,
     };
     let doc = &analysis.doc;
     let anchors = linked_anchors(doc);
@@ -939,6 +940,7 @@ mod tests {
         let mut images = ImageStore {
             opts: &HtmlOptions::default(),
             jobs: Vec::new(),
+            vector: false,
         };
         let opts = LatexOptions::default();
         let writer = Writer {

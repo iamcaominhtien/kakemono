@@ -100,6 +100,7 @@ pub fn render_markdown(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &Markdo
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        vector: true,
     };
     // Added notes are numbered across the document.
     let numbered = super::notes::numbered_analysis(analysis);

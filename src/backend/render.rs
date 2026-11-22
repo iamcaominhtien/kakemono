@@ -275,7 +275,7 @@ impl<'a> PageRenderer<'a> {
 
 /// The fonts SVG text is drawn with: the system's, and those of the folders
 /// in `KAKEMONO_FONT_DIRS` (loaded once).
-fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
     static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> = std::sync::OnceLock::new();
     FONTS
         .get_or_init(|| {

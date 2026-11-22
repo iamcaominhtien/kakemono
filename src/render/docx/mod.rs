@@ -131,7 +131,7 @@ fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions)
         body.images.len(),
         opts.jobs,
         || pictures.renderer(),
-        |renderer, i| pictures.region(renderer.as_ref(), &body.images[i].spec, opts.scale),
+        |renderer, i| pictures.raster_region(renderer.as_ref(), &body.images[i].spec, opts.scale),
     );
     let mut media = Media::default();
     let content = fill_images(&body.xml, &body.images, drawn, &mut media);
