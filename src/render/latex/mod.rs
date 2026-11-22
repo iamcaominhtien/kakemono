@@ -111,10 +111,12 @@ const LINE_HEIGHT_RATIO: f32 = 1.2;
 /// table is only on its first page, not repeated on each: a header of
 /// narrow wrapped columns can take most of a page.
 const LONG_TABLE_MAX_HEAD_RATIO: f32 = 0.25;
-/// The share of an even split of the free width of a long table that a
-/// wrapped column gets at least, when the line has no room for
-/// [`MIN_WRAPPED_COLUMN_EM`] in every one: the rest is shared by their text.
-const MIN_EVEN_SHARE_RATIO: f32 = 0.5;
+/// The widest a wrapped column of a long table is kept for its typical
+/// cell, in em: it is at least as wide as the mean of its body cells (or
+/// its longest word) up to this, so that a short label (a name, a CJK
+/// term of up to 6 characters) is on one line. A table that then does not
+/// fit is set smaller, turned or cut into groups of columns.
+const TYPICAL_CELL_MAX_EM: f32 = 6.0;
 /// The width of the text in pt: letter paper with the 2.5 cm margins of
 /// [`PREAMBLE`]. Only used to guess whether a long table fits the line.
 const TEXT_WIDTH_PT: f32 = 472.0;
@@ -128,8 +130,13 @@ const WIDE_CHAR_EM: f32 = 0.75;
 const NARROW_CHAR_EM: f32 = 0.33;
 /// The width guessed for any other character in em (a figure is 0.5 em).
 const OTHER_CHAR_EM: f32 = 0.5;
-/// How much wider the bold text of a header cell is.
-const BOLD_WIDTH_RATIO: f32 = 1.1;
+/// How much wider bold text is (Latin Modern bold against regular, 1.15).
+const BOLD_WIDTH_RATIO: f32 = 1.15;
+/// How much wider, in em, the text of a small size is than at 10 pt: Latin
+/// Modern draws small sizes from wider designs. (smallest font size in pt
+/// it applies to, ratio), largest first; measured on the alphabet and the
+/// figures with pdfLaTeX (`\tiny`: 0.61 em a letter against 0.49 em).
+const SIZE_WIDTH_RATIOS: &[(f32, f32)] = &[(10.0, 1.0), (9.0, 1.03), (8.0, 1.06), (0.0, 1.22)];
 /// The narrowest a column of a long table is ever made, in em of its font:
 /// the room for one CJK character.
 const MIN_COLUMN_EM: f32 = 1.0;
@@ -964,22 +971,35 @@ impl Writer<'_, '_> {
             let cols = Columns::fitted(table, size.2, size.3, TEXT_WIDTH_PT);
             cols.fits().then_some((size, cols))
         });
+        let (above, below) = match caption {
+            Some(caption) if caption_first => (Some(caption), None),
+            Some(caption) => (None, Some(caption)),
+            None => (None, None),
+        };
         let (tables, landscape) = match portrait {
-            Some((size, cols)) => (self.longtable_part(table, &cols, size, TEXT_HEIGHT_PT), false),
+            Some((size, cols)) => (
+                self.longtable_part(table, &cols, size, TEXT_HEIGHT_PT, (above, below)),
+                false,
+            ),
             None => {
                 // Turned, in the smallest font: the width of the text is
                 // the height of the page.
                 let size = *LONG_TABLE_SIZES.last().expect("sizes");
                 let cols = Columns::fitted(table, size.2, size.3, TEXT_HEIGHT_PT);
                 let tables = if cols.fits() {
-                    self.longtable_part(table, &cols, size, TEXT_WIDTH_PT)
+                    self.longtable_part(table, &cols, size, TEXT_WIDTH_PT, (above, below))
                 } else {
-                    column_groups(&cols)
+                    let groups = column_groups(&cols);
+                    groups
                         .iter()
-                        .map(|group| {
+                        .enumerate()
+                        .map(|(i, group)| {
                             let part = table_columns(table, group);
                             let cols = Columns::fitted(&part, size.2, size.3, TEXT_HEIGHT_PT);
-                            self.longtable_part(&part, &cols, size, TEXT_WIDTH_PT)
+                            // The caption above the first group, or below
+                            // the last.
+                            let captions = (above.filter(|_| i == 0), below.filter(|_| i + 1 == groups.len()));
+                            self.longtable_part(&part, &cols, size, TEXT_WIDTH_PT, captions)
                         })
                         .collect::<Vec<_>>()
                         .join("\n\n")
@@ -987,28 +1007,27 @@ impl Writer<'_, '_> {
                 (tables, true)
             }
         };
-        // `\nopagebreak` keeps the caption on the page of the first rows
-        // (or of the last ones, below the table).
-        let body = match caption {
-            Some(caption) if caption_first => format!("{caption}\n\n\\nopagebreak\n{tables}"),
-            Some(caption) => format!("{tables}\n\\nopagebreak\n\n{caption}"),
-            None => tables,
-        };
         if landscape {
-            format!("\\begin{{landscape}}\n{body}\n\\end{{landscape}}")
+            format!("\\begin{{landscape}}\n{tables}\n\\end{{landscape}}")
         } else {
-            body
+            tables
         }
     }
 
     /// One `longtable` of `table` in the columns `cols`, at `size` (a row of
-    /// [`LONG_TABLE_SIZES`]), on pages whose text is `page_height_pt` high.
+    /// [`LONG_TABLE_SIZES`]), on pages whose text is `page_height_pt` high,
+    /// with the captions `(above, below)`. A caption is a row of the table,
+    /// over all its columns: above, in the head of its first page; below,
+    /// in the foot of its last. Outside the table, it could be left alone
+    /// at the bottom of a page (longtable breaks the page before the head
+    /// when the head and the first row do not fit).
     fn longtable_part(
         &self,
         table: &Table,
         cols: &Columns,
         size: (usize, &str, f32, f32),
         page_height_pt: f32,
+        (above, below): (Option<&str>, Option<&str>),
     ) -> String {
         let (_, size, size_pt, tabcolsep_pt) = size;
         let n_cols = table.n_cols.max(1);
@@ -1019,28 +1038,57 @@ impl Writer<'_, '_> {
                 "\\begingroup{size}\\setlength{{\\tabcolsep}}{{{tabcolsep_pt}pt}}"
             ));
         }
+        let captioned = above.is_some() || below.is_some();
+        if captioned {
+            // A captioned table starts at the left margin, as its caption.
+            lines.push("\\begingroup\\setlength{\\LTleft}{0pt}\\setlength{\\LTright}{\\fill}".to_string());
+        }
         lines.push(format!("\\begin{{longtable}}{{{spec}}}"));
+        // A caption is a paragraph as wide as the text, in a box of no
+        // width: it does not widen the table.
+        let caption_row = |caption: &str| {
+            format!(
+                "\\multicolumn{{{n_cols}}}{{@{{}}l@{{}}}}{{\\makebox[0pt][l]{{\\parbox[t]{{\\linewidth}}{{{caption}}}}}}} \\\\*"
+            )
+        };
+        if let Some(caption) = above {
+            lines.push(caption_row(caption));
+        }
         lines.push("\\toprule".to_string());
         let rows = self.rows(table, cols, true);
         let header = table.header_rows.min(table.rows.len());
-        if header > 0 && header < table.rows.len() {
+        let (head, body) = if header > 0 && header < table.rows.len() {
             // The header rows and the rule under them: `rows` puts it
-            // after the last header row. A header too tall to repeat is
-            // only on the first page.
-            lines.extend(rows[..=header].iter().cloned());
-            if cols.header_lines(table) as f32 * size_pt * LINE_HEIGHT_RATIO
-                > LONG_TABLE_MAX_HEAD_RATIO * page_height_pt
-            {
-                lines.push("\\endfirsthead".to_string());
-                lines.push("\\toprule".to_string());
-            }
-            lines.push("\\endhead".to_string());
-            lines.extend(rows[header + 1..].iter().cloned());
+            // after the last header row.
+            (&rows[..=header], &rows[header + 1..])
         } else {
-            lines.extend(rows);
+            (&rows[..0], &rows[..])
+        };
+        lines.extend(head.iter().cloned());
+        // A header too tall to repeat is only on the first page.
+        let repeat = !head.is_empty()
+            && cols.header_lines(table) as f32 * size_pt * LINE_HEIGHT_RATIO
+                <= LONG_TABLE_MAX_HEAD_RATIO * page_height_pt;
+        if above.is_some() || (!head.is_empty() && !repeat) {
+            lines.push("\\endfirsthead".to_string());
+            lines.push("\\toprule".to_string());
+            if repeat {
+                lines.extend(head.iter().cloned());
+            }
+        }
+        if above.is_some() || !head.is_empty() {
+            lines.push("\\endhead".to_string());
         }
         lines.push("\\bottomrule".to_string());
+        if let Some(caption) = below {
+            lines.push(caption_row(caption));
+        }
+        lines.push("\\endlastfoot".to_string());
+        lines.extend(body.iter().cloned());
         lines.push("\\end{longtable}".to_string());
+        if captioned {
+            lines.push("\\endgroup".to_string());
+        }
         if !size.is_empty() {
             lines.push("\\endgroup".to_string());
         }
@@ -1181,10 +1229,12 @@ impl Columns {
     /// Otherwise the columns wider than an even share of the line wrap, and
     /// share what the others leave in proportion to the mean width of
     /// their body cells, so that a typical row takes as many lines in each
-    /// of them; each is at least [`MIN_WRAPPED_COLUMN_EM`] wide when there
-    /// is room for that ([`MIN_EVEN_SHARE_RATIO`]), and never under
-    /// [`MIN_COLUMN_EM`]. The columns are `tabcolsep_pt` apart on each side,
-    /// the text `width_pt` wide.
+    /// of them; each is at least as wide as its typical cell
+    /// ([`TYPICAL_CELL_MAX_EM`]) and never under [`MIN_COLUMN_EM`], even
+    /// when the table then does not fit. Once any column wraps, every
+    /// column is set in its width ([`Columns::paragraph`]), so that the
+    /// table is as wide as the shares say. The columns are `tabcolsep_pt`
+    /// apart on each side, the text `width_pt` wide.
     fn fitted(table: &Table, size_pt: f32, tabcolsep_pt: f32, width_pt: f32) -> Self {
         let mut cols = Self::plain(table);
         let n_cols = cols.align.len();
@@ -1193,15 +1243,23 @@ impl Columns {
             body,
             word,
             breaks,
+            spans,
         } = TextWidths::of(table, n_cols);
-        cols.em_share = size_pt / width_pt;
+        let em_pt = em_width_pt(size_pt);
+        cols.em_share = em_pt / width_pt;
         cols.pad_share = tabcolsep_pt / width_pt;
-        let share_of = |em: f32| (em * size_pt + 2.0 * tabcolsep_pt) / width_pt;
+        let share_of = |em: f32| (em * em_pt + 2.0 * tabcolsep_pt) / width_pt;
         cols.share = natural.iter().map(|&em| share_of(em)).collect();
+        let mean = |col: usize| {
+            let (sum, count) = body[col];
+            if count == 0 { 0.0 } else { sum / count as f32 }
+        };
+        // The width of a wrapped column's typical cell, in em.
+        let typical = |col: usize| mean(col).max(word[col]).clamp(MIN_COLUMN_EM, TYPICAL_CELL_MAX_EM);
         cols.least = (0..n_cols)
             .map(|col| {
                 if breaks[col] {
-                    share_of(word[col].max(MIN_COLUMN_EM))
+                    share_of(typical(col))
                 } else {
                     share_of(natural[col])
                 }
@@ -1210,37 +1268,35 @@ impl Columns {
         if cols.share.iter().sum::<f32>() <= LONG_TABLE_FILL_RATIO {
             return cols;
         }
+        // The columns under a cell over several of them are together as
+        // wide as its typical text.
+        let floors = span_floors(&spans, &cols.least, |em| share_of(em.min(TYPICAL_CELL_MAX_EM)));
+        for (col, floor) in floors.into_iter().enumerate() {
+            cols.least[col] = cols.least[col].max(floor);
+        }
         let even = 1.0 / n_cols as f32;
         cols.wrap = (0..n_cols).map(|col| cols.share[col] > even && breaks[col]).collect();
+        for col in (0..n_cols).filter(|&col| !cols.wrap[col]) {
+            cols.share[col] = cols.share[col].max(cols.least[col]);
+        }
         let wrapped: Vec<usize> = (0..n_cols).filter(|&col| cols.wrap[col]).collect();
         let kept: f32 = (0..n_cols)
             .filter(|&col| !cols.wrap[col])
             .map(|col| cols.share[col])
             .sum();
         let left = LONG_TABLE_FILL_RATIO - kept;
-        let weight = |col: usize| {
-            let (sum, count) = body[col];
-            (if count == 0 { 0.0 } else { sum / count as f32 }).max(MIN_WRAPPED_COLUMN_EM)
-        };
+        let weight = |col: usize| mean(col).max(MIN_WRAPPED_COLUMN_EM);
         if left <= 0.0 {
             // The others leave nothing: the table is wider than the text.
             for &col in &wrapped {
-                cols.share[col] = share_of(MIN_WRAPPED_COLUMN_EM);
+                cols.share[col] = cols.least[col];
             }
             return cols;
         }
-        // Each wrapped column gets at least its floor: the least width (or
-        // its longest word, when longer), or part of an even share of what
-        // is left when that is less. The others share the rest in
-        // proportion to their weights.
-        let even_left = left / wrapped.len() as f32;
-        // Never under 1 em of text, whatever the room: a table that then
-        // does not fit is set smaller, turned or cut.
-        let floor = |col: usize| {
-            share_of(MIN_WRAPPED_COLUMN_EM.max(word[col]))
-                .min(MIN_EVEN_SHARE_RATIO * even_left)
-                .max(share_of(MIN_COLUMN_EM))
-        };
+        // Each wrapped column gets at least its floor, the width of its
+        // typical cell (when the floors do not fit, the table does not
+        // either); the others share the rest in proportion to their weights.
+        let floor = |col: usize| cols.least[col];
         let mut floored = vec![false; n_cols];
         loop {
             let free: Vec<usize> = wrapped.iter().copied().filter(|&col| !floored[col]).collect();
@@ -1285,7 +1341,8 @@ impl Columns {
     /// counted in theirs).
     fn paragraph(&self, col: usize, width: usize) -> bool {
         let fitted = self.share.iter().any(|&share| share > 0.0);
-        self.wraps(col, width) || (width > 1 && fitted)
+        let wrapping = self.wrap.iter().any(|&wrap| wrap);
+        self.wraps(col, width) || (fitted && (width > 1 || wrapping))
     }
 
     /// The column specification of the `width` columns from `col` taken
@@ -1318,6 +1375,9 @@ struct TextWidths {
     /// One of a column's cells has more than one word (a column of numbers
     /// or codes under one-word headers has none: it could not wrap).
     breaks: Vec<bool>,
+    /// The cells over several columns: (first column, columns, width of
+    /// the text on one line).
+    spans: Vec<(usize, usize, f32)>,
 }
 
 impl TextWidths {
@@ -1329,8 +1389,16 @@ impl TextWidths {
             body: vec![(0.0, 0); n_cols],
             word: vec![0.0; n_cols],
             breaks: vec![false; n_cols],
+            spans: Vec::new(),
         };
         for (row, cells) in table.rows.iter().enumerate() {
+            for cell in cells.iter().filter(|cell| cell.colspan > 1 && cell.col < n_cols) {
+                let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
+                let bold = row < table.header_rows || cell.spans.iter().any(|span| span.style & BOLD != 0);
+                let ratio = if bold { BOLD_WIDTH_RATIO } else { 1.0 };
+                let width = cell.colspan.min(n_cols - cell.col);
+                widths.spans.push((cell.col, width, text_em(&text) * ratio));
+            }
             for cell in cells.iter().filter(|cell| cell.colspan <= 1 && cell.col < n_cols) {
                 let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
                 let col = cell.col;
@@ -1349,6 +1417,34 @@ impl TextWidths {
         }
         widths
     }
+}
+
+/// The width in pt of the em that the widths of text are guessed in, at
+/// the font size `size_pt` ([`SIZE_WIDTH_RATIOS`]).
+fn em_width_pt(size_pt: f32) -> f32 {
+    size_pt
+        * SIZE_WIDTH_RATIOS
+            .iter()
+            .find(|(least, _)| size_pt >= *least)
+            .map_or(1.0, |&(_, ratio)| ratio)
+}
+
+/// The least share of each column that the cells over several columns
+/// `spans` (first column, columns, width in em) ask for: when the columns
+/// under a cell are together narrower (by `least`) than `share_of` its
+/// width, each gets an even part of what is missing.
+fn span_floors(spans: &[(usize, usize, f32)], least: &[f32], share_of: impl Fn(f32) -> f32) -> Vec<f32> {
+    let mut floors = vec![0.0f32; least.len()];
+    for &(col, width, em) in spans {
+        let have: f32 = least[col..col + width].iter().sum();
+        let missing = share_of(em) - have;
+        if missing > 0.0 {
+            for column in col..col + width {
+                floors[column] = floors[column].max(least[column] + missing / width as f32);
+            }
+        }
+    }
+    floors
 }
 
 /// The columns of a table too wide for the text, in groups that each fit
@@ -1641,7 +1737,11 @@ mod tests {
             .find("r0c0 & r0c1 & r0c2 \\\\\n\\midrule\n\\endhead")
             .expect("no repeated header");
         assert!(latex.find("r1c0").unwrap() > head);
-        assert!(latex.contains("r31c0 & r31c1 & r31c2 \\\\\n\\bottomrule\n\\end{longtable}"));
+        assert!(latex.contains("\\endhead\n\\bottomrule\n\\endlastfoot\n"), "{latex}");
+        assert!(
+            latex.contains("r31c0 & r31c1 & r31c2 \\\\\n\\end{longtable}"),
+            "{latex}"
+        );
     }
 
     #[test]
@@ -1666,18 +1766,21 @@ mod tests {
             .lines()
             .find(|line| line.starts_with("\\begin{longtable}"))
             .unwrap();
-        assert!(
-            spec_line.starts_with("\\begin{longtable}{ll>{\\raggedright\\arraybackslash}p{"),
-            "{spec_line}"
-        );
-        assert!(spec_line.ends_with("}l}"), "{spec_line}");
+        // Every column in its width, the long one the widest.
+        let shares: Vec<f32> = spec_line
+            .split("p{\\dimexpr")
+            .skip(1)
+            .map(|part| part.split("\\linewidth").next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(shares.len(), 4, "{spec_line}");
+        assert!(shares[2] > shares[0] + shares[1] + shares[3], "{spec_line}");
     }
 
     #[test]
     fn a_long_table_with_a_header_taller_than_a_quarter_page_shows_it_once() {
         let latex = table_latex(table_of(16, 40, |row, col| {
             if row == 0 {
-                "a long header of many words ".repeat(6)
+                "a long header of many words ".repeat(30)
             } else {
                 format!("{row} {col} text of the cell {}", "word ".repeat(col))
             }
@@ -1736,8 +1839,47 @@ mod tests {
         }
     }
 
+    /// The text of each page of the PDF that pdfLaTeX makes of `tex` in a
+    /// scratch folder named after `name`; `None` (said on the standard
+    /// error) when pdfLaTeX or pdftotext is not installed.
+    fn compiled_pages(name: &str, tex: &str) -> Option<Vec<String>> {
+        let dir = std::env::temp_dir().join(format!("kakemono-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.tex"), tex).unwrap();
+        let Ok(out) = std::process::Command::new("pdflatex")
+            .args(["-interaction=nonstopmode", "-halt-on-error", "t.tex"])
+            .current_dir(&dir)
+            .output()
+        else {
+            eprintln!("SKIPPED {name}: pdflatex is not installed, the LaTeX was not compiled");
+            return None;
+        };
+        assert!(
+            out.status.success() && dir.join("t.pdf").is_file(),
+            "pdflatex failed:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let Ok(text) = std::process::Command::new("pdftotext")
+            .args(["-layout", "t.pdf", "-"])
+            .current_dir(&dir)
+            .output()
+        else {
+            eprintln!("SKIPPED {name}: pdftotext is not installed, the PDF text was not checked");
+            return None;
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        Some(
+            String::from_utf8_lossy(&text.stdout)
+                .split('\u{c}')
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    /// The caption of a long table is on the page of its first row, wherever
+    /// the table starts on the page.
     #[test]
-    fn the_caption_of_a_long_table_stays_with_it() {
+    fn the_caption_of_a_long_table_stays_with_its_first_row() {
         let mut block = Block::new(
             0,
             BlockKind::Figure {
@@ -1746,13 +1888,30 @@ mod tests {
                 label: None,
             },
         );
-        block.spans = vec![Span::plain("Table 1: Prices")];
+        block.spans = vec![Span::plain("Table 1: CAPTIONMARK")];
         block.caption_above = true;
-        block.table = Some(table_of(3, 31, |row, col| format!("r{row}c{col}")));
-        let latex = figure_latex(&block);
-        let caption = latex.find("Prices").unwrap();
-        let table = latex.find("\\begin{longtable}").unwrap();
-        assert!(latex[caption..table].contains("\\nopagebreak"), "{latex}");
+        block.table = Some(table_of(2, 31, |row, col| {
+            if row == 1 && col == 0 {
+                "FIRSTROW".to_string()
+            } else {
+                format!("r{row}c{col}")
+            }
+        }));
+        let table = figure_latex(&block);
+        // The table starts `room` pt above the bottom of the first page.
+        for room in (10..=90).step_by(8) {
+            let body = format!("\\noindent\\rule{{1pt}}{{\\dimexpr\\textheight-{room}pt\\relax}}\n\n{table}");
+            let tex = document(&doc_of("x"), &body, InputFormat::Pdf);
+            let Some(pages) = compiled_pages(&format!("caption-{room}"), &tex) else {
+                return;
+            };
+            let page_of = |mark: &str| pages.iter().position(|page| page.contains(mark));
+            assert_eq!(
+                page_of("CAPTIONMARK"),
+                page_of("FIRSTROW"),
+                "{room} pt left: the caption is not on the page of the first row"
+            );
+        }
     }
 
     /// Long tables compile with pdfLaTeX (when it is installed) and show
@@ -1794,35 +1953,70 @@ mod tests {
         assert!(first.contains("\\multirow{3}{=}"), "{first}");
         let second = table_latex(table_of(20, 31, number));
         let tex = document(&doc_of("x"), &format!("{first}\n\n{second}"), InputFormat::Pdf);
-        let dir = std::env::temp_dir().join(format!("kakemono-longtable-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("t.tex"), tex).unwrap();
-        let compiled = std::process::Command::new("pdflatex")
-            .args(["-interaction=nonstopmode", "-halt-on-error", "t.tex"])
-            .current_dir(&dir)
-            .output();
-        let Ok(out) = compiled else {
-            eprintln!("pdflatex not run: the long tables were not compiled");
+        let Some(pages) = compiled_pages("long-tables", &tex) else {
             return;
         };
-        assert!(
-            out.status.success() && dir.join("t.pdf").is_file(),
-            "pdflatex failed:\n{}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        let Ok(text) = std::process::Command::new("pdftotext")
-            .args(["-layout", "t.pdf", "-"])
-            .current_dir(&dir)
-            .output()
-        else {
-            eprintln!("pdftotext not run: the PDF text was not checked");
-            return;
-        };
-        let text = String::from_utf8_lossy(&text.stdout);
+        let text = pages.concat();
         for value in ["end40", "Both texts", &number(31, 19), &number(31, 0)] {
             assert!(text.contains(value), "{value} is not in the PDF");
         }
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A form laid out over 20 columns, as Japanese workbooks are: long
+    /// notes in column 1, short labels in columns 14 to 16, and columns
+    /// of one character or none between them.
+    fn form() -> Table {
+        table_of(20, 40, |row, col| match col {
+            1 => format!("{row} {}", "注意事項の説明文".repeat(4)),
+            2 => "会社名".to_string(),
+            5..=12 => {
+                if row % 3 == 0 {
+                    "年".to_string()
+                } else {
+                    String::new()
+                }
+            }
+            14 => "〇〇労働基準監督署".to_string(),
+            15 => "〇〇水道局".to_string(),
+            16 => format!("{row} 現認者（参考人）の確認（住所、氏名、電話番号）"),
+            19 => "TEL".to_string(),
+            _ => String::new(),
+        })
+    }
+
+    #[test]
+    fn a_long_table_with_wrapped_columns_sets_every_column_in_its_width() {
+        let latex = table_latex(form());
+        let spec = latex
+            .lines()
+            .find(|line| line.starts_with("\\begin{longtable}"))
+            .unwrap();
+        let columns = spec.matches("p{\\dimexpr").count();
+        assert_eq!(columns, 20, "{spec}");
+    }
+
+    #[test]
+    fn short_labels_of_a_wrapped_column_stay_on_one_line() {
+        let mut table = form();
+        // A label over columns 17 and 18, empty elsewhere.
+        table.rows[3].retain(|cell| cell.col != 17 && cell.col != 18);
+        table.rows[3].push(TableCell {
+            col: 17,
+            colspan: 2,
+            rowspan: 1,
+            spans: vec![Span::plain("〇〇監理役")],
+        });
+        for &(_, _, size_pt, tabcolsep_pt) in LONG_TABLE_SIZES {
+            for width_pt in [TEXT_WIDTH_PT, TEXT_HEIGHT_PT] {
+                let cols = Columns::fitted(&table, size_pt, tabcolsep_pt, width_pt);
+                if cols.fits() {
+                    let room_em = (cols.share[15] * width_pt - 2.0 * tabcolsep_pt) / size_pt;
+                    assert!(room_em >= 5.0 - 1e-3, "〇〇水道局 in {room_em} em at {size_pt} pt");
+                    let room_em = ((cols.share[17] + cols.share[18]) * width_pt - 2.0 * tabcolsep_pt) / size_pt;
+                    assert!(room_em >= 5.0 - 1e-3, "〇〇監理役 in {room_em} em at {size_pt} pt");
+                }
+            }
+        }
     }
 
     #[test]
