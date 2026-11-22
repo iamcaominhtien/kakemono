@@ -4,12 +4,15 @@
 //! (a form, a cover or notes sheet).
 
 use super::ExcelConfig;
-use super::drawing::Shape;
+use super::drawing::{Drawn, PictureRef, Shape};
 use super::grid::{CellKind, Grid, Merge, MergeIndex};
 use super::regions::{self, Visible, is_blank};
-use crate::model::{Block, BlockKind, FloatKind, Span, Table, TableCell};
+use crate::common::geom::Rect;
+use crate::model::{Block, BlockKind, FloatKind, ImageSpec, Span, Table, TableCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// The size in points of a picture whose drawing and file give none.
+const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
 /// Between two lines of a caption. The renderers show a newline in a
 /// caption as a space, so the lines are joined by a dash instead.
 const CAPTION_SEPARATOR: &str = " — ";
@@ -38,7 +41,9 @@ pub(crate) struct Parts {
 }
 
 /// The blocks of the sheet `name`: a level-1 heading, then its regions in
-/// reading order, then the text of its shapes `shapes` (sorted by anchor), one paragraph per line. A sheet with neither has none. The blocks are numbered from 0;
+/// reading order, then the text of its shapes and its pictures `shapes`
+/// (sorted by anchor), one paragraph per line of text, one figure per
+/// picture. A sheet with neither has none. The blocks are numbered from 0;
 /// the caller numbers them in the whole document.
 pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &ExcelConfig) -> Vec<Block> {
     let mut blocks = Vec::new();
@@ -92,12 +97,16 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
     // The text of the shapes, in anchor order, after the cells: one
     // paragraph per line (a paragraph or a line break of the shape), since
     // a line feed inside a span is not a break in every output.
-    for (_, text) in shapes {
-        blocks.extend(
-            text.lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| paragraph(vec![Span::plain(line)])),
-        );
+    // A picture read is a figure, with its alternative text.
+    for (_, item) in shapes {
+        match item {
+            Drawn::Text(text) => blocks.extend(
+                text.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| paragraph(vec![Span::plain(line)])),
+            ),
+            Drawn::Picture(picture) => blocks.extend(figure(picture)),
+        }
     }
     if blocks.is_empty() {
         return blocks;
@@ -109,6 +118,36 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
         block.id = id;
     }
     blocks
+}
+
+/// The figure of a picture read (one with an index in the document's
+/// pictures), at its size; `None` for one not read.
+fn figure(picture: &PictureRef) -> Option<Block> {
+    let index = picture.index?;
+    let (width, height) = picture.size_pt.unwrap_or(FALLBACK_PICTURE_PT);
+    let image = ImageSpec {
+        page: 0,
+        rect: Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: width,
+            y1: height,
+        },
+        transparent: false,
+        embedded: Some(index),
+    };
+    let mut block = Block::new(
+        0,
+        BlockKind::Figure {
+            kind: FloatKind::Graphic,
+            image: Some(image),
+            label: None,
+        },
+    );
+    if !picture.alt.is_empty() {
+        block.rows = vec![vec![Span::plain(picture.alt.clone())]];
+    }
+    Some(block)
 }
 
 /// The rows of `region`, read into caption, header, body and notes.
@@ -961,7 +1000,10 @@ mod tests {
     #[test]
     fn shape_text_follows_the_regions_one_paragraph_per_line() {
         let grid = grid(&[&["A", "B"], &["1", "2"]]);
-        let shapes = [((0, 0), "Emergency\n03-1234".to_string()), ((9, 9), "Last".to_string())];
+        let shapes = [
+            ((0, 0), Drawn::Text("Emergency\n03-1234".to_string())),
+            ((9, 9), Drawn::Text("Last".to_string())),
+        ];
         let blocks = sheet_blocks("Data", &grid, &shapes, &ExcelConfig::default());
         let texts: Vec<_> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts[2..], ["Emergency", "03-1234", "Last"]);
@@ -971,7 +1013,7 @@ mod tests {
 
     #[test]
     fn a_sheet_with_only_shapes_has_a_heading() {
-        let shapes = [((0, 0), "Org chart".to_string())];
+        let shapes = [((0, 0), Drawn::Text("Org chart".to_string()))];
         let blocks = sheet_blocks("Chart", &Grid::default(), &shapes, &ExcelConfig::default());
         let texts: Vec<_> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts, ["Chart", "Org chart"]);

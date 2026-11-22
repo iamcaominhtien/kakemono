@@ -17,16 +17,19 @@ mod styles;
 mod workbook;
 
 use crate::analysis::semantics::text::{slug, unique_anchor};
-use crate::model::{Block, BlockKind, Document, Meta};
+use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
-use drawing::Shape;
+use drawing::{Drawn, Shape};
 use grid::{Grid, Table};
 use sheet::SheetContext;
 use std::collections::{HashMap, HashSet};
 use workbook::{Workbook, is_sml};
 
+/// Points in a pixel at 96 pixels per inch: the size of a picture whose
+/// drawing gives none.
+const PT_PER_PX: f32 = 0.75;
 /// Font size of the running text, in points: Excel's default font size.
 const BODY_SIZE_PT: f32 = 11.0;
 /// Distance between baselines, as a ratio of the font size.
@@ -129,8 +132,9 @@ pub fn detect(data: &[u8]) -> bool {
 pub fn read(data: &[u8], config: &ExcelConfig, source: Option<String>) -> Result<Document> {
     let zip = ZipArchive::new(data)?;
     let workbook = Workbook::read(&zip)?;
-    let sheets = read_sheets(&zip, &workbook, config)?;
-    Ok(build(&workbook, &sheets, config, source))
+    let mut pictures = Pictures::default();
+    let sheets = read_sheets(&zip, &workbook, config, &mut pictures)?;
+    Ok(build(&workbook, &sheets, pictures.files, config, source))
 }
 
 /// The grid of each visible sheet of `workbook`, with its name. A sheet
@@ -145,6 +149,7 @@ fn read_sheets<'w>(
     zip: &ZipArchive<'_>,
     workbook: &'w Workbook,
     config: &ExcelConfig,
+    pictures: &mut Pictures,
 ) -> Result<Vec<(&'w str, Grid, Vec<Shape>)>> {
     // A workbook without string cells has no shared strings part.
     let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
@@ -170,7 +175,7 @@ fn read_sheets<'w>(
         let mut shapes = Vec::new();
         let grid = match xml {
             Some(xml) => {
-                shapes = sheet_shapes(zip, &sheet.part);
+                shapes = sheet_shapes(zip, &sheet.part, pictures);
                 let (links, tables) = sheet_rels(zip, &sheet.part);
                 let ctx = SheetContext {
                     strings: &strings,
@@ -208,17 +213,76 @@ fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec
 }
 
 /// The text of the shapes and text boxes in the drawings of the sheet part
-/// `part`, by position. A missing or damaged drawing part is left out.
-fn sheet_shapes(zip: &ZipArchive<'_>, part: &str) -> Vec<Shape> {
+/// `part`, and their pictures, by position. A missing or damaged drawing
+/// part is left out, and so is a picture whose file is missing, damaged or
+/// in a format that cannot be shown. The files of the pictures are added
+/// to `pictures` (once each), which the pictures given refer to.
+fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, pictures: &mut Pictures) -> Vec<Shape> {
     let mut shapes: Vec<Shape> = Vec::new();
     for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
         if kind == DRAWING_REL && !rel.external {
             let drawing = zip.read_text(&rel.target).ok().flatten();
-            shapes.extend(drawing.and_then(|xml| drawing::texts(&xml).ok()).unwrap_or_default());
+            let items = drawing.and_then(|xml| drawing::items(&xml).ok()).unwrap_or_default();
+            let files: HashMap<String, String> = read_rels(zip, &rel.target)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, _, rel)| !rel.external)
+                .map(|(id, _, rel)| (id, rel.target))
+                .collect();
+            shapes.extend(items.into_iter().filter_map(|(anchor, item)| match item {
+                Drawn::Picture(mut picture) => {
+                    let index = pictures.read(zip, files.get(&picture.rel)?)?;
+                    picture.size_pt = picture.size_pt.or_else(|| pictures.pixel_size_pt(index));
+                    picture.index = Some(index);
+                    Some((anchor, Drawn::Picture(picture)))
+                }
+                text => Some((anchor, text)),
+            }));
         }
     }
     shapes.sort_by_key(|(anchor, _)| *anchor);
     shapes
+}
+
+/// The picture files of a workbook, each read and made ready for every
+/// output (as a Word document's are) once.
+#[derive(Default)]
+struct Pictures {
+    /// The pictures read, which [`Drawn::Picture`] refers to by index.
+    files: Vec<Picture>,
+    /// The index of each part read, `None` when it cannot be shown.
+    parts: HashMap<String, Option<usize>>,
+}
+
+impl Pictures {
+    /// The index of the picture of the part `part`, read once; `None` when
+    /// it is missing, damaged or in a format that cannot be shown.
+    fn read(&mut self, zip: &ZipArchive<'_>, part: &str) -> Option<usize> {
+        if let Some(index) = self.parts.get(part) {
+            return *index;
+        }
+        let index = zip
+            .read(part)
+            .ok()
+            .flatten()
+            .and_then(crate::word::pictures::normalize)
+            .map(|picture| {
+                self.files.push(picture);
+                self.files.len() - 1
+            });
+        self.parts.insert(part.to_string(), index);
+        index
+    }
+
+    /// The size in points of the picture `index` at 96 pixels per inch.
+    fn pixel_size_pt(&self, index: usize) -> Option<(f32, f32)> {
+        let data = &self.files.get(index)?.data;
+        let reader = image::ImageReader::new(std::io::Cursor::new(data))
+            .with_guessed_format()
+            .ok()?;
+        let (width, height) = reader.into_dimensions().ok()?;
+        Some((width as f32 * PT_PER_PX, height as f32 * PT_PER_PX))
+    }
 }
 
 /// The range and header rows of the table part `part`; `None` when it is
@@ -238,10 +302,12 @@ fn table(zip: &ZipArchive<'_>, part: &str) -> Option<Table> {
 }
 
 /// The document of a workbook: one section per visible sheet, given with
-/// its grid, read with the thresholds `config`.
+/// its grid and drawings, read with the thresholds `config`; `pictures`
+/// are the picture files the drawings refer to.
 fn build(
     workbook: &Workbook,
     sheets: &[(&str, Grid, Vec<Shape>)],
+    pictures: Vec<Picture>,
     config: &ExcelConfig,
     source: Option<String>,
 ) -> Document {
@@ -276,13 +342,14 @@ fn build(
         body_font: String::new(),
         math_font: String::new(),
         blocks,
-        pictures: Vec::new(),
+        pictures,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{BlockKind, FloatKind};
     use crate::render::zip::{Compression, ZipWriter};
     use grid::Merge;
 
@@ -329,7 +396,7 @@ mod tests {
         assert!(doc.blocks.is_empty());
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
         assert_eq!(sheets.len(), 1);
         assert!(sheets[0].1.cells.is_empty());
     }
@@ -351,7 +418,7 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
         assert_eq!(sheets[0].1.cells.len(), 1);
         assert!(sheets[0].1.declared.tables.is_empty());
         assert!(read(&data, &ExcelConfig::default(), None).is_ok());
@@ -398,7 +465,7 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
         assert_eq!(sheets[0].1.cells.len(), 1);
     }
 
@@ -415,7 +482,7 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
         let read: Vec<_> = sheets.iter().map(|(name, grid, _)| (*name, grid.cells.len())).collect();
         assert_eq!(read, [("Bad", 0), ("Good", 1)]);
         let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
@@ -444,7 +511,7 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default()).unwrap();
+        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
         assert_eq!(sheets.len(), 1);
         let (name, grid, _) = &sheets[0];
         assert_eq!(*name, "Data");
@@ -508,6 +575,57 @@ mod tests {
         let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
         let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
         assert_eq!(texts, ["Data", "7", "Emergency", "03-1234"]);
+    }
+
+    /// A PNG of 4 × 2 pixels.
+    fn png() -> Vec<u8> {
+        let mut data = Vec::new();
+        image::RgbImage::new(4, 2)
+            .write_to(&mut std::io::Cursor::new(&mut data), image::ImageFormat::Png)
+            .unwrap();
+        data
+    }
+
+    /// A drawing with the text box of [`DRAWING`] at C3, a picture at A6
+    /// (relationship `rId1`, 2 × 1 inches, alt text "Logo"), a picture
+    /// whose file is missing (`rId2`) and a chart.
+    const PICTURE_DRAWING: &str = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>5</xdr:row></xdr:from><xdr:ext cx="1828800" cy="914400"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="3" name="Picture 2" descr="Logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="914400"/></a:xfrm></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor><xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:row>2</xdr:row></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>4</xdr:row></xdr:to><xdr:sp><xdr:txBody><a:p><a:r><a:t>Emergency</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor><xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>8</xdr:row></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>9</xdr:row></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="4" name="Picture 3"/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId2"/></xdr:blipFill></xdr:pic><xdr:clientData/></xdr:twoCellAnchor><xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>9</xdr:row></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>12</xdr:row></xdr:to><xdr:graphicFrame><a:graphic><a:graphicData><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId3"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"#;
+    /// The relationships of [`PICTURE_DRAWING`].
+    const PICTURE_DRAWING_RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/missing.png"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>"#;
+
+    #[test]
+    fn pictures_become_figures_among_the_shapes_in_anchor_order() {
+        let mut zip = ZipWriter::default();
+        for (name, contents) in [
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS),
+            ("xl/worksheets/sheet1.xml", ONE_CELL_SHEET),
+            ("xl/worksheets/_rels/sheet1.xml.rels", SHEET_DRAWING_RELS),
+            ("xl/drawings/drawing1.xml", PICTURE_DRAWING),
+            ("xl/drawings/_rels/drawing1.xml.rels", PICTURE_DRAWING_RELS),
+        ] {
+            zip.add(name, contents.as_bytes(), Compression::Deflated);
+        }
+        zip.add("xl/media/image1.png", &png(), Compression::Stored);
+        let doc = super::read(&zip.finish(), &ExcelConfig::default(), None).unwrap();
+        let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Data", "7", "Emergency", ""]);
+        assert_eq!(doc.pictures.len(), 1);
+        assert_eq!(doc.pictures[0].data, png());
+        let figure = &doc.blocks[3];
+        let BlockKind::Figure {
+            kind: FloatKind::Graphic,
+            image: Some(image),
+            ..
+        } = &figure.kind
+        else {
+            panic!("not a picture: {:?}", figure.kind);
+        };
+        assert_eq!(image.embedded, Some(0));
+        assert_eq!((image.rect.width(), image.rect.height()), (144.0, 72.0));
+        assert_eq!(figure.rows[0][0].text, "Logo");
+        assert_eq!(figure.id, 3);
     }
 
     #[test]

@@ -14,7 +14,7 @@ mod ir;
 pub(crate) mod metafile;
 pub(crate) mod mtef;
 pub(crate) mod omml;
-mod pictures;
+pub(crate) mod pictures;
 mod styles;
 mod symbols;
 pub(crate) mod xml;
