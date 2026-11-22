@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
+
+### Fixed
+
+- Keep a novel's chapters, drop caps and paragraphs whole
+
+Novels, as calibre and Word make them, now keep their chapters and their paragraphs. On the two books of the issues, every chapter is found and the paragraphs are no longer cut into lines.
+
+##### Paragraphs (#26)
+
+- **Paragraphs separated by space.** In a document that sets its paragraphs apart with a blank line (and often ragged right, with no first-line indent), prose set close together is one paragraph: a line that ends early no longer ends it. The document is recognised by the regular spacing of its paragraphs, which the varied gaps of a paper do not have.
+- **Across a page break**, an unfinished sentence that goes on in lowercase is one paragraph, even after a short last line.
+- **A stray blank line inside a sentence** ("… his class put" / "together, but …") no longer cuts it, when the part before it stops on a bare word; a line of verse ending in a comma, or a short item of a list, stays apart.
+- **Shouted lines in capitals** ("YOU WON'T BELIEVE / WHAT IT'S DOING!") stay one paragraph.
+- **JSON:** `layout.bbox` of a paragraph that goes on onto the next page is now the box of its lines on its first page, as documented, instead of a union of boxes from two pages.
+
+On *Harry Potter and the Sorcerer's Stone* (250 pages, made in Word), the paragraphs cut mid-sentence drop from 374 to 6, all of them items of a list or lines of a song; the paragraphs cut line by line on a page from 399 to 1.
+
+##### Chapter headings (#25)
+
+- **A chapter headed by its number alone** ("2" between "1 ROGER" and "3 ANDOVER") is a level-1 heading when it is styled like the numbered chapters and in sequence with them. A number out of sequence (a page number, a label) stays text.
+- **Chapter labels in words** ("CHAPTER TWO", "Chapter Twenty-One", "PART THREE") are level-1 headings, with the short line in capitals under them as their title. On the first page, such a label is no longer taken for the authors' names.
+- **A prologue headed like the chapters without a number**, marked by the chapter ornament under it, is a heading.
+- **The ornament under a chapter heading** ("◄○►", "* * *", "❦") joins the heading instead of being a paragraph.
+
+##### Drop caps (#25)
+
+- A drop cap set beside a single line, as calibre sets them, opens its paragraph: the rest of the line no longer comes out as a superscript (`<b>T</b><sup>rong…</sup>`), the paragraph is no longer cut where the lines beside the cap end, and a line of dialogue opening with a drop cap is no longer a heading.
+- No stray space after a drop cap ("T he letter").
+
+On *Những vụ án mạng ABC* (126 pages, calibre), all 35 chapters (8 of them headed by their number alone) and the prologue are level-1 headings, against 27 before; on *Harry Potter*, all 17 chapters, against none, and the book has no authors any more.
+
+Fixes #25
+Fixes #26
+
 ## [0.15.0](https://github.com/iamcaominhtien/kakemono/compare/v0.14.0...v0.15.0) - 2026-11-22
 
 ### Added

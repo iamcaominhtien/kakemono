@@ -262,6 +262,14 @@ pub(crate) fn first_alpha_lower(text: &str) -> bool {
         .is_some_and(|ch| ch.is_lowercase())
 }
 
+/// Whether `text` is an ornament set under a chapter heading ("◄○►",
+/// "* * *", "❦"): at most `max_chars` characters (spaces aside), none a
+/// letter or a digit.
+pub(crate) fn is_ornament(text: &str, max_chars: usize) -> bool {
+    let chars: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    !chars.is_empty() && chars.len() <= max_chars && chars.iter().all(|ch| !ch.is_alphanumeric())
+}
+
 /// Whether `text` ends a sentence (`.`, `?`, `!` or `:`), ignoring closing
 /// brackets and quotes after the punctuation.
 pub(crate) fn ends_terminal(text: &str) -> bool {

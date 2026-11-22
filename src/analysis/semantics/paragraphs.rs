@@ -60,12 +60,23 @@ pub struct ParagraphsConfig {
     /// hyphen) and ends in a full line, the second starts lowercase after an unfinished sentence
     /// and lies at most this many leadings below it.
     pub same_leaf_max_gap_leading: f32,
+    /// In a document whose paragraphs are separated by space, the second
+    /// part may lie this many leadings below the first (a blank line), when
+    /// the first stops on a word without any punctuation.
+    pub spaced_cut_max_gap_leading: f32,
+    /// ... and the part before the blank has several lines, or its line
+    /// fills at least this share of the column's width.
+    pub spaced_cut_min_width_ratio: f32,
     /// Lines joined across a paragraph cut are running text: at least this
     /// share of their visible characters are letters.
     pub cut_prose_min_letter_ratio: f32,
     /// A last line ending within this distance (multiple of its font size)
     /// of the right edge of its block is a full line, as in running text.
     pub full_line_max_gap_em: f32,
+    /// A block of at most this many characters (spaces aside), none a
+    /// letter or a digit, right under a heading is the ornament of a
+    /// chapter heading ("◄○►", "* * *", "❦").
+    pub ornament_max_chars_count: usize,
 }
 
 impl Default for ParagraphsConfig {
@@ -84,8 +95,11 @@ impl Default for ParagraphsConfig {
             size_tolerance_pt: 0.4,
             footnote_size_tolerance_pt: 0.4,
             same_leaf_max_gap_leading: 1.6,
+            spaced_cut_max_gap_leading: 2.5,
+            spaced_cut_min_width_ratio: 0.6,
             cut_prose_min_letter_ratio: 0.6,
             full_line_max_gap_em: 0.6,
+            ornament_max_chars_count: 12,
         }
     }
 }
@@ -99,6 +113,8 @@ struct DocumentStyle<'a> {
     uses_indent: bool,
     /// Bibliography entries carry labels.
     refs_labeled: bool,
+    /// Paragraphs are separated by space ([`DocStats::spaced_paragraphs`]).
+    spaced: bool,
 }
 
 /// The two lines that meet at a column or page break, with the measurements
@@ -142,8 +158,10 @@ pub(crate) fn merge_paragraphs(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &
         fonts,
         uses_indent: uses_first_line_indent(nodes, stats, cfg),
         refs_labeled: references_are_labeled(nodes, cfg),
+        spaced: stats.spaced_paragraphs,
     };
     join_chapter_labels(nodes);
+    join_heading_ornaments(nodes, cfg);
     merge_cut_paragraphs(nodes, stats, cfg);
     merge_split_blocks(nodes, &style, cfg);
     merge_split_footnotes(nodes, cfg);
@@ -163,6 +181,31 @@ fn join_chapter_labels(nodes: &mut Vec<Node>) {
                 }
             }
             nodes[i].class = class;
+            append_text_node(nodes, i, i + 1);
+        }
+        i += 1;
+    }
+}
+
+/// Joins the ornament set under a chapter heading ("◄○►", "* * *") to the
+/// heading, as it is when the ornament shares the heading's line ("3
+/// ANDOVER ◄○►"), rather than leaving it a paragraph of its own.
+fn join_heading_ornaments(nodes: &mut Vec<Node>, cfg: &ParagraphsConfig) {
+    let mut i = 0;
+    while i + 1 < nodes.len() {
+        let joins = matches!(nodes[i].class, Class::Heading { .. })
+            && nodes[i].text_block().is_some()
+            && nodes[i + 1].loc.page == nodes[i].loc.page
+            && nodes[i + 1]
+                .text_block()
+                .is_some_and(|block| is_ornament(&block_text(&block.lines), cfg.ornament_max_chars_count));
+        if joins {
+            if let NodeKind::Text(ornament) = &nodes[i + 1].kind {
+                let bbox = ornament.bbox;
+                if let NodeKind::Text(heading) = &mut nodes[i].kind {
+                    heading.bbox = heading.bbox.union(&bbox);
+                }
+            }
             append_text_node(nodes, i, i + 1);
         }
         i += 1;
@@ -227,11 +270,21 @@ fn is_cut_paragraph(prev: &Node, next: &Node, stats: &DocStats, cfg: &Paragraphs
         return false;
     };
     let (last, first) = (prev_block.lines.last().unwrap(), &next_block.lines[0]);
-    (prev_block.lines.len() >= 2 || last.text().ends_with('-'))
-        && prev_block.right - last.bbox.x1 <= cfg.full_line_max_gap_em * last.size
+    let full_last = prev_block.right - last.bbox.x1 <= cfg.full_line_max_gap_em * last.size
+        && next_block.gap_before <= cfg.same_leaf_max_gap_leading * stats.leading;
+    // In a document whose paragraphs are separated by space (and often set
+    // ragged right), a blank line in the middle of a sentence that stops
+    // on a bare word ("... his class put" / "together, but ...") is no
+    // paragraph break; a line ending in a comma may be a line of verse,
+    // and a short block of one line an item of a list.
+    let column = prev.leaf_right - prev.leaf_left;
+    let spaced_cut = stats.spaced_paragraphs
+        && last.text().trim_end().ends_with(char::is_alphanumeric)
+        && (prev_block.lines.len() >= 2 || last.bbox.x1 - prev.leaf_left >= cfg.spaced_cut_min_width_ratio * column)
+        && next_block.gap_before <= cfg.spaced_cut_max_gap_leading * stats.leading;
+    ((full_last && (prev_block.lines.len() >= 2 || last.text().ends_with('-'))) || spaced_cut)
         && prev.tail == (next.loc.page, next.loc.leaf)
         && (last.size - first.size).abs() <= cfg.size_tolerance_pt
-        && next_block.gap_before <= cfg.same_leaf_max_gap_leading * stats.leading
         && !ends_terminal(&last.text())
         && first_alpha_lower(&first.text())
         && prose_line(&last.text(), cfg)
@@ -430,6 +483,7 @@ impl<'a> Junction<'a> {
             .or_else(|| self.run_in_rule())
             .or_else(|| self.list_label_rule())
             .or_else(|| self.hyphen_rule())
+            .or_else(|| self.spaced_sentence_rule(style))
             .or_else(|| self.layout_break_rule())
             .or_else(|| self.sentence_rule())
             .unwrap_or(style.uses_indent)
@@ -472,6 +526,21 @@ impl<'a> Junction<'a> {
     /// A word hyphenated at the break: joined.
     fn hyphen_rule(&self) -> Option<bool> {
         self.hyphenated.then_some(true)
+    }
+
+    /// In a document whose paragraphs are separated by space (often set
+    /// ragged right, so that every last line looks short), an unfinished
+    /// sentence that goes on in lowercase after an unindented first line:
+    /// joined.
+    /// A last line in capitals ("OTHER EQUIPMENT" over a list) is left
+    /// to the other rules.
+    fn spaced_sentence_rule(&self, style: &DocumentStyle) -> Option<bool> {
+        (style.spaced
+            && !self.indented_first
+            && !ends_terminal(&self.last_text)
+            && first_alpha_lower(&self.first_text)
+            && self.last_text.chars().any(char::is_lowercase))
+        .then_some(true)
     }
 
     /// A short last line or an indented first line: a paragraph break.
@@ -561,4 +630,21 @@ fn has_footnote_mark(block: &TextBlock) -> bool {
             .glyphs
             .first()
             .is_some_and(|glyph| is_footnote_symbol(&glyph.text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParagraphsConfig;
+    use crate::analysis::semantics::is_ornament;
+
+    #[test]
+    fn ornaments_have_no_letters_or_digits() {
+        let cfg = ParagraphsConfig::default();
+        for ornament in ["◄○►", "* * *", "❦", "~ ~"] {
+            assert!(is_ornament(ornament, cfg.ornament_max_chars_count), "{ornament}");
+        }
+        for text in ["2", "A", "* * * * * * * * * * * * *", "", "(1)"] {
+            assert!(!is_ornament(text, cfg.ornament_max_chars_count), "{text}");
+        }
+    }
 }
