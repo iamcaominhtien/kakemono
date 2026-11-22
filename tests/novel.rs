@@ -45,8 +45,8 @@ fn build_pdf(pages: &[String]) -> Vec<u8> {
     let mut objects: Vec<String> = vec![
         String::new(),
         String::new(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>".to_string(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>".to_string(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>".to_string(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>".to_string(),
     ];
     let mut kids = Vec::new();
     for content in pages {
@@ -180,4 +180,136 @@ fn chapter_labels_in_words_are_headings_not_authors() {
         "{blocks:#?}"
     );
     assert!(!blocks.iter().any(|(kind, _)| kind == "Authors"), "{blocks:#?}");
+}
+
+/// A line of text in font `font` of size `size` at (`x`, `y`), `x` in
+/// fractions of a point.
+fn text_at(font: &str, size: u32, x: f32, y: u32, line: &str) -> String {
+    format!("BT /{font} {size} Tf {x:.3} {y} Td ({line}) Tj ET\n")
+}
+
+/// A chapter opening with a drop cap `initial` (Times-Bold of `size`, its
+/// advance `advance_em` wide) whose baseline lies `drop` points under the
+/// first line: the `beside` lines start where its advance ends, the `rest`
+/// at the margin. A last line apart (a blank line above it) follows.
+fn drop_cap_chapter(
+    heading: &str,
+    initial: &str,
+    size: u32,
+    advance_em: f32,
+    drop: u32,
+    beside: &[&str],
+    rest: &[&str],
+) -> String {
+    let mut page = centred("F2", 16, 700, heading);
+    page.push_str(&text("F2", size, 72, 640 - drop, initial));
+    let indent = 72.0 + advance_em * size as f32;
+    let mut y = 640;
+    for line in beside {
+        page.push_str(&text_at("F1", 11, indent, y, line));
+        y -= 14;
+    }
+    for line in rest {
+        page.push_str(&text("F1", 11, 72, y, line));
+        y -= 14;
+    }
+    page.push_str(&text(
+        "F1",
+        11,
+        72,
+        y - 14,
+        "Nobody came to the door again that day, and the house was quiet.",
+    ));
+    page
+}
+
+/// The kind, text and scripts (any glyph raised or lowered) of the first
+/// block after the heading of a one-chapter PDF.
+fn opening(page: String) -> (String, String, bool) {
+    let paper =
+        Paper::from_bytes(build_pdf(&[centred("F2", 24, 600, "THE NUMBERED CHAPTERS"), page])).expect("valid pdf");
+    let analysis = paper.analyze();
+    let blocks = &analysis.doc.blocks;
+    let at = blocks
+        .iter()
+        .position(|block| matches!(block.kind, BlockKind::Heading { .. }))
+        .expect("a heading");
+    let block = &blocks[at + 1];
+    let scripts = block
+        .lines
+        .iter()
+        .any(|line| line.glyphs.iter().any(|glyph| glyph.script != 0));
+    (format!("{:?}", block.kind), block.text(), scripts)
+}
+
+#[test]
+fn drop_cap_over_one_line_starts_its_paragraph() {
+    // As calibre sets it: the cap reaches a little under the first line,
+    // the second line already runs at the margin under it.
+    for (size, drop) in [(22, 3), (28, 6), (34, 9)] {
+        let page = drop_cap_chapter(
+            "1 ROGER",
+            "T",
+            size,
+            0.667,
+            drop,
+            &["he letter came on a grey morning, folded twice and sealed with plain wax, and"],
+            &["unsurprisingly it was addressed to me in a hand that I did not know at all."],
+        );
+        let (kind, text, scripts) = opening(page);
+        assert_eq!(kind, "Paragraph { in_abstract: false }", "size {size}");
+        assert_eq!(
+            text,
+            "The letter came on a grey morning, folded twice and sealed with plain wax, and \
+             unsurprisingly it was addressed to me in a hand that I did not know at all.",
+            "size {size}"
+        );
+        assert!(!scripts, "size {size}");
+    }
+}
+
+#[test]
+fn drop_cap_opening_a_line_of_dialogue_is_not_a_heading() {
+    for (size, drop) in [(22, 3), (28, 6), (34, 9)] {
+        let page = drop_cap_chapter(
+            "2 ANDOVER",
+            "\\223G",
+            size,
+            0.5 + 0.778,
+            drop,
+            &["o away?\\224 I asked him."],
+            &[],
+        );
+        let (kind, text, scripts) = opening(page);
+        assert_eq!(
+            (kind.as_str(), text.as_str()),
+            (
+                "Paragraph { in_abstract: false }",
+                "\u{201C}Go away?\u{201D} I asked him."
+            ),
+            "size {size}"
+        );
+        assert!(!scripts, "size {size}");
+    }
+}
+
+#[test]
+fn drop_cap_over_three_lines_keeps_its_paragraph_whole() {
+    let page = drop_cap_chapter(
+        "1 ROGER",
+        "T",
+        48,
+        0.667,
+        28,
+        &[
+            "he letter came on a grey morning, folded twice and sealed with plain",
+            "wax, and it was addressed to me in a hand that I did not know. I read",
+            "it at the window while the tea went cold, and then I read it again,",
+        ],
+        &["more slowly, for it spoke of a crime that had not yet been done at all, and of"],
+    );
+    let (kind, text, _) = opening(page);
+    assert_eq!(kind, "Paragraph { in_abstract: false }");
+    assert!(text.starts_with("The letter came"), "{text}");
+    assert!(text.ends_with("done at all, and of"), "{text}");
 }

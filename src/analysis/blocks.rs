@@ -278,6 +278,10 @@ pub struct BlocksConfig {
     /// A line starting more than this many sizes left or right of the
     /// paragraph's other continuation lines starts a new paragraph.
     pub para_indent_change_em: f32,
+    /// A paragraph whose first glyph is at least this many times as large
+    /// as its line opens with a drop cap: the lines set beside the cap are
+    /// indented by its width, which does not start a new paragraph.
+    pub drop_cap_min_size_ratio: f32,
     /// Two text rows belong to different blocks when their baseline gap
     /// exceeds this many expected leadings ...
     pub block_gap_leading: f32,
@@ -404,6 +408,7 @@ const DEFAULT_CONFIG: BlocksConfig = BlocksConfig {
     para_right_overshoot_pt: 3.0,
     para_label_align_em: 0.6,
     para_indent_change_em: 0.6,
+    drop_cap_min_size_ratio: 2.0,
     block_gap_leading: 1.25,
     block_gap_slack_pt: 1.5,
     block_ink_gap_em: 0.45,
@@ -2078,17 +2083,42 @@ fn is_prose(lines: &[(Line, f32)], fonts: &[FontInfo], cfg: &BlocksConfig) -> bo
 
 /// Rule: in a paragraph of two lines or more, the line starts left or right
 /// of the paragraph's continuation lines.
+/// The lines set beside a drop cap at the start of the paragraph (indented
+/// by its width) do not count, and do not start a new paragraph either.
 fn indent_changes(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
     if candidate.para.len() == 1 {
+        return false;
+    }
+    let cap_bottom = drop_cap_bottom(&candidate.para[0].0, cfg);
+    let beside = |line: &Line| cap_bottom.is_some_and(|bottom| line.bbox.y0 < bottom);
+    if beside(candidate.line) {
         return false;
     }
     let em = candidate.line.size;
     let rest_x0 = candidate.para[1..]
         .iter()
+        .filter(|line| !beside(&line.0))
         .map(|line| line.0.bbox.x0)
         .fold(f32::INFINITY, f32::min);
+    if rest_x0.is_infinite() {
+        return false;
+    }
     candidate.line.bbox.x0 > rest_x0 + cfg.para_indent_change_em * em
         || candidate.line.bbox.x0 < rest_x0 - cfg.para_indent_change_em * em
+}
+
+/// The bottom of the drop cap that opens `first`, the first line of a
+/// paragraph: its first glyph, when it is at least
+/// [`BlocksConfig::drop_cap_min_size_ratio`] times as large as the line.
+fn drop_cap_bottom(first: &Line, cfg: &BlocksConfig) -> Option<f32> {
+    // An opening quote before the letter is as large as it.
+    first
+        .glyphs
+        .iter()
+        .take(2)
+        .filter(|glyph| glyph.size >= cfg.drop_cap_min_size_ratio * first.size)
+        .map(|glyph| glyph.ink.y1)
+        .reduce(f32::max)
 }
 
 #[cfg(test)]
