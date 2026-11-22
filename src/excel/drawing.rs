@@ -1,20 +1,45 @@
 //! The text of the shapes and text boxes of a sheet's drawing part
-//! (`xl/drawings/drawingN.xml`), and its pictures: Japanese workbooks often
-//! put text, org charts and flows in shapes rather than in cells, and
-//! covers have logos and photos.
+//! (`xl/drawings/drawingN.xml`), its pictures and its charts: Japanese
+//! workbooks often put text, org charts and flows in shapes rather than in
+//! cells, covers have logos and photos, and dashboards charts.
 
+use super::grid::Marker;
+use crate::chart::Placed;
 use crate::word::docx::parse;
 use crate::word::pictures::bounded_size;
 use anyhow::Result;
 use roxmltree::Node;
 
-/// What a shape or a picture of a drawing gives.
-#[derive(Debug, Clone, PartialEq)]
+/// What a shape, a picture or a chart of a drawing gives.
+#[derive(Debug, Clone)]
 pub(crate) enum Drawn {
     /// The text of a shape.
     Text(String),
     /// A picture.
     Picture(PictureRef),
+    /// A chart.
+    Chart(ChartRef),
+    /// A picture placed in a cell (Excel 365's "Place in cell"): it is
+    /// shown after the table of its cell.
+    CellPicture(PictureRef),
+}
+
+/// A chart of a drawing (a `graphicFrame` whose graphic is a chart).
+#[derive(Debug, Clone)]
+pub(crate) struct ChartRef {
+    /// The relationship (in the drawing part) of its chart part: the
+    /// `r:id` of its `c:chart` (or `cx:chart`).
+    pub(crate) rel: String,
+    /// The cells its anchor spans, from its top left corner to its bottom
+    /// right one (a `twoCellAnchor`).
+    pub(crate) cells: Option<(Marker, Marker)>,
+    /// Its size in points, from its anchor's `ext` (a `oneCellAnchor` or
+    /// an `absoluteAnchor`).
+    pub(crate) size_pt: Option<(f32, f32)>,
+    /// The chart read and drawn, with the index of its picture in
+    /// [`Document::pictures`](crate::model::Document::pictures) when it was
+    /// drawn; `None` until then, or when its part cannot be read.
+    pub(crate) placed: Option<Box<(Placed, Option<usize>)>>,
 }
 
 /// A picture of a drawing.
@@ -42,11 +67,11 @@ const UNANCHORED: (u32, u32) = (u32::MAX, u32::MAX);
 /// English Metric Units in a point: the unit of DrawingML sizes.
 const EMU_PER_PT: f32 = 12_700.0;
 
-/// The text of each shape (`sp`) and each picture (`pic`) of a drawing,
-/// also inside a group, with the cell its anchor starts at; sorted by
-/// anchor (row, then column), those with the same anchor in document
-/// order. Connectors and charts give nothing, nor does a picture linked
-/// rather than embedded. The shapes of a group share the group's anchor.
+/// The text of each shape (`sp`), each picture (`pic`) and each chart (a
+/// `graphicFrame` of a chart) of a drawing, also inside a group, with the
+/// cell its anchor starts at; sorted by anchor (row, then column), those
+/// with the same anchor in document order. Connectors give nothing, nor
+/// do a picture linked rather than embedded and other graphics. The shapes of a group share the group's anchor.
 /// An `mc:AlternateContent` is read through its `Choice` only (its
 /// `Fallback` repeats it). A shape's text is its paragraphs (`a:p`) joined
 /// by `\n`; its runs are joined, a `a:br` is a `\n`; a shape with only
@@ -70,11 +95,18 @@ fn anchors(node: Node<'_, '_>, shapes: &mut Vec<Shape>) {
                 let anchor = from(child).unwrap_or(UNANCHORED);
                 let start = shapes.len();
                 collect(child, anchor, shapes);
-                // A picture without a size of its own has the anchor's.
+                // A picture without a size of its own has the anchor's;
+                // a chart always has.
                 let size = named(child, "ext").next().and_then(extent);
+                let cells = markers(child);
                 for (_, item) in &mut shapes[start..] {
-                    if let Drawn::Picture(picture) = item {
-                        picture.size_pt = picture.size_pt.or(size);
+                    match item {
+                        Drawn::Picture(picture) => picture.size_pt = picture.size_pt.or(size),
+                        Drawn::Chart(chart) => {
+                            chart.size_pt = size;
+                            chart.cells = cells;
+                        }
+                        Drawn::Text(_) | Drawn::CellPicture(_) => {}
                     }
                 }
             }
@@ -97,6 +129,11 @@ fn collect(node: Node<'_, '_>, anchor: (u32, u32), shapes: &mut Vec<Shape>) {
             "pic" => {
                 if let Some(picture) = picture(child) {
                     shapes.push((anchor, Drawn::Picture(picture)));
+                }
+            }
+            "graphicFrame" => {
+                if let Some(chart) = chart(child) {
+                    shapes.push((anchor, Drawn::Chart(chart)));
                 }
             }
             "grpSp" => collect(child, anchor, shapes),
@@ -130,6 +167,48 @@ fn from(anchor: Node<'_, '_>) -> Option<(u32, u32)> {
     let marker = named(anchor, "from").next()?;
     let number = |name: &str| named(marker, name).next()?.text()?.trim().parse::<u32>().ok();
     Some((number("row")?, number("col")?))
+}
+
+/// The two corners of a `twoCellAnchor`: its `from` and `to` markers;
+/// `None` for another anchor, or one with a damaged marker.
+fn markers(anchor: Node<'_, '_>) -> Option<(Marker, Marker)> {
+    let marker = |name: &str| -> Option<Marker> {
+        let marker = named(anchor, name).next()?;
+        let number = |name: &str| named(marker, name).next()?.text()?.trim().parse::<i64>().ok();
+        let index = |name: &str| u32::try_from(number(name)?).ok();
+        let offset = |name: &str| {
+            let points = number(name).unwrap_or(0) as f32 / EMU_PER_PT;
+            if points.is_finite() { points } else { 0.0 }
+        };
+        Some(Marker {
+            row: index("row")?,
+            row_off_pt: offset("rowOff"),
+            col: index("col")?,
+            col_off_pt: offset("colOff"),
+        })
+    };
+    (anchor.tag_name().name() == "twoCellAnchor")
+        .then(|| Some((marker("from")?, marker("to")?)))
+        .flatten()
+}
+
+/// The chart of a `graphicFrame`: the relationship of its chart part;
+/// `None` for another graphic (a diagram, an OLE object).
+fn chart(frame: Node<'_, '_>) -> Option<ChartRef> {
+    let graphic = named(frame, "graphic").next()?;
+    let data = named(graphic, "graphicData").next()?;
+    let chart = named(data, "chart").next()?;
+    let rel = chart
+        .attributes()
+        .find(|attr| attr.name() == "id")
+        .map(|attr| attr.value().trim().to_string())
+        .filter(|rel| !rel.is_empty())?;
+    Some(ChartRef {
+        rel,
+        cells: None,
+        size_pt: None,
+        placed: None,
+    })
 }
 
 /// A picture (`pic`) embedded in the package; `None` for one linked to a
@@ -218,7 +297,7 @@ mod tests {
             .into_iter()
             .filter_map(|(anchor, item)| match item {
                 Drawn::Text(text) => Some((anchor, text)),
-                Drawn::Picture(_) => None,
+                Drawn::Picture(_) | Drawn::Chart(_) | Drawn::CellPicture(_) => None,
             })
             .collect())
     }
@@ -316,6 +395,7 @@ mod tests {
             .map(|(anchor, item)| match item {
                 Drawn::Picture(picture) => (anchor, picture.rel, picture.alt, picture.size_pt),
                 Drawn::Text(text) => panic!("text {text}"),
+                Drawn::Chart(_) | Drawn::CellPicture(_) => panic!("not a picture of the drawing"),
             })
             .collect();
         assert_eq!(
@@ -340,7 +420,7 @@ mod tests {
             );
             match &items(&format!("{head}{}</xdr:wsDr>", two_cell(0, 0, &pic))).unwrap()[0].1 {
                 Drawn::Picture(picture) => picture.size_pt,
-                Drawn::Text(_) => None,
+                Drawn::Text(_) | Drawn::Chart(_) | Drawn::CellPicture(_) => None,
             }
         };
         assert_eq!(size("inf", "12700"), None);
@@ -349,6 +429,38 @@ mod tests {
             size("1e30", "5e29"),
             Some((MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 2.0))
         );
+    }
+
+    #[test]
+    fn charts_are_read_with_their_anchor_also_in_groups() {
+        let head = HEAD.replace(
+            '>',
+            r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">"#,
+        );
+        let frame = |rel: &str| {
+            format!(
+                r#"<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/></xdr:nvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="{rel}"/></a:graphicData></a:graphic></xdr:graphicFrame>"#
+            )
+        };
+        let two_cell = r#"<xdr:twoCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:colOff>12700</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:colOff>25400</xdr:colOff><xdr:row>10</xdr:row><xdr:rowOff>127000</xdr:rowOff></xdr:to>"#;
+        let xml = format!(
+            r#"{head}{two_cell}<xdr:grpSp>{}{}</xdr:grpSp><xdr:clientData/></xdr:twoCellAnchor><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>20</xdr:row></xdr:from><xdr:ext cx="2540000" cy="1270000"/>{}</xdr:oneCellAnchor></xdr:wsDr>"#,
+            frame("rId1"),
+            r#"<xdr:pic><xdr:blipFill><a:blip r:embed="rId3"/></xdr:blipFill></xdr:pic>"#,
+            frame("rId2"),
+        );
+        let read = items(&xml).unwrap();
+        assert_eq!(read.len(), 3);
+        let Drawn::Chart(first) = &read[0].1 else { panic!("a chart") };
+        assert_eq!(read[0].0, (2, 1));
+        assert_eq!(first.rel, "rId1");
+        let (from, to) = first.cells.unwrap();
+        assert_eq!((from.row, from.col, from.col_off_pt), (2, 1, 1.0));
+        assert_eq!((to.row, to.col, to.col_off_pt, to.row_off_pt), (10, 4, 2.0, 10.0));
+        // The picture of the group is found too.
+        assert!(matches!(&read[1].1, Drawn::Picture(picture) if picture.rel == "rId3"));
+        let Drawn::Chart(second) = &read[2].1 else { panic!("a chart") };
+        assert_eq!((second.rel.as_str(), second.size_pt, second.cells), ("rId2", Some((200.0, 100.0)), None));
     }
 
     #[test]

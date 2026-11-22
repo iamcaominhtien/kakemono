@@ -3,7 +3,8 @@
 //! and Windows metafiles (EMF, WMF, through SVG) kept as vector: SVG
 //! written again by usvg (`backend::sanitize_svg`).
 
-use crate::backend::svg::ReadySvg;
+use crate::backend::render::MAX_SVG_BYTES;
+use crate::backend::svg::{ReadySvg, SVG_PNG_SCALE};
 use crate::backend::within_pixel_cap;
 use crate::model::{Picture, PictureFormat};
 use crate::word::fmt::model::FImage;
@@ -39,6 +40,8 @@ const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 /// the page layout read a Word file each, and an SVG can take seconds to
 /// read.
 const MAX_RECENT_VECTOR_BYTES: usize = 64 * 1024 * 1024;
+/// Pixels per point of an SVG's size, as usvg reads `pt` lengths.
+const PX_PER_SVG_PT: f32 = 4.0 / 3.0;
 /// How far into a file the start of an SVG document is looked for.
 const SVG_SNIFF_BYTES: usize = 512;
 
@@ -57,6 +60,34 @@ pub(crate) fn store(pictures: &mut Vec<Picture>, data: Vec<u8>, budget: usize) -
     }
     pictures.push(picture);
     Some(pictures.len() - 1)
+}
+
+/// A chart drawn by our own renderer (`chart::svg`) added to `pictures`
+/// as an SVG picture, whose index it gets: it is not written again by usvg
+/// as a foreign SVG is, since it is made of numbers and escaped text, but
+/// it is held to the same byte cap; `None` when it is larger, or when the
+/// pictures would then hold more than `budget` bytes.
+pub(crate) fn store_chart(pictures: &mut Vec<Picture>, svg: String, size_pt: (f32, f32), budget: usize) -> Option<usize> {
+    let used: usize = pictures.iter().map(|picture| picture.data.len()).sum();
+    if svg.len() > MAX_SVG_BYTES || used + svg.len() > budget {
+        return None;
+    }
+    pictures.push(chart_picture(svg, size_pt));
+    Some(pictures.len() - 1)
+}
+
+/// The chart SVG `svg`, drawn `size_pt` large, as a picture: the size of
+/// its PNG at 2 pixels per point is known without reading it (usvg counts
+/// a point as 4/3 of a pixel), within the pixel cap.
+fn chart_picture(svg: String, (width, height): (f32, f32)) -> Picture {
+    let side = |points: f32| (points * PX_PER_SVG_PT * SVG_PNG_SCALE).ceil().max(1.0) as u32;
+    let (png_width, png_height) = (side(width), side(height));
+    let fits = u64::from(png_width) * u64::from(png_height) <= crate::backend::MAX_RASTER_PIXELS;
+    Picture {
+        data: svg.into_bytes(),
+        format: PictureFormat::Svg,
+        png_size: fits.then_some((png_width, png_height)),
+    }
 }
 
 /// [`store`] for the page layout: the picture `data` as [`for_layout`]

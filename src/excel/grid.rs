@@ -31,7 +31,100 @@ pub(crate) struct Grid {
     /// The columns with a value left out because they are past the limit
     /// of columns (`ExcelConfig::max_cols`), in the rows read.
     pub(crate) truncated_cols: u32,
+    /// The widths of the columns and the heights of the rows, where the
+    /// drawings of the sheet are placed.
+    pub(crate) sizes: Sizes,
+    /// The cells that show a picture of their own (Excel 365's "Place in
+    /// cell"): their place and their value metadata (`vm`, from 1).
+    pub(crate) cell_pictures: Vec<((u32, u32), u32)>,
 }
+
+/// The widths of the columns and the heights of the rows of a sheet, as
+/// far as the file gives them, in points.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Sizes {
+    /// The width of the columns the file sizes (`col`): first and last
+    /// column, width in points.
+    pub(crate) cols: Vec<(u32, u32, f32)>,
+    /// The height of the rows the file sizes (`row ht`), in points.
+    pub(crate) rows: BTreeMap<u32, f32>,
+    /// The width of the other columns (`sheetFormatPr`); `None` for
+    /// Excel's default.
+    pub(crate) default_col_pt: Option<f32>,
+    /// The height of the other rows (`sheetFormatPr`); `None` for Excel's
+    /// default.
+    pub(crate) default_row_pt: Option<f32>,
+}
+
+/// A corner of a drawing on the sheet: a cell (row, column, both
+/// 0-based) and the offset from its top left corner, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Marker {
+    /// The row.
+    pub(crate) row: u32,
+    /// The offset down from the row's top.
+    pub(crate) row_off_pt: f32,
+    /// The column.
+    pub(crate) col: u32,
+    /// The offset right from the column's left edge.
+    pub(crate) col_off_pt: f32,
+}
+
+/// Excel's default column width: 8.43 characters of Calibri 11, 64
+/// pixels.
+const DEFAULT_COL_PT: f32 = 48.0;
+/// Excel's default row height, in points.
+const DEFAULT_ROW_PT: f32 = 15.0;
+
+impl Sizes {
+    /// The width and height in points of the box from `from` to `to`;
+    /// hidden rows and columns (`hidden_rows`, `hidden_cols`) take no room.
+    /// A box whose `to` comes before its `from` has no size on that side.
+    pub(crate) fn span_pt(
+        &self,
+        from: Marker,
+        to: Marker,
+        hidden_rows: &HashSet<u32>,
+        hidden_cols: &HashSet<u32>,
+    ) -> (f32, f32) {
+        let col_width = |col: u32| {
+            if hidden_cols.contains(&col) {
+                return 0.0;
+            }
+            self.cols
+                .iter()
+                .rev()
+                .find(|(first, last, _)| (*first..=*last).contains(&col))
+                .map_or(self.default_col_pt.unwrap_or(DEFAULT_COL_PT), |(_, _, width)| *width)
+        };
+        let default_row = self.default_row_pt.unwrap_or(DEFAULT_ROW_PT);
+        // The rows: the default height for all, corrected by the rows
+        // the file sizes or hides (a sheet may have a million rows).
+        let rows_between = |first: u32, last: u32| -> f32 {
+            if last <= first {
+                return 0.0;
+            }
+            let mut height = (last - first) as f32 * default_row;
+            for (row, row_height) in self.rows.range(first..last) {
+                height += if hidden_rows.contains(row) { 0.0 } else { *row_height } - default_row;
+            }
+            height -= hidden_rows
+                .iter()
+                .filter(|row| (first..last).contains(*row) && !self.rows.contains_key(row))
+                .count() as f32
+                * default_row;
+            height
+        };
+        // The columns are at most 16 384.
+        let cols_between = |first: u32, last: u32| -> f32 { (first..last.min(first.saturating_add(MAX_SHEET_COLS))).map(col_width).sum() };
+        let width = cols_between(from.col, to.col) - from.col_off_pt + to.col_off_pt;
+        let height = rows_between(from.row, to.row) - from.row_off_pt + to.row_off_pt;
+        (width.max(0.0), height.max(0.0))
+    }
+}
+
+/// The most columns of a sheet (XFD).
+const MAX_SHEET_COLS: u32 = 16_384;
 
 /// One cell: its text as Excel shows it, and what kind of value it holds.
 #[derive(Debug, Clone, PartialEq)]

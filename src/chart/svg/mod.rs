@@ -142,10 +142,7 @@ pub(super) const SMALL: TextStyle = TextStyle {
 /// do not share a plot (a pie with bars).
 pub(crate) fn svg(chart: &Chart, size_pt: (f32, f32)) -> Option<String> {
     let plan = plan(chart)?;
-    let (width, height) = (
-        clamp(size_pt.0, MIN_SIZE_PT.0, MAX_SIZE_PT.0, DEFAULT_SIZE_PT.0),
-        clamp(size_pt.1, MIN_SIZE_PT.1, MAX_SIZE_PT.1, DEFAULT_SIZE_PT.1),
-    );
+    let (width, height) = drawn_size(size_pt);
     let mut out = Svg::new(width, height);
     let mut area = Area {
         x: PADDING_PT,
@@ -183,6 +180,16 @@ pub(crate) fn svg(chart: &Chart, size_pt: (f32, f32)) -> Option<String> {
         Plan::Radar => round::radar(&mut out, chart, area),
     }
     Some(out.finish())
+}
+
+/// The size a chart asked to be drawn `size_pt` large is drawn at: within
+/// [`MIN_SIZE_PT`]..[`MAX_SIZE_PT`], Excel's default chart size for a side
+/// that is not a positive number.
+pub(crate) fn drawn_size(size_pt: (f32, f32)) -> (f32, f32) {
+    (
+        clamp(size_pt.0, MIN_SIZE_PT.0, MAX_SIZE_PT.0, DEFAULT_SIZE_PT.0),
+        clamp(size_pt.1, MIN_SIZE_PT.1, MAX_SIZE_PT.1, DEFAULT_SIZE_PT.1),
+    )
 }
 
 /// How `chart` is drawn; `None` when it is not.

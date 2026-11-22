@@ -25,6 +25,16 @@ use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
+/// The width of a digit of Excel's default font (Calibri 11), in pixels:
+/// the unit of column widths.
+const DIGIT_PX: f32 = 7.0;
+/// The padding of a column, in pixels, which `baseColWidth` leaves out.
+const COL_PADDING_PX: f32 = 5.0;
+/// Points in a pixel at 96 pixels per inch.
+const PT_PER_PX: f32 = 0.75;
+/// The largest column width (255 characters) or row height (409 points)
+/// Excel allows, with some room.
+const MAX_SIZE: f32 = 1_000.0;
 
 /// What a sheet's cells refer to outside the sheet part.
 pub(crate) struct SheetContext<'a> {
@@ -317,6 +327,10 @@ impl SheetReader<'_, '_> {
             (Place::Root, "mergeCells") => Place::MergeCells,
             (Place::Root, "sheetViews") => Place::SheetViews,
             (Place::Root, "hyperlinks") => Place::Hyperlinks,
+            (Place::Root, "sheetFormatPr") => {
+                self.sheet_format(tag);
+                Place::Other
+            }
             (Place::Root, "autoFilter") => {
                 self.grid.declared.auto_filter = tag.attr("ref").and_then(|area| range(&area));
                 Place::Other
@@ -340,6 +354,7 @@ impl SheetReader<'_, '_> {
             }
             (Place::Cols, "col") => {
                 self.hide_cols(tag);
+                self.size_cols(tag);
                 Place::Other
             }
             (Place::MergeCells, "mergeCell") => {
@@ -386,6 +401,39 @@ impl SheetReader<'_, '_> {
         if !self.row_past_limit && is_on(tag.attr("hidden").as_deref()) {
             self.grid.hidden_rows.insert(index);
         }
+        if !self.row_past_limit
+            && is_on(tag.attr("customHeight").as_deref())
+            && let Some(height) = tag.attr("ht").and_then(|value| points(&value))
+        {
+            self.grid.sizes.rows.insert(index, height);
+        }
+    }
+
+    /// Reads the default column width and row height of `sheetFormatPr`.
+    fn sheet_format(&mut self, tag: &Tag<'_>) {
+        let sizes = &mut self.grid.sizes;
+        sizes.default_row_pt = tag.attr("defaultRowHeight").and_then(|value| points(&value));
+        sizes.default_col_pt = tag
+            .attr("defaultColWidth")
+            .and_then(|value| points(&value))
+            .map(col_width_pt)
+            .or_else(|| {
+                let base = tag.attr("baseColWidth").and_then(|value| points(&value))?;
+                Some((base * DIGIT_PX + COL_PADDING_PX) * PT_PER_PX)
+            });
+    }
+
+    /// Records the width of the columns of `col` (one-based `min` and
+    /// `max`), when it gives one.
+    fn size_cols(&mut self, tag: &Tag<'_>) {
+        let bound = |name| tag.attr(name).and_then(|value| value.parse::<u32>().ok());
+        let width = tag.attr("width").and_then(|value| points(&value)).map(col_width_pt);
+        if let (Some(min), Some(max), Some(width)) = (bound("min"), bound("max"), width)
+            && min >= 1
+            && max >= min
+        {
+            self.grid.sizes.cols.push((min - 1, max - 1, width));
+        }
     }
 
     /// Starts the cell `tag`.
@@ -396,6 +444,12 @@ impl SheetReader<'_, '_> {
             .unwrap_or((self.row, self.next_col));
         self.next_col = at.1.saturating_add(1);
         let in_row = !self.row_past_limit;
+        if in_row
+            && self.limits.contain(at)
+            && let Some(vm) = tag.attr("vm").and_then(|value| value.parse::<u32>().ok())
+        {
+            self.grid.cell_pictures.push((at, vm));
+        }
         self.cell = Some(RawCell {
             at: (in_row && self.limits.contain(at)).then_some(at),
             past_col: (in_row && at.1 >= self.limits.cols).then_some(at.1),
@@ -555,6 +609,22 @@ fn plain(text: String) -> Vec<Span> {
     } else {
         vec![Span::plain(text)]
     }
+}
+
+/// A size of the file (a width in characters, a height in points), when
+/// it is a number from 0 to [`MAX_SIZE`].
+fn points(value: &str) -> Option<f32> {
+    value
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|size| size.is_finite() && (0.0..=MAX_SIZE).contains(size))
+}
+
+/// The width in points of a column `chars` wide (`col width`, in widths
+/// of a digit of the default font, its padding included).
+fn col_width_pt(chars: f32) -> f32 {
+    (chars * DIGIT_PX).round() * PT_PER_PX
 }
 
 /// Whether a boolean attribute is set.

@@ -13,8 +13,12 @@
 //! - `theme`: the colour scheme of a theme part, for the series without a
 //!   colour of their own.
 //! - `table`: a chart's data as a [`Table`](crate::model::Table).
+//! - `svg`: a chart drawn as SVG by our own renderer.
+//! - `place`: a chart made ready for a document: its figure, its caption
+//!   and its data table.
 
 mod chartex;
+mod place;
 mod read;
 mod svg;
 mod table;
@@ -22,8 +26,12 @@ mod theme;
 
 use crate::excel::numfmt::NumFmt;
 
+pub(crate) use place::{Charts, Placed, blocks};
 pub(crate) use read::read;
-pub(crate) use svg::svg;
+/// Chart parts written for the tests of the readers that place charts.
+#[cfg(test)]
+pub(crate) use read::tests as test_parts;
+pub(crate) use svg::{drawn_size, svg};
 pub(crate) use table::data_table;
 pub(crate) use theme::Theme;
 
@@ -54,6 +62,10 @@ pub(crate) struct ChartConfig {
     /// The most characters kept of one text (title, series name, category
     /// label).
     pub(crate) max_label_chars: usize,
+    /// The most charts read and drawn of one document; the others give a
+    /// note only. Each chart drawn keeps an SVG of up to a few hundred
+    /// kilobytes and a data table; the corpus's most is 12 in a workbook.
+    pub(crate) max_charts: usize,
 }
 
 impl Default for ChartConfig {
@@ -64,6 +76,7 @@ impl Default for ChartConfig {
             max_points_per_series: 32_000,
             max_points_per_chart: 1_000_000,
             max_label_chars: 1_000,
+            max_charts: 1_000,
         }
     }
 }

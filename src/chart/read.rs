@@ -686,7 +686,7 @@ fn flag(node: Node<'_, '_>, name: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chart::{AxisKind, AxisPosition, Categories, ChartKind, Grouping, LegendPosition};
     use crate::excel::numfmt::NumFmt;

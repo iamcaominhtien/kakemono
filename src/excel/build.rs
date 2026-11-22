@@ -7,6 +7,7 @@ use super::ExcelConfig;
 use super::drawing::{Drawn, PictureRef, Shape};
 use super::grid::{CellKind, Grid, Merge, MergeIndex};
 use super::regions::{self, Visible, is_blank};
+use crate::chart;
 use crate::common::geom::Rect;
 use crate::model::{Block, BlockKind, FloatKind, ImageSpec, Span, Table, TableCell};
 use crate::word::pictures::FALLBACK_PICTURE_PT;
@@ -40,26 +41,41 @@ pub(crate) struct Parts {
 }
 
 /// The blocks of the sheet `name`: a level-1 heading, then its regions in
-/// reading order, then the text of its shapes and its pictures `shapes`
-/// (sorted by anchor), one paragraph per line of text, one figure per
-/// picture. A sheet with neither has none. The blocks are numbered from 0;
+/// reading order (each followed by the pictures placed in its cells, in
+/// cell order), then the drawn objects `shapes` (sorted by anchor): one
+/// paragraph per line of text, one figure per picture, a figure and a data
+/// table per chart. A sheet with none of them has no blocks. The blocks are numbered from 0;
 /// the caller numbers them in the whole document.
 pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &ExcelConfig) -> Vec<Block> {
     let mut blocks = Vec::new();
     // The merges, filed once: each region looks only at those near it.
     let merges = MergeIndex::new(&grid.merges);
+    // The pictures placed in cells, shown after the table of their cell.
+    let mut in_cells: Vec<(&(u32, u32), &PictureRef)> = shapes
+        .iter()
+        .filter_map(|(at, item)| match item {
+            Drawn::CellPicture(picture) => Some((at, picture)),
+            _ => None,
+        })
+        .collect();
     for region in regions::split(grid, config) {
         let cells = RegionCells::new(grid, &merges, &region);
         if cells.cells.is_empty() {
             continue;
         }
         let parts = parts_of(grid, &region, &cells, config);
+        let inside = |(row, col): &(u32, u32)| {
+            (region.top..=region.bottom).contains(row) && (region.left..=region.right).contains(col)
+        };
+        let (mine, others): (Vec<_>, Vec<_>) = in_cells.into_iter().partition(|(at, _)| inside(at));
+        in_cells = others;
         if parts.paragraphs {
             blocks.extend(parts.body.iter().map(|&row| paragraph(cells.row_text(row))));
+            blocks.extend(mine.into_iter().filter_map(|(_, picture)| figure(picture)));
             continue;
         }
         blocks.extend(parts.lead.iter().map(|&row| paragraph(cells.row_text(row))));
-        let mut figure = Block::new(
+        let mut float = Block::new(
             0,
             BlockKind::Figure {
                 kind: FloatKind::Table,
@@ -67,19 +83,40 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
                 label: None,
             },
         );
-        figure.caption_above = true;
+        float.caption_above = true;
         for &row in &parts.caption {
-            if !figure.spans.is_empty() {
-                figure.spans.push(Span::plain(CAPTION_SEPARATOR));
+            if !float.spans.is_empty() {
+                float.spans.push(Span::plain(CAPTION_SEPARATOR));
             }
-            figure
+            float
                 .spans
                 .extend(cells.row(row).flat_map(|(_, cell)| cell.spans.iter().cloned()));
         }
-        figure.table = Some(table(&cells, &parts, config));
-        blocks.push(figure);
+        float.table = Some(table(&cells, &parts, config));
+        blocks.push(float);
         blocks.extend(parts.notes.iter().map(|&row| paragraph(cells.row_text(row))));
+        blocks.extend(mine.into_iter().filter_map(|(_, picture)| figure(picture)));
     }
+    // Those of cells in no table (a region of only pictures).
+    blocks.extend(in_cells.into_iter().filter_map(|(_, picture)| figure(picture)));
+    blocks.extend(truncation_notes(grid));
+    blocks.extend(drawn_blocks(shapes));
+    if blocks.is_empty() {
+        return blocks;
+    }
+    let mut heading = Block::new(0, BlockKind::Heading { level: 1 });
+    heading.spans = vec![Span::plain(name)];
+    blocks.insert(0, heading);
+    for (id, block) in blocks.iter_mut().enumerate() {
+        block.id = id;
+    }
+    blocks
+}
+
+/// The paragraphs saying how many rows and columns of `grid` are left out
+/// past the limits.
+fn truncation_notes(grid: &Grid) -> Vec<Block> {
+    let mut notes = Vec::new();
     for (count, one, many) in [
         (grid.truncated_rows, "row is", "rows are"),
         (grid.truncated_cols, "column is", "columns are"),
@@ -90,13 +127,25 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
             } else {
                 format!("{count} more {many} not shown.")
             };
-            blocks.push(paragraph(vec![Span::plain(text)]));
+            notes.push(paragraph(vec![Span::plain(text)]));
         }
     }
+    notes
+}
+
+/// The blocks of the drawn objects `shapes`, sorted by anchor, after the
+/// cells: one paragraph per line of text, a figure per picture, a figure
+/// and a data table per chart. The pictures placed in cells are not
+/// among them: they follow the table of their cell.
+fn drawn_blocks(shapes: &[Shape]) -> Vec<Block> {
+    let mut blocks = Vec::new();
     // The text of the shapes, in anchor order, after the cells: one
     // paragraph per line (a paragraph or a line break of the shape), since
     // a line feed inside a span is not a break in every output.
-    // A picture read is a figure, with its alternative text.
+    // A picture read is a figure, with its alternative text; a chart is
+    // its figure and its data table, named "Chart N" of the sheet when it
+    // has no title.
+    let mut charts = 0;
     for (_, item) in shapes {
         match item {
             Drawn::Text(text) => blocks.extend(
@@ -105,16 +154,15 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
                     .map(|line| paragraph(vec![Span::plain(line)])),
             ),
             Drawn::Picture(picture) => blocks.extend(figure(picture)),
+            Drawn::CellPicture(_) => {}
+            Drawn::Chart(chart) => {
+                if let Some(placed) = &chart.placed {
+                    charts += 1;
+                    let (placed, index) = placed.as_ref();
+                    blocks.extend(chart::blocks(placed.clone(), *index, &format!("Chart {charts}")));
+                }
+            }
         }
-    }
-    if blocks.is_empty() {
-        return blocks;
-    }
-    let mut heading = Block::new(0, BlockKind::Heading { level: 1 });
-    heading.spans = vec![Span::plain(name)];
-    blocks.insert(0, heading);
-    for (id, block) in blocks.iter_mut().enumerate() {
-        block.id = id;
     }
     blocks
 }

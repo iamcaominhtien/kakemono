@@ -11,6 +11,7 @@ mod grid;
 pub(crate) mod numfmt;
 mod pull;
 mod regions;
+mod richdata;
 mod sheet;
 mod strings;
 mod styles;
@@ -19,7 +20,8 @@ mod workbook;
 use crate::analysis::semantics::text::{slug, unique_anchor};
 use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
-use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store};
+use crate::chart::Charts;
+use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store, store_chart};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::{Drawn, Shape};
@@ -40,6 +42,8 @@ const HYPERLINK_REL: &str = "hyperlink";
 const TABLE_REL: &str = "table";
 /// Relationship type of the drawing part of a sheet.
 const DRAWING_REL: &str = "drawing";
+/// Relationship type of the theme part of the workbook.
+const THEME_REL: &str = "theme";
 /// Header rows of an Excel Table without `headerRowCount`.
 const DEFAULT_HEADER_ROW_COUNT: u32 = 1;
 
@@ -160,6 +164,7 @@ fn read_sheets<'w>(
         .flatten()
         .and_then(|xml| styles::read(&xml).ok())
         .unwrap_or_default();
+    let in_cells = richdata::cell_pictures(zip, &workbook.part);
     let mut sheets = Vec::new();
     for (index, sheet) in workbook.sheets.iter().enumerate() {
         if !sheet.visible {
@@ -173,7 +178,6 @@ fn read_sheets<'w>(
         let mut shapes = Vec::new();
         let grid = match xml {
             Some(xml) => {
-                shapes = sheet_shapes(zip, &sheet.part, pictures);
                 let (links, tables) = sheet_rels(zip, &sheet.part);
                 let ctx = SheetContext {
                     strings: &strings,
@@ -184,7 +188,10 @@ fn read_sheets<'w>(
                     print_title_rows: workbook.print_titles.get(&index).copied(),
                     config,
                 };
-                sheet::read(&xml, &ctx).unwrap_or_default()
+                let mut grid = sheet::read(&xml, &ctx).unwrap_or_default();
+                shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
+                shapes.extend(cell_pictures(zip, &mut grid, &in_cells, pictures));
+                grid
             }
             None => Grid::default(),
         };
@@ -211,11 +218,13 @@ fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec
 }
 
 /// The text of the shapes and text boxes in the drawings of the sheet part
-/// `part`, and their pictures, by position. A missing or damaged drawing
-/// part is left out, and so is a picture whose file is missing, damaged or
-/// in a format that cannot be shown. The files of the pictures are added
-/// to `pictures` (once each), which the pictures given refer to.
-fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, pictures: &mut Pictures) -> Vec<Shape> {
+/// `part`, their pictures and their charts, by position. A missing or
+/// damaged drawing part is left out, and so is a picture whose file is
+/// missing, damaged or in a format that cannot be shown, and a chart whose
+/// part is. The files of the pictures, and the drawings of the charts, are
+/// added to `pictures` (once each), which the pictures given refer to; a
+/// chart is drawn at the size its anchor takes on the sheet `grid`.
+fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pictures) -> Vec<Shape> {
     let mut shapes: Vec<Shape> = Vec::new();
     for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
         if kind == DRAWING_REL && !rel.external {
@@ -234,6 +243,20 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, pictures: &mut Pictures) -> Ve
                     picture.index = Some(index);
                     Some((anchor, Drawn::Picture(picture)))
                 }
+                Drawn::Chart(mut chart) => {
+                    let size = match chart.cells {
+                        Some((from, to)) => grid.sizes.span_pt(from, to, &grid.hidden_rows, &grid.hidden_cols),
+                        None => chart.size_pt.unwrap_or_default(),
+                    };
+                    let xml = zip.read(files.get(&chart.rel)?).ok()??;
+                    let mut placed = pictures.charts(zip).place(&xml, size)?;
+                    let index = placed
+                        .svg
+                        .take()
+                        .and_then(|svg| store_chart(&mut pictures.files, svg, placed.size_pt, MAX_PICTURE_BYTES));
+                    chart.placed = Some(Box::new((placed, index)));
+                    Some((anchor, Drawn::Chart(chart)))
+                }
                 text => Some((anchor, text)),
             }));
         }
@@ -242,17 +265,60 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, pictures: &mut Pictures) -> Ve
     shapes
 }
 
+/// The pictures placed in the cells of `grid`, by the cells' value
+/// metadata `in_cells`, in cell order, each anchored at its cell: a cell
+/// whose picture is read loses its value (`#VALUE!` for older readers).
+/// A picture whose file cannot be shown is left out, and its cell kept.
+fn cell_pictures(
+    zip: &ZipArchive<'_>,
+    grid: &mut Grid,
+    in_cells: &HashMap<u32, richdata::CellPicture>,
+    pictures: &mut Pictures,
+) -> Vec<Shape> {
+    let mut placed: Vec<((u32, u32), u32)> = std::mem::take(&mut grid.cell_pictures);
+    placed.sort_unstable();
+    let mut shapes = Vec::new();
+    for (at, vm) in placed {
+        let Some(found) = in_cells.get(&vm) else { continue };
+        let Some(index) = pictures.read(zip, &found.part) else {
+            continue;
+        };
+        grid.cells.remove(&at);
+        let picture = drawing::PictureRef {
+            rel: String::new(),
+            alt: found.alt.clone(),
+            size_pt: pictures.pixel_size_pt(index),
+            index: Some(index),
+        };
+        shapes.push((at, Drawn::CellPicture(picture)));
+    }
+    shapes
+}
+
 /// The picture files of a workbook, each read and made ready for every
-/// output (as a Word document's are) once.
+/// output (as a Word document's are) once, and the drawings of its charts.
 #[derive(Default)]
 struct Pictures {
-    /// The pictures read, which [`Drawn::Picture`] refers to by index.
+    /// The pictures read, which [`Drawn::Picture`] and [`Drawn::Chart`]
+    /// refer to by index.
     files: Vec<Picture>,
     /// The index of each part read, `None` when it cannot be shown.
     parts: HashMap<String, Option<usize>>,
+    /// The charts read so far, with the workbook's theme; made at the
+    /// first chart.
+    charts: Option<Charts>,
 }
 
 impl Pictures {
+    /// The charts of the workbook `zip`, coloured by its theme.
+    fn charts(&mut self, zip: &ZipArchive<'_>) -> &mut Charts {
+        self.charts.get_or_insert_with(|| {
+            let theme = workbook::workbook_part(zip)
+                .and_then(|part| zip.read(&related_part(zip, &part, THEME_REL)).ok().flatten());
+            Charts::new(theme.as_deref())
+        })
+    }
+
     /// The index of the picture of the part `part`, read once; `None` when
     /// it is missing, damaged, in a format that cannot be shown, too large,
     /// or past the workbook's budget of picture bytes.
@@ -616,6 +682,104 @@ mod tests {
         assert_eq!((image.rect.width(), image.rect.height()), (144.0, 72.0));
         assert_eq!(figure.rows[0][0].text, "Logo");
         assert_eq!(figure.id, 3);
+    }
+
+    /// A chart part: columns of two points, titled `title`.
+    fn chart_part(title: &str) -> String {
+        let series = crate::chart::test_parts::ser(0, "S", &["a", "b"], &["1", "2"], "");
+        crate::chart::test_parts::space(
+            &format!(r#"<c:title><c:tx><c:rich><a:p><a:r><a:t>{title}</a:t></a:r></a:p></c:rich></c:tx></c:title>"#),
+            &format!(
+                "<c:barChart><c:barDir val=\"col\"/>{series}{}</c:barChart>{}",
+                crate::chart::test_parts::AXES,
+                crate::chart::test_parts::AXIS_PARTS
+            ),
+        )
+    }
+
+    #[test]
+    fn a_chart_is_a_figure_then_its_data_at_its_anchor_s_size() {
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="2" width="20" customWidth="1"/></cols><sheetData><row r="1"><c r="A1"><v>7</v></c></row><row r="11" ht="40" customHeight="1"/></sheetData></worksheet>"#;
+        let mut zip = ZipWriter::default();
+        for (name, contents) in [
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS),
+            ("xl/worksheets/sheet1.xml", sheet),
+            ("xl/worksheets/_rels/sheet1.xml.rels", SHEET_DRAWING_RELS),
+            ("xl/drawings/drawing1.xml", PICTURE_DRAWING),
+            ("xl/drawings/_rels/drawing1.xml.rels", PICTURE_DRAWING_RELS),
+            ("xl/charts/chart1.xml", &chart_part("Sales")),
+        ] {
+            zip.add(name, contents.as_bytes(), Compression::Deflated);
+        }
+        let doc = super::read(&zip.finish(), &ExcelConfig::default(), None).unwrap();
+        let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
+        assert_eq!(texts, ["Data", "7", "Emergency", "Sales", "Sales"]);
+        let figure = &doc.blocks[3];
+        let BlockKind::Figure {
+            kind: FloatKind::Figure,
+            image: Some(image),
+            ..
+        } = &figure.kind
+        else {
+            panic!("not a chart: {:?}", figure.kind);
+        };
+        assert_eq!(doc.pictures[image.embedded.unwrap()].format, crate::model::PictureFormat::Svg);
+        // From A10 to E13: two columns of 20 characters (140 pixels) and
+        // two of the default width; rows 10 and 12 of 20 points, 11 of 40.
+        assert_eq!((image.rect.width(), image.rect.height()), (2.0 * 105.0 + 2.0 * 48.0, 80.0));
+        let table = doc.blocks[4].table.as_ref().expect("the data table");
+        assert_eq!(table.rows.len(), 3);
+    }
+
+    #[test]
+    fn pictures_in_cells_follow_the_table_of_their_cell() {
+        let workbook_rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata" Target="metadata.xml"/></Relationships>"#;
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Photo</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Cup</t></is></c><c r="B2" t="e" vm="1"><v>#VALUE!</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>Pen</t></is></c><c r="B3" t="e" vm="2"><v>#VALUE!</v></c></row></sheetData></worksheet>"#;
+        let metadata = r#"<metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:xlrd="http://schemas.microsoft.com/office/spreadsheetml/2017/richdata"><metadataTypes count="1"><metadataType name="XLRICHVALUE" minSupportedVersion="120000"/></metadataTypes><futureMetadata name="XLRICHVALUE" count="2"><bk><extLst><ext uri="{3e2802c4-a4d2-4d8b-9148-e3be6c30e623}"><xlrd:rvb i="0"/></ext></extLst></bk><bk><extLst><ext uri="{3e2802c4-a4d2-4d8b-9148-e3be6c30e623}"><xlrd:rvb i="1"/></ext></extLst></bk></futureMetadata><valueMetadata count="2"><bk><rc t="1" v="0"/></bk><bk><rc t="1" v="1"/></bk></valueMetadata></metadata>"#;
+        let values = r#"<rvData xmlns="http://schemas.microsoft.com/office/spreadsheetml/2017/richdata" count="2"><rv s="0"><v>0</v><v>5</v><v>A cup</v></rv><rv s="0"><v>1</v><v>5</v><v></v></rv></rvData>"#;
+        let structures = r#"<rvStructures xmlns="http://schemas.microsoft.com/office/spreadsheetml/2017/richdata" count="1"><s t="_localImage"><k n="_rvRel:LocalImageIdentifier" t="i"/><k n="CalcOrigin" t="i"/><k n="Text" t="s"/></s></rvStructures>"#;
+        let rels = r#"<richValueRels xmlns="http://schemas.microsoft.com/office/spreadsheetml/2022/richvaluerel" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><rel r:id="rId1"/><rel r:id="rId2"/></richValueRels>"#;
+        let rel_files = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/missing.png"/></Relationships>"#;
+        let mut zip = ZipWriter::default();
+        for (name, contents) in [
+            ("_rels/.rels", PACKAGE_RELS),
+            ("xl/workbook.xml", WORKBOOK),
+            ("xl/_rels/workbook.xml.rels", workbook_rels),
+            ("xl/worksheets/sheet1.xml", sheet),
+            ("xl/metadata.xml", metadata),
+            ("xl/richData/rdrichvalue.xml", values),
+            ("xl/richData/rdrichvaluestructure.xml", structures),
+            ("xl/richData/richValueRel.xml", rels),
+            ("xl/richData/_rels/richValueRel.xml.rels", rel_files),
+        ] {
+            zip.add(name, contents.as_bytes(), Compression::Deflated);
+        }
+        zip.add("xl/media/image1.png", &png(), Compression::Stored);
+        let doc = super::read(&zip.finish(), &ExcelConfig::default(), None).unwrap();
+        assert_eq!(doc.pictures.len(), 1);
+        let kinds: Vec<_> = doc
+            .blocks
+            .iter()
+            .map(|block| match &block.kind {
+                BlockKind::Figure { image: Some(_), .. } => format!("picture {}", block.rows[0][0].text),
+                BlockKind::Figure { .. } => "table".to_string(),
+                _ => block.text(),
+            })
+            .collect();
+        assert_eq!(kinds, ["Data", "table", "picture A cup"]);
+        // The cell of the picture shown is empty; the other keeps its value.
+        let table = doc.blocks[1].table.as_ref().unwrap();
+        let text = |row: usize, col: usize| -> String {
+            table.rows[row]
+                .iter()
+                .find(|cell| cell.col == col)
+                .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(text(1, 1), "");
+        assert_eq!(text(2, 1), "#VALUE!");
     }
 
     #[test]
