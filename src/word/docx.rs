@@ -3,7 +3,7 @@
 
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
 use super::omml;
-use super::pictures::normalize;
+use super::pictures::{MAX_PICTURE_BYTES, store};
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
@@ -646,11 +646,7 @@ impl Reader<'_> {
             .read(&rel.target)
             .ok()
             .flatten()
-            .and_then(normalize)
-            .map(|picture| {
-                self.pictures.push(picture);
-                self.pictures.len() - 1
-            });
+            .and_then(|data| store(self.pictures, data, MAX_PICTURE_BYTES));
         self.picture_index.insert(rel.target.clone(), index);
         index
     }

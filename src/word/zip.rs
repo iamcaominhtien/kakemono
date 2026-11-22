@@ -92,6 +92,12 @@ impl<'a> ZipArchive<'a> {
         Ok(Self { data, entries })
     }
 
+    /// The names of the entries.
+    #[cfg(test)]
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
     /// Whether the archive has an entry named `name`.
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.find(name).is_some()

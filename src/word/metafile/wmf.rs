@@ -348,6 +348,10 @@ pub(super) fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
     bmp.extend_from_slice(&[0, 0, 0, 0]);
     bmp.extend_from_slice(&u32::try_from(offset).ok()?.to_le_bytes());
     bmp.extend_from_slice(dib);
+    // A bitmap header can name any size: none past the cap is decoded.
+    if !crate::backend::within_pixel_cap(&bmp) {
+        return None;
+    }
     let image = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp).ok()?;
     let mut png = Vec::new();
     image

@@ -11,6 +11,12 @@ use hayro_syntax::Pdf;
 use kurbo::Affine;
 use std::collections::HashSet;
 
+/// Most pixels of a picture drawn or decoded (40 million: 160 MB in RGBA,
+/// more than a 36-megapixel photo): an SVG or a metafile that would be
+/// larger is drawn smaller, and a bitmap that says it is larger is not
+/// shown. A file of a few bytes can declare any size; this keeps memory
+/// use bounded.
+pub const MAX_RASTER_PIXELS: u64 = 40_000_000;
 /// Largest width or height of a rendered bitmap, in pixels: the scale is
 /// reduced for regions that would exceed it, to keep memory use sane.
 const MAX_BITMAP_SIDE_PX: f32 = 6000.0;
@@ -306,14 +312,32 @@ fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
 
 /// Draws an SVG picture of a page (one written by
 /// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
-/// at `scale` pixels per point. Returns `None` when the SVG cannot be read.
+/// at `scale` pixels per point, or smaller when it would have more than
+/// [`MAX_RASTER_PIXELS`]. Returns `None` when the SVG cannot be read.
 pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
     use resvg::{tiny_skia, usvg};
     let options = usvg::Options {
         fontdb: svg_fonts(),
+        // Pictures inside the SVG: data only (a path would read a file of
+        // this machine into the output), and within the pixel cap.
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|mime, data, options| {
+                within_pixel_cap(&data)
+                    .then(|| (usvg::ImageHrefResolver::default_data_resolver())(mime, data, options))
+                    .flatten()
+            }),
+            resolve_string: Box::new(|_, _| None),
+        },
         ..Default::default()
     };
     let tree = usvg::Tree::from_str(svg, &options).ok()?;
+    let pixels = f64::from(tree.size().width()) * f64::from(tree.size().height()) * f64::from(scale).powi(2);
+    let scale = if pixels > MAX_RASTER_PIXELS as f64 {
+        // Rounded down a little, so that the rounded size stays within.
+        (f64::from(scale) * (MAX_RASTER_PIXELS as f64 / pixels).sqrt() * 0.999) as f32
+    } else {
+        scale
+    };
     let size = tree.size().to_int_size().scale_by(scale)?;
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
     pixmap.fill(tiny_skia::Color::WHITE);
@@ -323,6 +347,33 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
         &mut pixmap.as_mut(),
     );
     pixmap.encode_png().ok()
+}
+
+/// Whether the bitmap `data` has at most [`MAX_RASTER_PIXELS`] pixels, by
+/// the size its header gives; `true` when it has none that can be read
+/// (it is not a bitmap, or it is damaged: decoding it fails early).
+pub fn within_pixel_cap(data: &[u8]) -> bool {
+    // A PNG's size is in its first chunk (IHDR): the decoder would not
+    // give it before finding pixel data.
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.get(12..16) == Some(b"IHDR") {
+        let side = |at: usize| {
+            data.get(at..at + 4)
+                .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        if let (Some(width), Some(height)) = (side(16), side(20)) {
+            return u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS;
+        }
+    }
+    image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()
+        .and_then(|mut reader| {
+            // The size as declared: the default limits would refuse to
+            // read a large one, which would pass as "no size".
+            reader.no_limits();
+            reader.into_dimensions().ok()
+        })
+        .is_none_or(|(width, height)| u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS)
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are
@@ -529,5 +580,26 @@ width=\"484\" height=\"209\" preserveAspectRatio=\"none\" style=\"image-renderin
         assert!(!smooth_fine_images(line(0.588843)).contains("pixelated"));
         // A heat map of big cells: 1.8 pt per pixel, kept sharp.
         assert!(smooth_fine_images(line(1.8)).contains("pixelated"));
+    }
+}
+
+#[cfg(test)]
+mod svg_tests {
+    use super::{MAX_RASTER_PIXELS, svg_to_png};
+
+    #[test]
+    fn a_huge_svg_is_drawn_within_the_pixel_cap() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
+        let png = svg_to_png(svg, 2.0).expect("drawn smaller");
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&png))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert!(
+            u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS,
+            "{width}x{height}"
+        );
+        assert!(width > 1000 && width == height, "{width}x{height}");
     }
 }

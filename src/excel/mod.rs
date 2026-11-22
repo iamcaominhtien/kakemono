@@ -19,6 +19,7 @@ mod workbook;
 use crate::analysis::semantics::text::{slug, unique_anchor};
 use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
+use crate::word::pictures::{MAX_PICTURE_BYTES, store};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::{Drawn, Shape};
@@ -256,7 +257,8 @@ struct Pictures {
 
 impl Pictures {
     /// The index of the picture of the part `part`, read once; `None` when
-    /// it is missing, damaged or in a format that cannot be shown.
+    /// it is missing, damaged, in a format that cannot be shown, too large,
+    /// or past the workbook's budget of picture bytes.
     fn read(&mut self, zip: &ZipArchive<'_>, part: &str) -> Option<usize> {
         if let Some(index) = self.parts.get(part) {
             return *index;
@@ -265,11 +267,7 @@ impl Pictures {
             .read(part)
             .ok()
             .flatten()
-            .and_then(crate::word::pictures::normalize)
-            .map(|picture| {
-                self.files.push(picture);
-                self.files.len() - 1
-            });
+            .and_then(|data| store(&mut self.files, data, MAX_PICTURE_BYTES));
         self.parts.insert(part.to_string(), index);
         index
     }
@@ -626,6 +624,32 @@ mod tests {
         assert_eq!((image.rect.width(), image.rect.height()), (144.0, 72.0));
         assert_eq!(figure.rows[0][0].text, "Logo");
         assert_eq!(figure.id, 3);
+    }
+
+    #[test]
+    fn a_picture_declaring_a_huge_size_is_left_out_or_drawn_smaller() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(100_000u32.to_be_bytes());
+        png.extend(100_000u32.to_be_bytes());
+        png.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
+        for (media, drawn) in [(png.as_slice(), false), (svg.as_slice(), true)] {
+            let mut zip = ZipWriter::default();
+            for (name, contents) in [
+                ("_rels/.rels", PACKAGE_RELS),
+                ("xl/workbook.xml", WORKBOOK),
+                ("xl/_rels/workbook.xml.rels", WORKBOOK_RELS),
+                ("xl/worksheets/sheet1.xml", ONE_CELL_SHEET),
+                ("xl/worksheets/_rels/sheet1.xml.rels", SHEET_DRAWING_RELS),
+                ("xl/drawings/drawing1.xml", PICTURE_DRAWING),
+                ("xl/drawings/_rels/drawing1.xml.rels", PICTURE_DRAWING_RELS),
+            ] {
+                zip.add(name, contents.as_bytes(), Compression::Deflated);
+            }
+            zip.add("xl/media/image1.png", media, Compression::Stored);
+            let doc = super::read(&zip.finish(), &ExcelConfig::default(), None).unwrap();
+            assert_eq!(doc.pictures.len(), usize::from(drawn));
+        }
     }
 
     #[test]
