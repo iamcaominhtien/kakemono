@@ -16,6 +16,7 @@
 
 pub(crate) mod apply;
 pub(crate) mod citation;
+pub(crate) mod figure_lines;
 pub(crate) mod front;
 pub(crate) mod markup;
 pub(crate) mod plain_text;
@@ -189,6 +190,10 @@ struct BlockOut {
     /// Text found inside a figure (axis labels, legends), as plain text.
     #[serde(skip_serializing_if = "Option::is_none")]
     figure_text: Option<String>,
+    /// The text inside a figure as runs, each editable (see
+    /// [`figure_lines`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    figure_lines: Option<Vec<figure_lines::RunOut>>,
     /// The text of a formula as the PDF gives it (alt text).
     #[serde(skip_serializing_if = "Option::is_none")]
     alt: Option<String>,
@@ -381,6 +386,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
             json.label = label.clone();
             json.text = Some(text_of(&block.spans));
             json.figure_text = block.rows.first().map(|row| plain(row)).filter(|text| !text.is_empty());
+            json.figure_lines = image.as_ref().and_then(|_| figure_lines::runs_out(block));
             json.image = image.as_ref().map(|spec| images.region(spec, float_class(*kind)));
             json.table = block.table.as_ref().map(table_out);
         }

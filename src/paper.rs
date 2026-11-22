@@ -390,7 +390,7 @@ impl Paper {
     /// text of single blocks are not errors: those blocks keep their text,
     /// and [`ContentReport::warnings`] says why.
     pub fn apply_content(&self, analysis: &mut Analysis, json: &str) -> Result<ContentReport> {
-        apply_content(analysis, json, &self.source_info(), None)
+        self.apply_content_from(analysis, json, None)
     }
 
     /// [`Paper::apply_content`] for a JSON file in the folder `base`: a
@@ -399,7 +399,38 @@ impl Paper {
     /// # Errors
     /// As [`Paper::apply_content`].
     pub fn apply_content_in(&self, analysis: &mut Analysis, json: &str, base: &Path) -> Result<ContentReport> {
-        apply_content(analysis, json, &self.source_info(), Some(base))
+        self.apply_content_from(analysis, json, Some(base))
+    }
+
+    /// Applies `json` (relative `replace_image` paths read from `base`),
+    /// then draws again the figures whose text was edited
+    /// (`figure_lines`): their new picture replaces the old one.
+    fn apply_content_from(&self, analysis: &mut Analysis, json: &str, base: Option<&Path>) -> Result<ContentReport> {
+        let (mut report, edits) = apply_content(analysis, json, &self.source_info(), base)?;
+        let Some(renderer) = self.renderer() else {
+            return Ok(report);
+        };
+        for edit in edits {
+            let block = &analysis.doc.blocks[edit.block_idx];
+            let Some(svg) = crate::render::figure_svg(&renderer, block, &edit, &mut report.warnings) else {
+                report.warnings.push(format!(
+                    "block {}: the figure could not be drawn again with its edited text",
+                    block.id
+                ));
+                continue;
+            };
+            analysis.doc.pictures.push(crate::model::Picture {
+                data: svg.into_bytes(),
+                jpeg: false,
+            });
+            let index = analysis.doc.pictures.len() - 1;
+            if let crate::model::BlockKind::Figure { image: Some(spec), .. } =
+                &mut analysis.doc.blocks[edit.block_idx].kind
+            {
+                spec.embedded = Some(index);
+            }
+        }
+        Ok(report)
     }
 
     /// The source as the JSON output names it.

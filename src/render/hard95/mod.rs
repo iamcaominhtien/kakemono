@@ -426,7 +426,7 @@ fn replaced_picture(block: &Block) -> Option<&ImageSpec> {
 /// (which still shows the original figure), fitted without stretching.
 fn replaced_figure(id: usize, spec: &ImageSpec, images: &mut ImageStore<'_>, units: &Units) -> String {
     format!(
-        "<div class=\"b\" data-kind=\"figure-picture\" data-block=\"{id}\" style=\"left:{};top:{};width:{};height:{};background:#fff\"><img src=\"{}\" alt=\"\" style=\"display:block;width:100%;height:100%;object-fit:contain\"></div>\n",
+        "<div class=\"b\" data-kind=\"figure-picture\" data-block=\"{id}\" style=\"position:absolute;left:{};top:{};width:{};height:{};background:#fff\"><img src=\"{}\" alt=\"\" style=\"display:block;width:100%;height:100%;object-fit:contain\"></div>\n",
         units.x(spec.rect.x0),
         units.y(spec.rect.y0),
         units.x(spec.rect.width()),

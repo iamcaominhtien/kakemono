@@ -16,6 +16,7 @@
 //! inside the block's box instead, and the hard mode (whose text layer is
 //! line by line) has no text for it.
 
+use super::figure_lines::{self, FigureEdit};
 use super::markup::{Parsed, from_markup, to_markup};
 use super::plain_text::block_plain;
 use super::replace::apply_replacement;
@@ -87,6 +88,17 @@ struct BlockIn {
     /// A picture to draw in place of a figure's (see [`super::replace`]).
     #[serde(default)]
     replace_image: Option<String>,
+    /// The runs of text inside a figure (see [`super::figure_lines`]).
+    #[serde(default)]
+    figure_lines: Option<Vec<RunIn>>,
+}
+
+/// A run of text inside a figure, in the file.
+#[derive(Deserialize)]
+struct RunIn {
+    /// Its text with markup.
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// A table of the file.
@@ -121,7 +133,7 @@ pub(crate) fn apply_content(
     json: &str,
     source: &SourceInfo,
     base: Option<&Path>,
-) -> Result<ContentReport> {
+) -> Result<(ContentReport, Vec<FigureEdit>)> {
     let file: FileIn = serde_json::from_str(json).map_err(|err| anyhow::anyhow!("reading the JSON: {err}"))?;
     check_header(&file, source)?;
     let index: HashMap<usize, usize> = analysis
@@ -150,14 +162,25 @@ pub(crate) fn apply_content(
         }
     }
     let mut report = ContentReport::default();
+    let mut edits = Vec::new();
     let mut title_edited = false;
     for block_in in &file.blocks {
         let idx = index[&block_in.id];
         let block = &mut analysis.doc.blocks[idx];
         let mut edited = apply_block(block, block_in, &mut report);
         title_edited |= edited && matches!(block.kind, BlockKind::Title);
+        let figure_edit = figure_edit(&analysis.doc.blocks[idx], idx, block_in, &mut report);
         if let Some(value) = &block_in.replace_image {
             edited |= apply_replacement(&mut analysis.doc, idx, value, base, &mut report);
+            if figure_edit.is_some() {
+                report.warnings.push(format!(
+                    "block {}: replace_image is used; the edited figure_lines are not",
+                    block_in.id
+                ));
+            }
+        } else if let Some(figure_edit) = figure_edit {
+            edits.push(figure_edit);
+            edited = true;
         }
         if edited {
             report.edited_blocks += 1;
@@ -173,7 +196,23 @@ pub(crate) fn apply_content(
             .collect();
         analysis.doc.meta.title = Some(title.join(" ").split_whitespace().collect::<Vec<_>>().join(" "));
     }
-    Ok(report)
+    Ok((report, edits))
+}
+
+/// The edited runs of text of the figure `block` (at `idx`), or `None` when
+/// none of them was edited.
+fn figure_edit(block: &Block, idx: usize, block_in: &BlockIn, report: &mut ContentReport) -> Option<FigureEdit> {
+    let runs_in = block_in.figure_lines.as_ref()?;
+    let mut runs = Vec::new();
+    for (pos, (run, run_in)) in figure_lines::runs(block).into_iter().zip(runs_in).enumerate() {
+        let place = format!("block {}, figure line {}", block.id, pos + 1);
+        if let Some(text) = &run_in.text
+            && let Some(spans) = edited_spans(&figure_lines::run_spans(block, &run), text, &place, report)
+        {
+            runs.push((run, spans));
+        }
+    }
+    (!runs.is_empty()).then_some(FigureEdit { block_idx: idx, runs })
 }
 
 /// Checks the format, version and source of the file.

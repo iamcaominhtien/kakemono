@@ -38,6 +38,7 @@ pub(crate) use escape::*;
 pub(crate) use flow::*;
 pub use json::apply::ContentReport;
 pub(crate) use json::apply::apply_content;
+pub(crate) use json::figure_lines::figure_svg;
 pub use json::{JsonOptions, JsonOutput};
 pub(crate) use json::{SourceInfo, render_json};
 pub use latex::{LatexOptions, LatexOutput, render_latex};

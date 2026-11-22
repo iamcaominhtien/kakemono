@@ -302,6 +302,16 @@ Markdown `[^n1]` footnotes and EPUB popup footnotes at the end of each chapter (
 each chapter). `plain` and the chunks leave the notes out. A `<note>` that is not closed, or that
 holds a formula or another note, is read with a warning.
 
+**Translating the text inside a figure.** A figure whose picture has text in the PDF (labels,
+legends, the boxes of a diagram) lists it in `figure_lines`, as runs: a label, or the lines of one
+paragraph inside a box, each `{"text": "…", "box": [x0, y0, x1, y1], "size": pt}`, the `text`
+editable like a block's. An edited run is written in place: the figure is drawn again without the
+glyphs of the old text, and the new text is written in its box, in a sans-serif (or monospaced)
+font of the run's size and weight, broken into lines that fit the box (made smaller, down to 75%,
+when it needs more lines than the run had; a one-line label may grow to 1.6 times its width). The
+figure then becomes an SVG, as with `replace_image` below, which wins when both are given. Rotated
+text (an axis title written upwards) is not in `figure_lines` yet.
+
 **Replacing a figure's picture.** A `figure` block may also get `"replace_image"`: a PNG, JPEG or
 SVG file, named by a path relative to the JSON file, or a data URI. Every output then draws it in
 place of the figure's picture (a translated or redrawn figure, say). An SVG stays an SVG in the
@@ -312,7 +322,10 @@ of another shape than the figure is fitted into its box and centred, never stret
 pictures an SVG names (relative to the SVG) are kept inside it.
 A picture whose shape differs from the figure's box, a file that cannot be read, or
 `replace_image` on a block that is not a figure with a picture is a warning; the figure then keeps
-its picture (except for the shape, where the new picture is still used).
+its picture (except for the shape, where the new picture is still used). A JSON written again after
+`--content` has the new picture in `image` and no `replace_image`. With the library,
+`Paper::apply_content_in(&mut analysis, &json, folder)` reads relative paths from the JSON's folder;
+`Paper::apply_content`, which has no folder, takes only data URIs and absolute paths.
 
 In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
 text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them

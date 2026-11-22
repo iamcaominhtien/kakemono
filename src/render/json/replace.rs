@@ -65,6 +65,15 @@ pub(crate) fn apply_replacement(
         ));
         return false;
     }
+    // A PNG or JPEG whose header is right may still be cut or damaged.
+    if let PictureData::Png(data) | PictureData::Jpeg(data) = &kind
+        && image::load_from_memory(data).is_err()
+    {
+        report.warnings.push(format!(
+            "block {id}: replace_image {value} is damaged and cannot be read"
+        ));
+        return false;
+    }
     let (aspect, box_aspect) = (size.0 / size.1, box_width / box_height.max(f32::EPSILON));
     let other_shape = (aspect / box_aspect - 1.0).abs() > REPLACE_ASPECT_TOLERANCE_RATIO;
     if other_shape {
@@ -160,9 +169,12 @@ fn fitted(picture: &PictureData, folder: Option<&Path>, width: f32, height: f32)
 fn load(value: &str, base: Option<&Path>) -> Result<(Vec<u8>, Option<std::path::PathBuf>), String> {
     if let Some(uri) = value.strip_prefix("data:") {
         let (head, payload) = uri.split_once(',').ok_or("a data URI without a comma")?;
-        let data = if head.ends_with(";base64") {
+        let is_base64 = head.split(';').any(|part| part.trim().eq_ignore_ascii_case("base64"));
+        let data = if is_base64 {
+            // Pasted data URIs are often cut into lines.
+            let payload: String = payload.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
             base64::engine::general_purpose::STANDARD
-                .decode(payload.trim())
+                .decode(payload)
                 .map_err(|err| format!("bad base64: {err}"))?
         } else {
             percent_decoded(payload)
