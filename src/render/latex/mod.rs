@@ -35,6 +35,16 @@ const PREAMBLE_HEAD_END: &str = "folder next to this one.\n";
 /// Said at the top of a document with CJK text.
 const CJK_NOTE: &str = "% Its Chinese, Japanese or Korean text needs LuaLaTeX or XeLaTeX: pdfLaTeX\n\
                         % has no font for it and writes a ? for each of its characters.\n";
+/// The symbols that the escape of text writes as math, which CJK text uses
+/// as characters (△ is the minus sign of Japanese statistics) and the CJK
+/// fonts have: in a document with CJK text they are `\kakemonotext`, the
+/// character under XeLaTeX and LuaLaTeX, math under pdfLaTeX.
+const CJK_TEXT_SYMBOLS: &[(char, &str)] = &[
+    ('△', "\\triangle"),
+    ('□', "\\square"),
+    ('〈', "\\langle"),
+    ('〉', "\\rangle"),
+];
 /// The end of the choice of fonts in [`PREAMBLE`], where [`CJK_FONTS`] go.
 const FONTS_END: &str = "  \\usepackage{fontspec}\n\\fi\n";
 /// The fonts of CJK text, for a document that has some. Noto Serif and
@@ -78,6 +88,8 @@ const CJK_FONTS: &str = r#"\ifLuaTeX
     {\setCJKsansfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Medium.otf}%
      \setCJKmonofont{HaranoAjiGothic-Medium.otf}}
 \fi
+% A symbol of CJK text: the character #1, or the math symbol #2 under pdfLaTeX.
+\newcommand{\kakemonotext}[2]{\ifPDFTeX\ensuremath{#2}\else#1\fi}
 "#;
 /// Most body rows of a table set as one box, shrunk to the width of the
 /// text; a table with more is a `longtable`, broken across pages with its
@@ -281,6 +293,26 @@ pub fn render_latex(
 /// for, the title of the PDF, and `body`.
 fn document(doc: &Document, body: &str, input: InputFormat) -> String {
     let title = escape(&doc_title(doc));
+    let cjk = title.chars().chain(body.chars()).any(is_cjk);
+    // The symbols of CJK text written as math are characters of the CJK
+    // fonts under XeLaTeX and LuaLaTeX: as text, they stay in the text of
+    // the PDF (math symbols are lost to its text extraction).
+    let (title, body) = if cjk {
+        let as_text = |text: &str| {
+            CJK_TEXT_SYMBOLS
+                .iter()
+                .fold(text.to_string(), |text, (symbol, command)| {
+                    text.replace(
+                        &format!("\\ensuremath{{{command}}}"),
+                        &format!("\\kakemonotext{{{symbol}}}{{{command}}}"),
+                    )
+                })
+        };
+        (as_text(&title), as_text(body))
+    } else {
+        (title, body.to_string())
+    };
+    let body = body.as_str();
     let (vietnamese, unknown): (Vec<char>, Vec<char>) = unknown_chars(&title, body)
         .into_iter()
         .partition(|&ch| vietnamese::t5_letter(ch).is_some());
@@ -303,7 +335,7 @@ fn document(doc: &Document, body: &str, input: InputFormat) -> String {
             1,
         );
     }
-    if title.chars().chain(body.chars()).any(is_cjk) {
+    if cjk {
         out = out.replacen(PREAMBLE_HEAD_END, &format!("{PREAMBLE_HEAD_END}{CJK_NOTE}"), 1);
         out = out.replacen(FONTS_END, &format!("{FONTS_END}{CJK_FONTS}"), 1);
     }
@@ -1645,6 +1677,26 @@ mod tests {
         }
         // Kanbun and vertical forms are CJK text.
         assert!(is_cjk('\u{3190}') && is_cjk('\u{319F}') && is_cjk('\u{FE10}') && is_cjk('\u{FE19}'));
+    }
+
+    #[test]
+    fn symbols_of_cjk_text_are_characters_under_lualatex_and_xelatex() {
+        let body = escape("△11 523 □ 〈注〉");
+        let tex = document(&doc_of("人口 △11 523"), &body, InputFormat::Xlsx);
+        for (symbol, command) in [
+            ("△", "\\triangle"),
+            ("□", "\\square"),
+            ("〈", "\\langle"),
+            ("〉", "\\rangle"),
+        ] {
+            assert!(
+                tex.contains(&format!("\\kakemonotext{{{symbol}}}{{{command}}}")),
+                "{symbol}: {tex}"
+            );
+        }
+        // Without CJK text, the math symbol stays.
+        let latin = document(&doc_of("x"), &escape("△ x"), InputFormat::Pdf);
+        assert!(latin.contains("\\ensuremath{\\triangle}") && !latin.contains("kakemonotext"));
     }
 
     #[test]
