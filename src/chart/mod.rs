@@ -2,7 +2,7 @@
 //! the same in a workbook, `xl/charts/chartN.xml`, and in a Word document,
 //! `word/charts/chartN.xml`) and the Office 2016 extended chart part
 //! (`cx:chartSpace`: waterfall, treemap and the like) read into a
-//! [`Chart`].
+//! [`Chart`], and a chart's data as a table.
 //!
 //! Only the values the file caches are read (`c:numCache`, `c:strCache`,
 //! `c:multiLvlStrCache`, literals): the formulas of the references are not
@@ -12,14 +12,17 @@
 //! - `chartex`: the extended chart part → [`Chart`], never an error.
 //! - `theme`: the colour scheme of a theme part, for the series without a
 //!   colour of their own.
+//! - `table`: a chart's data as a [`Table`](crate::model::Table).
 
 mod chartex;
 mod read;
+mod table;
 mod theme;
 
 use crate::excel::numfmt::NumFmt;
 
 pub(crate) use read::read;
+pub(crate) use table::data_table;
 pub(crate) use theme::Theme;
 
 /// An RGB colour.
@@ -304,5 +307,115 @@ impl Series {
         self.name
             .clone()
             .unwrap_or_else(|| format!("Series {}", u64::from(self.index) + 1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Chart, ChartConfig, ChartKind, Theme, data_table, read};
+    use crate::word::zip::ZipArchive;
+    use std::path::{Path, PathBuf};
+
+    /// The workbooks and Word documents under `dir`, sorted.
+    fn office_files(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if matches!(extension, "xlsx" | "xlsm" | "docx") {
+                    found.push(path);
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// One line describing `chart`: its types, series, points per series,
+    /// title, whether it has cached data and whether it was truncated.
+    fn describe(chart: &Chart) -> String {
+        let kinds: Vec<String> = chart
+            .groups
+            .iter()
+            .map(|group| match &group.kind {
+                ChartKind::NotDrawn { name } => format!("not-drawn:{name}"),
+                kind => format!("{kind:?}{}", if group.three_d { "(3-D)" } else { "" }),
+            })
+            .collect();
+        let points: Vec<usize> = chart
+            .series()
+            .map(|series| series.values.as_ref().map_or(0, |values| values.points.len()))
+            .collect();
+        let table = data_table(chart).map(|table| format!("{}x{}", table.rows.len(), table.n_cols));
+        let heads: Vec<String> = chart
+            .series()
+            .map(|series| {
+                let first: Vec<Option<f64>> = series
+                    .values
+                    .iter()
+                    .flat_map(|values| values.points.iter().take(3).copied())
+                    .collect();
+                let [red, green, blue] = series.color;
+                format!("{:?} #{red:02X}{green:02X}{blue:02X} {first:?}", series.label())
+            })
+            .collect();
+        format!(
+            "types={} series={} points={points:?} title={:?} cached={} truncated={} table={}\n    {}",
+            kinds.join("+"),
+            points.len(),
+            chart.title,
+            chart.has_data,
+            chart.truncated,
+            table.unwrap_or_else(|| "none".into()),
+            heads.join("\n    ")
+        )
+    }
+
+    /// Every chart part of the files under `KAKEMONO_CHART_CORPUS` reads
+    /// without a panic; one line per chart is printed.
+    #[test]
+    #[ignore = "reads the files under KAKEMONO_CHART_CORPUS"]
+    fn corpus_charts_read_without_panics() {
+        let dir = std::env::var("KAKEMONO_CHART_CORPUS").expect("KAKEMONO_CHART_CORPUS");
+        let (mut charts, mut panics) = (0, 0);
+        for path in office_files(Path::new(&dir)) {
+            let data = std::fs::read(&path).unwrap();
+            let Ok(zip) = ZipArchive::new(&data) else { continue };
+            let theme_part = ["xl/theme/theme1.xml", "word/theme/theme1.xml"]
+                .into_iter()
+                .find_map(|name| zip.read(name).ok().flatten());
+            let theme = Theme::read(theme_part.as_deref());
+            let mut parts: Vec<String> = zip
+                .names()
+                .into_iter()
+                .filter(|name| {
+                    let file = name.rsplit('/').next().unwrap_or_default();
+                    name.contains("/charts/") && file.starts_with("chart") && file.ends_with(".xml")
+                })
+                .collect();
+            parts.sort();
+            for part in parts {
+                let Some(xml) = zip.read(&part).ok().flatten() else {
+                    continue;
+                };
+                charts += 1;
+                let result = std::panic::catch_unwind(|| read(&xml, &theme, &ChartConfig::default()));
+                let file = path.file_name().unwrap().to_string_lossy();
+                match result {
+                    Ok(Ok(chart)) => println!("{file} {part}: {}", describe(&chart)),
+                    Ok(Err(error)) => println!("{file} {part}: error {error:#}"),
+                    Err(_) => {
+                        panics += 1;
+                        println!("{file} {part}: PANIC");
+                    }
+                }
+            }
+        }
+        println!("{charts} chart parts, {panics} panics");
+        assert_eq!(panics, 0);
     }
 }
