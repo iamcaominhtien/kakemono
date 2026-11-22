@@ -10,6 +10,15 @@ use crate::word::fmt::model::FImage;
 /// the pictures past it are left out. Each file of a package may hold up to
 /// 512 MiB, and a package many files.
 pub(crate) const MAX_PICTURE_BYTES: usize = 256 * 1024 * 1024;
+/// Points in a pixel at 96 pixels per inch: the size of a picture whose
+/// document gives none.
+pub(crate) const PT_PER_PX: f32 = 0.75;
+/// The size in points of a picture whose document and file give none.
+pub(crate) const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
+/// The longest side of a picture, in points: 22 inches, Word's largest
+/// page. A document can give any size, an infinite one too; a larger
+/// picture is made smaller, keeping its aspect.
+pub(crate) const MAX_PICTURE_SIDE_PT: f32 = 1584.0;
 /// Pixels per point of an SVG drawing turned into a PNG.
 const SVG_SCALE: f32 = 2.0;
 /// Signature of a PNG file.
@@ -54,6 +63,25 @@ pub(crate) fn store_for_layout(images: &mut Vec<FImage>, data: Vec<u8>, budget: 
     }
     images.push(image);
     Some(images.len() - 1)
+}
+
+/// The size `(width, height)` in points, made at most
+/// [`MAX_PICTURE_SIDE_PT`] on each side, keeping its aspect; `None` when a
+/// side is not a positive finite number.
+pub(crate) fn bounded_size((width, height): (f32, f32)) -> Option<(f32, f32)> {
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return None;
+    }
+    let shrink = (MAX_PICTURE_SIDE_PT / width.max(height)).min(1.0);
+    Some((width * shrink, height * shrink))
+}
+
+/// The size in points of the bitmap `data` at 96 pixels per inch, by the
+/// size its header gives, bounded ([`bounded_size`]); `None` when it has
+/// none.
+pub(crate) fn pixel_size_pt(data: &[u8]) -> Option<(f32, f32)> {
+    let (width, height) = crate::backend::declared_size(data)?;
+    bounded_size((width as f32 * PT_PER_PX, height as f32 * PT_PER_PX))
 }
 
 /// The picture `data` as a PNG or JPEG, or `None` when its format cannot
@@ -159,6 +187,15 @@ mod tests {
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
         let picture = normalize(svg.to_vec()).expect("drawn smaller");
         assert!(picture.data.starts_with(PNG_MAGIC));
+    }
+
+    #[test]
+    fn the_size_of_a_large_picture_keeps_its_aspect() {
+        // 4000 × 1000 pixels: 3000 × 750 points, bounded to the largest side.
+        let (width, height) = pixel_size_pt(&png_header(4000, 1000)).unwrap();
+        assert_eq!((width, height), (MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 4.0));
+        assert_eq!(pixel_size_pt(&png_header(400, 200)), Some((300.0, 150.0)));
+        assert_eq!(pixel_size_pt(b"not a picture"), None);
     }
 
     #[test]

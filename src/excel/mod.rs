@@ -19,7 +19,7 @@ mod workbook;
 use crate::analysis::semantics::text::{slug, unique_anchor};
 use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
-use crate::word::pictures::{MAX_PICTURE_BYTES, store};
+use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::{Drawn, Shape};
@@ -28,9 +28,6 @@ use sheet::SheetContext;
 use std::collections::{HashMap, HashSet};
 use workbook::{Workbook, is_sml};
 
-/// Points in a pixel at 96 pixels per inch: the size of a picture whose
-/// drawing gives none.
-const PT_PER_PX: f32 = 0.75;
 /// Font size of the running text, in points: Excel's default font size.
 const BODY_SIZE_PT: f32 = 11.0;
 /// Distance between baselines, as a ratio of the font size.
@@ -274,12 +271,7 @@ impl Pictures {
 
     /// The size in points of the picture `index` at 96 pixels per inch.
     fn pixel_size_pt(&self, index: usize) -> Option<(f32, f32)> {
-        let data = &self.files.get(index)?.data;
-        let reader = image::ImageReader::new(std::io::Cursor::new(data))
-            .with_guessed_format()
-            .ok()?;
-        let (width, height) = reader.into_dimensions().ok()?;
-        Some((width as f32 * PT_PER_PX, height as f32 * PT_PER_PX))
+        pixel_size_pt(&self.files.get(index)?.data)
     }
 }
 

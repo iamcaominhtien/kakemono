@@ -6,6 +6,7 @@
 
 use super::ir::{Inline, Item, Para, Table as WordTable, VMerge, WordDoc};
 use super::omml::plain_text;
+use super::pictures::{FALLBACK_PICTURE_PT, bounded_size, pixel_size_pt};
 use crate::analysis::semantics::AssembleConfig;
 use crate::analysis::semantics::assemble::{link_blocks, link_contents, reference_label, slug_marker};
 use crate::analysis::semantics::patterns::{HEADING_LETTER, HEADING_NUM, HEADING_ROMAN, REF_HEADING};
@@ -24,11 +25,6 @@ use std::sync::LazyLock;
 const LEADING_RATIO: f32 = 1.2;
 /// The math font named for a document with Office Math (Word's own).
 const OFFICE_MATH_FONT: &str = "Cambria Math";
-/// Points per pixel of a picture whose size the document does not give
-/// (96 dpi).
-const PT_PER_PX: f32 = 0.75;
-/// Size of a picture whose size is unknown, in points.
-const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
 
 /// The number of an equation as it is set next to it: "(3)", "(2.1a)".
 static EQUATION_NUMBER: LazyLock<Regex> =
@@ -104,7 +100,7 @@ struct Builder<'a> {
     in_references: bool,
     /// Code lines being gathered into one listing.
     code: Vec<Vec<Span>>,
-    /// Sizes of the pictures, by index.
+    /// Sizes of the pictures in points (96 pixels per inch), by index.
     picture_sizes: Vec<Option<(f32, f32)>>,
 }
 
@@ -115,7 +111,11 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         .iter()
         .map(|note| ((note.endnote, note.id.clone()), note.body.as_slice()))
         .collect();
-    let picture_sizes = word.pictures.iter().map(|picture| pixel_size(&picture.data)).collect();
+    let picture_sizes = word
+        .pictures
+        .iter()
+        .map(|picture| pixel_size_pt(&picture.data))
+        .collect();
     let mut builder = Builder {
         notes,
         note_numbers: HashMap::new(),
@@ -424,17 +424,9 @@ impl Builder<'_> {
 
     /// The picture `index` at its size in the document (or its own size).
     fn picture_spec(&self, index: usize, width_pt: f32, height_pt: f32) -> ImageSpec {
-        let (width, height) = if width_pt > 0.0 && height_pt > 0.0 {
-            (width_pt, height_pt)
-        } else {
-            self.picture_sizes
-                .get(index)
-                .copied()
-                .flatten()
-                .map_or(FALLBACK_PICTURE_PT, |(width, height)| {
-                    (width * PT_PER_PX, height * PT_PER_PX)
-                })
-        };
+        let (width, height) = bounded_size((width_pt, height_pt))
+            .or_else(|| self.picture_sizes.get(index).copied().flatten())
+            .unwrap_or(FALLBACK_PICTURE_PT);
         ImageSpec {
             page: 0,
             rect: Rect {
@@ -1149,15 +1141,6 @@ fn roman_lower(number: usize) -> String {
         }
     }
     out
-}
-
-/// The size in pixels of a PNG or JPEG picture.
-fn pixel_size(data: &[u8]) -> Option<(f32, f32)> {
-    let reader = image::ImageReader::new(std::io::Cursor::new(data))
-        .with_guessed_format()
-        .ok()?;
-    let (width, height) = reader.into_dimensions().ok()?;
-    Some((width as f32, height as f32))
 }
 
 #[cfg(test)]

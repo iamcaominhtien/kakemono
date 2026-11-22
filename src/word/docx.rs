@@ -3,7 +3,7 @@
 
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
 use super::omml;
-use super::pictures::{MAX_PICTURE_BYTES, store};
+use super::pictures::{MAX_PICTURE_BYTES, bounded_size, store};
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
@@ -721,7 +721,8 @@ pub(crate) fn field_words(instr: &str) -> Vec<String> {
     words
 }
 
-/// The size of a DrawingML picture in points, from its `wp:extent`.
+/// The size of a DrawingML picture in points, from its `wp:extent`,
+/// bounded ([`bounded_size`]); `(0, 0)` when it has none.
 pub(crate) fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
     node.descendants()
         .find(|item| is(*item, WP_NS, "extent"))
@@ -732,13 +733,13 @@ pub(crate) fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
                     .and_then(|value| value.parse::<f32>().ok())
                     .unwrap_or(0.0)
             };
-            (emu("cx") / EMU_PER_PT, emu("cy") / EMU_PER_PT)
+            bounded_size((emu("cx") / EMU_PER_PT, emu("cy") / EMU_PER_PT)).unwrap_or_default()
         })
         .unwrap_or_default()
 }
 
 /// The size in points of a VML shape, from its `style` attribute
-/// (`width:120pt;height:3.5in`).
+/// (`width:120pt;height:3.5in`), bounded ([`bounded_size`]).
 pub(crate) fn vml_size(style: &str) -> (f32, f32) {
     let mut size = (0.0, 0.0);
     for declaration in style.split(';') {
@@ -764,12 +765,17 @@ pub(crate) fn vml_size(style: &str) -> (f32, f32) {
             _ => {}
         }
     }
-    size
+    // An infinite side gives no size; a huge one is bounded.
+    if !(size.0.is_finite() && size.1.is_finite()) {
+        return (0.0, 0.0);
+    }
+    bounded_size(size).unwrap_or(size)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::word::pictures::MAX_PICTURE_SIDE_PT;
 
     /// Links of hyperlink and cross-reference fields.
     #[test]
@@ -791,6 +797,24 @@ mod tests {
         assert_eq!(resolve("word", "../customXml/item1.xml"), "customXml/item1.xml");
         assert_eq!(resolve("", "word/document.xml"), "word/document.xml");
         assert_eq!(resolve("word", "/word/media/a.png"), "word/media/a.png");
+    }
+
+    /// The size of a drawing: an infinite or absurd one is not taken as
+    /// it is.
+    #[test]
+    fn drawing_sizes_are_finite_and_bounded() {
+        let size = |cx: &str, cy: &str| {
+            let xml = format!(r#"<wp:inline xmlns:wp="{WP_NS}"><wp:extent cx="{cx}" cy="{cy}"/></wp:inline>"#);
+            drawing_size(parse(&xml).unwrap().root_element())
+        };
+        assert_eq!(size("1828800", "914400"), (144.0, 72.0));
+        assert_eq!(size("inf", "914400"), (0.0, 0.0));
+        assert_eq!(size("NaN", "914400"), (0.0, 0.0));
+        let (width, height) = size("1e30", "5e29");
+        assert_eq!((width, height), (MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 2.0));
+        let digits = "9".repeat(45);
+        assert_eq!(vml_size(&format!("width:{digits}pt;height:10pt")), (0.0, 0.0));
+        assert_eq!(vml_size("width:3168pt;height:72pt"), (MAX_PICTURE_SIDE_PT, 36.0));
     }
 
     /// VML sizes in the units Word writes.

@@ -353,6 +353,12 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
 /// the size its header gives; `true` when it has none that can be read
 /// (it is not a bitmap, or it is damaged: decoding it fails early).
 pub fn within_pixel_cap(data: &[u8]) -> bool {
+    declared_size(data).is_none_or(|(width, height)| u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS)
+}
+
+/// The size in pixels the header of the bitmap `data` gives, before any
+/// pixel is read; `None` when it is not a bitmap or its header is damaged.
+pub fn declared_size(data: &[u8]) -> Option<(u32, u32)> {
     // A PNG's size is in its first chunk (IHDR): the decoder would not
     // give it before finding pixel data.
     if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.get(12..16) == Some(b"IHDR") {
@@ -360,20 +366,15 @@ pub fn within_pixel_cap(data: &[u8]) -> bool {
             data.get(at..at + 4)
                 .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         };
-        if let (Some(width), Some(height)) = (side(16), side(20)) {
-            return u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS;
-        }
+        return Some((side(16)?, side(20)?));
     }
-    image::ImageReader::new(std::io::Cursor::new(data))
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
-        .ok()
-        .and_then(|mut reader| {
-            // The size as declared: the default limits would refuse to
-            // read a large one, which would pass as "no size".
-            reader.no_limits();
-            reader.into_dimensions().ok()
-        })
-        .is_none_or(|(width, height)| u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS)
+        .ok()?;
+    // The size as declared: the default limits would refuse to read a
+    // large one, which would pass as "no size".
+    reader.no_limits();
+    reader.into_dimensions().ok()
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are

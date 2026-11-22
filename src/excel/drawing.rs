@@ -4,6 +4,7 @@
 //! covers have logos and photos.
 
 use crate::word::docx::parse;
+use crate::word::pictures::bounded_size;
 use anyhow::Result;
 use roxmltree::Node;
 
@@ -161,11 +162,11 @@ fn picture(pic: Node<'_, '_>) -> Option<PictureRef> {
     })
 }
 
-/// The size in points of an `ext` element (`cx`, `cy` in EMU); `None` when
-/// it is missing or empty.
+/// The size in points of an `ext` element (`cx`, `cy` in EMU), bounded
+/// ([`bounded_size`]); `None` when it is missing, empty or not finite.
 fn extent(ext: Node<'_, '_>) -> Option<(f32, f32)> {
-    let emu = |name: &str| ext.attribute(name)?.trim().parse::<f32>().ok().filter(|emu| *emu > 0.0);
-    Some((emu("cx")? / EMU_PER_PT, emu("cy")? / EMU_PER_PT))
+    let emu = |name: &str| ext.attribute(name)?.trim().parse::<f32>().ok();
+    bounded_size((emu("cx")? / EMU_PER_PT, emu("cy")? / EMU_PER_PT))
 }
 
 /// The text of a shape: its paragraphs joined by `\n`; `None` when it has
@@ -197,6 +198,7 @@ fn paragraph(para: Node<'_, '_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::word::pictures::MAX_PICTURE_SIDE_PT;
 
     const HEAD: &str = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">"#;
 
@@ -323,6 +325,29 @@ mod tests {
                 ((3, 0), "rId1".into(), "Logo".into(), Some((100.0, 50.0))),
                 ((5, 0), "rId1".into(), String::new(), None),
             ]
+        );
+    }
+
+    #[test]
+    fn infinite_or_absurd_picture_sizes_are_bounded() {
+        let head = HEAD.replace(
+            '>',
+            r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+        );
+        let size = |cx: &str, cy: &str| {
+            let pic = format!(
+                r#"<xdr:pic><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill><xdr:spPr><a:xfrm><a:ext cx="{cx}" cy="{cy}"/></a:xfrm></xdr:spPr></xdr:pic>"#
+            );
+            match &items(&format!("{head}{}</xdr:wsDr>", two_cell(0, 0, &pic))).unwrap()[0].1 {
+                Drawn::Picture(picture) => picture.size_pt,
+                Drawn::Text(_) => None,
+            }
+        };
+        assert_eq!(size("inf", "12700"), None);
+        assert_eq!(size("NaN", "12700"), None);
+        assert_eq!(
+            size("1e30", "5e29"),
+            Some((MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 2.0))
         );
     }
 

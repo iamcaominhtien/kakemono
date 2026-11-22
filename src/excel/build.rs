@@ -9,10 +9,9 @@ use super::grid::{CellKind, Grid, Merge, MergeIndex};
 use super::regions::{self, Visible, is_blank};
 use crate::common::geom::Rect;
 use crate::model::{Block, BlockKind, FloatKind, ImageSpec, Span, Table, TableCell};
+use crate::word::pictures::FALLBACK_PICTURE_PT;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// The size in points of a picture whose drawing and file give none.
-const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
 /// Between two lines of a caption. The renderers show a newline in a
 /// caption as a space, so the lines are joined by a dash instead.
 const CAPTION_SEPARATOR: &str = " — ";

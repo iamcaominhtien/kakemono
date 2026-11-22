@@ -11,7 +11,7 @@ use super::props::{RawCell, RawPara, RawRun, TWIPS_PER_PT, ThemeFonts, is_on, pa
 use super::styles::{Conditional, Numbering, Styles, TableStyle, parse_num_format};
 use crate::word::docx::{Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of};
 use crate::word::omml;
-use crate::word::pictures::{MAX_PICTURE_BYTES, store_for_layout};
+use crate::word::pictures::{MAX_PICTURE_BYTES, bounded_size, store_for_layout};
 use crate::word::xml::{
     DRAWING_NS, MATH_NS, MC_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child, children, is, toggle, val,
 };
@@ -293,11 +293,13 @@ fn twips(node: Node<'_, '_>, name: &str) -> Option<f32> {
         .map(|value| value / TWIPS_PER_PT)
 }
 
-/// EMU in the attribute `name` of `node` (no namespace), in points.
+/// EMU in the attribute `name` of `node` (no namespace), in points;
+/// `None` when it is not a finite number.
 fn emu(node: Node<'_, '_>, name: &str) -> Option<f32> {
     node.attribute(name)
         .and_then(|value| value.parse::<f32>().ok())
         .map(|value| value / EMU_PER_PT)
+        .filter(|value| value.is_finite())
 }
 
 impl Reader<'_> {
@@ -855,8 +857,9 @@ impl Reader<'_> {
     /// A DrawingML drawing (`wp:inline` or `wp:anchor`).
     fn drawing(&mut self, node: Node<'_, '_>, fmt: &RunFmt) -> Option<Inline> {
         let extent = child(node, WP_NS, "extent");
-        let width = extent.and_then(|extent| emu(extent, "cx")).unwrap_or(0.0);
-        let height = extent.and_then(|extent| emu(extent, "cy")).unwrap_or(0.0);
+        let size = |name: &str| extent.and_then(|extent| emu(extent, name)).unwrap_or(0.0);
+        // A huge size is bounded, keeping its aspect.
+        let (width, height) = bounded_size((size("cx"), size("cy"))).unwrap_or((size("cx"), size("cy")));
         let anchor = is(node, WP_NS, "anchor").then(|| drawing_anchor(node));
         let alt = child(node, WP_NS, "docPr")
             .and_then(|doc_pr| doc_pr.attribute("descr").or_else(|| doc_pr.attribute("title")))
@@ -1834,6 +1837,14 @@ pub(crate) fn number_text(number: u32, format: &NumFormat) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emu_values_are_finite() {
+        let doc = roxmltree::Document::parse(r#"<e a="914400" b="inf" c="1e40" d="NaN"/>"#).unwrap();
+        let node = doc.root_element();
+        assert_eq!(emu(node, "a"), Some(72.0));
+        assert_eq!([emu(node, "b"), emu(node, "c"), emu(node, "d")], [None, None, None]);
+    }
 
     /// The key of an obfuscated font is the GUID read backwards.
     #[test]
