@@ -788,8 +788,9 @@ fn write_chunks(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, file: &P
 /// [`Paper::apply_content`]).
 fn apply_content(paper: &Paper, analysis: &mut Analysis, path: &Path) -> Result<()> {
     let json = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let base = path.parent().unwrap_or(Path::new("."));
     let report = paper
-        .apply_content(analysis, &json)
+        .apply_content_in(analysis, &json, base)
         .with_context(|| format!("applying {}", path.display()))?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");

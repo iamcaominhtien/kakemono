@@ -19,6 +19,7 @@ pub(crate) mod citation;
 pub(crate) mod front;
 pub(crate) mod markup;
 pub(crate) mod plain_text;
+pub(crate) mod replace;
 
 use super::latex::math::latex;
 use super::{Equations, HtmlOptions, ImageStore, Mode, PageImage, float_class, math_html, plain};

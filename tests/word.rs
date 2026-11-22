@@ -390,3 +390,36 @@ fn nested_list_items_keep_their_level() {
         ]
     );
 }
+
+/// A Word document's picture, already a stored picture, is replaced by a
+/// `replace_image` given as a data URI, like a PDF's figure.
+#[test]
+fn replace_image_works_on_a_word_picture() {
+    use base64::Engine;
+    let (paper, mut analysis) = load(SAMPLE_DOCX);
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let mut content: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(30, 20, image::Rgb([200, 30, 30]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png = png.into_inner();
+    let uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    );
+    let figure = content["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["type"] == "figure" && block.get("image").is_some())
+        .expect("the sample has a picture");
+    figure["replace_image"] = uri.into();
+    let report = paper.apply_content(&mut analysis, &content.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+    let out = paper.to_json(&analysis, &JsonOptions::default());
+    assert!(
+        out.files.iter().any(|(_, data)| data == &png),
+        "the new picture is written"
+    );
+}

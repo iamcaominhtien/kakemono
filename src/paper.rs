@@ -14,6 +14,7 @@ use crate::render::{
 use crate::word::{self, WordFormat};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 /// The format of the file a [`Paper`] was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +390,16 @@ impl Paper {
     /// text of single blocks are not errors: those blocks keep their text,
     /// and [`ContentReport::warnings`] says why.
     pub fn apply_content(&self, analysis: &mut Analysis, json: &str) -> Result<ContentReport> {
-        apply_content(analysis, json, &self.source_info())
+        apply_content(analysis, json, &self.source_info(), None)
+    }
+
+    /// [`Paper::apply_content`] for a JSON file in the folder `base`: a
+    /// figure's `replace_image` that is a relative path is read from there.
+    ///
+    /// # Errors
+    /// As [`Paper::apply_content`].
+    pub fn apply_content_in(&self, analysis: &mut Analysis, json: &str, base: &Path) -> Result<ContentReport> {
+        apply_content(analysis, json, &self.source_info(), Some(base))
     }
 
     /// The source as the JSON output names it.

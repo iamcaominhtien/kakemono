@@ -18,12 +18,14 @@
 
 use super::markup::{Parsed, from_markup, to_markup};
 use super::plain_text::block_plain;
+use super::replace::apply_replacement;
 use super::{FORMAT_NAME, FORMAT_VERSION, SourceInfo, kind_name};
 use crate::analysis::pipeline::Analysis;
 use crate::model::{Block, BlockKind, Span};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// What applying an edited JSON file did.
 #[derive(Debug, Clone, Default)]
@@ -82,6 +84,9 @@ struct BlockIn {
     /// A rebuilt table.
     #[serde(default)]
     table: Option<TableIn>,
+    /// A picture to draw in place of a figure's (see [`super::replace`]).
+    #[serde(default)]
+    replace_image: Option<String>,
 }
 
 /// A table of the file.
@@ -108,7 +113,15 @@ struct CellIn {
 /// format version, was made from another source (its SHA-256 differs), or
 /// names a block that does not exist or has another type (the file was
 /// made with other analysis options or by another version of kakemono).
-pub(crate) fn apply_content(analysis: &mut Analysis, json: &str, source: &SourceInfo) -> Result<ContentReport> {
+///
+/// A `replace_image` that is a relative path is read from `base`, the
+/// folder of the JSON file; without it, such a path is a warning.
+pub(crate) fn apply_content(
+    analysis: &mut Analysis,
+    json: &str,
+    source: &SourceInfo,
+    base: Option<&Path>,
+) -> Result<ContentReport> {
     let file: FileIn = serde_json::from_str(json).map_err(|err| anyhow::anyhow!("reading the JSON: {err}"))?;
     check_header(&file, source)?;
     let index: HashMap<usize, usize> = analysis
@@ -139,10 +152,15 @@ pub(crate) fn apply_content(analysis: &mut Analysis, json: &str, source: &Source
     let mut report = ContentReport::default();
     let mut title_edited = false;
     for block_in in &file.blocks {
-        let block = &mut analysis.doc.blocks[index[&block_in.id]];
-        if apply_block(block, block_in, &mut report) {
+        let idx = index[&block_in.id];
+        let block = &mut analysis.doc.blocks[idx];
+        let mut edited = apply_block(block, block_in, &mut report);
+        title_edited |= edited && matches!(block.kind, BlockKind::Title);
+        if let Some(value) = &block_in.replace_image {
+            edited |= apply_replacement(&mut analysis.doc, idx, value, base, &mut report);
+        }
+        if edited {
             report.edited_blocks += 1;
-            title_edited |= matches!(block.kind, BlockKind::Title);
         }
     }
     if title_edited {

@@ -481,3 +481,154 @@ fn word_document_has_every_mode() {
     assert!(medium.contains("class=\"sheet\""), "medium is one sheet");
     assert!(medium.contains("font-family:"), "medium keeps Word's fonts");
 }
+
+/// Runs `kakemono` with `args` from the folder `dir`.
+fn kakemono_in(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_kakemono"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("the kakemono executable runs")
+}
+
+/// The files of a ZIP package (a `.docx`): (name, contents).
+fn zip_parts(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let le16 = |at: usize| usize::from(u16::from_le_bytes([zip[at], zip[at + 1]]));
+    let le32 = |at: usize| u32::from_le_bytes(zip[at..at + 4].try_into().unwrap()) as usize;
+    let mut parts = Vec::new();
+    let mut at = 0;
+    while zip[at..].starts_with(b"PK\x03\x04") {
+        let (method, size, name_len, extra_len) = (le16(at + 8), le32(at + 18), le16(at + 26), le16(at + 28));
+        let name = String::from_utf8(zip[at + 30..at + 30 + name_len].to_vec()).unwrap();
+        let start = at + 30 + name_len + extra_len;
+        let raw = &zip[start..start + size];
+        let data = if method == 8 {
+            let mut out = Vec::new();
+            flate2::read::DeflateDecoder::new(raw).read_to_end(&mut out).unwrap();
+            out
+        } else {
+            raw.to_vec()
+        };
+        parts.push((name, data));
+        at = start + size;
+    }
+    parts
+}
+
+/// A 10 by 10 PNG.
+fn square_png() -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(10, 10, image::Rgb([0, 128, 255]))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+/// The LIGO paper as an editable JSON in `dir`, with replacements: an SVG
+/// of the size of the first figure's picture, a missing file for the
+/// second, a square PNG for the wide third one, and a PNG on an equation.
+/// Returns the edited JSON's path and the SVG.
+fn ligo_with_replacements(dir: &Path) -> (PathBuf, String) {
+    let json = dir.join("ligo.json");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", json.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut content: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+    let blocks = content["blocks"].as_array().unwrap();
+    let index_of = |kind: &str, nth: usize| {
+        blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block["type"] == kind)
+            .nth(nth)
+            .unwrap()
+            .0
+    };
+    let (first, second, third, equation) = (
+        index_of("figure", 0),
+        index_of("figure", 1),
+        index_of("figure", 2),
+        index_of("equation", 0),
+    );
+    let picture = dir.join(blocks[first]["image"].as_str().unwrap());
+    let (width, height) = image::image_dimensions(picture).unwrap();
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"><rect width="{width}" height="{height}" fill="#eef"/><text x="10" y="40" font-size="30">Hình mới</text></svg>"##
+    );
+    std::fs::create_dir_all(dir.join("vi")).unwrap();
+    std::fs::write(dir.join("vi/fig1.svg"), &svg).unwrap();
+    std::fs::write(dir.join("vi/square.png"), square_png()).unwrap();
+    content["blocks"][first]["replace_image"] = "vi/fig1.svg".into();
+    content["blocks"][second]["replace_image"] = "vi/missing.png".into();
+    content["blocks"][third]["replace_image"] = "vi/square.png".into();
+    content["blocks"][equation]["replace_image"] = "vi/square.png".into();
+    let edited = dir.join("ligo.vi.json");
+    std::fs::write(&edited, serde_json::to_string(&content).unwrap()).unwrap();
+    (edited, svg)
+}
+
+/// A figure's `replace_image`, a path relative to the JSON's folder,
+/// replaces its picture in Markdown, Word and friendly HTML; a missing
+/// file, a picture of another shape and a block that is not a figure are
+/// warnings.
+#[test]
+fn replace_image_swaps_a_figure_in_every_format() {
+    let dir = scratch("cli-replace");
+    let (edited, svg) = ligo_with_replacements(&dir);
+    let edited = edited.to_str().unwrap();
+    let elsewhere = std::env::temp_dir();
+
+    let md = dir.join("out/x.md");
+    let out = kakemono_in(
+        &elsewhere,
+        &["convert", ligo_abs(), "--content", edited, "-o", md.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("missing.png"), "{stderr}");
+    assert!(stderr.contains("aspect"), "{stderr}");
+    assert!(stderr.contains("not a figure"), "{stderr}");
+    let text = std::fs::read_to_string(&md).unwrap();
+    assert!(text.contains(".svg)"), "the replaced figure is an SVG file: {text}");
+
+    let docx = dir.join("out/x.docx");
+    let out = kakemono_in(
+        &elsewhere,
+        &["convert", ligo_abs(), "--content", edited, "-o", docx.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let png = kakemono::backend::svg_to_png(&svg, 3.0).unwrap();
+    let parts = zip_parts(&std::fs::read(&docx).unwrap());
+    assert!(
+        parts
+            .iter()
+            .any(|(name, data)| name.starts_with("word/media/") && data == &png)
+    );
+    assert!(
+        parts
+            .iter()
+            .any(|(name, data)| name.starts_with("word/media/") && data == &square_png())
+    );
+
+    let html = dir.join("out/x.friendly.html");
+    let out = kakemono_in(
+        &elsewhere,
+        &[
+            "convert",
+            ligo_abs(),
+            "-m",
+            "friendly",
+            "--content",
+            edited,
+            "-o",
+            html.to_str().unwrap(),
+        ],
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read_to_string(&html).unwrap().contains("data:image/svg+xml"));
+}
+
+/// The LIGO paper's absolute path, for commands run from another folder.
+fn ligo_abs() -> &'static str {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/1602.03837v1.pdf")
+}
