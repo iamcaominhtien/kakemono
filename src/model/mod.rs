@@ -254,10 +254,26 @@ pub struct Picture {
     pub data: Vec<u8>,
     /// The format of [`Picture::data`].
     pub format: PictureFormat,
+    /// For an SVG: the size in pixels of the PNG drawn of it at 2 pixels
+    /// per point, found when it was read (`None` for a bitmap, whose header
+    /// gives its size, or when none would be drawn).
+    pub(crate) png_size: Option<(u32, u32)>,
+}
+
+impl Picture {
+    /// A PNG or JPEG picture.
+    pub(crate) fn bitmap(data: Vec<u8>, format: PictureFormat) -> Self {
+        Self {
+            data,
+            format,
+            png_size: None,
+        }
+    }
 }
 
 /// The format of a [`Picture`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PictureFormat {
     /// A PNG file.
     Png,

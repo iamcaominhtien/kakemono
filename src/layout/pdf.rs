@@ -32,24 +32,23 @@ struct Loaded<'a> {
     /// Fonts loaded so far, by face.
     fonts: HashMap<usize, Font>,
     /// Pictures loaded so far, by index (`None` for one that does not decode).
-    pictures: HashMap<usize, Option<LoadedPicture<'a>>>,
+    pictures: HashMap<usize, Option<LoadedPicture>>,
 }
 
-/// A picture loaded for the PDF.
-enum LoadedPicture<'a> {
+/// A picture loaded for the PDF, once for every place it is drawn at.
+enum LoadedPicture {
     /// A bitmap.
     Raster(Image),
-    /// An SVG drawing, parsed, with its text (drawn as a bitmap when it has
-    /// filters: see `backend::svg::draw`).
-    Vector(Box<resvg::usvg::Tree>, &'a str),
+    /// An SVG drawing, parsed.
+    Vector(Box<resvg::usvg::Tree>),
 }
 
-impl LoadedPicture<'_> {
+impl LoadedPicture {
     /// Draws the picture on `surface` at its origin, `size` large.
     fn draw(&self, surface: &mut krilla::surface::Surface<'_>, size: Size) {
         match self {
             Self::Raster(image) => surface.draw_image(image.clone(), size),
-            Self::Vector(tree, svg) => crate::backend::svg::draw(surface, tree, svg, size),
+            Self::Vector(tree) => crate::backend::svg::draw_vector(surface, tree, size),
         }
     }
 }
@@ -275,7 +274,7 @@ fn draw_text(surface: &mut krilla::surface::Surface<'_>, run: &TextRun, font: Fo
 /// Draws a picture in a box, with its cropping.
 fn draw_image(
     surface: &mut krilla::surface::Surface<'_>,
-    image: &LoadedPicture<'_>,
+    image: &LoadedPicture,
     x: f32,
     y: f32,
     width: f32,
@@ -314,13 +313,17 @@ fn draw_image(
 }
 
 /// The picture `image` loaded for the PDF: a metafile without its lines
-/// of text, which are drawn as text over it; an SVG as vector; `None` when
-/// it does not decode.
-fn load_picture(image: &FImage) -> Option<LoadedPicture<'_>> {
-    fn vector(data: &[u8]) -> Option<LoadedPicture<'_>> {
-        let svg = std::str::from_utf8(data).ok()?;
-        let tree = crate::backend::parse_svg(svg)?;
-        Some(LoadedPicture::Vector(Box::new(tree), svg))
+/// of text, which are drawn as text over it; an SVG as vector, or as a PNG
+/// when it has filters (krilla draws each filter as a bitmap of up to 25
+/// million pixels per nested group); `None` when it does not decode.
+fn load_picture(image: &FImage) -> Option<LoadedPicture> {
+    fn vector(data: &[u8]) -> Option<LoadedPicture> {
+        let tree = crate::backend::parse_svg(std::str::from_utf8(data).ok()?)?;
+        if tree.filters().is_empty() {
+            return Some(LoadedPicture::Vector(Box::new(tree)));
+        }
+        let png = crate::backend::render::png_of_tree(&tree, crate::backend::svg::SVG_PNG_SCALE)?;
+        Image::from_png(png.into(), true).ok().map(LoadedPicture::Raster)
     }
     if let Some(bare) = &image.bare {
         return vector(bare);

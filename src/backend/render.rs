@@ -17,6 +17,42 @@ use std::collections::HashSet;
 /// shown. A file of a few bytes can declare any size; this keeps memory
 /// use bounded.
 pub const MAX_RASTER_PIXELS: u64 = 40_000_000;
+/// Most pixels the filters of an SVG picture drawn as a bitmap are drawn
+/// over, all its filters together (10 million): each filter can cover the
+/// whole picture, and 200 blurs over 20 million pixels each took minutes
+/// (over 40 million pixels in all, 14 s). A picture with many filters is
+/// drawn smaller.
+pub(crate) const MAX_FILTERED_PIXELS: u64 = 10_000_000;
+/// Most characters of text in an SVG picture, counted with the copies that
+/// `<use>` makes (20 000): usvg lays out its text as it reads it, looking
+/// for a font for each character, and 240 kB of text took 18 s. A picture
+/// with more is left out (Word keeps a PNG beside an SVG, taken instead).
+pub(crate) const MAX_SVG_TEXT_CHARS: u64 = 20_000;
+/// Most elements of an SVG picture, counted with the copies that `<use>`
+/// makes, that is read at all (1 million): a few lines of `<use>` can ask
+/// for billions. A picture with more is left out.
+pub(crate) const MAX_SVG_ELEMENTS: u64 = 1_000_000;
+/// Most bytes of path data (`d`, `points`) of an SVG picture, counted with
+/// the copies that `<use>` makes, that is read at all (64 MiB): usvg keeps
+/// each copy, and 8.5 kB of `<use>` over a path of 1500 segments took
+/// 1.9 GB to read. A picture with more is left out.
+pub(crate) const MAX_SVG_PATH_BYTES: u64 = 64 * 1024 * 1024;
+/// Most nodes of an SVG picture kept as SVG, once read (100 000): usvg's
+/// writer writes each copy that `<use>` makes in full. A picture with more
+/// is kept as a PNG.
+pub(crate) const MAX_SVG_NODES: u64 = 100_000;
+/// Most points of the paths of an SVG picture kept as SVG, once read
+/// (1 million, about 20 MB written). A picture with more is kept as a PNG.
+pub(crate) const MAX_SVG_POINTS: u64 = 1_000_000;
+/// Most points of the paths of an SVG picture drawn as a PNG (10 million):
+/// a picture with more is left out.
+pub(crate) const MAX_RASTER_SVG_POINTS: u64 = 10_000_000;
+/// Most filters of an SVG picture kept as SVG (16): a PDF draws each as a
+/// bitmap. A picture with more is kept as a PNG.
+pub(crate) const MAX_SVG_FILTERS: usize = 16;
+/// Longest SVG picture, in bytes: as read (decompressed) and as written
+/// (32 MiB). A longer one is left out, or kept as a PNG once read.
+pub(crate) const MAX_SVG_BYTES: usize = 32 * 1024 * 1024;
 /// Largest width or height of a rendered bitmap, in pixels: the scale is
 /// reduced for regions that would exceed it, to keep memory use sane.
 const MAX_BITMAP_SIDE_PX: f32 = 6000.0;
@@ -322,7 +358,8 @@ pub(crate) fn svg_options() -> resvg::usvg::Options<'static> {
             resolve_data: Box::new(|mime, data, options| {
                 let allowed = match declared_size(&data) {
                     Some(_) => within_pixel_cap(&data),
-                    None => mime == "image/svg+xml",
+                    // An SVG inside: within the caps of an SVG picture.
+                    None => mime == "image/svg+xml" && super::svg::within_read_caps(&data),
                 };
                 allowed
                     .then(|| (usvg::ImageHrefResolver::default_data_resolver())(mime, data, options))
@@ -342,7 +379,8 @@ pub(crate) fn plan_raster(tree: &resvg::usvg::Tree, scale: f32) -> Option<(f32, 
     // nested group drawn apart (opacity, clip, mask, filter) takes a
     // pixmap of its own, at most the size of the picture: they share the
     // cap.
-    let budget = MAX_RASTER_PIXELS / (1 + isolated_depth(tree.root()));
+    let filters = tree.filters().len() as u64;
+    let budget = (MAX_RASTER_PIXELS / (1 + isolated_depth(tree.root()))).min(MAX_FILTERED_PIXELS / filters.max(1));
     let base = tree.size().to_int_size();
     let pixels = f64::from(base.width()) * f64::from(base.height()) * f64::from(scale).powi(2);
     let scale = if pixels > budget as f64 {
@@ -364,13 +402,18 @@ pub(crate) fn plan_raster(tree: &resvg::usvg::Tree, scale: f32) -> Option<(f32, 
 /// at `scale` pixels per point, or smaller when it would have more than
 /// [`MAX_RASTER_PIXELS`]. Returns `None` when the SVG cannot be read.
 pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
-    use resvg::{tiny_skia, usvg};
-    let tree = usvg::Tree::from_str(svg, &svg_options()).ok()?;
-    let (scale, size) = plan_raster(&tree, scale)?;
+    let tree = resvg::usvg::Tree::from_str(svg, &svg_options()).ok()?;
+    png_of_tree(&tree, scale)
+}
+
+/// Draws the parsed SVG `tree` as [`svg_to_png`] draws an SVG.
+pub(crate) fn png_of_tree(tree: &resvg::usvg::Tree, scale: f32) -> Option<Vec<u8>> {
+    use resvg::tiny_skia;
+    let (scale, size) = plan_raster(tree, scale)?;
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
-        &tree,
+        tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );

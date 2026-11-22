@@ -3,9 +3,13 @@
 //! and Windows metafiles (EMF, WMF, through SVG) kept as vector: SVG
 //! written again by usvg (`backend::sanitize_svg`).
 
+use crate::backend::svg::ReadySvg;
 use crate::backend::within_pixel_cap;
 use crate::model::{Picture, PictureFormat};
 use crate::word::fmt::model::FImage;
+use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
+use std::sync::Mutex;
 
 /// Most bytes of the pictures of one document, once made ready (256 MiB):
 /// the pictures past it are left out. Each file of a package may hold up to
@@ -20,10 +24,6 @@ pub(crate) const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
 /// page. A document can give any size, an infinite one too; a larger
 /// picture is made smaller, keeping its aspect.
 pub(crate) const MAX_PICTURE_SIDE_PT: f32 = 1584.0;
-/// Pixels per point of an SVG drawing turned into a PNG (the fallback of
-/// an output that needs one), which also gives the size of an SVG picture
-/// whose document gives none: that of its PNG.
-const SVG_SCALE: f32 = crate::backend::svg::SVG_PNG_SCALE;
 /// Signature of a PNG file.
 const PNG_MAGIC: &[u8] = b"\x89PNG";
 /// Signature of a JPEG file.
@@ -32,6 +32,13 @@ const JPEG_MAGIC: &[u8] = &[0xFF, 0xD8, 0xFF];
 const GIF_MAGIC: &[u8] = b"GIF8";
 /// Signature of a BMP file.
 const BMP_MAGIC: &[u8] = b"BM";
+/// Signature of a gzip-compressed file.
+const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
+/// Most bytes of the vector pictures (SVG, metafiles) last made ready that
+/// are kept for the next reading of the same file (64 MiB): the text and
+/// the page layout read a Word file each, and an SVG can take seconds to
+/// read.
+const MAX_RECENT_VECTOR_BYTES: usize = 64 * 1024 * 1024;
 /// How far into a file the start of an SVG document is looked for.
 const SVG_SNIFF_BYTES: usize = 512;
 
@@ -81,11 +88,11 @@ pub(crate) fn bounded_size((width, height): (f32, f32)) -> Option<(f32, f32)> {
 
 /// The size in points of `picture` at 96 pixels per inch, bounded
 /// ([`bounded_size`]): of a bitmap, by the size its header gives; of an
-/// SVG, by that of the PNG drawn of it at [`SVG_SCALE`]. `None` when it has
-/// none.
+/// SVG, by that of the PNG drawn of it at 2 pixels per point (found when
+/// it was read). `None` when it has none.
 pub(crate) fn pixel_size_pt(picture: &Picture) -> Option<(f32, f32)> {
     let (width, height) = match picture.format {
-        PictureFormat::Svg => crate::backend::svg_png_size(std::str::from_utf8(&picture.data).ok()?, SVG_SCALE)?,
+        PictureFormat::Svg => picture.png_size?,
         PictureFormat::Png | PictureFormat::Jpeg => crate::backend::declared_size(&picture.data)?,
     };
     bounded_size((width as f32 * PT_PER_PX, height as f32 * PT_PER_PX))
@@ -101,33 +108,56 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
         return None;
     }
     if data.starts_with(PNG_MAGIC) {
-        return Some(Picture {
-            data,
-            format: PictureFormat::Png,
-        });
+        return Some(Picture::bitmap(data, PictureFormat::Png));
     }
     if data.starts_with(JPEG_MAGIC) {
-        return Some(Picture {
-            data,
-            format: PictureFormat::Jpeg,
-        });
+        return Some(Picture::bitmap(data, PictureFormat::Jpeg));
     }
     if data.starts_with(GIF_MAGIC) || data.starts_with(BMP_MAGIC) {
         return to_png(&data);
     }
     if super::metafile::is_metafile(&data) {
-        return svg_picture(super::metafile::to_svg(&data)?.as_bytes());
+        return made_once(&data, || svg_picture(super::metafile::to_svg(&data)?.as_bytes()));
     }
     if is_svg(&data) {
-        return svg_picture(&data);
+        return made_once(&data, || svg_picture(&data));
     }
     None
+}
+
+/// The vector picture `data` made ready by `make`, or as it was made last
+/// time when the same file was made ready a little before (by the other
+/// reading of the same Word file): the last ones are kept, up to
+/// [`MAX_RECENT_VECTOR_BYTES`], by the SHA-256 of their file.
+fn made_once(data: &[u8], make: impl FnOnce() -> Option<Picture>) -> Option<Picture> {
+    type Recent = VecDeque<([u8; 32], Option<Picture>)>;
+    static RECENT: Mutex<Recent> = Mutex::new(VecDeque::new());
+    let key: [u8; 32] = Sha256::digest(data).into();
+    let found = RECENT.lock().ok().and_then(|recent| {
+        recent
+            .iter()
+            .find(|(made, _)| *made == key)
+            .map(|(_, picture)| picture.clone())
+    });
+    if let Some(picture) = found {
+        return picture;
+    }
+    let picture = make();
+    if let Ok(mut recent) = RECENT.lock() {
+        let size = |picture: &Option<Picture>| picture.as_ref().map_or(0, |picture| picture.data.len());
+        recent.push_back((key, picture.clone()));
+        while recent.iter().map(|(_, picture)| size(picture)).sum::<usize>() > MAX_RECENT_VECTOR_BYTES {
+            recent.pop_front();
+        }
+    }
+    picture
 }
 
 /// The picture `data` for the page layout: as [`normalize`] makes it and,
 /// for a metafile with lines of text, also without them, with those lines,
 /// which the PDF draws as text.
 pub(crate) fn for_layout(data: Vec<u8>) -> Option<FImage> {
+    // The picture without its text, when it can be kept as SVG.
     let parts = super::metafile::to_svg_and_text(&data)
         .filter(|(_, texts)| !texts.is_empty())
         .and_then(|(svg, texts)| Some((crate::backend::sanitize_svg(svg.as_bytes())?, texts)));
@@ -141,12 +171,17 @@ pub(crate) fn for_layout(data: Vec<u8>) -> Option<FImage> {
     })
 }
 
-/// The SVG `data` written again by usvg, as a picture; `None` when it
-/// cannot be read.
+/// The SVG `data` as a picture, read once (`backend::prepare_svg`): written
+/// again by usvg, or a PNG drawn of it when it is too large to write as
+/// SVG; `None` when it cannot be read, or asks for too much.
 fn svg_picture(data: &[u8]) -> Option<Picture> {
-    Some(Picture {
-        data: crate::backend::sanitize_svg(data)?.into_bytes(),
-        format: PictureFormat::Svg,
+    Some(match crate::backend::prepare_svg(data)? {
+        ReadySvg::Svg { svg, png_size, .. } => Picture {
+            data: svg.into_bytes(),
+            format: PictureFormat::Svg,
+            png_size,
+        },
+        ReadySvg::Png(png) => Picture::bitmap(png, PictureFormat::Png),
     })
 }
 
@@ -157,14 +192,16 @@ fn to_png(data: &[u8]) -> Option<Picture> {
     image
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
-    Some(Picture {
-        data: png,
-        format: PictureFormat::Png,
-    })
+    Some(Picture::bitmap(png, PictureFormat::Png))
 }
 
-/// Whether `data` is an SVG drawing.
+/// Whether `data` is an SVG drawing, or a gzip-compressed file (an `.svgz`:
+/// Word reads no other compressed picture), which
+/// `backend::prepare_svg` reads within its byte cap.
 fn is_svg(data: &[u8]) -> bool {
+    if data.starts_with(GZIP_MAGIC) {
+        return true;
+    }
     let head = String::from_utf8_lossy(&data[..data.len().min(SVG_SNIFF_BYTES)]);
     head.trim_start().starts_with('<') && head.contains("<svg")
 }
@@ -217,24 +254,18 @@ mod tests {
         let small = normalize(small.to_vec()).unwrap();
         assert_eq!(
             pixel_size_pt(&small),
-            Some((40.0 * SVG_SCALE * PT_PER_PX, 20.0 * SVG_SCALE * PT_PER_PX))
+            Some((40.0 * 2.0 * PT_PER_PX, 20.0 * 2.0 * PT_PER_PX))
         );
     }
 
     #[test]
     fn the_size_of_a_large_picture_keeps_its_aspect() {
         // 4000 × 1000 pixels: 3000 × 750 points, bounded to the largest side.
-        let png = |width, height| Picture {
-            data: png_header(width, height),
-            format: PictureFormat::Png,
-        };
+        let png = |width, height| Picture::bitmap(png_header(width, height), PictureFormat::Png);
         let (width, height) = pixel_size_pt(&png(4000, 1000)).unwrap();
         assert_eq!((width, height), (MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 4.0));
         assert_eq!(pixel_size_pt(&png(400, 200)), Some((300.0, 150.0)));
-        let damaged = Picture {
-            data: b"not a picture".to_vec(),
-            format: PictureFormat::Png,
-        };
+        let damaged = Picture::bitmap(b"not a picture".to_vec(), PictureFormat::Png);
         assert_eq!(pixel_size_pt(&damaged), None);
     }
 
@@ -266,6 +297,58 @@ mod tests {
         assert_eq!(picture.format, PictureFormat::Svg);
         let text = String::from_utf8(picture.data).unwrap();
         assert!(text.contains("<path") && !text.contains("alert"), "{text}");
+    }
+
+    #[test]
+    fn a_vector_picture_is_made_ready_once_for_both_readings() {
+        // The text and the page layout read the same file: an SVG that
+        // takes long to read (a PNG drawn of many filters) is read once.
+        let defs: String = (0..100)
+            .map(|i| format!(r#"<filter id="f{i}"><feGaussianBlur stdDeviation="3"/></filter>"#))
+            .collect();
+        let rects: String = (0..100)
+            .map(|i| format!(r#"<rect filter="url(#f{i})" x="{i}" width="2000" height="1000"/>"#))
+            .collect();
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000">{defs}{rects}</svg>"#);
+        let start = std::time::Instant::now();
+        let first = normalize(svg.clone().into_bytes()).expect("a PNG");
+        let once = start.elapsed();
+        let start = std::time::Instant::now();
+        let image = for_layout(svg.into_bytes()).expect("a PNG");
+        let again = start.elapsed();
+        assert_eq!((first.data, first.format), (image.data, image.format));
+        assert!(again * 10 < once, "{once:?} then {again:?}");
+    }
+
+    #[test]
+    fn a_compressed_svg_is_read() {
+        use std::io::Write;
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"><rect width="4" height="2"/></svg>"#;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(svg).unwrap();
+        let picture = normalize(gzip.finish().unwrap()).expect("an SVG");
+        assert_eq!(picture.format, PictureFormat::Svg);
+        assert_eq!(picture.png_size, Some((8, 4)));
+    }
+
+    #[test]
+    fn an_svg_of_many_copies_is_kept_as_a_png() {
+        // 10^4 copies of a path of 200 segments.
+        let leaf = format!("M0 0{}", " l1 1".repeat(200));
+        let groups: String = (1..=4)
+            .map(|level| {
+                format!(
+                    r##"<g id="a{level}">{}</g>"##,
+                    format!(r##"<use href="#a{}"/>"##, level - 1).repeat(10)
+                )
+            })
+            .collect();
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><defs><path id="a0" d="{leaf}"/>{groups}</defs><use href="#a4"/></svg>"##
+        );
+        let picture = normalize(svg.into_bytes()).expect("a PNG");
+        assert_eq!(picture.format, PictureFormat::Png);
+        assert!(picture.data.starts_with(PNG_MAGIC));
     }
 
     /// A metafile becomes SVG; for the page layout, so does the picture
