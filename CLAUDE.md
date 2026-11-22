@@ -105,7 +105,12 @@ committing.
 - Both readers (`docx.rs` for `.docx`, `doc/` for `.doc`) fill the same intermediate form
   (`ir.rs`); `build.rs` alone decides what each paragraph is. A rule about styles goes there.
 - The test samples are `tests/data/word/sample.docx` (pandoc, from `sample.md`) and `sample.doc`
-  (LibreOffice); a change to the reading shows in `tests/data/snapshots/word-sample.txt`.
+  (LibreOffice), with `vector.docx` and `chart.docx` written by `make-vector-docx.py` and
+  `make-chart-docx.py` (`python3 -I tests/data/word/make-chart-docx.py`); a change to the reading
+  shows in `tests/data/snapshots/word-sample.txt`.
+- Charts (`src/chart/`, shared with `src/excel/`): `read.rs`/`chartex.rs` read a chart part into a
+  `Chart` (cached values only), `svg/` draws it, `table.rs` gives its data table, `place.rs` makes
+  the figure and the table a document shows. The `.doc` reader leaves charts out.
 - A Word document has no pages (`Document::pages` is empty) and its pictures are stored in
   `Document::pictures` (`ImageSpec::embedded`): renderers must not assume a page to draw from.
 - The page layout (`src/word/fmt/` → `src/layout/`) is a second reading of the same file, with
@@ -122,8 +127,10 @@ committing.
   header rows or regions goes there; its threshold is a documented field of `ExcelConfig`
   (`src/excel/mod.rs`, re-exported by `src/config.rs`), with its unit in the name.
 - The test sample is `tests/data/excel/sample.xlsx`, made by LibreOffice from the hand-written
-  `sample.fods` (`soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`);
-  a change to the reading shows in `tests/data/snapshots/excel-sample.txt`.
+  `sample.fods` (`soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`),
+  and `charts.xlsx` (charts, pictures in a group and in cells), written by
+  `python3 -I tests/data/excel/make-chart-xlsx.py`; a change to the reading shows in
+  `tests/data/snapshots/excel-sample.txt`.
 - A workbook has no pages (`Document::pages` is empty, `Paper::to_pdf` fails with "no page layout"):
   the HTML modes other than friendly give the friendly page. Dates are always written ISO, and
   `--header-rows` (`ExcelConfig::header_rows`) overrides the header rules.

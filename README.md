@@ -96,6 +96,9 @@ read directly, without the layout analysis a PDF needs, and turned into the same
   an `<img>` of the SVG in HTML, an `.svg` file in Markdown, JSON and EPUB, a PDF picture in LaTeX,
   an SVG with a PNG beside it in Word, vector drawing in the PDF. An SVG is written again by
   kakemono first, with only its drawing (no script, link or style sheet);
+- charts of `.docx` files are drawn by kakemono as SVG (vector in the PDF too), each followed by a
+  table of its data; an Office 2016 chart (waterfall, treemap, ...) shows the picture Word keeps
+  beside it, else its data; the charts of `.doc` files are left out;
 - formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and `.docx`
   files) become real formulas, floating shapes and text boxes of `.doc` files are read,
   and nested lists keep their level.
@@ -139,6 +142,10 @@ it to an AI:
 - values are shown as Excel shows them: percentages, thousands separators, decimals; dates and
   times always in ISO form (`2024-01-31`, `14:05`); furigana never reaches the text;
 - the text of shapes and text boxes is read; forms drawn on a grid keep their text, not their look;
+- pictures become figures (also those of groups, and those placed in cells, after their table);
+  charts are drawn by kakemono as SVG, sharp at any zoom (bar, column, line, area, pie, doughnut,
+  scatter, radar, and bar and line combined; the colours and data labels of the file), each
+  followed by a table of its data, which is what the chunks and the JSON give;
 - in the chunks (`.jsonl`), a table is cut between rows and every chunk repeats its header rows.
 
 ```bash

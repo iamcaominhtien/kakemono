@@ -43,10 +43,29 @@ rows and hidden columns are left out; an empty sheet gives nothing, not even a h
    - **body rows**;
    - **note rows**: the single-cell rows after the body (`Source: ...`, `Note: ...`) are
      paragraphs after the table.
-4. The text of the **shapes and text boxes** of the sheet's drawing (`xl/drawings/`): Japanese
-   workbooks often put text, flows and org charts in shapes. It becomes paragraphs after the cells,
-   in the order of the anchors (row, then column). Pictures, charts, connectors and form controls
-   are not read.
+4. The pictures **placed in cells** (Excel 365's "Place in cell": a cell's `vm` attribute, through
+   `xl/metadata.xml` and `xl/richData/` to the picture's file) follow the table of their cell, in
+   cell order, as figures with their alternative text; their cell, which holds `#VALUE!` for older
+   readers, is left empty.
+5. The **drawn objects** of the sheet's drawing (`xl/drawings/`), after the cells, in the order of
+   their anchors (row, then column), those of a group (`xdr:grpSp`) included:
+   - the text of **shapes and text boxes** (Japanese workbooks often put text, flows and org
+     charts in shapes) becomes paragraphs, one per line;
+   - a **picture** becomes a figure with its alternative text;
+   - a **chart** (a `graphicFrame` of a `c:chart`, or of an Office 2016 `cx:chart`) becomes a
+     figure of the chart drawn as SVG by kakemono (`src/chart/`), captioned with its title, else
+     "Chart N" (the Nth chart of the sheet), **followed by a table of its data**: the categories as
+     rows, a column per series, the series names as the header row, with the same caption. Only the
+     values the chart part caches are read (formulas are not computed): a chart without them gives
+     its caption and a note. A chart of a type that is not drawn (stock, bubble, surface, the
+     Office 2016 types such as waterfall or treemap) gives its data table alone. The chart is drawn
+     at the size of its anchor: the widths of its columns and the heights of its rows
+     (`col width`, `row ht`, `sheetFormatPr`), or its `ext`, within 72 × 54 pt to 1440 × 1440 pt.
+     Its series take the colours of the file, else the accent colours of the workbook's theme
+     (`xl/theme/theme1.xml`); the values or shares of `c:dLbls` are shown on bars, points and
+     slices.
+
+   Connectors and form controls are not read.
 
 A region with fewer than two columns of data (no row with two cells or more), such as a cover or a
 list of notes, becomes **paragraphs**, one per row. (When `table_min_fill_ratio` is raised above 0,
@@ -157,6 +176,7 @@ would be lost without a word.
 
 ## Left out
 
-Excel 97–2003 (`.xls`), `.ods` and `.csv` files; charts, pictures, pivot tables, comments,
-conditional formatting, cell colours and form controls; recomputing formulas; rebuilding the look
-of a form drawn on a grid.
+Excel 97–2003 (`.xls`), `.ods` and `.csv` files; pivot tables, comments, conditional formatting,
+cell colours and form controls; recomputing formulas (a chart shows the values its part caches);
+rebuilding the look of a form drawn on a grid; pictures placed in cells shown inside their table
+cell (they follow the table); the data labels of area, radar and scatter charts.
