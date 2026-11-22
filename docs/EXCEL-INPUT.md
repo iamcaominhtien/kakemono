@@ -24,8 +24,9 @@ for Word documents; `.xlsm` files are the same format. Excel 97–2003 files (`.
 
 ## What a workbook becomes
 
-A workbook has no pages, like a Word document: `Document::pages` is empty, and the outputs that
-need pages are not written (see [Outputs](#outputs)).
+A workbook has no pages, like a Word document: `Document::pages` is empty; the HTML modes that
+show pages give the friendly page, and the PDF is laid out from the document (see
+[The PDF](#the-pdf)).
 
 Each **visible** sheet, in workbook order, becomes a section. Hidden and very hidden sheets, hidden
 rows and hidden columns are left out; an empty sheet gives nothing, not even a heading.
@@ -145,15 +146,59 @@ would be lost without a word.
 | Word, Markdown, LaTeX, EPUB | the same document; with `-m medium`, Markdown keeps HTML tables |
 | editable JSON (`--content` applies it back) | the blocks and tables; `source.format` is `xlsx` |
 | chunks (`.jsonl`) | the text cut along the sheets; a table is cut only between rows, and **every chunk of a table repeats its caption and header rows**, unless together they would take more than half of a chunk: then no chunk of the table has them |
-| PDF (`-o x.pdf`) | an error: a workbook has no page layout |
+| PDF (`-o x.pdf`) | the document laid out in pages, without TeX (see [The PDF](#the-pdf)) |
 
 `kakemono inspect book.xlsx` prints the blocks found; it takes `--header-rows` too.
+
+## The PDF
+
+`kakemono convert book.xlsx -o book.pdf` (`Paper::to_pdf`) lays the document out in pages with the
+Word layout engine (`src/layout/`: line breaking, fonts, tables, pages, krilla), not with TeX:
+`src/layout/workbook/` turns the blocks into the engine's formatted document (`FDoc`), as the Word
+reader does for a `.docx`. The look is that of the LaTeX output compiled with LuaLaTeX:
+
+- one sheet after another, each starting with its heading (kept with what follows), page numbers
+  at the bottom;
+- tables centred, with a heavy rule above and below and a light one under the header (the
+  rules the document gives, as in Word and LaTeX); a caption above its table is kept with it;
+- the columns are as wide as their text when the table fits the width of the text; otherwise each
+  column keeps at least its typical cell (the mean width of its body cells, at most
+  `typical_cell_max_em`, and its widest word, and its header on at most `header_max_lines`
+  lines), the columns that need little more get it, and the long ones share the rest and wrap;
+- a table that does not fit is set smaller (from `table_size_pt` down to `min_table_size_pt`),
+  then on landscape pages (from `table_size_pt` down again), then in groups of columns that each
+  repeat the first column, at `min_table_size_pt`: no column is ever cut off; the text after a
+  turned table stays on its pages until the next heading or float;
+- a long table breaks between rows, with its header rows repeated at the top of each page (when
+  they take at most `max_head_ratio` of the page); a table of at most `max_unbroken_body_rows`
+  body rows moves whole to the next page; a row is kept whole unless it is taller than
+  `max_unsplit_row_ratio` of the page, then it breaks between lines;
+- at most `max_cells` (500,000) cells of tables are laid out in one PDF, some 3,000 pages: the
+  rows past them are left out, with a paragraph saying how many (laying out takes 2 to 3 KB a
+  cell at its peak; the 18,035-row Toronto budget, 144,000 cells, is whole: 420 pages, 4.4 s,
+  0.6 GB);
+- figures (PNG, JPEG, and SVG pictures and charts drawn as vector) at their size, made smaller to
+  fit the text width and `figure_max_height_ratio` of its height, with their caption;
+- the text in a serif font (Liberation Serif, else Times New Roman or another installed serif),
+  CJK text in a CJK font (Noto Serif CJK JP, else IPAex/IPA Mincho, Yu Mincho, MS Mincho, Hiragino,
+  Noto Sans CJK...), links in blue.
+
+The page is A4 with 2.5 cm margins, unless the first visible sheet whose print settings
+(`pageSetup paperSize`) name a known paper (Letter, Legal, Tabloid, Executive, A3, A4, A5, B4, B5)
+asks for another. Every threshold is a field of `WorkbookPdfConfig` (`config.rs`):
+`Paper::to_pdf_with` takes one. The PDF is the same from one run to the next on one computer, but
+depends on the fonts installed, so it has no snapshot: `tests/excel.rs` checks that every cell and
+the last row of each table are in its text.
+
+Not done: `--content` does not apply to the PDF; the sheet's own column widths, fonts, colours,
+borders, number alignment of a cell, and print areas are not used (the look is the LaTeX output's).
 
 ## In the other interfaces
 
 - Rust: `Paper::from_bytes_with(data, &ExcelConfig { header_rows: Some(1), ..Default::default() })`;
   `Paper::from_bytes` reads a workbook with the default `ExcelConfig`. `InputFormat::Xlsx` is
-  `"xlsx"` by `name()` and has no pages.
+  `"xlsx"` by `name()` and has no pages; `Paper::to_pdf` (or `to_pdf_with` and a
+  `WorkbookPdfConfig`) lays it out as a PDF.
 - Python: `header_rows=` on `convert`, `convert_all`, `to_docx`, `to_markdown`, `to_json`,
   `to_latex`, `to_epub`, `to_chunks` and `analyze`.
 

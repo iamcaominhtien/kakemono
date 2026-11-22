@@ -33,7 +33,8 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
-./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (all outputs but PDF)
+./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (every output)
+./target/release/kakemono convert <file.xlsx> -o out/x.pdf                   # a workbook laid out as a document (src/layout/workbook/)
 ./target/release/kakemono convert <file.xlsx> --header-rows 1 -o out/x.md    # header rows of every table, given instead of found
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
@@ -131,8 +132,11 @@ committing.
   and `charts.xlsx` (charts, pictures in a group and in cells), written by
   `python3 -I tests/data/excel/make-chart-xlsx.py`; a change to the reading shows in
   `tests/data/snapshots/excel-sample.txt`.
-- A workbook has no pages (`Document::pages` is empty, `Paper::to_pdf` fails with "no page layout"):
-  the HTML modes other than friendly give the friendly page. Dates are always written ISO, and
+- A workbook has no pages (`Document::pages` is empty): the HTML modes other than friendly give the
+  friendly page. Its PDF (`Paper::to_pdf`) is laid out by `src/layout/workbook/`, which turns the
+  `Document` into the Word layout engine's `FDoc` (tables fitted to the page: smaller, landscape, or
+  column groups; header rows repeated); its thresholds are `WorkbookPdfConfig`. A change to the
+  shared layout code (`flow.rs`, `para.rs`) must keep `scripts/word-fidelity.py` where it was. Dates are always written ISO, and
   `--header-rows` (`ExcelConfig::header_rows`) overrides the header rules.
 - The rules are tried on the corpus of `tests/data/excel-corpus.tsv` (downloaded, not committed):
   a change to the header or region rules should be compared on it, like a rule of the analysis:

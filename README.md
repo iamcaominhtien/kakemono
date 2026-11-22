@@ -42,6 +42,7 @@ kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages
 kakemono convert 1706.03762 -o attention.jsonl  # chunks for retrieval (RAG), one per line
 kakemono convert report.docx -o report.md       # a Word document (.docx or .doc) as input
 kakemono convert report.docx -o report.pdf      # a Word document as a PDF, laid out as Word lays it out
+kakemono convert sales.xlsx -o sales.pdf        # a workbook as a PDF document: sheet after sheet, long tables across pages
 kakemono convert sales.xlsx -o sales.md         # an Excel workbook (.xlsx) as input: one table per region of each sheet
 ```
 
@@ -155,7 +156,12 @@ kakemono convert sales.xlsx --header-rows 2 -o sales.md  # two header rows in ev
 ```
 
 A workbook has no pages: `hard`, `hard-95` and `medium` give the friendly page, as for a Word
-document, and `-o sales.pdf` is an error. Details: [docs/EXCEL-INPUT.md](docs/EXCEL-INPUT.md).
+document. `-o sales.pdf` lays it out as a document, without TeX: each sheet after its heading,
+tables with rules and their cells wrapped in their columns, a long table broken between rows with
+its header rows repeated on each page, a wide one set smaller, then on landscape pages, then in
+groups of columns (no column is ever cut off), charts drawn as vector, CJK text in CJK fonts; on A4
+unless the workbook's print settings name another paper. Details:
+[docs/EXCEL-INPUT.md](docs/EXCEL-INPUT.md).
 
 ## Word documents
 
@@ -440,7 +446,7 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an Excel workbook (`
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`); for Markdown, `friendly` or `medium` (how tables are written) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `-f, --format <html\|docx\|md\|tex\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input: the document laid out in pages as Word lays it out; workbook: laid out as a document); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` |
 | `--header-rows <N>` | Header rows of every table of an Excel workbook, 0 for none (default: found from the cells); ignored for other inputs |
 | `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but the `hard` mode |

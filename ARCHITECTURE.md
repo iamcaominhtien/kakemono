@@ -40,6 +40,8 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
     │   └► layout/    FDoc laid out in pages as Word does → a PDF (`-f pdf`); for the hard and
     │                 hard-95 modes that PDF goes through the PDF pipeline above; medium is
     │                 layout/html.rs (Word's formatting in one continuous page)
+    │      layout/workbook/  a workbook's Document → FDoc (tables fitted to the page) → the
+    │                 same engine → a PDF
     │
     ▼  render/        trait Renderer: one implementation per mode
  hard │ hard-95 │ medium │ friendly        shared: assets, escape, flow, mathml, table
@@ -60,7 +62,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | --- | --- |
 | `lib.rs` | Public API (the semver promise of the crate on crates.io): `Paper`, `convert`, `Analysis`, the Options types, `config`, `model`, `source`. The other modules are `#[doc(hidden)]` internals, public only for the CLI, examples and tests |
 | `main.rs` | CLI: only reads the arguments, then calls the API |
-| `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
+| `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), EPUB (`to_epub`), editable JSON (`to_json`), chunks (`to_chunks`) or, for a Word document or a workbook, a PDF of its pages (`to_pdf`, `to_pdf_with`), and applies an edited JSON file (`apply_content`) |
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm), `ExcelConfig` (the thresholds of the Excel reader, re-exported from `excel/`) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made ready: PNG and JPEG as they are, other bitmaps made PNG, SVG and metafiles kept as SVG written again by usvg, made ready once for the text and the page layout; a `asvg:svgBlip` is taken over the PNG beside it; a chart's SVG stored as it is), charts of a `.docx` (`w:drawing` of a chart part, through `chart/`: a figure and its data table; an Office 2016 chart shows the fallback picture of its `mc:AlternateContent` when there is one; `.doc` charts are left out), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
@@ -69,7 +71,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`) before
 | `word/fmt/` | A Word document with all its formatting, for the layout engine (`FDoc`, `model`): `docx` and `doc` read sections, headers and footers, resolved paragraph, run, table and cell properties (`props`, `styles`; `sprm` for `.doc`), lists, notes, fields, pictures, shapes and embedded fonts; `drawing` the floating shapes and text boxes of a `.doc` (OfficeArt), `frames` frames placed like text boxes, `contrast` automatic text colour |
 | `word/metafile/` | EMF and WMF pictures replayed on a small model of a Windows device context (`dc`) and written as SVG |
 | `word/mtef.rs` | MathType and Equation Editor formulas (MTEF 3 and 5, the `Equation Native` stream of an OLE object) → `MathNode` |
-| `layout/` | The Word layout engine (SVG pictures drawn as vector): `fonts` (embedded, installed, metric-compatible open fonts, and the built-in metrics of `metrics.txt` for fonts with no open match), `shape` (glyphs with Word's defaults), `para` (line breaking, tabs, justification, line heights), `flow` (sections, columns, pages: spacing, widows and orphans, keep-with-next, tables, headers and footers, footnotes, floating objects), `display` (what is drawn where), `pdf` (written with krilla), `html` (the medium mode for Word), `lines` (text lines of a PDF with their baselines, to compare a layout with Word's) |
+| `layout/` | The Word layout engine (SVG pictures drawn as vector): `fonts` (embedded, installed, metric-compatible open fonts, and the built-in metrics of `metrics.txt` for fonts with no open match), `shape` (glyphs with Word's defaults), `para` (line breaking, tabs, justification, line heights), `flow` (sections, columns, pages: spacing, widows and orphans, keep-with-next, tables, headers and footers, footnotes, floating objects), `display` (what is drawn where), `pdf` (written with krilla), `html` (the medium mode for Word), `lines` (text lines of a PDF with their baselines, to compare a layout with Word's), `workbook` (a workbook's `Document` as an `FDoc`: headings, paragraphs, figures, and tables whose columns are measured with the engine's fonts and fitted to the page, smaller, on landscape pages or in groups of columns; `WorkbookPdfConfig`) |
 | `backend/` | Adapter around hayro: reads pages (`extract`), recognizes fonts (`fonts`), draws pages/regions (`render`; resvg turns a very large SVG page into a PNG; a photograph is cut out as a JPEG); `svg`: a foreign SVG picture parsed by usvg and written back by usvg's writer (no script, event handler, `foreignObject`, style sheet or link survives; only data pictures within the pixel cap), once: what it asks for (text, elements, path data, with the copies `<use>` makes) is counted before it is read and capped, and one too large to write as SVG (nodes, points, filters, bytes, or not well-formed once written) is kept as a PNG; drawn into a PDF as vector by krilla-svg (as a capped PNG when it has filters). The caps are constants next to `MAX_RASTER_PIXELS` in `render` |
 | `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution |
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
@@ -92,7 +94,7 @@ main → paper → analysis → backend → common
               → word    → analysis (the linking of `semantics`)
               → excel   → word (`zip`, `docx` for parts and relationships, `xml`), chart, model
               → chart   → word (`docx::parse`, `xml`), excel (`numfmt`), model
-              → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping)
+              → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping), model (a workbook)
               → render  → model   → common
 ```
 
