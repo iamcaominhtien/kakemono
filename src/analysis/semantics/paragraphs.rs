@@ -60,6 +60,13 @@ pub struct ParagraphsConfig {
     /// hyphen) and ends in a full line, the second starts lowercase after an unfinished sentence
     /// and lies at most this many leadings below it.
     pub same_leaf_max_gap_leading: f32,
+    /// In a document whose paragraphs are separated by space, the second
+    /// part may lie this many leadings below the first (a blank line), when
+    /// the first stops on a word without any punctuation.
+    pub spaced_cut_max_gap_leading: f32,
+    /// ... and the part before the blank has several lines, or its line
+    /// fills at least this share of the column's width.
+    pub spaced_cut_min_width_ratio: f32,
     /// Lines joined across a paragraph cut are running text: at least this
     /// share of their visible characters are letters.
     pub cut_prose_min_letter_ratio: f32,
@@ -88,6 +95,8 @@ impl Default for ParagraphsConfig {
             size_tolerance_pt: 0.4,
             footnote_size_tolerance_pt: 0.4,
             same_leaf_max_gap_leading: 1.6,
+            spaced_cut_max_gap_leading: 2.5,
+            spaced_cut_min_width_ratio: 0.6,
             cut_prose_min_letter_ratio: 0.6,
             full_line_max_gap_em: 0.6,
             ornament_max_chars_count: 12,
@@ -268,11 +277,21 @@ fn is_cut_paragraph(prev: &Node, next: &Node, stats: &DocStats, cfg: &Paragraphs
         return false;
     };
     let (last, first) = (prev_block.lines.last().unwrap(), &next_block.lines[0]);
-    (prev_block.lines.len() >= 2 || last.text().ends_with('-'))
-        && prev_block.right - last.bbox.x1 <= cfg.full_line_max_gap_em * last.size
+    let full_last = prev_block.right - last.bbox.x1 <= cfg.full_line_max_gap_em * last.size
+        && next_block.gap_before <= cfg.same_leaf_max_gap_leading * stats.leading;
+    // In a document whose paragraphs are separated by space (and often set
+    // ragged right), a blank line in the middle of a sentence that stops
+    // on a bare word ("... his class put" / "together, but ...") is no
+    // paragraph break; a line ending in a comma may be a line of verse,
+    // and a short block of one line an item of a list.
+    let column = prev.leaf_right - prev.leaf_left;
+    let spaced_cut = stats.spaced_paragraphs
+        && last.text().trim_end().ends_with(char::is_alphanumeric)
+        && (prev_block.lines.len() >= 2 || last.bbox.x1 - prev.leaf_left >= cfg.spaced_cut_min_width_ratio * column)
+        && next_block.gap_before <= cfg.spaced_cut_max_gap_leading * stats.leading;
+    ((full_last && (prev_block.lines.len() >= 2 || last.text().ends_with('-'))) || spaced_cut)
         && prev.tail == (next.loc.page, next.loc.leaf)
         && (last.size - first.size).abs() <= cfg.size_tolerance_pt
-        && next_block.gap_before <= cfg.same_leaf_max_gap_leading * stats.leading
         && !ends_terminal(&last.text())
         && first_alpha_lower(&first.text())
         && prose_line(&last.text(), cfg)
@@ -520,9 +539,15 @@ impl<'a> Junction<'a> {
     /// ragged right, so that every last line looks short), an unfinished
     /// sentence that goes on in lowercase after an unindented first line:
     /// joined.
+    /// A last line in capitals ("OTHER EQUIPMENT" over a list) is left
+    /// to the other rules.
     fn spaced_sentence_rule(&self, style: &DocumentStyle) -> Option<bool> {
-        (style.spaced && !self.indented_first && !ends_terminal(&self.last_text) && first_alpha_lower(&self.first_text))
-            .then_some(true)
+        (style.spaced
+            && !self.indented_first
+            && !ends_terminal(&self.last_text)
+            && first_alpha_lower(&self.first_text)
+            && self.last_text.chars().any(char::is_lowercase))
+        .then_some(true)
     }
 
     /// A short last line or an indented first line: a paragraph break.

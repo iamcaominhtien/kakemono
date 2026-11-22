@@ -1951,7 +1951,7 @@ fn split_paragraphs(
         spaced,
     } = layout;
     let ragged = is_ragged(&lines, right, fonts, cfg);
-    let spaced_prose = spaced && is_prose(&lines, fonts, cfg);
+    let spaced_prose = spaced && is_prose(&lines, fonts, true, cfg);
     let mut paras: Vec<Vec<(Line, f32)>> = Vec::new();
     for (line, gap) in lines {
         let Some(para) = paras.last_mut() else {
@@ -2049,7 +2049,7 @@ fn is_ragged(lines: &[(Line, f32)], right: f32, fonts: &[FontInfo], cfg: &Blocks
     if lines.len() < cfg.ragged_min_lines_count
         || !lines
             .iter()
-            .all(|line| is_prose(std::slice::from_ref(line), fonts, cfg))
+            .all(|line| is_prose(std::slice::from_ref(line), fonts, false, cfg))
     {
         return false;
     }
@@ -2065,14 +2065,18 @@ fn is_ragged(lines: &[(Line, f32)], right: f32, fonts: &[FontInfo], cfg: &Blocks
 /// and mostly lowercase words (a list of names and roles is not prose).
 /// The words are counted over the whole group: one line of names ("Mr. and
 /// Mrs. Dursley, of number four, Privet Drive") does not make a novel's
-/// paragraph a list.
-fn is_prose(lines: &[(Line, f32)], fonts: &[FontInfo], cfg: &BlocksConfig) -> bool {
+/// paragraph a list. With `shouting`, words in capitals count as words of
+/// a sentence too ("YOU WON'T BELIEVE / WHAT IT'S DOING!"): a list of
+/// names is in title case.
+fn is_prose(lines: &[(Line, f32)], fonts: &[FontInfo], shouting: bool, cfg: &BlocksConfig) -> bool {
     let (mut lower, mut words) = (0, 0);
     for (line, _) in lines {
         let text = line.text();
         for word in text.split_whitespace() {
+            let letters: Vec<char> = word.chars().filter(|ch| ch.is_alphabetic()).collect();
+            let capitals = letters.len() >= 2 && letters.iter().all(|ch| ch.is_uppercase());
             words += 1;
-            lower += usize::from(word.starts_with(|ch: char| ch.is_lowercase()));
+            lower += usize::from(word.starts_with(|ch: char| ch.is_lowercase()) || (shouting && capitals));
         }
     }
     lines
@@ -2219,6 +2223,15 @@ mod tests {
         // Without the spacing, the short lines that end a sentence still
         // end paragraphs.
         assert!(paragraphs_in(&paragraph, false).len() > 1);
+    }
+
+    #[test]
+    fn spaced_novel_keeps_a_shouted_sentence_whole() {
+        let shout = [
+            "\"DUDLEY! MR. DURSLEY! COME AND LOOK AT THIS SNAKE! YOU WON'T BELIEVE",
+            "WHAT IT'S DOING!\"",
+        ];
+        assert_eq!(paragraphs_in(&shout, true).len(), 1);
     }
 
     #[test]
