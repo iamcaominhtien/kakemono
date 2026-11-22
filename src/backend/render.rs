@@ -319,10 +319,15 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
     let options = usvg::Options {
         fontdb: svg_fonts(),
         // Pictures inside the SVG: data only (a path would read a file of
-        // this machine into the output), and within the pixel cap.
+        // this machine into the output), and only those whose size is known
+        // and within the pixel cap, or SVG (drawn within this one).
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: Box::new(|mime, data, options| {
-                within_pixel_cap(&data)
+                let allowed = match declared_size(&data) {
+                    Some(_) => within_pixel_cap(&data),
+                    None => mime == "image/svg+xml",
+                };
+                allowed
                     .then(|| (usvg::ImageHrefResolver::default_data_resolver())(mime, data, options))
                     .flatten()
             }),
@@ -331,14 +336,24 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
         ..Default::default()
     };
     let tree = usvg::Tree::from_str(svg, &options).ok()?;
-    let pixels = f64::from(tree.size().width()) * f64::from(tree.size().height()) * f64::from(scale).powi(2);
-    let scale = if pixels > MAX_RASTER_PIXELS as f64 {
+    // The pixmap is the size rounded up to whole pixels: counted so. Each
+    // nested group drawn apart (opacity, clip, mask, filter) takes a
+    // pixmap of its own, at most the size of the picture: they share the
+    // cap.
+    let budget = MAX_RASTER_PIXELS / (1 + isolated_depth(tree.root()));
+    let base = tree.size().to_int_size();
+    let pixels = f64::from(base.width()) * f64::from(base.height()) * f64::from(scale).powi(2);
+    let scale = if pixels > budget as f64 {
         // Rounded down a little, so that the rounded size stays within.
-        (f64::from(scale) * (MAX_RASTER_PIXELS as f64 / pixels).sqrt() * 0.999) as f32
+        (f64::from(scale) * (budget as f64 / pixels).sqrt() * 0.999) as f32
     } else {
         scale
     };
-    let size = tree.size().to_int_size().scale_by(scale)?;
+    let size = base.scale_by(scale)?;
+    // A side rounded up to one pixel can still leave too many.
+    if u64::from(size.width()) * u64::from(size.height()) > budget {
+        return None;
+    }
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
@@ -347,6 +362,21 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
         &mut pixmap.as_mut(),
     );
     pixmap.encode_png().ok()
+}
+
+/// The most groups drawn apart (each on a pixmap of its own) nested in
+/// `group`, itself included.
+fn isolated_depth(group: &resvg::usvg::Group) -> u64 {
+    let inner = group
+        .children()
+        .iter()
+        .filter_map(|node| match node {
+            resvg::usvg::Node::Group(child) => Some(isolated_depth(child)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    inner + u64::from(group.should_isolate())
 }
 
 /// Whether the bitmap `data` has at most [`MAX_RASTER_PIXELS`] pixels, by
@@ -368,6 +398,9 @@ pub fn declared_size(data: &[u8]) -> Option<(u32, u32)> {
         };
         return Some((side(16)?, side(20)?));
     }
+    if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+        return webp_size(data);
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -375,6 +408,35 @@ pub fn declared_size(data: &[u8]) -> Option<(u32, u32)> {
     // large one, which would pass as "no size".
     reader.no_limits();
     reader.into_dimensions().ok()
+}
+
+/// The size in pixels of the WebP picture `data`, from its first chunk:
+/// `VP8X` (extended: the canvas), `VP8L` (lossless) or `VP8 ` (lossy).
+fn webp_size(data: &[u8]) -> Option<(u32, u32)> {
+    let body = data.get(20..)?;
+    let le = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0u32, |value, &byte| (value << 8) | u32::from(byte))
+    };
+    match data.get(12..16)? {
+        b"VP8X" => Some((le(body.get(4..7)?) + 1, le(body.get(7..10)?) + 1)),
+        b"VP8L" => {
+            if *body.first()? != 0x2f {
+                return None;
+            }
+            let bits = le(body.get(1..5)?);
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        }
+        b"VP8 " => {
+            if body.get(3..6)? != [0x9d, 0x01, 0x2a] {
+                return None;
+            }
+            Some((le(body.get(6..8)?) & 0x3fff, le(body.get(8..10)?) & 0x3fff))
+        }
+        _ => None,
+    }
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are
@@ -586,7 +648,72 @@ width=\"484\" height=\"209\" preserveAspectRatio=\"none\" style=\"image-renderin
 
 #[cfg(test)]
 mod svg_tests {
-    use super::{MAX_RASTER_PIXELS, svg_to_png};
+    use super::{MAX_RASTER_PIXELS, declared_size, svg_to_png, within_pixel_cap};
+
+    /// The pixels of the PNG `png`.
+    fn pixels(png: &[u8]) -> u64 {
+        let (width, height) = declared_size(png).unwrap();
+        u64::from(width) * u64::from(height)
+    }
+
+    #[test]
+    fn nested_groups_drawn_apart_share_the_cap() {
+        let open = r#"<g opacity="0.9">"#.repeat(30);
+        let close = "</g>".repeat(30);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000">{open}<rect width="30000" height="30000" fill="red"/>{close}</svg>"#
+        );
+        let png = svg_to_png(&svg, 2.0).expect("drawn smaller");
+        assert!(pixels(&png) * 31 <= MAX_RASTER_PIXELS, "{} pixels", pixels(&png));
+    }
+
+    #[test]
+    fn a_thin_svg_counts_its_rounded_pixels() {
+        // 2e8 × 0.01 points: 2e6 pixels as floats, 2e8 once rounded up.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200000000" height="0.01"><rect width="10" height="10"/></svg>"#;
+        assert!(svg_to_png(svg, 2.0).is_none_or(|png| pixels(&png) <= MAX_RASTER_PIXELS));
+    }
+
+    /// The header of a WebP picture of `width` × `height` pixels, as each of
+    /// its three kinds of first chunk gives it.
+    fn webp_headers(width: u32, height: u32) -> [Vec<u8>; 3] {
+        let riff = |chunk: &[u8], body: &[u8]| {
+            let mut data = b"RIFF\0\0\0\0WEBP".to_vec();
+            data.extend(chunk);
+            data.extend((body.len() as u32).to_le_bytes());
+            data.extend(body);
+            data
+        };
+        let (wide, high) = (width - 1, height - 1);
+        let mut extended = vec![0u8; 4];
+        extended.extend(&wide.to_le_bytes()[..3]);
+        extended.extend(&high.to_le_bytes()[..3]);
+        let mut lossless = vec![0x2f];
+        lossless.extend((wide | (high << 14)).to_le_bytes());
+        let mut lossy = vec![0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a];
+        lossy.extend((width as u16).to_le_bytes());
+        lossy.extend((height as u16).to_le_bytes());
+        [
+            riff(b"VP8X", &extended),
+            riff(b"VP8L", &lossless),
+            riff(b"VP8 ", &lossy),
+        ]
+    }
+
+    #[test]
+    fn the_size_of_a_webp_picture_is_read() {
+        for header in webp_headers(16_383, 9_000) {
+            assert_eq!(declared_size(&header), Some((16_383, 9_000)));
+        }
+    }
+
+    #[test]
+    fn an_svg_draws_only_pictures_it_can_size_within_the_cap() {
+        let [_, lossless, _] = webp_headers(16_383, 16_383);
+        assert!(!within_pixel_cap(&lossless));
+        let [_, small, _] = webp_headers(100, 100);
+        assert!(within_pixel_cap(&small));
+    }
 
     #[test]
     fn a_huge_svg_is_drawn_within_the_pixel_cap() {
