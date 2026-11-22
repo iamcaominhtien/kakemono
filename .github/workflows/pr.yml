@@ -1,0 +1,52 @@
+name: PR
+
+# A pull request is squash-merged and its merged commit is the release, so:
+#  - its title is a Conventional Commits subject (it becomes the commit and sets
+#    the version);
+#  - it carries the version its title asks for, with its CHANGELOG.md entry
+#    (`scripts/release.py bump --pr N` writes both; see CONTRIBUTING.md).
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Title and version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          kinds='feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert'
+          if printf '%s' "$TITLE" | grep -qE "^($kinds)(\([a-z0-9._/-]+\))?!?: [^ ].*[^.]$"; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error::The PR title must be a Conventional Commits subject, for example"
+          echo "::error::'feat(tables): ...', 'fix: ...', 'feat!: ...' (breaking; the ! goes before the colon)."
+          echo "::error::Kinds: $kinds. No period at the end. Got: $TITLE"
+          exit 1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # every branch and tag: main and the last release tag are compared
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the version and CHANGELOG.md
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
+          python3 scripts/release.py check --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
+      - name: Tests of the release script
+        run: pipx run pytest -q scripts/tests

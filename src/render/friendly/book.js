@@ -469,6 +469,8 @@
     T={a:a,b:b,spine:per===2?g.pw:0,leaf:per===2?[g.pw,2*g.pw]:[0,g.pw]};
     T.c=[T.leaf[1],y];T.end=[2*T.spine-T.c[0],y];
     show(b,false);paint(repA,a);paint(repB,b);
+    // Opening or closing the book: no left page lies under the cover's leaf, only the desk.
+    if(per===2&&cover&&a===0){real.querySelector('.verso').style.visibility='hidden';var spine=real.querySelector('.recto').getBoundingClientRect().left-win.getBoundingClientRect().left;win.style.clipPath='inset(0 0 0 '+Math.max(0,spine)+'px)';}
     flapIn.textContent='';flapIn.appendChild(per===2?repB:blank);
     turn.hidden=false;layerA.style.opacity='';
   }
@@ -502,7 +504,7 @@
       ['rgba(255,255,255,.16)',flapW*.38],['rgba(255,255,255,0)',flapW*.62],['rgba(0,0,0,.08)',flapW]]);
   }
   function end(complete){
-    turn.hidden=true;T=null;busy=false;
+    turn.hidden=true;T=null;busy=false;win.style.clipPath='';
     if(queued){var q=queued;queued=0;go(q,false);}
   }
 

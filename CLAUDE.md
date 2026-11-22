@@ -159,6 +159,10 @@ committing.
   A PR that mixes kinds gets every label that applies. If a PR fits none of these (for example
   CI only, or refactoring only), create a short, lowercase label that names it (`ci`,
   `refactor`, `tests`) rather than leaving the PR unlabelled.
+- **Version:** every PR carries its release. After creating it, run
+  `python3 scripts/release.py bump --pr <N>` (or `--title ... --body-file ...` when `gh` cannot
+  read the PR), commit `chore(release): vX.Y.Z` and push; again after changing the title or the
+  description. Never tag or edit the version by hand (CONTRIBUTING.md, "Releases").
 - **SonarQube Cloud issues:** after the PR's checks finish, read the new issues SonarQube Cloud
   reports on it and fix them all in the PR, without waiting to be asked. They are public:
   `curl -s "https://sonarcloud.io/api/issues/search?componentKeys=iamcaominhtien_rust-pdf-parser&pullRequest=<N>&resolved=false"`.
