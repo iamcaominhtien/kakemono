@@ -1,11 +1,12 @@
 name: Release
 
-# Every push to main (each merged PR) is released, without a release PR:
-#  - `release` runs `release-plz update`, which picks the next version from the
-#    Conventional Commits since the last tag and writes it to Cargo.toml, Cargo.lock
-#    and CHANGELOG.md. It commits that to main as `chore: release vX.Y.Z`, then
-#    `release-plz release` tags the commit and creates the GitHub release
-#    (see release-plz.toml);
+# The merged commit of a pull request is the release: every PR carries its new
+# version (Cargo.toml, Cargo.lock) and its CHANGELOG.md entry, written by
+# `scripts/release.py bump --pr N` and checked by the PR workflow (see
+# CONTRIBUTING.md). On every push to main:
+#  - `release` tags the pushed commit `vX.Y.Z` when that version has no tag yet,
+#    and creates the GitHub release with its CHANGELOG.md entry as notes;
+#    nothing is committed to main;
 #  - `binaries` then attaches prebuilt binaries to the release;
 #  - `crate` publishes the new version on crates.io (secret CARGO_REGISTRY_TOKEN).
 # The Python package is published by the Python workflow once this one is done.
@@ -15,8 +16,7 @@ on:
 
 permissions: {}
 
-# One release at a time. A run that waits while another runs releases everything
-# merged up to then.
+# One release at a time.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -28,66 +28,36 @@ env:
 jobs:
   release:
     name: Tag and release
-    # The `chore: release` commit pushed by this job is not released again (pushes
-    # made with the default token do not start workflows anyway).
-    if: >-
-      github.repository_owner == 'iamcaominhtien' &&
-      !startsWith(github.event.head_commit.message, 'chore: release')
+    if: github.repository_owner == 'iamcaominhtien'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: write
     outputs:
       created: ${{ steps.release.outputs.created }}
       tag: ${{ steps.release.outputs.tag }}
     steps:
-      # The tip of main, not the pushed commit: a run that waited for an earlier one
-      # starts from that run's `chore: release` commit.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: main
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: stable
-      - name: Install release-plz
-        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
-        with:
-          tool: release-plz@0.4.3
-      - name: Bump the version and update CHANGELOG.md
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # A version set by hand in Cargo.toml (not tagged yet) is released as it is.
-          # `release-plz update` could not handle it anyway when the package was renamed:
-          # it looks for the package, by its new name, in the last release tag.
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-            echo "v$version is not tagged yet: releasing it as it is"
-            exit 0
-          fi
-          release-plz update
-          # `git status`, not `git diff`: the first release creates CHANGELOG.md.
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "nothing new since the last release"
-            exit 0
-          fi
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          git add Cargo.toml Cargo.lock CHANGELOG.md
-          git commit -m "chore: release v$version"
-          git push origin HEAD:main
-      - name: Tag and create the GitHub release
+      - name: Tag the pushed commit and create the GitHub release
         id: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          out=$(release-plz release --git-token "$GITHUB_TOKEN" -o json)
-          echo "release-plz: $out"
-          tag=$(echo "$out" | jq -r '.releases[0].tag // empty')
-          if [ -n "$tag" ]; then created=true; else created=false; fi
+          version=$(python3 scripts/release.py version)
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag is released already: nothing to do"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/release.py notes "$version" > "$RUNNER_TEMP/notes.md"
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+          gh release create "$tag" --title "$tag" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "created=$created" >> "$GITHUB_OUTPUT"
-          echo "released tag: ${tag:-none}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
 
   binaries:
     name: Binary ${{ matrix.target }}
