@@ -237,7 +237,9 @@ other formulas as pictures in `paper_assets/`:
 - `text` is one string, so that a paragraph can be edited (or translated) as a whole: `<b>`, `<i>`,
   `<code>`, `<sup>`, `<sub>`, `<sf>` (sans-serif), `<sc>` (small capitals), `<mf>` (math font),
   `<a href>` and `<font color>` keep the styles and links; `<m id="n">…</m>` stands for the n-th
-  formula of the block, with its LaTeX inside.
+  formula of the block, with its LaTeX inside. `<tn>…</tn>` is a translator's note added at that
+  point of the text, for example `“<i>Mon ami</i><tn>Tiếng Pháp: <i>bạn tôi</i>. (ND)</tn>
+  Hastings!”`: it may hold the style tags and links, but no formula and no other note.
 - `plain` is the same text without tags, formulas as `$LaTeX$` (`$$…$$` for a displayed formula),
   for search indexes and language models; table cells have one too.
 
@@ -291,6 +293,13 @@ left out of the file, or left unchanged, keep their text, so an unedited file ch
 Extra fields are ignored, so a file can keep the original next to the edited text. The file must
 come from the same PDF (its `sha256`) and the same analysis options (`--tables`). A block whose
 markup cannot be read (an unknown tag) keeps its text, with a warning.
+
+Translator's notes (`<tn>`) are printed as they are written and numbered in reading order: in
+friendly and medium a raised number links to the note, listed in a small aside after its block;
+in hard-95 the number opens the note in a popup; Word gets real footnotes, LaTeX `\footnote`s,
+Markdown `[^tn1]` footnotes and EPUB popup footnotes at the end of each chapter (numbered again in
+each chapter). `plain` and the chunks leave the notes out. A `<tn>` that is not closed, or that
+holds a formula or another note, is read with a warning.
 
 In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
 text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them
