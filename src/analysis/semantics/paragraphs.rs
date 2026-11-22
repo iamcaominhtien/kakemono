@@ -99,6 +99,8 @@ struct DocumentStyle<'a> {
     uses_indent: bool,
     /// Bibliography entries carry labels.
     refs_labeled: bool,
+    /// Paragraphs are separated by space ([`DocStats::spaced_paragraphs`]).
+    spaced: bool,
 }
 
 /// The two lines that meet at a column or page break, with the measurements
@@ -142,6 +144,7 @@ pub(crate) fn merge_paragraphs(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &
         fonts,
         uses_indent: uses_first_line_indent(nodes, stats, cfg),
         refs_labeled: references_are_labeled(nodes, cfg),
+        spaced: stats.spaced_paragraphs,
     };
     join_chapter_labels(nodes);
     merge_cut_paragraphs(nodes, stats, cfg);
@@ -430,6 +433,7 @@ impl<'a> Junction<'a> {
             .or_else(|| self.run_in_rule())
             .or_else(|| self.list_label_rule())
             .or_else(|| self.hyphen_rule())
+            .or_else(|| self.spaced_sentence_rule(style))
             .or_else(|| self.layout_break_rule())
             .or_else(|| self.sentence_rule())
             .unwrap_or(style.uses_indent)
@@ -472,6 +476,15 @@ impl<'a> Junction<'a> {
     /// A word hyphenated at the break: joined.
     fn hyphen_rule(&self) -> Option<bool> {
         self.hyphenated.then_some(true)
+    }
+
+    /// In a document whose paragraphs are separated by space (often set
+    /// ragged right, so that every last line looks short), an unfinished
+    /// sentence that goes on in lowercase after an unindented first line:
+    /// joined.
+    fn spaced_sentence_rule(&self, style: &DocumentStyle) -> Option<bool> {
+        (style.spaced && !self.indented_first && !ends_terminal(&self.last_text) && first_alpha_lower(&self.first_text))
+            .then_some(true)
     }
 
     /// A short last line or an indented first line: a paragraph break.

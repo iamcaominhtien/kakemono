@@ -47,6 +47,25 @@ pub struct PageConfig {
     /// Leading (in body sizes) assumed when no pair of adjacent body lines
     /// was found; 1.2 is the usual default line spacing of typesetters.
     pub default_leading_em: f32,
+    /// Two adjacent body lines are lines of one paragraph when their
+    /// baseline distance is at most this many leadings ...
+    pub line_pitch_max_leading: f32,
+    /// ... and lines of two paragraphs set apart by a blank space when it
+    /// is at least this many leadings (and at most
+    /// [`PageConfig::leading_max_gap_em`]).
+    pub para_space_min_leading: f32,
+    /// The document separates its paragraphs by space (a novel made in
+    /// Word, with no first-line indent) when at least this share of the
+    /// adjacent body lines are spaced paragraphs ...
+    pub spaced_paragraphs_min_ratio: f32,
+    /// ... and at least this share of those spaced distances are the same
+    /// (within [`PageConfig::para_space_tolerance_leading`]): a blank line
+    /// or a fixed space after each paragraph, not the varied gaps around
+    /// the headings, equations and figures of a paper.
+    pub para_space_regular_min_ratio: f32,
+    /// Width (in leadings) of the window in which spaced distances count
+    /// as the same.
+    pub para_space_tolerance_leading: f32,
 }
 
 impl Default for PageConfig {
@@ -62,6 +81,11 @@ impl Default for PageConfig {
             leading_overlap_ratio: 0.5,
             leading_bin_pt: 0.1,
             default_leading_em: 1.2,
+            line_pitch_max_leading: 1.15,
+            para_space_min_leading: 1.5,
+            spaced_paragraphs_min_ratio: 0.2,
+            para_space_regular_min_ratio: 0.8,
+            para_space_tolerance_leading: 0.1,
         }
     }
 }
@@ -142,6 +166,10 @@ pub struct DocStats {
     pub body_font: u16,
     /// Baseline distance of the running text.
     pub leading: f32,
+    /// The paragraphs are separated by a blank space (see
+    /// [`PageConfig::spaced_paragraphs_min_ratio`]): a group of lines set
+    /// close together is then a single paragraph.
+    pub spaced_paragraphs: bool,
 }
 
 /// Measures the body size, body font and leading of the document.
@@ -150,14 +178,35 @@ pub struct DocStats {
 /// is the font with most glyphs among lines of that size; the leading is the
 /// most common baseline distance between adjacent body lines. Each falls
 /// back to a default (see [`PageConfig`]) when the document has no text.
+/// The share of those distances that are a blank line rather than the
+/// leading tells whether paragraphs are separated by space.
 pub fn compute_stats(pages: &[PageData], cfg: &PageConfig) -> DocStats {
     let body_size = measure_body_size(pages, cfg);
     let body_font = find_body_font(pages, body_size, cfg);
-    let leading = measure_leading(pages, body_size, cfg);
+    let pitches = adjacent_pitches(pages, body_size, cfg);
+    let leading = weighted_mode(
+        pitches.iter().map(|&dy| (dy, 1.0)),
+        cfg.leading_bin_pt,
+        body_size * cfg.default_leading_em,
+    );
+    let lines = pitches
+        .iter()
+        .filter(|&&dy| dy <= cfg.line_pitch_max_leading * leading)
+        .count();
+    let mut spaced: Vec<f32> = pitches
+        .iter()
+        .copied()
+        .filter(|&dy| dy >= cfg.para_space_min_leading * leading)
+        .collect();
+    spaced.sort_by(f32::total_cmp);
+    let regular = most_within(&spaced, cfg.para_space_tolerance_leading * leading);
     DocStats {
         body_size,
         body_font,
         leading,
+        spaced_paragraphs: spaced.len() as f32
+            >= cfg.spaced_paragraphs_min_ratio * (lines + spaced.len()).max(1) as f32
+            && regular as f32 >= cfg.para_space_regular_min_ratio * spaced.len() as f32,
     }
 }
 
@@ -189,10 +238,25 @@ fn find_body_font(pages: &[PageData], body_size: f32, cfg: &PageConfig) -> u16 {
         .unwrap_or(0)
 }
 
-/// Leading: most common baseline distance between vertically adjacent body
-/// lines that overlap horizontally.
-fn measure_leading(pages: &[PageData], body_size: f32, cfg: &PageConfig) -> f32 {
-    let mut gaps: Vec<(f32, f32)> = Vec::new();
+/// The largest number of the `sorted` values that fit in a window of
+/// `width`.
+fn most_within(sorted: &[f32], width: f32) -> usize {
+    let mut best = 0;
+    let mut start = 0;
+    for (end, &value) in sorted.iter().enumerate() {
+        while value - sorted[start] > width {
+            start += 1;
+        }
+        best = best.max(end + 1 - start);
+    }
+    best
+}
+
+/// Baseline distances between vertically adjacent body lines that overlap
+/// horizontally (up to [`PageConfig::leading_max_gap_em`]); their mode is
+/// the leading.
+fn adjacent_pitches(pages: &[PageData], body_size: f32, cfg: &PageConfig) -> Vec<f32> {
+    let mut gaps: Vec<f32> = Vec::new();
     for page in pages {
         let body: Vec<&Line> = page
             .lines
@@ -212,11 +276,25 @@ fn measure_leading(pages: &[PageData], body_size: f32, cfg: &PageConfig) -> f32 
                     && upper.bbox.x_overlap(&lower.bbox)
                         > cfg.leading_overlap_ratio * upper.bbox.width().min(lower.bbox.width())
                 {
-                    gaps.push((dy, 1.0));
+                    gaps.push(dy);
                     break;
                 }
             }
         }
     }
-    weighted_mode(gaps.into_iter(), cfg.leading_bin_pt, body_size * cfg.default_leading_em)
+    gaps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::most_within;
+
+    #[test]
+    fn spaced_distances_of_a_novel_are_regular() {
+        // A blank line after every paragraph: the same distance each time.
+        assert_eq!(most_within(&[32.1, 32.2, 32.2, 32.2, 32.3], 1.6), 5);
+        // The gaps around a paper's headings, equations and figures vary.
+        assert_eq!(most_within(&[16.0, 18.5, 20.0, 22.0, 24.5], 1.1), 1);
+        assert_eq!(most_within(&[], 1.0), 0);
+    }
 }

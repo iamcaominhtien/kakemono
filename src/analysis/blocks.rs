@@ -264,8 +264,9 @@ pub struct BlocksConfig {
     /// In ragged text, a line ending at most this many font sizes before the
     /// right edge is a full line of prose.
     pub ragged_line_max_gap_em: f32,
-    /// Ragged text is prose when at least this share of the words of each
-    /// line start in lowercase.
+    /// A group of lines is prose (ragged text, or text in a document whose
+    /// paragraphs are separated by space) when at least this share of its
+    /// words start in lowercase.
     pub ragged_prose_min_lower_ratio: f32,
     /// The right edge of a paragraph is at most this far (points) beyond the
     /// right edge of the column's text, so that one line with a wide inline
@@ -591,6 +592,9 @@ struct ParagraphBreak<'a> {
     footnote: bool,
     /// The group is set ragged right (see [`is_ragged`]).
     ragged: bool,
+    /// The group is prose (see [`is_prose`]) in a document that separates
+    /// its paragraphs by space ([`DocStats::spaced_paragraphs`]).
+    spaced_prose: bool,
 }
 
 /// A rule of the paragraph splitting: whether a line starts a new
@@ -1886,7 +1890,13 @@ fn flush_group(ctx: BlockContext, group: &mut Vec<(Line, f32)>, loc: Loc, out: &
             .any(|line| (line.0.bbox.x0 - left).abs() > cfg.centered_group_min_offset_pt)
         && !footnote;
 
-    for para in split_paragraphs(lines, right, centered, footnote, ctx.fonts, cfg) {
+    let layout = GroupLayout {
+        right,
+        centered,
+        footnote,
+        spaced: ctx.stats.spaced_paragraphs,
+    };
+    for para in split_paragraphs(lines, layout, ctx.fonts, cfg) {
         let gap_before = para[0].1;
         let lines: Vec<Line> = para.into_iter().map(|line| line.0).collect();
         let bbox = lines.iter().fold(Rect::EMPTY, |acc, line| acc.union(&line.bbox));
@@ -1907,18 +1917,36 @@ fn flush_group(ctx: BlockContext, group: &mut Vec<(Line, f32)>, loc: Loc, out: &
     }
 }
 
+/// How a group of lines is set, for [`split_paragraphs`].
+#[derive(Clone, Copy)]
+struct GroupLayout {
+    /// Right edge of the group's text.
+    right: f32,
+    /// The group is centred.
+    centered: bool,
+    /// The group is in the footnote area.
+    footnote: bool,
+    /// The document separates its paragraphs by space.
+    spaced: bool,
+}
+
 /// Splits the lines of a group (with their gaps before) into paragraphs. A
 /// centred group is one paragraph; otherwise a line starts a new paragraph
 /// when one of the [`PARAGRAPH_RULES`] says so.
 fn split_paragraphs(
     lines: Vec<(Line, f32)>,
-    right: f32,
-    centered: bool,
-    footnote: bool,
+    layout: GroupLayout,
     fonts: &[FontInfo],
     cfg: &BlocksConfig,
 ) -> Vec<Vec<(Line, f32)>> {
+    let GroupLayout {
+        right,
+        centered,
+        footnote,
+        spaced,
+    } = layout;
     let ragged = is_ragged(&lines, right, fonts, cfg);
+    let spaced_prose = spaced && is_prose(&lines, fonts, cfg);
     let mut paras: Vec<Vec<(Line, f32)>> = Vec::new();
     for (line, gap) in lines {
         let Some(para) = paras.last_mut() else {
@@ -1934,6 +1962,7 @@ fn split_paragraphs(
                 right,
                 footnote,
                 ragged,
+                spaced_prose,
             };
             PARAGRAPH_RULES.iter().any(|rule| rule(&candidate, cfg))
         };
@@ -1982,8 +2011,13 @@ fn new_enumeration_item(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool 
 /// breaks its lines early anyway: there, a line that nearly reaches the
 /// right edge (within [`BlocksConfig::ragged_line_max_gap_em`]) ends its
 /// paragraph only when it ends a sentence; a much shorter one (an item of a
-/// list of names, a line of code) still does.
+/// list of names, a line of code) still does. In a document whose
+/// paragraphs are separated by space, the space already ends them: prose
+/// set close together is one paragraph, whatever its short lines.
 fn follows_short_line(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
+    if candidate.spaced_prose {
+        return false;
+    }
     let prev = &candidate.para.last().unwrap().0;
     let em = candidate.line.size;
     let sentence_end = || {
@@ -2003,23 +2037,15 @@ fn follows_short_line(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
 /// [`BlocksConfig::ragged_min_lines_count`] lines, fewer than
 /// [`BlocksConfig::justified_min_ratio`] of those before the last end at the
 /// group's `right` edge (justified text ends nearly all of them there), and
-/// its lines read as sentences: not code (monospaced), and mostly
-/// lowercase words (a list of names and roles is not prose).
+/// each line reads as a sentence ([`is_prose`]): a listing of code whose
+/// lines are prose taken together ("# assign base score" over
+/// `if gender.lower() == "male":`) still keeps its lines apart.
 fn is_ragged(lines: &[(Line, f32)], right: f32, fonts: &[FontInfo], cfg: &BlocksConfig) -> bool {
-    if lines.len() < cfg.ragged_min_lines_count {
-        return false;
-    }
-    let prose = lines.iter().all(|(line, _)| {
-        let text = line.text();
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let lower = words
+    if lines.len() < cfg.ragged_min_lines_count
+        || !lines
             .iter()
-            .filter(|word| word.starts_with(|ch: char| ch.is_lowercase()))
-            .count();
-        line.font_frac(fonts, |font| font.mono) < cfg.bold_dominant_ratio
-            && lower as f32 >= cfg.ragged_prose_min_lower_ratio * words.len() as f32
-    });
-    if !prose {
+            .all(|line| is_prose(std::slice::from_ref(line), fonts, cfg))
+    {
         return false;
     }
     let body = &lines[..lines.len() - 1];
@@ -2028,6 +2054,26 @@ fn is_ragged(lines: &[(Line, f32)], right: f32, fonts: &[FontInfo], cfg: &Blocks
         .filter(|(line, _)| (line.bbox.x1 - right).abs() <= cfg.justified_edge_tol_pt)
         .count();
     (flush as f32) < cfg.justified_min_ratio * body.len() as f32
+}
+
+/// Whether a group of `lines` reads as sentences: not code (monospaced),
+/// and mostly lowercase words (a list of names and roles is not prose).
+/// The words are counted over the whole group: one line of names ("Mr. and
+/// Mrs. Dursley, of number four, Privet Drive") does not make a novel's
+/// paragraph a list.
+fn is_prose(lines: &[(Line, f32)], fonts: &[FontInfo], cfg: &BlocksConfig) -> bool {
+    let (mut lower, mut words) = (0, 0);
+    for (line, _) in lines {
+        let text = line.text();
+        for word in text.split_whitespace() {
+            words += 1;
+            lower += usize::from(word.starts_with(|ch: char| ch.is_lowercase()));
+        }
+    }
+    lines
+        .iter()
+        .all(|(line, _)| line.font_frac(fonts, |font| font.mono) < cfg.bold_dominant_ratio)
+        && lower as f32 >= cfg.ragged_prose_min_lower_ratio * words as f32
 }
 
 /// Rule: in a paragraph of two lines or more, the line starts left or right
@@ -2047,7 +2093,7 @@ fn indent_changes(candidate: &ParagraphBreak, cfg: &BlocksConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlocksConfig, EquationBlock, RawBlock, TextBlock, join_equation_parts, split_paragraphs};
+    use super::{BlocksConfig, EquationBlock, GroupLayout, RawBlock, TextBlock, join_equation_parts, split_paragraphs};
     use crate::analysis::lines::{LinesConfig, build_lines};
     use crate::analysis::page::DocStats;
     use crate::backend::{Dir, FontInfo, Glyph, RawPage};
@@ -2090,13 +2136,25 @@ mod tests {
 
     /// The paragraphs of `rows`, as lists of line texts.
     fn paragraphs(rows: &[&str]) -> Vec<Vec<String>> {
+        paragraphs_in(rows, false)
+    }
+
+    /// The paragraphs of `rows` in a document whose paragraphs are
+    /// separated by space (`spaced`) or not.
+    fn paragraphs_in(rows: &[&str], spaced: bool) -> Vec<Vec<String>> {
         let lines = lines_of(rows);
         let right = lines
             .iter()
             .map(|(line, _)| line.bbox.x1)
             .fold(f32::NEG_INFINITY, f32::max);
         let fonts = [FontInfo::default()];
-        split_paragraphs(lines, right, false, false, &fonts, &BlocksConfig::default())
+        let layout = GroupLayout {
+            right,
+            centered: false,
+            footnote: false,
+            spaced,
+        };
+        split_paragraphs(lines, layout, &fonts, &BlocksConfig::default())
             .into_iter()
             .map(|para| para.iter().map(|(line, _)| line.text()).collect())
             .collect()
@@ -2114,6 +2172,35 @@ mod tests {
             "then I hope you will drink to our good journey.",
         ];
         assert_eq!(paragraphs(&letter).len(), 1);
+    }
+
+    #[test]
+    fn spaced_novel_paragraph_is_not_cut_at_short_lines() {
+        // A novel made in Word: paragraphs separated by a blank line, set
+        // ragged right, so a line may end well before the longest one
+        // ("Mrs." with room for "Potter"), even after a full stop.
+        let paragraph = [
+            "The Dursleys had everything they wanted, but they also had a secret, and",
+            "their greatest fear was that somebody would discover it. They didn't",
+            "think they could bear it if anyone found out. Mrs.",
+            "Potter was Mrs. Dursley's sister, but they hadn't met for several years;",
+        ];
+        assert_eq!(paragraphs_in(&paragraph, true).len(), 1);
+        // Without the spacing, the short lines that end a sentence still
+        // end paragraphs.
+        assert!(paragraphs_in(&paragraph, false).len() > 1);
+    }
+
+    #[test]
+    fn spaced_document_keeps_a_list_of_names_apart() {
+        let names = [
+            "Greg Brockman Infrastructure lead",
+            "Trevor Cai Throughput lead",
+            "David Farhi Optimization Team",
+            "Chris Hesse Usability Lead",
+            "Amin Tootoonchian Model Distribution, Systems & Networking Lead",
+        ];
+        assert_eq!(paragraphs_in(&names, true).len(), names.len());
     }
 
     #[test]
@@ -2179,6 +2266,7 @@ mod tests {
         body_size: 10.0,
         body_font: 0,
         leading: 12.0,
+        spaced_paragraphs: false,
     };
 
     /// A matrix that the reading order cut into two columns of a zone (its

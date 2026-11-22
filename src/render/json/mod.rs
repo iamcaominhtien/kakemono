@@ -350,7 +350,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
         anchor: block.anchor.clone(),
         layout: Some(LayoutOut {
             page: block.page,
-            bbox: bbox(&block.bbox),
+            bbox: bbox(&page_bbox(block)),
         }),
         plain: plain_text::block_plain(block),
         ..Default::default()
@@ -493,6 +493,23 @@ fn float_name(kind: FloatKind) -> &'static str {
         FloatKind::Algorithm => "algorithm",
         FloatKind::Graphic => "graphic",
     }
+}
+
+/// The box of a block on its page: for a paragraph that goes on onto the
+/// next page or column of another page, the box of its lines on the first
+/// page only (the block's box covers the lines of every page, in the
+/// coordinates of each).
+fn page_bbox(block: &Block) -> Rect {
+    if block.lines.iter().all(|line| line.page == block.page) {
+        return block.bbox;
+    }
+    block
+        .lines
+        .iter()
+        .filter(|line| line.page == block.page)
+        .map(|line| line.bbox)
+        .reduce(|a, b| a.union(&b))
+        .unwrap_or(block.bbox)
 }
 
 /// A box as `[x0, y0, x1, y1]`, rounded.
