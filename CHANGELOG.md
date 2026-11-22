@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.13.2](https://github.com/iamcaominhtien/kakemono/compare/v0.13.1...v0.13.2) - 2026-11-22
+
+### Build and CI
+
+- Release the merged commit of each pull request ([#22](https://github.com/iamcaominhtien/kakemono/pull/22))
+
+Until now, the Release workflow (release-plz) committed `chore: release vX.Y.Z` to `main` after each merge and tagged that commit. As a result, a GitHub release pointed at a bot commit, not at the merged PR.
+
+From now on, the merged commit of a PR is the release.
+
+##### What changes for each PR
+
+Each PR carries its own version in `Cargo.toml` and `Cargo.lock`, and its own `CHANGELOG.md` entry. You write them by running `python3 scripts/release.py bump --pr <N>` on the PR's branch:
+
+- **Version:** taken from the last tag and the PR title. `feat` bumps the minor version, a breaking change bumps the major version (the minor while 0.x), and anything else bumps the patch.
+- **Changelog entry:** the PR title, followed by its description. Reviewer-only parts are removed (Summary heading, Testing sections, footer, trailers) and headings move two levels down, as `release-plz.toml` did before.
+
+Running it again after a title or description change rewrites the same entry.
+
+##### Workflows
+
+- A new **PR workflow** (`.github/workflows/pr.yml`) checks three things: the title follows Conventional Commits, the version matches what the title asks for, and `CHANGELOG.md` has an entry for that version. It also runs the release script's tests.
+- **Release workflow:** on merge, the `release` job tags the pushed commit and creates the GitHub release with its `CHANGELOG.md` entry as notes. It no longer commits to `main`. The `binaries` and `crate` jobs, and the Python workflow, are unchanged.
+
+`release-plz.toml` is removed. `CONTRIBUTING.md` and `CLAUDE.md` describe the new flow.
+
 ## [0.13.1](https://github.com/iamcaominhtien/kakemono/compare/v0.13.0...v0.13.1) - 2026-11-20
 
 ### Added
