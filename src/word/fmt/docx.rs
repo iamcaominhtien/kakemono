@@ -302,6 +302,14 @@ fn emu(node: Node<'_, '_>, name: &str) -> Option<f32> {
         .filter(|value| value.is_finite())
 }
 
+/// The size in points of a drawing's `wp:extent`, bounded
+/// ([`bounded_size`]); `(0, 0)` when it has none, or a side that is not
+/// positive.
+fn extent_size(extent: Option<Node<'_, '_>>) -> (f32, f32) {
+    let size = |name: &str| extent.and_then(|extent| emu(extent, name)).unwrap_or(0.0);
+    bounded_size((size("cx"), size("cy"))).unwrap_or_default()
+}
+
 impl Reader<'_> {
     /// The sections of the body.
     fn body(&mut self, body: Node<'_, '_>) -> Vec<Section> {
@@ -856,10 +864,7 @@ impl Reader<'_> {
 
     /// A DrawingML drawing (`wp:inline` or `wp:anchor`).
     fn drawing(&mut self, node: Node<'_, '_>, fmt: &RunFmt) -> Option<Inline> {
-        let extent = child(node, WP_NS, "extent");
-        let size = |name: &str| extent.and_then(|extent| emu(extent, name)).unwrap_or(0.0);
-        // A huge size is bounded, keeping its aspect.
-        let (width, height) = bounded_size((size("cx"), size("cy"))).unwrap_or((size("cx"), size("cy")));
+        let (width, height) = extent_size(child(node, WP_NS, "extent"));
         let anchor = is(node, WP_NS, "anchor").then(|| drawing_anchor(node));
         let alt = child(node, WP_NS, "docPr")
             .and_then(|doc_pr| doc_pr.attribute("descr").or_else(|| doc_pr.attribute("title")))
@@ -1837,6 +1842,17 @@ pub(crate) fn number_text(number: u32, format: &NumFormat) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawing_extent_with_a_side_not_positive_has_no_size() {
+        for (cx, cy) in [("-914400", "914400"), ("914400", "0"), ("-1e30", "-1e30")] {
+            let xml = format!(r#"<e cx="{cx}" cy="{cy}"/>"#);
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            assert_eq!(extent_size(Some(doc.root_element())), (0.0, 0.0), "{cx} {cy}");
+        }
+        let doc = roxmltree::Document::parse(r#"<e cx="1828800" cy="914400"/>"#).unwrap();
+        assert_eq!(extent_size(Some(doc.root_element())), (144.0, 72.0));
+    }
 
     #[test]
     fn emu_values_are_finite() {
