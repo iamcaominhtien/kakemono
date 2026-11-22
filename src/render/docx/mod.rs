@@ -81,6 +81,10 @@ const SVG_BLIP_EXT: &str = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}";
 /// The namespace of `asvg:svgBlip`.
 const SVG_BLIP_NS: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
 
+/// A drawn picture: its data, its format, and for an SVG the PNG drawn of
+/// it, which Word shows where it cannot show SVG.
+type DrawnPicture = (Vec<u8>, PictureFormat, Option<std::sync::Arc<[u8]>>);
+
 /// The parts of the package made from the drawn pictures.
 #[derive(Default)]
 struct Media {
@@ -165,7 +169,13 @@ fn write_package(
         body.images.len(),
         opts.jobs,
         || pictures.renderer(),
-        |renderer, i| pictures.region(renderer.as_ref(), &body.images[i].spec, opts.scale),
+        |renderer, i| {
+            let spec = &body.images[i].spec;
+            let (data, format) = pictures.region(renderer.as_ref(), spec, opts.scale)?;
+            // The PNG beside an SVG, made once however often it is used.
+            let fallback = spec.embedded.and_then(|index| pictures.svg_png(index));
+            Some((data, format, fallback))
+        },
     );
     let mut media = Media::default();
     let content = fill_images(&body.xml, &body.images, drawn, &mut media);
@@ -207,7 +217,8 @@ fn write_package(
 }
 
 /// Replaces the picture placeholders of `xml` with the drawn pictures
-/// (`drawn[i]` for `images[i]`: data and format), adding their files and
+/// (`drawn[i]` for `images[i]`: data, format, and for an SVG the PNG drawn
+/// of it), adding their files and
 /// relationships to `media`. An SVG picture is written as Word writes one:
 /// a PNG drawn of it, which any reader shows, with the SVG beside it
 /// (`asvg:svgBlip`), which Word 2016 and later show. A picture that could
@@ -216,12 +227,7 @@ fn write_package(
 /// # Panics
 /// When `xml` holds a placeholder that is not closed or whose index is not
 /// a number (it was not written by the body).
-fn fill_images(
-    xml: &str,
-    images: &[PendingImage],
-    drawn: Vec<Option<(Vec<u8>, PictureFormat)>>,
-    media: &mut Media,
-) -> String {
+fn fill_images(xml: &str, images: &[PendingImage], drawn: Vec<Option<DrawnPicture>>, media: &mut Media) -> String {
     let mut drawn = drawn;
     let mut out = String::with_capacity(xml.len());
     let mut rest = xml;
@@ -230,22 +236,17 @@ fn fill_images(
         let after = &rest[start + MARK.len_utf8()..];
         let end = after.find(MARK).expect("placeholders are closed");
         let index: usize = after[..end].parse().expect("placeholder index");
-        if let Some((data, format)) = drawn[index].take() {
+        if let Some((data, format, fallback)) = drawn[index].take() {
             let (id, svg_id) = match format {
-                PictureFormat::Svg => {
-                    let png = std::str::from_utf8(&data)
-                        .ok()
-                        .and_then(|svg| crate::backend::svg_to_png(svg, crate::backend::svg::SVG_PNG_SCALE));
-                    match png {
-                        Some(png) => {
-                            let id = media.add(png, "png");
-                            let svg_id = media.add(data, "svg");
-                            (id, Some(svg_id))
-                        }
-                        // No PNG can be drawn of it: the SVG alone.
-                        None => (media.add(data, "svg"), None),
+                PictureFormat::Svg => match fallback {
+                    Some(png) => {
+                        let id = media.add(png.to_vec(), "png");
+                        let svg_id = media.add(data, "svg");
+                        (id, Some(svg_id))
                     }
-                }
+                    // No PNG can be drawn of it: the SVG alone.
+                    None => (media.add(data, "svg"), None),
+                },
                 PictureFormat::Jpeg => (media.add(data, "jpeg"), None),
                 PictureFormat::Png => (media.add(data, "png"), None),
             };
