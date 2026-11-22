@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.15.0](https://github.com/iamcaominhtien/kakemono/compare/v0.14.0...v0.15.0) - 2026-11-22
+
+### Added
+
+- Replace a figure's picture and edit the text inside figures with --content
+
+Lets a tool that edits kakemono's JSON (utsushi, for translation) change what a figure shows, not only the text around it:
+
+- **`replace_image`** on a figure block in `--content`: a PNG, JPEG or SVG replaces the figure's picture in every output, fitted into its box; hard-95 draws it over the figure's box without its old text layer.
+- **`figure_lines`**: the runs of text inside a figure (labels, rotated runs), editable in `--content`; the figure is redrawn with the new text in place.
+- **`kakemono render-svg`**: rasterizes an SVG as kakemono does.
+- Stored SVG pictures are drawn as vectors where the format allows.
+- Fix: a Word document converted to PDF ignored `--content`.
+
 ## [0.14.0](https://github.com/iamcaominhtien/kakemono/compare/v0.13.2...v0.14.0) - 2026-11-22
 
 ### Added
