@@ -725,6 +725,34 @@ impl Flow<'_> {
     /// next paragraph brings along: rows whose text is kept with the next,
     /// and the row after them.
     fn kept_rows_height(&mut self, table: &Table, width: f32) -> f32 {
+        // Only those rows are laid out when they give the same heights as
+        // the whole table: when the table's grid gives the column widths
+        // (else they come from the count of columns of every row) and no
+        // cell merged down from them goes on below them. A long table is
+        // then not laid out twice.
+        let kept = table.rows.iter().take_while(|row| row_keeps_next(row)).count() + 1;
+        let columns = table
+            .rows
+            .iter()
+            .map(|row| row.grid_before + row.grid_after + row.cells.iter().map(|cell| cell.span.max(1)).sum::<usize>())
+            .max()
+            .unwrap_or(0);
+        let own_grid = table.grid.len() >= columns && table.grid.iter().sum::<f32>() > 0.0;
+        let merged_on = table
+            .rows
+            .get(kept)
+            .is_some_and(|row| row.cells.iter().any(|cell| cell.vmerge == VMerge::Continue));
+        let truncated;
+        let table = if kept < table.rows.len() && own_grid && !merged_on {
+            truncated = Table {
+                props: table.props.clone(),
+                grid: table.grid.clone(),
+                rows: table.rows[..kept].to_vec(),
+            };
+            &truncated
+        } else {
+            table
+        };
         let laid = self.lay_table(table, width);
         let mut height = 0.0;
         for (row, laid_row) in table.rows.iter().zip(&laid.rows) {
@@ -1510,7 +1538,7 @@ impl Flow<'_> {
             self.state.y += anchor.vertical.offset.max(0.0);
         }
         let width = self.column_width();
-        let laid = self.lay_table(table, width);
+        let mut laid = self.lay_table(table, width);
         let header_rows: Vec<usize> = (0..laid.rows.len()).take_while(|&at| table.rows[at].header).collect();
         let mut at = 0;
         // Right after a page break (and the repeated header rows), a row is
@@ -1518,7 +1546,15 @@ impl Flow<'_> {
         let mut forced = false;
         let mut rest: Option<LaidRow> = None;
         while at < laid.rows.len() {
-            let row = rest.take().unwrap_or_else(|| laid.rows[at].clone());
+            // A row below the header is drawn once: it is taken, not copied
+            // (a long table is not held twice).
+            let row = rest.take().unwrap_or_else(|| {
+                if at < header_rows.len() {
+                    laid.rows[at].clone()
+                } else {
+                    std::mem::take(&mut laid.rows[at])
+                }
+            });
             let room_all = self.state.bottom - self.state.notes_height - self.state.y;
             // The row's footnotes go on the page with it.
             let room = room_all - self.row_notes_height(&row);
@@ -1997,7 +2033,7 @@ struct LaidTable {
 }
 
 /// A laid-out row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct LaidRow {
     height: f32,
     cells: Vec<LaidCell>,
