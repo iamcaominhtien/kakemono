@@ -302,6 +302,16 @@ Markdown `[^n1]` footnotes and EPUB popup footnotes at the end of each chapter (
 each chapter). `plain` and the chunks leave the notes out. A `<note>` that is not closed, or that
 holds a formula or another note, is read with a warning.
 
+**Replacing a figure's picture.** A `figure` block may also get `"replace_image"`: a PNG, JPEG or
+SVG file, named by a path relative to the JSON file, or a data URI. Every output then draws it in
+place of the figure's picture (a translated or redrawn figure, say). An SVG stays an SVG in the
+HTML modes, EPUB, Markdown and JSON, with its text turned into paths so that it looks the same
+without its fonts; Word and LaTeX get it as a PNG at `--scale`. In `hard-95` the picture covers the
+figure's box on the page, fitted without stretching, and the figure's old text layer is left out.
+A picture whose shape differs from the figure's box, a file that cannot be read, or
+`replace_image` on a block that is not a figure with a picture is a warning; the figure then keeps
+its picture (except for the shape, where the new picture is still used).
+
 In `hard-95` an edited block flows inside the box of its lines, its type made smaller when the new
 text is longer (down to 62%), and a paragraph that runs over columns or pages runs over them
 again. The `hard` mode shows the pages themselves and cannot show edited text. In LaTeX output,
@@ -428,7 +438,9 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 Other commands: `kakemono fetch <id> -o paper.pdf` only downloads; `kakemono inspect paper.pdf`
 prints the detected structure (headings, paragraphs, figures, formulas; `<math>` marks a formula
 rebuilt as MathML); `kakemono formula picture.png` reads pictures of LaTeX formulas and prints
-their MathML (experimental).
+their MathML (experimental); `kakemono render-svg picture.svg -o picture.png [--scale 2]` draws an
+SVG as a PNG the way kakemono draws the SVG pictures it is given (`replace_image`), with the
+pictures it names relative to the SVG.
 
 ## The analysis as JSON
 
