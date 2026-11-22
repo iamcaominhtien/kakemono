@@ -18,9 +18,9 @@ mod styles;
 mod workbook;
 
 use crate::analysis::semantics::text::{slug, unique_anchor};
+use crate::chart::Charts;
 use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
-use crate::chart::Charts;
 use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store, store_chart};
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
@@ -725,10 +725,16 @@ mod tests {
         else {
             panic!("not a chart: {:?}", figure.kind);
         };
-        assert_eq!(doc.pictures[image.embedded.unwrap()].format, crate::model::PictureFormat::Svg);
+        assert_eq!(
+            doc.pictures[image.embedded.unwrap()].format,
+            crate::model::PictureFormat::Svg
+        );
         // From A10 to E13: two columns of 20 characters (140 pixels) and
         // two of the default width; rows 10 and 12 of 20 points, 11 of 40.
-        assert_eq!((image.rect.width(), image.rect.height()), (2.0 * 105.0 + 2.0 * 48.0, 80.0));
+        assert_eq!(
+            (image.rect.width(), image.rect.height()),
+            (2.0 * 105.0 + 2.0 * 48.0, 80.0)
+        );
         let table = doc.blocks[4].table.as_ref().expect("the data table");
         assert_eq!(table.rows.len(), 3);
     }

@@ -1,7 +1,8 @@
 //! Word documents as input: the sample `.docx` and `.doc` of
 //! `tests/data/word` (written from `sample.md` by pandoc, and saved as
 //! `.doc` by LibreOffice), the vector pictures of `vector.docx` (written by
-//! `make-vector-docx.py`), and the LIGO paper made into a Word document by
+//! `make-vector-docx.py`), the charts of `chart.docx` (written by
+//! `make-chart-docx.py`), and the LIGO paper made into a Word document by
 //! kakemono and read back.
 
 use kakemono::model::{Block, BlockKind, Document, FloatKind, PictureFormat, Span};
@@ -19,6 +20,10 @@ const SAMPLE_DOC: &str = "word/sample.doc";
 /// An SVG drawing with a PNG fallback, an EMF metafile and an SVG alone,
 /// written by `make-vector-docx.py`.
 const VECTOR_DOCX: &str = "word/vector.docx";
+/// A column chart with a caption, an anchored doughnut, an extended chart
+/// with a fallback picture and one without, written by
+/// `make-chart-docx.py`.
+const CHART_DOCX: &str = "word/chart.docx";
 /// Lists inside lists, written by pandoc from `lists.md`.
 const LISTS_DOCX: &str = "word/lists.docx";
 /// The LIGO paper, the one test PDF in the repository.
@@ -321,7 +326,7 @@ fn every_output_can_be_written_from_word() {
 #[test]
 fn word_outputs_match_their_snapshot() {
     let mut text = String::new();
-    for name in [SAMPLE_DOCX, SAMPLE_DOC, VECTOR_DOCX] {
+    for name in [SAMPLE_DOCX, SAMPLE_DOC, VECTOR_DOCX, CHART_DOCX] {
         let (paper, analysis) = load(name);
         let html_opts = HtmlOptions {
             embed_fonts: false,
@@ -475,4 +480,76 @@ fn vector_pictures_stay_vector_in_every_output() {
     // The page layout: drawn as vector, no bitmap in the PDF.
     let pdf = paper.to_pdf().unwrap();
     assert_eq!(pdf_bitmaps(&pdf), 0);
+}
+
+/// Each chart of a Word document is a figure of its SVG drawing followed
+/// by its data table, at its place in the text, in every output; an
+/// extended chart shows its fallback picture, or its data alone; the page
+/// layout draws the charts as vector.
+#[test]
+fn charts_are_figures_with_their_data_in_every_output() {
+    let (paper, analysis) = load(CHART_DOCX);
+    let doc = &analysis.doc;
+    let floats: Vec<(String, String)> = blocks_of(doc, |kind| matches!(kind, BlockKind::Figure { .. }))
+        .map(|block| {
+            let what = match (&block.kind, &block.table) {
+                (_, Some(_)) => "table".to_string(),
+                (BlockKind::Figure { image: Some(image), .. }, None) => {
+                    let picture = &doc.pictures[image.embedded.expect("a picture of the document")];
+                    format!("{:?}", picture.format)
+                }
+                _ => "none".to_string(),
+            };
+            (what, block.text())
+        })
+        .collect();
+    let expected = [
+        ("Svg", "Figure 1: Sales by quarter."),
+        ("table", "Figure 1: Sales by quarter."),
+        ("Svg", "Share of sales"),
+        ("table", "Share of sales"),
+        ("Png", ""),
+        ("table", "Cash again"),
+    ];
+    let expected: Vec<(String, String)> = expected
+        .iter()
+        .map(|(what, text)| ((*what).to_string(), (*text).to_string()))
+        .collect();
+    assert_eq!(floats, expected);
+    // The caption under the chart is the chart's, with its label.
+    assert!(matches!(
+        &block(doc, "Figure 1").kind,
+        BlockKind::Figure { kind: FloatKind::Figure, label: Some(label), .. } if label == "Figure 1"
+    ));
+    // The drawings: the file's theme colours, the values on the bars and
+    // the shares of the doughnut.
+    let svgs: Vec<String> = doc
+        .pictures
+        .iter()
+        .filter(|picture| picture.format == PictureFormat::Svg)
+        .map(|picture| String::from_utf8(picture.data.clone()).unwrap())
+        .collect();
+    assert!(
+        svgs[0].contains("#2a6f97") && svgs[0].contains(">170</text>"),
+        "{}",
+        svgs[0]
+    );
+    assert!(svgs[1].contains(">45%</text>"), "{}", svgs[1]);
+    // Markdown: the drawings as SVG files, the data as tables.
+    let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default());
+    assert_eq!(
+        markdown.files.iter().filter(|(name, _)| name.ends_with(".svg")).count(),
+        2
+    );
+    assert!(
+        markdown.markdown.contains("| Q4 | 170 | 140 |"),
+        "{}",
+        markdown.markdown
+    );
+    // The page layout: both charts drawn as vector; the one bitmap is the
+    // fallback picture.
+    let pdf = paper.to_pdf().unwrap();
+    assert_eq!(pdf_bitmaps(&pdf), 1);
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert_eq!(html.matches("<img src=\"data:image/svg+xml;base64,").count(), 2);
 }

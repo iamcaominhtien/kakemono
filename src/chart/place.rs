@@ -114,30 +114,26 @@ pub(crate) fn table_block(table: Table, caption: &str) -> Block {
 
 /// The blocks of the chart `placed` whose picture, when it was drawn and
 /// stored, is the document's picture `picture`, shown at its size: the
-/// figure (a caption alone for a chart not drawn), then its data table,
-/// or the note saying why there is none. `caption` is its title, else
-/// what the caller names it ("Chart 2").
+/// figure, then its data table, or the note saying why there is none; a
+/// chart not drawn gives its data table alone (with the chart's caption),
+/// else its caption and the note. `caption` is its title, else what the
+/// caller names it ("Chart 2").
 pub(crate) fn blocks(placed: Placed, picture: Option<usize>, caption: &str) -> Vec<Block> {
     let caption = placed.title.as_deref().unwrap_or(caption);
-    let image = picture.map(|index| image_spec(index, placed.size_pt));
+    let paragraph = |text: &str| {
+        let mut block = Block::new(0, BlockKind::Paragraph { in_abstract: false });
+        block.spans = vec![Span::plain(text)];
+        block
+    };
     let mut blocks = Vec::new();
-    match image {
-        Some(image) => blocks.push(figure_block(Some(image), caption)),
-        None => {
-            let mut heading = Block::new(0, BlockKind::Paragraph { in_abstract: false });
-            heading.spans = vec![Span::plain(caption)];
-            blocks.push(heading);
-        }
+    match picture {
+        Some(index) => blocks.push(figure_block(Some(image_spec(index, placed.size_pt)), caption)),
+        None if placed.table.is_none() => blocks.push(paragraph(caption)),
+        None => {}
     }
     match placed.table {
         Some(table) => blocks.push(table_block(table, caption)),
-        None => {
-            if let Some(note) = placed.note {
-                let mut block = Block::new(0, BlockKind::Paragraph { in_abstract: false });
-                block.spans = vec![Span::plain(note)];
-                blocks.push(block);
-            }
-        }
+        None => blocks.extend(placed.note.map(paragraph)),
     }
     blocks
 }
@@ -210,10 +206,7 @@ mod tests {
         );
         // Without a title, the caller's name.
         let placed = charts.place(columns("", true).as_bytes(), (300.0, 200.0)).unwrap();
-        assert_eq!(
-            read(&super::blocks(placed, Some(1), "Chart 2"))[0].1,
-            "Chart 2"
-        );
+        assert_eq!(read(&super::blocks(placed, Some(1), "Chart 2"))[0].1, "Chart 2");
     }
 
     #[test]

@@ -33,16 +33,8 @@ pub mod source;
 pub mod analysis;
 #[doc(hidden)]
 pub mod backend;
-// Charts of workbooks and Word documents: read here, drawn and placed in the
-// documents by the Excel and Word readers.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        unused_imports,
-        reason = "used by the Excel and Word readers once they place charts"
-    )
-)]
+// Charts of workbooks and Word documents: read, drawn and made ready here,
+// placed in the documents by the Excel and Word readers.
 pub(crate) mod chart;
 #[doc(hidden)]
 pub mod common;

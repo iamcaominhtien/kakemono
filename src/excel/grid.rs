@@ -116,7 +116,11 @@ impl Sizes {
             height
         };
         // The columns are at most 16 384.
-        let cols_between = |first: u32, last: u32| -> f32 { (first..last.min(first.saturating_add(MAX_SHEET_COLS))).map(col_width).sum() };
+        let cols_between = |first: u32, last: u32| -> f32 {
+            (first..last.min(first.saturating_add(MAX_SHEET_COLS)))
+                .map(col_width)
+                .sum()
+        };
         let width = cols_between(from.col, to.col) - from.col_off_pt + to.col_off_pt;
         let height = rows_between(from.row, to.row) - from.row_off_pt + to.row_off_pt;
         (width.max(0.0), height.max(0.0))

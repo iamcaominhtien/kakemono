@@ -19,6 +19,10 @@ pub(crate) const VML_NS: &str = "urn:schemas-microsoft-com:vml";
 pub(crate) const OFFICE_NS: &str = "urn:schemas-microsoft-com:office:office";
 /// Namespace of the markup compatibility elements (`mc:`).
 pub(crate) const MC_NS: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+/// Namespace of DrawingML charts (`c:`).
+pub(crate) const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+/// Namespace of the extended charts of Office 2016 (`cx:`).
+pub(crate) const CHARTEX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 /// Namespace of the SVG picture of an `a:blip` (`asvg:svgBlip`, Office 2016).
 pub(crate) const SVG_BLIP_NS: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
 /// Namespace of the package relationships (`.rels` parts).

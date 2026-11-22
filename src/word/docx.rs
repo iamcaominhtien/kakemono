@@ -3,14 +3,15 @@
 
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
 use super::omml;
-use super::pictures::{MAX_PICTURE_BYTES, bounded_size, store};
+use super::pictures::{MAX_PICTURE_BYTES, bounded_size, store, store_chart};
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
-    DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, SVG_BLIP_NS, VML_NS, WORD_NS, WP_NS, attr,
-    child, children, is, val,
+    CHART_NS, CHARTEX_NS, DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, SVG_BLIP_NS, VML_NS,
+    WORD_NS, WP_NS, attr, child, children, is, val,
 };
 use super::zip::ZipArchive;
+use crate::chart::Charts;
 use crate::model::{MathNode, Span};
 use anyhow::{Context, Result};
 use roxmltree::{Document as Xml, Node, ParsingOptions};
@@ -18,6 +19,8 @@ use std::collections::HashMap;
 
 /// The main document part when the package relationships do not name one.
 const DEFAULT_DOCUMENT_PART: &str = "word/document.xml";
+/// The theme part when the relationships of the document do not name one.
+const DEFAULT_THEME_PART: &str = "word/theme/theme1.xml";
 /// Relationship type of the main document part.
 const OFFICE_DOCUMENT_REL: &str = "officeDocument";
 /// EMU (English Metric Units) per point: the unit of DrawingML sizes.
@@ -76,6 +79,8 @@ struct Reader<'a> {
     boxes: Vec<Item>,
     /// Bookmarks that start between paragraphs, given to the next one.
     pending_bookmarks: Vec<String>,
+    /// The charts read so far, with the document's theme.
+    charts: Charts,
 }
 
 /// Reads a `.docx` file.
@@ -108,6 +113,7 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         fields: Vec::new(),
         boxes: Vec::new(),
         pending_bookmarks: Vec::new(),
+        charts: Charts::new(theme_part(&zip, &main).as_deref()),
     };
     let root = document.root_element();
     let body = child(root, WORD_NS, "body").context("the document has no body")?;
@@ -580,6 +586,12 @@ impl Reader<'_> {
             para.inlines.push(Inline::Math { node, display: false });
             return;
         }
+        if let Some(rel) = chart_rel(node) {
+            if let Some(chart) = self.chart(rel, drawing_size(node)) {
+                para.inlines.push(chart);
+            }
+            return;
+        }
         if let Some(blip) = node.descendants().find(|item| is(*item, DRAWING_NS, "blip")) {
             let (width_pt, height_pt) = drawing_size(node);
             let alt = node
@@ -637,6 +649,19 @@ impl Reader<'_> {
         super::mtef::equation(&super::equation_native(&data)?)
     }
 
+    /// The chart of the chart part of relationship `id`, drawn `size_pt`
+    /// large; `None` when the part is missing or damaged.
+    fn chart(&mut self, id: &str, size_pt: (f32, f32)) -> Option<Inline> {
+        let rel = self.rels.get(id).filter(|rel| !rel.external)?;
+        let xml = self.zip.read(&rel.target).ok()??;
+        let mut placed = self.charts.place(&xml, size_pt)?;
+        let picture = placed
+            .svg
+            .take()
+            .and_then(|svg| store_chart(self.pictures, svg, placed.size_pt, MAX_PICTURE_BYTES));
+        Some(Inline::Chart(Box::new((placed, picture))))
+    }
+
     /// The index of the picture of relationship `id`, read and converted
     /// once; `None` when it cannot be shown.
     fn picture(&mut self, id: &str) -> Option<usize> {
@@ -664,9 +689,36 @@ pub(crate) fn svg_blip<'a>(blip: Node<'a, '_>) -> Option<&'a str> {
 }
 
 /// The content of an `mc:AlternateContent` to read: its first choice
-/// (Word's own markup), else its fallback.
+/// (Word's own markup), else its fallback; but the fallback picture of an
+/// extended chart (`cx:`), which is not drawn, when there is one.
 pub(crate) fn alternate<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
-    child(node, MC_NS, "Choice").or_else(|| child(node, MC_NS, "Fallback"))
+    let choice = child(node, MC_NS, "Choice");
+    let fallback = child(node, MC_NS, "Fallback");
+    if let (Some(choice), Some(fallback)) = (choice, fallback)
+        && choice.descendants().any(|item| is(item, CHARTEX_NS, "chart"))
+        && fallback.descendants().any(|item| is(item, DRAWING_NS, "blip"))
+    {
+        return Some(fallback);
+    }
+    choice.or(fallback)
+}
+
+/// The relationship of the chart part of a drawing (`c:chart` or
+/// `cx:chart` in its graphic); `None` when its graphic is not a chart.
+pub(crate) fn chart_rel<'a>(node: Node<'a, '_>) -> Option<&'a str> {
+    let chart = node
+        .descendants()
+        .find(|item| is(*item, CHART_NS, "chart") || is(*item, CHARTEX_NS, "chart"))?;
+    attr(chart, REL_NS, "id")
+}
+
+/// The theme part of the document whose main part is `main`: the one its
+/// relationships name, else Word's usual one.
+pub(crate) fn theme_part(zip: &ZipArchive<'_>, main: &str) -> Option<Vec<u8>> {
+    zip.read(&related_part(zip, main, "theme"))
+        .ok()
+        .flatten()
+        .or_else(|| zip.read(DEFAULT_THEME_PART).ok().flatten())
 }
 
 /// The link of a field instruction: a web address or a bookmark for

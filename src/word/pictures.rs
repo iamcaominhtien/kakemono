@@ -67,13 +67,40 @@ pub(crate) fn store(pictures: &mut Vec<Picture>, data: Vec<u8>, budget: usize) -
 /// as a foreign SVG is, since it is made of numbers and escaped text, but
 /// it is held to the same byte cap; `None` when it is larger, or when the
 /// pictures would then hold more than `budget` bytes.
-pub(crate) fn store_chart(pictures: &mut Vec<Picture>, svg: String, size_pt: (f32, f32), budget: usize) -> Option<usize> {
+pub(crate) fn store_chart(
+    pictures: &mut Vec<Picture>,
+    svg: String,
+    size_pt: (f32, f32),
+    budget: usize,
+) -> Option<usize> {
     let used: usize = pictures.iter().map(|picture| picture.data.len()).sum();
     if svg.len() > MAX_SVG_BYTES || used + svg.len() > budget {
         return None;
     }
     pictures.push(chart_picture(svg, size_pt));
     Some(pictures.len() - 1)
+}
+
+/// [`store_chart`] for the page layout: the chart's SVG added to `images`.
+pub(crate) fn store_chart_for_layout(
+    images: &mut Vec<FImage>,
+    svg: String,
+    size_pt: (f32, f32),
+    budget: usize,
+) -> Option<usize> {
+    let size = |image: &FImage| image.data.len() + image.bare.as_ref().map_or(0, Vec::len);
+    let used: usize = images.iter().map(size).sum();
+    if svg.len() > MAX_SVG_BYTES || used + svg.len() > budget {
+        return None;
+    }
+    let picture = chart_picture(svg, size_pt);
+    images.push(FImage {
+        data: picture.data,
+        format: picture.format,
+        bare: None,
+        texts: Vec::new(),
+    });
+    Some(images.len() - 1)
 }
 
 /// The chart SVG `svg`, drawn `size_pt` large, as a picture: the size of

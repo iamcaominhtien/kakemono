@@ -11,6 +11,7 @@ use crate::analysis::semantics::AssembleConfig;
 use crate::analysis::semantics::assemble::{link_blocks, link_contents, reference_label, slug_marker};
 use crate::analysis::semantics::patterns::{HEADING_LETTER, HEADING_NUM, HEADING_ROMAN, REF_HEADING};
 use crate::analysis::semantics::text::{slug, unique_anchor};
+use crate::chart::{self, Placed};
 use crate::common::geom::Rect;
 use crate::common::patterns::CAP_LABEL;
 use crate::model::{
@@ -95,6 +96,12 @@ struct Builder<'a> {
     loose_bookmarks: Vec<String>,
     /// A caption waiting for the float after it.
     caption: Option<PendingCaption>,
+    /// Charts so far, which name those without a title ("Chart 2").
+    charts: usize,
+    /// The last chart whose caption is its own (its title, or "Chart N"):
+    /// the index of its figure and the number of blocks after its own
+    /// blocks, so that a caption right after them can be given to it.
+    last_chart: Option<(usize, usize)>,
     /// The paragraphs read now belong to the abstract.
     in_abstract: bool,
     /// The paragraphs read now are the bibliography.
@@ -129,6 +136,8 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         bookmarks: HashMap::new(),
         loose_bookmarks: Vec::new(),
         caption: None,
+        charts: 0,
+        last_chart: None,
         in_abstract: false,
         in_references: false,
         code: Vec::new(),
@@ -232,7 +241,7 @@ impl Builder<'_> {
         let mut first = true;
         for inline in &para.inlines {
             match inline {
-                Inline::Math { display: true, .. } | Inline::Picture { .. } => {
+                Inline::Math { display: true, .. } | Inline::Picture { .. } | Inline::Chart(_) => {
                     if has_text(&text) {
                         self.text_block(para, role, &text, first);
                         first = false;
@@ -420,8 +429,36 @@ impl Builder<'_> {
                 }
                 self.push_float(block);
             }
+            Inline::Chart(chart) => self.chart(chart),
             _ => {}
         }
+    }
+
+    /// Adds a chart: its figure (with the caption waiting before it, else
+    /// its title, else "Chart N"), then its data table with the same
+    /// caption, or the note saying why it has none. A caption after it can
+    /// still be given to it ([`Builder::caption_para`]).
+    fn chart(&mut self, chart: &(Placed, Option<usize>)) {
+        self.charts += 1;
+        let (placed, picture) = chart;
+        let mut blocks = chart::blocks(placed.clone(), *picture, &format!("Chart {}", self.charts)).into_iter();
+        let Some(first) = blocks.next() else { return };
+        let figure = self.blocks.len();
+        let own_caption = self.caption.is_none();
+        if matches!(first.kind, BlockKind::Figure { .. }) {
+            self.push_float(first);
+        } else {
+            self.flush_caption();
+            self.push(first);
+        }
+        let caption = self.blocks[figure].spans.clone();
+        for mut block in blocks {
+            if block.table.is_some() {
+                block.spans.clone_from(&caption);
+            }
+            self.push(block);
+        }
+        self.last_chart = own_caption.then_some((figure, self.blocks.len()));
     }
 
     /// The picture `index` at its size in the document (or its own size).
@@ -452,6 +489,22 @@ impl Builder<'_> {
         self.flush_caption();
         let spans = self.spans(para, false);
         let label = caption_label(&text_of(&spans));
+        // A figure caption right after a chart with its own caption is
+        // the chart's, and its data table's.
+        if let Some((figure, end)) = self.last_chart.take()
+            && end == self.blocks.len()
+            && !label_is_table(label.as_deref())
+            && matches!(self.blocks[figure].kind, BlockKind::Figure { .. })
+        {
+            for index in figure + 1..end {
+                if self.blocks[index].table.is_some() {
+                    self.blocks[index].spans.clone_from(&spans);
+                }
+            }
+            self.caption_float(figure, spans, label, false);
+            self.mark_bookmarks(para);
+            return;
+        }
         let previous_free = self
             .blocks
             .last()
@@ -684,7 +737,7 @@ impl Builder<'_> {
                     spans.push(span);
                     self.pending_notes.push((*endnote, id.clone()));
                 }
-                Inline::Picture { .. } => {}
+                Inline::Picture { .. } | Inline::Chart(_) => {}
             }
         }
         let mut spans = merge_spans(spans);
@@ -904,7 +957,7 @@ fn is_picture_only(para: &Para) -> bool {
     for inline in &para.inlines {
         match inline {
             Inline::Text(span) if span.text.trim().is_empty() => {}
-            Inline::Picture { .. } => any = true,
+            Inline::Picture { .. } | Inline::Chart(_) => any = true,
             _ => return false,
         }
     }
@@ -922,7 +975,7 @@ fn has_text(inlines: &[&Inline]) -> bool {
     inlines.iter().any(|inline| match inline {
         Inline::Text(span) => !span.text.trim().is_empty(),
         Inline::Math { .. } | Inline::NoteRef { .. } => true,
-        Inline::Picture { .. } => false,
+        Inline::Picture { .. } | Inline::Chart(_) => false,
     })
 }
 

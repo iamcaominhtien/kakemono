@@ -451,7 +451,9 @@ mod tests {
         );
         let read = items(&xml).unwrap();
         assert_eq!(read.len(), 3);
-        let Drawn::Chart(first) = &read[0].1 else { panic!("a chart") };
+        let Drawn::Chart(first) = &read[0].1 else {
+            panic!("a chart")
+        };
         assert_eq!(read[0].0, (2, 1));
         assert_eq!(first.rel, "rId1");
         let (from, to) = first.cells.unwrap();
@@ -459,8 +461,13 @@ mod tests {
         assert_eq!((to.row, to.col, to.col_off_pt, to.row_off_pt), (10, 4, 2.0, 10.0));
         // The picture of the group is found too.
         assert!(matches!(&read[1].1, Drawn::Picture(picture) if picture.rel == "rId3"));
-        let Drawn::Chart(second) = &read[2].1 else { panic!("a chart") };
-        assert_eq!((second.rel.as_str(), second.size_pt, second.cells), ("rId2", Some((200.0, 100.0)), None));
+        let Drawn::Chart(second) = &read[2].1 else {
+            panic!("a chart")
+        };
+        assert_eq!(
+            (second.rel.as_str(), second.size_pt, second.cells),
+            ("rId2", Some((200.0, 100.0)), None)
+        );
     }
 
     #[test]

@@ -9,11 +9,13 @@ use super::model::{
 };
 use super::props::{RawCell, RawPara, RawRun, TWIPS_PER_PT, ThemeFonts, is_on, parse_color, theme_fonts};
 use super::styles::{Conditional, Numbering, Styles, TableStyle, parse_num_format};
+use crate::chart::Charts;
 use crate::word::docx::{
-    Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of, svg_blip,
+    Rel, alternate, chart_rel, document_title, field_words, main_part, parse, related_part, rels_of, svg_blip,
+    theme_part,
 };
 use crate::word::omml;
-use crate::word::pictures::{MAX_PICTURE_BYTES, bounded_size, store_for_layout};
+use crate::word::pictures::{MAX_PICTURE_BYTES, bounded_size, store_chart_for_layout, store_for_layout};
 use crate::word::xml::{
     DRAWING_NS, MATH_NS, MC_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child, children, is, toggle, val,
 };
@@ -77,6 +79,7 @@ struct Reader<'a> {
     part_index: HashMap<String, usize>,
     cell: Option<CellContext>,
     pending_bookmarks: Vec<String>,
+    charts: Charts,
 }
 
 /// Reads a `.docx` file with its formatting.
@@ -126,6 +129,7 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         part_index: HashMap::new(),
         cell: None,
         pending_bookmarks: Vec::new(),
+        charts: Charts::new(theme_part(&zip, &main).as_deref()),
     };
     let body = child(document.root_element(), WORD_NS, "body").context("the document has no body")?;
     doc.sections = reader.body(body);
@@ -906,7 +910,20 @@ impl Reader<'_> {
             self.group(group, width, height, &mut shape);
             return Some(Inline::Shape(Box::new(shape)));
         }
-        // A chart or diagram: its place is kept.
+        // A chart: drawn as vector at the drawing's size.
+        if let Some(rel) = chart_rel(data) {
+            let index = self.chart(rel, (width, height));
+            return Some(Inline::Image {
+                index,
+                width,
+                height,
+                anchor,
+                fmt: fmt.clone(),
+                alt,
+                crop: [0.0; 4],
+            });
+        }
+        // A diagram: its place is kept.
         Some(Inline::Image {
             index: None,
             width,
@@ -916,6 +933,16 @@ impl Reader<'_> {
             alt,
             crop: [0.0; 4],
         })
+    }
+
+    /// The picture of the chart part of relationship `id`, drawn
+    /// `size_pt` large; `None` when the part is missing or damaged, or the
+    /// chart is not drawn.
+    fn chart(&mut self, id: &str, size_pt: (f32, f32)) -> Option<usize> {
+        let rel = self.rels.get(id).filter(|rel| !rel.external)?;
+        let xml = self.zip.read(&rel.target).ok()??;
+        let placed = self.charts.place(&xml, size_pt)?;
+        store_chart_for_layout(&mut self.images, placed.svg?, placed.size_pt, MAX_PICTURE_BYTES)
     }
 
     /// The picture of a `pic:pic` and its cropping.

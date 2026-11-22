@@ -11,14 +11,11 @@ use super::{
 };
 use crate::excel::numfmt::NumFmt;
 use crate::word::docx::parse;
+pub(super) use crate::word::xml::{CHART_NS, CHARTEX_NS};
 use crate::word::xml::{DRAWING_NS, MC_NS, child, is};
 use anyhow::{Context, Result, bail};
 use roxmltree::Node;
 
-/// Namespace of DrawingML charts (`c:`).
-pub(super) const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
-/// Namespace of the extended charts of Office 2016 (`cx:`).
-pub(super) const CHARTEX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 /// The gap between two categories of a bar chart when the part gives none
 /// (`c:gapWidth`), in percent of a bar's width.
 const DEFAULT_GAP_WIDTH_PERCENT: f32 = 150.0;
