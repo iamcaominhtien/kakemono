@@ -423,6 +423,7 @@ fn cluster_html(
             href: source.and_then(|span| span.href.clone()),
             color: glyph.color,
             math: None,
+            note: None,
         };
         let mut css = format!(
             "width:{};top:{};font-size:{}",

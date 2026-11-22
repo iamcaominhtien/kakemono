@@ -36,6 +36,14 @@ pub struct Span {
     /// their styles.
     #[serde(skip)]
     pub math: Option<Box<MathNode>>,
+    /// A translator's note attached at this point of the text (the `<tn>`
+    /// tag of the editable JSON): the span is the note's call, and the
+    /// note's content is these spans (styled text, without formulas or
+    /// other notes). The call's `text` is its mark: empty in the document,
+    /// filled with the note's number only by the outputs that number the
+    /// notes themselves. `None` for every other span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<Vec<Span>>,
 }
 
 impl Span {
@@ -52,6 +60,7 @@ impl Span {
             href: None,
             color: [0; 3],
             math: None,
+            note: None,
         }
     }
 }

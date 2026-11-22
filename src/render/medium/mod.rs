@@ -2,6 +2,7 @@
 //! text is real, reflowed HTML and paragraphs are never cut at column or page
 //! boundaries.
 
+use super::notes::{NOTES_CSS, aside_html};
 use super::*;
 use crate::common::geom::median;
 
@@ -73,11 +74,15 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
     }
 
     let source = arxiv_abs_link(doc);
-    let math_css = if pages.contains("<math ") {
+    let mut math_css = if pages.contains("<math ") {
         math_css(images.opts.embed_fonts)
     } else {
         String::new()
     };
+    // The style of the translator's notes goes with it, when there are any.
+    if pages.contains("<aside class=\"tn\"") {
+        math_css.push_str(NOTES_CSS);
+    }
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -154,6 +159,7 @@ fn page_html(doc: &Document, page_idx: usize, page: &PageInfo, trim: &PageTrim, 
         sides: side_figures(doc, &blocks),
 
         math: images.opts.equations == Equations::MathMl,
+        note_asides: true,
     };
     let mut inner = String::new();
 
@@ -215,12 +221,14 @@ fn zone_html(zone: &[&Block], cols: usize, images: &mut ImageStore<'_>, ctx: &Fl
                 }
                 let parts: Vec<String> = zone[start..k].iter().map(|block| spans_html(&block.spans)).collect();
                 inner.push_str(&format!("<h1 class=\"title\">{}</h1>\n", parts.join(" ")));
+                inner.push_str(&aside_html(&zone[start..k], ctx.math));
             }
             BlockKind::Authors => {
                 while k < zone.len() && matches!(zone[k].kind, BlockKind::Authors) {
                     k += 1;
                 }
                 inner.push_str(&authors_html(&zone[start..k]));
+                inner.push_str(&aside_html(&zone[start..k], ctx.math));
             }
             _ => {
                 while k < zone.len() && !matches!(zone[k].kind, BlockKind::Title | BlockKind::Authors) {

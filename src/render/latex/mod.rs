@@ -24,6 +24,7 @@ use crate::backend::PdfFile;
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
 use crate::render::Pictures;
 use math::latex;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
@@ -120,6 +121,7 @@ pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOpti
         text: Text {
             anchors: &anchors,
             math: opts.equations == Equations::MathMl,
+            table_notes: RefCell::default(),
         },
         images: &mut images,
         out: String::new(),
@@ -696,9 +698,14 @@ impl Writer<'_, '_> {
         }
         let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
+            // Footnotes are lost inside a table: its cells get the marks,
+            // and the notes follow the table.
+            *self.text.table_notes.borrow_mut() = Some(Vec::new());
+            let tabular = self.tabular(table);
+            let notes = self.text.table_notes.borrow_mut().take().unwrap_or_default();
             Some(format!(
-                "\\begin{{center}}\n\\begin{{kakemonotable}}\n{}\n\\end{{kakemonotable}}\n\\end{{center}}",
-                self.tabular(table)
+                "\\begin{{center}}\n\\begin{{kakemonotable}}\n{tabular}\n\\end{{kakemonotable}}\n\\end{{center}}{}",
+                footnote_texts(&notes)
             ))
         } else {
             image.map(|spec| {
@@ -866,6 +873,20 @@ fn protect_start(text: &str) -> String {
     }
 }
 
+/// The texts of the notes whose marks are in a table (`\footnotemark`),
+/// numbered as their marks: the counter goes back by their number, then
+/// steps once per note. Empty without notes.
+fn footnote_texts(notes: &[String]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let texts: String = notes
+        .iter()
+        .map(|note| format!("\\stepcounter{{footnote}}\\footnotetext{{{note}}}"))
+        .collect();
+    format!("\n\\addtocounter{{footnote}}{{-{}}}{texts}", notes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -925,6 +946,7 @@ mod tests {
             text: Text {
                 anchors: &anchors,
                 math: true,
+                table_notes: RefCell::default(),
             },
             images: &mut images,
             out: String::new(),

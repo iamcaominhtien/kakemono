@@ -2,6 +2,7 @@
 //! (themes Paper, White and Dark, a contents column that can be hidden, a
 //! running head, embedded reading fonts).
 
+use super::notes::{NOTES_CSS, aside_html};
 use super::*;
 use base64::Engine;
 use std::collections::HashMap;
@@ -115,6 +116,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
         sides: side_figures(doc, &doc.blocks.iter().collect::<Vec<_>>()),
 
         math: images.opts.equations == Equations::MathMl,
+        note_asides: true,
     };
     let mut content = render_flow(&front_rest, images, &ctx);
     content.push_str(&render_flow(body, images, &ctx));
@@ -129,7 +131,13 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
     } else {
         String::new()
     };
+    let notes = if content.contains("<aside class=\"tn\"") || head.contains("<aside class=\"tn\"") {
+        NOTES_CSS
+    } else {
+        ""
+    };
     let page = Page {
+        notes,
         title: &title,
         topbar: &topbar(doc, &title),
         toc: &toc_html(body),
@@ -144,6 +152,8 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
 
 /// The parts of the page, put together by [`Page::html`].
 struct Page<'a> {
+    /// Style of the translator's notes (empty when the paper has none).
+    notes: &'a str,
     /// Title of the paper (plain text).
     title: &'a str,
     /// The running head.
@@ -194,7 +204,7 @@ impl Page<'_> {
 <title>{title}</title>
 <script>{HEAD_JS}</script>
 <style>
-{fonts}{math}{CSS}</style>
+{fonts}{math}{CSS}{notes}</style>
 </head>
 <body class="friendly">
 {topbar}<div class="layout">
@@ -220,6 +230,7 @@ impl Page<'_> {
             sound = PAGE_SOUND_JS.as_str(),
             fonts = self.fonts,
             math = self.math,
+            notes = self.notes,
             topbar = self.topbar,
             toc = self.toc,
             head = self.head,
@@ -331,6 +342,12 @@ fn paper_head(doc: &Document, title: &str, front: &[&Block]) -> String {
     for block in front.iter().filter(|block| matches!(block.kind, BlockKind::Note)) {
         head.push_str(&format!("<p class=\"note\">{}</p>\n", spans_html(&block.spans)));
     }
+    let front_text: Vec<&Block> = front
+        .iter()
+        .copied()
+        .filter(|block| matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note))
+        .collect();
+    head.push_str(&aside_html(&front_text, false));
     head
 }
 
@@ -382,6 +399,7 @@ fn toc_html(body: &[&Block]) -> String {
         block
             .spans
             .iter()
+            .filter(|span| span.note.is_none())
             .filter(|span| !(span.style & SUP != 0 && span.href.as_deref().is_some_and(|href| href.starts_with("#fn"))))
             .map(|span| span.text.as_str())
             .collect::<String>()

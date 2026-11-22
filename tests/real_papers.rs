@@ -2333,3 +2333,130 @@ fn ligo_references_without_heading_are_references() {
         .count();
     assert_eq!(notes, 1);
 }
+
+/// A translator's note (`<tn>` in the editable JSON) added to two
+/// paragraphs and a table cell of the LIGO paper reaches every output that shows edited
+/// text: a numbered call with the note after its block (HTML, Markdown), a
+/// popup (hard-95), real footnotes (Word, LaTeX, EPUB); the JSON written
+/// again gives the tag back, and the plain text and the chunks leave the
+/// note out.
+#[test]
+fn ligo_translator_notes_reach_every_output() {
+    let Some(paper) = load("1602.03837v1") else { return };
+    let mut analysis = paper.analyze();
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let note = "<tn>Tiếng Anh: <i>gravitational waves</i>. (ND)</tn>";
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut noted = Vec::new();
+    for block in value["blocks"].as_array_mut().unwrap() {
+        if block["type"] == "paragraph" && noted.len() < 2 {
+            let text = block["text"].as_str().unwrap().to_string();
+            block["text"] = format!("{text}{note}").into();
+            noted.push(text);
+        }
+        // And one in the first cell of the table.
+        if let Some(cell) = block.pointer_mut("/table/rows/0/0/text") {
+            *cell = format!("{}<tn>Ô bảng (ND)</tn>", cell.as_str().unwrap()).into();
+        }
+    }
+    let report = paper
+        .apply_content(&mut analysis, &serde_json::to_string(&value).unwrap())
+        .unwrap();
+    assert_eq!(report.edited_blocks, 3);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+
+    // The JSON written again holds the tag; its `plain` text does not.
+    let again = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let again_value: serde_json::Value = serde_json::from_str(&again).unwrap();
+    let block = again_value["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["text"].as_str().is_some_and(|text| text.ends_with(note)))
+        .expect("the note comes back in the JSON");
+    assert!(!block["plain"].as_str().unwrap().contains("Tiếng Anh"));
+    assert_eq!(paper.apply_content(&mut analysis, &again).unwrap().edited_blocks, 0);
+
+    let html = |mode| {
+        paper
+            .to_html(
+                &analysis,
+                &HtmlOptions {
+                    mode,
+                    inline_images: false,
+                    ..Default::default()
+                },
+            )
+            .html
+    };
+    for mode in [Mode::Friendly, Mode::Medium] {
+        let page = html(mode);
+        assert!(
+            page.contains("<a class=\"tn-call\" id=\"tnref-2\" href=\"#tn-2\""),
+            "{mode:?}"
+        );
+        assert_eq!(
+            page.matches("<aside class=\"tn\" role=\"note\">").count(),
+            3,
+            "{mode:?}"
+        );
+        assert!(
+            page.contains("<p id=\"tn-1\"><a class=\"tn-back\" href=\"#tnref-1\""),
+            "{mode:?}"
+        );
+        assert!(
+            page.contains("Tiếng Anh: <em>gravitational waves</em>. (ND)"),
+            "{mode:?}"
+        );
+        assert!(page.contains("aside.tn{"), "{mode:?}: the style of the notes");
+    }
+    let hard95 = html(Mode::Hard95);
+    assert!(hard95.contains("<sup class=\"tn\" tabindex=\"0\""));
+    assert!(hard95.contains("title=\"Tiếng Anh: gravitational waves. (ND)\""));
+    assert!(hard95.contains("class=\"tn-pop\"") || hard95.contains("'tn-pop'"));
+
+    let docx = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let part = |name: &str| {
+        docx.iter()
+            .find(|(part, _)| part == name)
+            .map(|(_, data)| String::from_utf8(data.clone()).unwrap())
+            .unwrap_or_else(|| panic!("{name} is missing"))
+    };
+    let footnotes = part("word/footnotes.xml");
+    assert!(footnotes.contains("w:type=\"separator\" w:id=\"-1\""));
+    assert!(footnotes.contains("<w:footnote w:id=\"3\">"));
+    assert!(footnotes.contains("Tiếng Anh: "));
+    assert!(part("word/document.xml").contains("<w:footnoteReference w:id=\"1\"/>"));
+    assert!(part("[Content_Types].xml").contains("/word/footnotes.xml"));
+    assert!(part("word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
+
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(md.contains("[^tn1]"));
+    assert!(
+        md.contains("\n[^tn2]: Tiếng Anh: *gravitational waves*. (ND)\n"),
+        "markdown"
+    );
+
+    let tex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert_eq!(
+        tex.matches("\\footnote{Tiếng Anh: \\textit{gravitational waves}. (ND)}")
+            .count(),
+        2
+    );
+    // In the table, the cell holds the mark and the note follows the table.
+    assert!(tex.contains("\\footnotemark{}"));
+    assert!(tex.contains("\\addtocounter{footnote}{-1}\\stepcounter{footnote}\\footnotetext{Ô bảng (ND)}"));
+
+    let epub = zip_parts(&paper.to_epub(&analysis, &EpubOptions::default()));
+    let book: String = epub
+        .iter()
+        .filter(|(name, _)| name.ends_with(".xhtml"))
+        .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
+        .collect();
+    assert_eq!(book.matches("epub:type=\"footnote\"").count(), 3);
+    assert_eq!(book.matches("epub:type=\"noteref\"").count(), 3);
+
+    let chunks = kakemono::chunks_jsonl(&paper.to_chunks(&analysis, &ChunkOptions::default()));
+    assert!(!chunks.contains("Tiếng Anh"));
+    assert!(chunks.contains(noted[0].split('<').next().unwrap().trim()));
+}

@@ -7,6 +7,8 @@ use super::math::{latex, math_char};
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::markdown::inline::merge;
+use crate::render::notes::{Segment, segments};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
@@ -96,6 +98,9 @@ pub(crate) struct Text<'a> {
     /// Write the formulas inside the text as `$…$` (see
     /// [`inline_math`](crate::render::inline_math)).
     pub(crate) math: bool,
+    /// While a table is written: the texts of its translator's notes, whose
+    /// cells hold only their marks (LaTeX loses a footnote in a table).
+    pub(crate) table_notes: RefCell<Option<Vec<String>>>,
 }
 
 impl Text<'_> {
@@ -120,10 +125,32 @@ impl Text<'_> {
         out.trim().to_string()
     }
 
-    /// Text spans as LaTeX (not trimmed). Neighbouring spans of the same
-    /// style and link are joined first, so that a word is not cut by
-    /// commands.
+    /// Text spans as LaTeX (not trimmed), a translator's note as a
+    /// `\footnote` (LaTeX numbers them).
     fn runs(&self, spans: &[Span]) -> String {
+        let mut out = String::new();
+        for segment in segments(spans) {
+            match segment {
+                Segment::Text(spans) => out.push_str(&self.text_runs(spans)),
+                Segment::Note(call) => {
+                    let note = self.spans(call.note.as_deref().unwrap_or_default());
+                    match self.table_notes.borrow_mut().as_mut() {
+                        Some(notes) => {
+                            notes.push(note);
+                            out.push_str("\\footnotemark{}");
+                        }
+                        None => out.push_str(&format!("\\footnote{{{note}}}")),
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Text spans without notes as LaTeX (not trimmed). Neighbouring spans
+    /// of the same style and link are joined first, so that a word is not
+    /// cut by commands.
+    fn text_runs(&self, spans: &[Span]) -> String {
         let mut out = String::new();
         for (text, style, href) in merge(spans) {
             let body = styled(&text, style);
@@ -333,6 +360,7 @@ mod tests {
         let text = Text {
             anchors: &anchors,
             math: false,
+            table_notes: RefCell::default(),
         };
         let mut known = span("[1]", 0);
         known.href = Some("#ref 1".into());

@@ -32,6 +32,12 @@ use std::collections::HashSet;
 const CSS: &str = include_str!("hard95.css");
 /// Script of the mode (zoom, line widths, reflow), embedded in the page.
 const JS: &str = include_str!("hard95.js");
+/// Style of the calls of translator's notes and of their popup, embedded
+/// only in a page that has notes.
+const NOTES_CSS: &str = include_str!("notes.css");
+/// Script that shows a translator's note in a popup when its call is
+/// tapped, embedded only in a page that has notes.
+const NOTES_JS: &str = include_str!("notes.js");
 
 /// Latin Modern, the fonts of LaTeX, for papers set in Computer Modern:
 /// the text in the page then has the letter shapes and almost exactly the
@@ -429,6 +435,7 @@ fn rotated_run_html(run: &RotatedRun, units: &Units) -> String {
         href: None,
         color: run.color,
         math: None,
+        note: None,
     };
     format!(
         "<span class=\"rt\" style=\"left:{};top:{};font-size:{};transform:rotate({:.2}deg)\" data-w=\"{}\">{}</span>",
@@ -480,6 +487,11 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
     } else {
         String::new()
     };
+    let (notes_css, notes_js) = if pages.contains("<sup class=\"tn\"") {
+        (NOTES_CSS, format!("<script>\n{NOTES_JS}</script>\n"))
+    } else {
+        ("", String::new())
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -489,7 +501,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 <meta name="generator" content="kakemono (hard-95)">
 <title>{title}</title>
 <style>
-{fonts}{CSS}</style>
+{fonts}{CSS}{notes_css}</style>
 </head>
 <body class="hard95 fit{cm}{tm}">
 <div class="topbar"><span class="t">{title}</span>{source}<span>{n} pages</span><button id="zout" type="button" aria-label="Zoom out">−</button><button id="zfit" type="button">Fit</button><button id="zin" type="button" aria-label="Zoom in">+</button></div>
@@ -497,7 +509,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 {pages}</main>
 <script>
 {JS}</script>
-</body>
+{notes_js}</body>
 </html>
 "#,
         title = esc(&title),
@@ -595,6 +607,9 @@ fn span_html(span: &Span, text: &str, gaps: &mut std::slice::Iter<'_, f32>) -> S
 /// The HTML `inner` of a span's text wrapped in the elements of its style,
 /// colour and link.
 fn wrap_span(span: &Span, inner: String) -> String {
+    if let Some(note) = &span.note {
+        return note_call(span, note);
+    }
     let mut out = inner;
     let mut classes: Vec<&str> = Vec::new();
     if span.style & MONO != 0 {
@@ -731,6 +746,20 @@ fn flow_block(doc: &Document, block: &Block, page_idx: usize, units: &Units) -> 
         flow_lines(block, &frags, size, &placement.shifts, style.align == "justify", units)
     };
     fragment_boxes(block, &frags, page_idx, &style, &placement.extra, &inner, edited, units)
+}
+
+/// The call of a translator's note: its number (the text of the numbered
+/// call), raised, with the note as its tooltip and, hidden, as the content
+/// of the popup that `notes.js` opens when the call is tapped. The page has
+/// no room for the note itself.
+fn note_call(call: &Span, note: &[Span]) -> String {
+    let plain: String = note.iter().map(|span| span.text.as_str()).collect();
+    let content: String = note.iter().map(|span| wrap_span(span, esc(&span.text))).collect();
+    format!(
+        "<sup class=\"tn\" tabindex=\"0\" role=\"button\" title=\"{}\">{}<span class=\"tn-c\" hidden>{content}</span></sup>",
+        esc(plain.trim()),
+        esc(&call.text)
+    )
 }
 
 /// Whether the text of `block` was edited after the analysis (see
@@ -1092,6 +1121,7 @@ fn equation(block: &Block, units: &Units) -> String {
             href: None,
             color: run.color,
             math: None,
+            note: None,
         };
         let mut html = span_html(&span, &run.text, &mut [].iter());
         // A tall glyph (a big delimiter, an integral sign) stays in the page

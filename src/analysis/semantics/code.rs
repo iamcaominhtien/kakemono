@@ -293,6 +293,7 @@ pub(crate) fn code_rows(lines: &[Line], fonts: &[FontInfo]) -> Vec<Vec<Span>> {
                         href: None,
                         color: [0, 0, 0],
                         math: None,
+                        note: None,
                     }),
                 }
             }

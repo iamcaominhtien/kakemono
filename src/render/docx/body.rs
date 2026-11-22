@@ -75,6 +75,9 @@ pub(super) struct Body<'a> {
     bookmarks: usize,
     /// The last thing written is a table.
     after_table: bool,
+    /// The runs of each translator's note, in order: note `i` is the
+    /// footnote with id `i + 1` (see [`super::footnotes_xml`]).
+    pub(super) notes: Vec<String>,
 }
 
 impl<'a> Body<'a> {
@@ -90,6 +93,7 @@ impl<'a> Body<'a> {
             anchors: doc.blocks.iter().filter_map(|block| block.anchor.clone()).collect(),
             bookmarks: 0,
             after_table: false,
+            notes: Vec::new(),
         }
     }
 
@@ -253,10 +257,15 @@ impl<'a> Body<'a> {
 
     /// Styled spans as runs, with their links: a link to an anchor of the
     /// document points to its bookmark, a web link to its URL; other
-    /// targets are left out.
+    /// targets are left out. A translator's note becomes a Word footnote,
+    /// which Word numbers.
     fn styled_runs(&mut self, spans: &[Span]) -> String {
         let mut out = String::new();
         for span in spans {
+            if let Some(note) = &span.note {
+                out.push_str(&self.footnote(note));
+                continue;
+            }
             match span.href.as_deref().and_then(|href| self.link_target(href)) {
                 Some(LinkTarget::Bookmark(name)) => out.push_str(&format!(
                     "<w:hyperlink w:anchor=\"{name}\" w:history=\"1\">{}</w:hyperlink>",
@@ -270,6 +279,21 @@ impl<'a> Body<'a> {
             }
         }
         out
+    }
+
+    /// Registers a translator's note as a footnote and returns the run of
+    /// its reference. The note's links stay text: the footnotes part has no
+    /// relationships of its own.
+    fn footnote(&mut self, note: &[Span]) -> String {
+        let runs: String = note
+            .iter()
+            .map(|span| text_runs(&span.text, &run_props(span.style, span.color, None)))
+            .collect();
+        self.notes.push(runs);
+        format!(
+            "<w:r><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr><w:footnoteReference w:id=\"{}\"/></w:r>",
+            self.notes.len()
+        )
     }
 
     /// Where the link `href` points, registering an external URL.

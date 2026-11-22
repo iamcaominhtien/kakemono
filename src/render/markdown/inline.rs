@@ -6,6 +6,7 @@ use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::esc;
 use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::latex::math::latex;
+use crate::render::notes::{Segment, segments};
 use std::collections::HashSet;
 
 /// Characters escaped with a backslash anywhere in running text: those that
@@ -65,10 +66,24 @@ impl Inline<'_> {
         out.trim().to_string()
     }
 
-    /// Text spans as inline Markdown (not trimmed). Neighbouring spans of
-    /// the same style and link are joined first, so that emphasis is not
-    /// closed and opened again inside a word.
+    /// Text spans as inline Markdown (not trimmed), the call of a numbered
+    /// translator's note as a footnote reference (`[^tn1]`).
     fn text(&self, spans: &[Span]) -> String {
+        let mut out = String::new();
+        for segment in segments(spans) {
+            match segment {
+                Segment::Text(spans) => out.push_str(&self.runs(spans)),
+                Segment::Note(call) if !call.text.is_empty() => out.push_str(&format!("[^{}]", note_label(call))),
+                Segment::Note(_) => {}
+            }
+        }
+        out
+    }
+
+    /// Text spans without notes as inline Markdown (not trimmed).
+    /// Neighbouring spans of the same style and link are joined first, so
+    /// that emphasis is not closed and opened again inside a word.
+    fn runs(&self, spans: &[Span]) -> String {
         let mut out = String::new();
         for (text, style, href) in merge(spans) {
             let body = styled(&text, style);
@@ -93,6 +108,11 @@ impl Inline<'_> {
             None => LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)),
         }
     }
+}
+
+/// The label of the footnote of a numbered translator's note (`tn1`).
+pub(crate) fn note_label(call: &Span) -> String {
+    format!("tn{}", call.text)
 }
 
 /// Neighbouring spans with the same Markdown style and link, joined:
@@ -212,8 +232,22 @@ fn destination(href: &str) -> String {
 }
 
 /// Spans as HTML for the cells of a table written as HTML (Markdown is not
-/// read inside them by every reader).
+/// read inside them by every reader). The call of a numbered translator's
+/// note is its raised number: footnote references are not read in HTML.
 pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
+    let mut out = String::new();
+    for segment in segments(spans) {
+        match segment {
+            Segment::Text(spans) => out.push_str(&runs_html(spans, anchors)),
+            Segment::Note(call) if !call.text.is_empty() => out.push_str(&format!("<sup>{}</sup>", esc(&call.text))),
+            Segment::Note(_) => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Spans without notes as HTML (see [`spans_html`]), not trimmed.
+fn runs_html(spans: &[Span], anchors: &HashSet<String>) -> String {
     let mut out = String::new();
     for (text, style, href) in merge(spans) {
         let inner = text.trim_matches(' ');
@@ -242,7 +276,7 @@ pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
         };
         out.push_str(&format!("{lead}{body}{trail}"));
     }
-    out.trim().to_string()
+    out
 }
 
 #[cfg(test)]

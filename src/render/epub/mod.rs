@@ -12,6 +12,7 @@
 mod package;
 mod xhtml;
 
+use super::notes::{NOTES_CSS, epub_asides, has_notes, number_blocks};
 use super::zip::{Compression, ZipWriter};
 use super::{
     Equations, FlowCtx, HtmlOptions, ImageStore, Mode, PageImage, WidthUnit, arxiv_abs_link, authors_html, doc_title,
@@ -127,13 +128,26 @@ pub fn render_epub(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &EpubOption
         covers: (None, None),
         sides: side_figures(doc, &all),
         math: opts.equations == Equations::MathMl,
+        note_asides: false,
     };
     let mut text = String::new();
     for (i, chapter) in chapters.iter().enumerate() {
         if i > 0 {
             text.push(SPLIT);
         }
-        text.push_str(&chapter_html(doc, chapter, &mut images, &ctx));
+        // The translator's notes are numbered from 1 in each chapter, and
+        // set at its end as EPUB footnotes.
+        if chapter.iter().any(|block| has_notes(block)) {
+            let mut numbered: Vec<Block> = chapter.iter().map(|block| (*block).clone()).collect();
+            number_blocks(&mut numbered, &format!("c{}-", i + 1));
+            let numbered: Vec<&Block> = numbered.iter().collect();
+            let html = chapter_html(doc, &numbered, &mut images, &ctx)
+                .replace("<a class=\"tn-call\"", "<a epub:type=\"noteref\" class=\"tn-call\"");
+            text.push_str(&html);
+            text.push_str(&epub_asides(&numbered, ctx.math));
+        } else {
+            text.push_str(&chapter_html(doc, chapter, &mut images, &ctx));
+        }
     }
     let cover = (opts.cover && !doc.pages.is_empty()).then(|| {
         text.push(SPLIT);
@@ -233,7 +247,12 @@ impl Book<'_> {
             toc_ncx(&info, &entries).as_bytes(),
             Compression::Deflated,
         );
-        zip.add(&format!("EPUB/{CSS_FILE}"), CSS.as_bytes(), Compression::Deflated);
+        let css = if self.bodies.iter().any(|body| body.contains("<aside class=\"tn\"")) {
+            format!("{CSS}{NOTES_CSS}")
+        } else {
+            CSS.to_string()
+        };
+        zip.add(&format!("EPUB/{CSS_FILE}"), css.as_bytes(), Compression::Deflated);
         for (name, data) in files {
             zip.add(&format!("EPUB/{name}"), data, Compression::Stored);
         }
