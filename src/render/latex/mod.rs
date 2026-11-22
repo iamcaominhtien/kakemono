@@ -45,7 +45,14 @@ const FONTS_END: &str = "  \\usepackage{fontspec}\n\\fi\n";
 /// as is usual in Japanese; the CJK fonts follow the Latin ones into
 /// sans-serif and monospaced text (`match`), and xeCJK keeps the spaces
 /// between CJK characters (Korean words are separated by spaces).
-const CJK_FONTS: &str = r"\ifLuaTeX
+/// xeCJK takes the symbols of Japanese text (①, ―, ≦, ●, ☆, box drawing,
+/// arrows) for Latin ones and looks for them in Latin Modern, which lacks
+/// them: those of the dash, Roman numerals, arrows, mathematical operators,
+/// enclosed alphanumerics, box drawing, geometric shapes and miscellaneous
+/// symbols blocks that both Noto Serif CJK and Harano Aji Mincho have and
+/// Latin Modern has not (checked with `fc-query`) are declared CJK. LuaTeX-ja
+/// sets them in its Japanese font by itself.
+const CJK_FONTS: &str = r#"\ifLuaTeX
   \usepackage[match]{luatexja-fontspec}
   \IfFontExistsTF{Noto Serif CJK JP}{\setmainjfont{Noto Serif CJK JP}}{}
   \IfFontExistsTF{Noto Sans CJK JP}{\setsansjfont{Noto Sans CJK JP}}{}
@@ -53,6 +60,16 @@ const CJK_FONTS: &str = r"\ifLuaTeX
 \ifXeTeX
   \usepackage{xeCJK}
   \xeCJKsetup{CJKspace=true}
+  \xeCJKDeclareCharClass{CJK}{"2015, "2160->"216B, "2170->"217B, "2194, "2196->"2199,
+    "21C4->"21C6, "21CB->"21CC, "21D0, "21D2, "21D4, "21E6->"21E9, "21F5, "2200,
+    "2202->"2203, "2205->"220B, "220F, "2211, "2213, "221D, "221F->"2220, "2225->"222E,
+    "2234->"2235, "223D, "2243, "2245, "2248, "2260->"2262, "2264->"2267, "226A->"226B,
+    "2272->"2273, "2276->"2277, "2282->"2287, "228A->"228B, "2295->"2298, "22A0, "22A5,
+    "22BF, "22DA->"22DB, "22EF, "2460->"2492, "249C->"254B, "2550, "255E, "2561, "256A,
+    "256D->"2573, "25A0->"25A2, "25AA->"25AB, "25B1->"25B3, "25B6->"25B7, "25BC->"25BD,
+    "25C0->"25C1, "25C6->"25C7, "25C9->"25CC, "25CE->"25D3, "25E2->"25E5, "25EF,
+    "2600->"2603, "2605->"2606, "260E, "2616->"2617, "261C->"261F, "2640, "2642,
+    "2660->"2669, "266B->"266F, "2672->"267D, "26A0, "26BD->"26BE}
   \IfFontExistsTF{Noto Serif CJK JP}
     {\setCJKmainfont{Noto Serif CJK JP}}
     {\setCJKmainfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiMincho-Regular.otf}}
@@ -61,7 +78,7 @@ const CJK_FONTS: &str = r"\ifLuaTeX
     {\setCJKsansfont[BoldFont=HaranoAjiGothic-Bold.otf]{HaranoAjiGothic-Medium.otf}%
      \setCJKmonofont{HaranoAjiGothic-Medium.otf}}
 \fi
-";
+"#;
 /// Body rows of a table from which it is a `longtable`, broken across
 /// pages with its header repeated, rather than one box shrunk to the width
 /// of the text: a box never breaks, so a table taller than the page is cut
@@ -293,14 +310,14 @@ fn is_cjk(ch: char) -> bool {
             | 0x3000..=0x303F // CJK symbols and punctuation
             | 0x3040..=0x30FF // Hiragana, Katakana
             | 0x3100..=0x312F // Bopomofo
-            | 0x3130..=0x318F // Hangul compatibility Jamo
-            | 0x31A0..=0x31FF // Bopomofo extended, CJK strokes, Katakana extension
+            | 0x3130..=0x31FF // Hangul compatibility Jamo, kanbun, Bopomofo extended, CJK strokes, Katakana extension
             | 0x3200..=0x33FF // Enclosed CJK, CJK compatibility
             | 0x3400..=0x4DBF // Han, extension A
             | 0x4E00..=0x9FFF // Han
             | 0xA960..=0xA97F // Hangul Jamo extended A
             | 0xAC00..=0xD7FF // Hangul syllables, Jamo extended B
             | 0xF900..=0xFAFF // CJK compatibility ideographs
+            | 0xFE10..=0xFE1F // Vertical forms
             | 0xFE30..=0xFE4F // CJK compatibility forms
             | 0xFF00..=0xFFEF // Halfwidth and fullwidth forms
             | 0x20000..=0x3FFFF // Han, extensions B and after
@@ -1302,6 +1319,21 @@ mod tests {
             assert!(tex.contains("\\setCJKmainfont"), "{text}");
             assert!(tex.contains("needs LuaLaTeX or XeLaTeX"), "{text}");
         }
+    }
+
+    #[test]
+    fn xelatex_sets_the_symbols_of_cjk_text_in_the_cjk_font() {
+        let tex = document(&doc_of("①②の手順 ≦ ― ●"), "①②の手順 ≦ ― ●", InputFormat::Xlsx);
+        let declared = tex
+            .lines()
+            .skip_while(|line| !line.contains("\\xeCJKDeclareCharClass{CJK}"))
+            .take_while(|line| !line.contains('}') || line.contains("DeclareCharClass"))
+            .collect::<String>();
+        for code in ["\"2015", "\"2264->\"2267", "\"2460->", "\"25CE->\"25D3"] {
+            assert!(declared.contains(code), "{code} not declared: {declared}");
+        }
+        // Kanbun and vertical forms are CJK text.
+        assert!(is_cjk('\u{3190}') && is_cjk('\u{319F}') && is_cjk('\u{FE10}') && is_cjk('\u{FE19}'));
     }
 
     #[test]
