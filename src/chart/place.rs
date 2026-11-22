@@ -114,7 +114,7 @@ pub(crate) fn table_block(table: Table, caption: &str) -> Block {
 
 /// The blocks of the chart `placed` whose picture, when it was drawn and
 /// stored, is the document's picture `picture`, shown at its size: the
-/// figure, then its data table, or the note saying why there is none; a
+/// figure, then its data table (captioned "… (data)"), or the note saying why there is none; a
 /// chart not drawn gives its data table alone (with the chart's caption),
 /// else its caption and the note. `caption` is its title, else what the
 /// caller names it ("Chart 2").
@@ -132,6 +132,9 @@ pub(crate) fn blocks(placed: Placed, picture: Option<usize>, caption: &str) -> V
         None => {}
     }
     match placed.table {
+        // Under its figure, the table says it holds the chart's data rather
+        // than repeating the figure's caption word for word.
+        Some(table) if picture.is_some() => blocks.push(table_block(table, &format!("{caption} (data)"))),
         Some(table) => blocks.push(table_block(table, caption)),
         None => blocks.extend(placed.note.map(paragraph)),
     }
@@ -202,7 +205,10 @@ mod tests {
         let blocks = blocks(placed, Some(0), "Chart 1");
         assert_eq!(
             read(&blocks),
-            [("figure".into(), "Sales".into()), ("table".into(), "Sales".into())]
+            [
+                ("figure".into(), "Sales".into()),
+                ("table".into(), "Sales (data)".into())
+            ]
         );
         // Without a title, the caller's name.
         let placed = charts.place(columns("", true).as_bytes(), (300.0, 200.0)).unwrap();

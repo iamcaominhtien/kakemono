@@ -11,6 +11,9 @@ const MAX_TICKS: usize = 50;
 const ZERO_SPREAD_RATIO: f64 = 1.0 / 6.0;
 /// The fewest ticks a scale aims at.
 const MIN_TARGET_TICKS: usize = 2;
+/// The most times [`readable`] makes a step coarser to stop tick labels
+/// repeating (each time at least doubles it).
+const MAX_COARSER_STEPS: usize = 8;
 /// The most ticks a scale aims at.
 const MAX_TARGET_TICKS: usize = 10;
 
@@ -174,19 +177,35 @@ pub(super) fn range(values: impl IntoIterator<Item = f64>) -> Option<(f64, f64)>
 /// the labels of its ticks in `format` would repeat (steps of 0.5 in a
 /// format without decimals show 0, 1, 1, 2, 2).
 pub(super) fn readable(build: impl Fn(usize) -> Scale, target: usize, format: &NumFmt, date1904: bool) -> Scale {
-    let mut target = target.max(1);
-    loop {
-        let scale = build(target);
+    let repeats = |scale: &Scale| {
         let labels: Vec<String> = scale
             .ticks()
             .iter()
             .map(|tick| label(*tick, format, date1904))
             .collect();
-        if target <= 1 || labels.windows(2).all(|pair| pair[0] != pair[1]) {
-            return scale;
-        }
+        labels.windows(2).any(|pair| pair[0] == pair[1])
+    };
+    let mut target = target.max(1);
+    let mut scale = build(target);
+    while repeats(&scale) && target > MIN_TARGET_TICKS {
         target /= 2;
+        scale = build(target);
     }
+    // At the fewest ticks a target gives, the step itself grows (0.5 → 1
+    // → 2 → 5), the bounds widened to multiples of it.
+    for _ in 0..MAX_COARSER_STEPS {
+        if !repeats(&scale) {
+            break;
+        }
+        let step = nice_step(scale.step * 1.5);
+        scale = Scale {
+            min: (scale.min / step).floor() * step,
+            max: ((scale.max / step).ceil() * step).max((scale.min / step).floor() * step + step),
+            step,
+            reversed: scale.reversed,
+        };
+    }
+    scale
 }
 
 /// The label of the tick `value` in the number format `format`.
@@ -271,6 +290,16 @@ mod tests {
         assert_eq!(build(7).step, 0.5);
         let scale = readable(build, 7, &format, false);
         assert_eq!(scale.ticks(), [0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn a_scale_of_zeros_in_whole_dollars_does_not_repeat_a_label() {
+        // All values 0: the scale runs 0 to 1, by 0.5 at the fewest ticks.
+        let format = NumFmt::Code("\"$\"#,##0".into());
+        let build = |target| Scale::nice(Some((0.0, 0.0)), Fixed::default(), Zero::Always, target, false);
+        let scale = readable(build, 5, &format, false);
+        let labels: Vec<String> = scale.ticks().iter().map(|tick| label(*tick, &format, false)).collect();
+        assert_eq!(labels, ["$0", "$1"]);
     }
 
     #[test]

@@ -715,7 +715,7 @@ mod tests {
         }
         let doc = super::read(&zip.finish(), &ExcelConfig::default(), None).unwrap();
         let texts: Vec<_> = doc.blocks.iter().map(Block::text).collect();
-        assert_eq!(texts, ["Data", "7", "Emergency", "Sales", "Sales"]);
+        assert_eq!(texts, ["Data", "7", "Emergency", "Sales", "Sales (data)"]);
         let figure = &doc.blocks[3];
         let BlockKind::Figure {
             kind: FloatKind::Figure,

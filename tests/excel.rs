@@ -315,13 +315,13 @@ fn charts_and_pictures_take_their_place() {
             "Sales",
             "table  (5 rows)",
             "svg Sales by quarter",
-            "table Sales by quarter (5 rows)",
+            "table Sales by quarter (data) (5 rows)",
             "svg Chart 2",
-            "table Chart 2 (5 rows)",
+            "table Chart 2 (data) (5 rows)",
             "Our logo",
             "png ",
             "svg Channels",
-            "table Channels (4 rows)",
+            "table Channels (data) (4 rows)",
             "Forecast",
             "The data of this chart is not stored in the file.",
             "Photos",
@@ -343,7 +343,7 @@ fn charts_and_pictures_take_their_place() {
     // The chunks give the data, under the chart's caption.
     let chunks = chunks_jsonl(&paper.to_chunks(&analysis, &ChunkOptions::default()));
     assert!(
-        chunks.contains("Sales by quarter\\n| North | South\\nQ1 | 120 | 90"),
+        chunks.contains("Sales by quarter (data)\\n| North | South\\nQ1 | 120 | 90"),
         "{chunks}"
     );
 }
