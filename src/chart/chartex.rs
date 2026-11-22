@@ -7,7 +7,7 @@
 
 use super::read::{CHARTEX_NS, Limits, cached, legend_position, non_empty, num_fmt, number, rich_text};
 use super::theme::Theme;
-use super::{Categories, Chart, ChartConfig, ChartKind, Numbers, PlotGroup, Series};
+use super::{Categories, Chart, ChartConfig, ChartKind, DataLabels, Numbers, PlotGroup, Series};
 use crate::word::xml::is;
 use roxmltree::Node;
 use std::collections::HashMap;
@@ -123,6 +123,7 @@ fn read_series(
         color: theme.automatic(position),
         point_colors: Vec::new(),
         markers: false,
+        labels: DataLabels::default(),
         line: false,
     }
 }

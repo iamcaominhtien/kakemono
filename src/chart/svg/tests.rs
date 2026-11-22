@@ -500,6 +500,7 @@ fn big(kind: ChartKind, n_series: usize, n_points: usize) -> Chart {
                 Vec::new()
             },
             markers: true,
+            labels: crate::chart::DataLabels::default(),
             line: true,
         })
         .collect();
@@ -690,4 +691,51 @@ fn a_point_with_its_own_fill_colours_its_bar() {
         .collect();
     // Category by category: A then B.
     assert_eq!(fills, ["#4472c4", "#ed7d31", "#00ff00", "#ed7d31"]);
+}
+
+/// The texts of the data labels of `svg`.
+fn data_labels(svg: &str) -> Vec<String> {
+    let doc = parsed(svg);
+    of_class(&doc, "data-label").into_iter().map(text).collect()
+}
+
+#[test]
+fn bars_show_their_values_and_pies_their_shares() {
+    let shown = r#"<c:dLbls><c:showVal val="1"/><c:showPercent val="0"/></c:dLbls>"#;
+    let bars = space(
+        "",
+        &format!(
+            "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>{}{AXES}</c:barChart>{AXIS_PARTS}",
+            ser(0, "S", &["a", "b"], &["1200", "300"], shown).replace("General", "#,##0")
+        ),
+    );
+    let svg = draw(&bars);
+    assert_eq!(data_labels(&svg), ["1,200", "300"]);
+    // Every label is inside the plot area, past or inside the bar's end.
+    let doc = parsed(&svg);
+    let (_, top, _, height) = plot(&doc);
+    for label in of_class(&doc, "data-label") {
+        let y = num(label, "y");
+        assert!(y >= top && y <= top + height, "{y}");
+    }
+    let percent = r#"<c:dLbls><c:showVal val="0"/><c:showPercent val="1"/></c:dLbls>"#;
+    let doughnut = format!(
+        r#"<c:doughnutChart><c:varyColors val="1"/>{}<c:holeSize val="50"/></c:doughnutChart>"#,
+        ser(0, "P", &["a", "b", "c"], &["1", "3", "0.001"], percent)
+    );
+    // The slice too thin for its label shows none.
+    assert_eq!(data_labels(&draw(&space("", &doughnut))), ["25%", "75%"]);
+    // No labels without dLbls.
+    assert!(data_labels(&draw(&columns("clustered", "col"))).is_empty());
+}
+
+#[test]
+fn stacked_segments_too_short_for_their_label_show_none() {
+    let shown = r#"<c:dLbls><c:showVal val="1"/></c:dLbls>"#;
+    let plot = format!(
+        r#"<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/><c:overlap val="100"/>{}{}{AXES}</c:barChart>{AXIS_PARTS}"#,
+        ser(0, "big", &["a"], &["100"], shown),
+        ser(1, "small", &["a"], &["0.1"], shown)
+    );
+    assert_eq!(data_labels(&draw(&space("", &plot))), ["100"]);
 }

@@ -3,9 +3,13 @@
 //! among them), and scatter over two value axes.
 
 use super::axis::{Fixed, Scale, Zero, label as tick_label, range, readable};
+use super::labels::{self, INK_OUTSIDE, LABEL_OFFSET_PT, Labels, ink_on};
 use super::write::{PathData, Svg, TextStyle, fit, hex, num, text_width};
 use super::{AXIS_LINE, Area, BASELINE_RATIO, GRID, HAIRLINE_PT, LINE_RATIO, SEGMENT_GAP_PT, SMALL, TEXT_SIZE_PT};
-use crate::chart::{Axis, AxisKind, AxisPosition, Categories, Chart, ChartKind, Grouping, PlotGroup, Series};
+use crate::chart::Rgb;
+use crate::chart::{
+    Axis, AxisKind, AxisPosition, Categories, Chart, ChartKind, Grouping, LabelPosition, PlotGroup, Series,
+};
 use crate::excel::numfmt::{self, NumFmt};
 use std::ops::Range;
 
@@ -269,7 +273,7 @@ fn categories(out: &mut Svg, chart: &Chart, area: Area) {
     };
     out.rect("plot", plot.x, plot.y, plot.width, plot.height, r#"fill="none""#);
     gridlines(out, &frame, &axes, category_axis);
-    marks(out, &frame, groups, &spans, &axes, &on_axis);
+    marks(out, &frame, groups, &spans, &axes, &on_axis, chart.date1904);
     if cat_shown {
         let zero = frame.value(&axes[0].scale, 0.0);
         let (from, to) = if horizontal {
@@ -319,7 +323,7 @@ fn value_axes<'c>(chart: &'c Chart, spans: &[Spans]) -> (Vec<ValueAxis<'c>>, Vec
 }
 
 /// Draws the marks of `groups`: areas behind bars, bars behind lines, as
-/// Excel draws them.
+/// Excel draws them, then the data labels over them.
 fn marks(
     out: &mut Svg,
     frame: &Frame,
@@ -327,21 +331,27 @@ fn marks(
     spans: &[Spans],
     axes: &[ValueAxis<'_>],
     on_axis: &[usize],
+    date1904: bool,
 ) {
     let mut budget = MAX_MARKERS;
+    let mut labels = Labels::new();
     for rank in 0..3 {
         for (index, group) in groups.iter().enumerate() {
             let scale = &axes[on_axis[index]].scale;
             match (&group.kind, rank) {
                 (ChartKind::Area { .. }, 0) => areas(out, frame, group, &spans[index], scale),
-                (ChartKind::Bar { .. }, 1) => bars(out, frame, group, &spans[index], scale),
+                (ChartKind::Bar { .. }, 1) => {
+                    bars(out, frame, group, &spans[index], scale, &mut labels, date1904);
+                }
                 (ChartKind::Line { grouping }, 2) => {
                     lines(out, frame, group, &spans[index], *grouping, scale, &mut budget);
+                    line_labels(frame, group, &spans[index], *grouping, scale, &mut labels, date1904);
                 }
                 _ => {}
             }
         }
     }
+    labels.write(out);
 }
 
 /// The buckets of `total` categories: one category each, unless the bars
@@ -690,8 +700,17 @@ fn gridlines(out: &mut Svg, frame: &Frame, axes: &[ValueAxis<'_>], category_axis
     }
 }
 
-/// Draws the bars of `group`, from its `spans`, on `scale`.
-fn bars(out: &mut Svg, frame: &Frame, group: &PlotGroup, spans: &Spans, scale: &Scale) {
+/// Draws the bars of `group`, from its `spans`, on `scale`; their data
+/// labels go to `labels`.
+fn bars(
+    out: &mut Svg,
+    frame: &Frame,
+    group: &PlotGroup,
+    spans: &Spans,
+    scale: &Scale,
+    labels: &mut Labels,
+    date1904: bool,
+) {
     let ChartKind::Bar {
         grouping,
         gap_width_ratio,
@@ -749,6 +768,140 @@ fn bars(out: &mut Svg, frame: &Frame, group: &PlotGroup, spans: &Spans, scale: &
                 (y1 - y0).abs(),
                 &format!(r#"fill="{}""#, hex(color)),
             );
+            if frame.buckets.size == 1
+                && labels.room()
+                && let Some(value) = series
+                    .values
+                    .as_ref()
+                    .and_then(|values| values.points.get(first).copied().flatten())
+                && let Some(text) = labels::text(series, first, value, None, date1904)
+            {
+                let bar = BarMark {
+                    along: start + width / 2.0,
+                    width,
+                    base,
+                    end,
+                    color,
+                };
+                bar_label(frame, &bar, stacked, series.labels.position, text, labels);
+            }
+        }
+    }
+}
+
+/// A bar drawn, along the category axis and across it.
+struct BarMark {
+    /// The middle of the bar along the category axis.
+    along: f32,
+    /// Its width along the category axis.
+    width: f32,
+    /// Where it starts across (its base).
+    base: f32,
+    /// Where it ends across.
+    end: f32,
+    /// Its fill.
+    color: Rgb,
+}
+
+/// Adds the data label `text` of `bar` to `labels` at `position` (by
+/// default past its end, or in its middle when the bars are `stacked`); a
+/// label inside that does not fit the bar is left out, one past the end
+/// that leaves the plot goes inside the end.
+fn bar_label(
+    frame: &Frame,
+    bar: &BarMark,
+    stacked: bool,
+    position: Option<LabelPosition>,
+    text: String,
+    labels: &mut Labels,
+) {
+    let (width, height) = labels::size(&text);
+    // The label's extent across the bar, and along it.
+    let (across, along) = if frame.horizontal {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    let length = (bar.end - bar.base).abs();
+    let outward = if bar.end >= bar.base { 1.0 } else { -1.0 };
+    let half = across / 2.0 + LABEL_OFFSET_PT;
+    let default = if stacked {
+        LabelPosition::Center
+    } else {
+        LabelPosition::OutsideEnd
+    };
+    let position = position.unwrap_or(default);
+    let (low, high) = if frame.horizontal {
+        (frame.plot.x, frame.plot.right())
+    } else {
+        (frame.plot.y, frame.plot.bottom())
+    };
+    let outside = bar.end + outward * half;
+    let (middle, inside) = match position {
+        LabelPosition::OutsideEnd | LabelPosition::BestFit
+            if outside - across / 2.0 >= low && outside + across / 2.0 <= high =>
+        {
+            (outside, false)
+        }
+        LabelPosition::InsideBase => (bar.base + outward * half, true),
+        LabelPosition::Center => ((bar.base + bar.end) / 2.0, true),
+        _ => (bar.end - outward * half, true),
+    };
+    // A label inside takes the bar's length and, give or take, its width.
+    if inside && (across + 2.0 * LABEL_OFFSET_PT > length || along > bar.width.max(frame.band() * 0.9)) {
+        return;
+    }
+    let ink = if inside { ink_on(bar.color) } else { INK_OUTSIDE };
+    labels.add(frame.point(bar.along, middle), text, ink);
+}
+
+/// Adds the data labels of the lines of `group` (one point per bucket) to
+/// `labels`, beside each point as the file says (right of it by default).
+fn line_labels(
+    frame: &Frame,
+    group: &PlotGroup,
+    spans: &Spans,
+    grouping: Grouping,
+    scale: &Scale,
+    labels: &mut Labels,
+    date1904: bool,
+) {
+    if frame.buckets.size != 1 {
+        return;
+    }
+    for (index, series) in group.series.iter().enumerate() {
+        if !series.labels.any() {
+            continue;
+        }
+        let points = series
+            .values
+            .as_ref()
+            .map(|values| values.points.as_slice())
+            .unwrap_or_default();
+        for (bucket, value) in points.iter().enumerate().take(frame.buckets.count) {
+            let Some(value) = *value else { continue };
+            let Some(text) = labels::text(series, bucket, value, None, date1904) else {
+                continue;
+            };
+            let top = if grouping == Grouping::Standard {
+                value
+            } else {
+                match spans[index].get(bucket).copied().flatten() {
+                    Some((_, to)) => to,
+                    None => continue,
+                }
+            };
+            let (x, y) = frame.point(frame.center(bucket), frame.value(scale, top));
+            let (width, height) = labels::size(&text);
+            let gap = MARKER_RADIUS_PT + LABEL_OFFSET_PT;
+            let center = match series.labels.position {
+                Some(LabelPosition::Above) => (x, y - gap - height / 2.0),
+                Some(LabelPosition::Below) => (x, y + gap + height / 2.0),
+                Some(LabelPosition::Left) => (x - gap - width / 2.0, y),
+                Some(LabelPosition::Center) => (x, y),
+                _ => (x + gap + width / 2.0, y),
+            };
+            labels.add(center, text, INK_OUTSIDE);
         }
     }
 }

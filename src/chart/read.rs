@@ -6,8 +6,8 @@
 
 use super::theme::{Theme, color};
 use super::{
-    Axis, AxisKind, AxisPosition, Categories, Chart, ChartConfig, ChartKind, Grouping, LegendPosition, Numbers,
-    PlotGroup, Rgb, Series, chartex,
+    Axis, AxisKind, AxisPosition, Categories, Chart, ChartConfig, ChartKind, DataLabels, Grouping, LabelPosition,
+    LegendPosition, Numbers, PlotGroup, Rgb, Series, chartex,
 };
 use crate::excel::numfmt::NumFmt;
 use crate::word::docx::parse;
@@ -344,8 +344,67 @@ fn read_series(
         point_colors,
         markers: symbol.map_or(group_markers, |symbol| symbol != "none"),
         line: line_like && !no_line && !matches!(scatter_style, "marker" | "none"),
+        labels: chart_el(ser, "dLbls")
+            .or_else(|| chart_el(group, "dLbls"))
+            .map(|node| data_labels(node, count))
+            .unwrap_or_default(),
     };
     (order, series)
+}
+
+/// The data labels `node` (`c:dLbls`) of a series of `count` points: a
+/// deleted one shows nothing, and the labels of points past `count` are
+/// left out.
+fn data_labels(node: Node<'_, '_>, count: usize) -> DataLabels {
+    if flag(node, "delete") == Some(true) {
+        return DataLabels::default();
+    }
+    let value = flag(node, "showVal").unwrap_or(false);
+    let percent = flag(node, "showPercent").unwrap_or(false);
+    let mut points: Vec<(usize, bool, bool)> = c_children(node, "dLbl")
+        .filter_map(|point| {
+            let index = val(point, "idx")?
+                .parse::<usize>()
+                .ok()
+                .filter(|index| *index < count)?;
+            if flag(point, "delete") == Some(true) {
+                return Some((index, false, false));
+            }
+            Some((
+                index,
+                flag(point, "showVal").unwrap_or(value),
+                flag(point, "showPercent").unwrap_or(percent),
+            ))
+        })
+        .collect();
+    points.sort_by_key(|(index, _, _)| *index);
+    points.dedup_by_key(|(index, _, _)| *index);
+    DataLabels {
+        value,
+        percent,
+        position: val(node, "dLblPos").and_then(label_position),
+        format: chart_el(node, "numFmt")
+            .filter(|fmt| !matches!(fmt.attribute("sourceLinked"), Some("1" | "true")))
+            .and_then(|fmt| fmt.attribute("formatCode"))
+            .map(num_fmt),
+        points,
+    }
+}
+
+/// The label position `pos` (`c:dLblPos`); `None` for one not known.
+fn label_position(pos: &str) -> Option<LabelPosition> {
+    Some(match pos {
+        "outEnd" => LabelPosition::OutsideEnd,
+        "inEnd" => LabelPosition::InsideEnd,
+        "ctr" => LabelPosition::Center,
+        "inBase" => LabelPosition::InsideBase,
+        "t" => LabelPosition::Above,
+        "b" => LabelPosition::Below,
+        "l" => LabelPosition::Left,
+        "r" => LabelPosition::Right,
+        "bestFit" => LabelPosition::BestFit,
+        _ => return None,
+    })
 }
 
 /// The colour of a series: for a line, its line, else its markers, else
@@ -1264,5 +1323,34 @@ pub(super) mod tests {
         let second = ser(1, "second", &["a"], &["1"], "").replace(r#"<c:order val="1"/>"#, r#"<c:order val="0"/>"#);
         let chart = chart(&space("", &format!("<c:barChart>{first}{second}</c:barChart>")));
         assert_eq!(chart.groups[0].series[0].label(), "second");
+    }
+
+    #[test]
+    fn data_labels_of_the_series_win_over_the_group_s() {
+        let own = r#"<c:dLbls><c:dLbl><c:idx val="1"/><c:delete val="1"/></c:dLbl><c:dLbl><c:idx val="9"/><c:showVal val="0"/></c:dLbl><c:numFmt formatCode="0.0" sourceLinked="0"/><c:dLblPos val="inEnd"/><c:showVal val="1"/><c:showPercent val="0"/></c:dLbls>"#;
+        let group = r#"<c:dLbls><c:showVal val="0"/><c:showPercent val="1"/></c:dLbls>"#;
+        let plot = format!(
+            "<c:barChart>{}{}{group}</c:barChart>",
+            ser(0, "own", &["a", "b", "c"], &["1", "2", "3"], own),
+            ser(1, "group", &["a", "b", "c"], &["1", "2", "3"], "")
+        );
+        let read = chart(&space("", &plot));
+        let labels = &read.groups[0].series[0].labels;
+        assert!(labels.value && !labels.percent);
+        assert_eq!(labels.position, Some(LabelPosition::InsideEnd));
+        assert_eq!(labels.format, Some(NumFmt::Code("0.0".into())));
+        // The deleted point shows nothing; the one past the points is left out.
+        assert_eq!(labels.points, [(1, false, false)]);
+        assert_eq!(labels.shown(0), (true, false));
+        assert_eq!(labels.shown(1), (false, false));
+        let labels = &read.groups[0].series[1].labels;
+        assert!(!labels.value && labels.percent && labels.any());
+        let deleted = space(
+            "",
+            &ser(0, "a", &["a"], &["1"], r#"<c:dLbls><c:delete val="1"/></c:dLbls>"#)
+                .replace("<c:ser>", "<c:lineChart><c:ser>")
+                .replace("</c:ser>", "</c:ser></c:lineChart>"),
+        );
+        assert!(!chart(&deleted).groups[0].series[0].labels.any());
     }
 }

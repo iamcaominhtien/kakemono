@@ -2,6 +2,7 @@
 //! per category, a polygon per series).
 
 use super::axis::{Fixed, Scale, Zero, label as tick_label, range};
+use super::labels::{self, LABEL_OFFSET_PT, Labels, ink_on};
 use super::plane::{LINE_WIDTH_PT, MARKER_RADIUS_PT, TICK_SPACING_PT, category_labels};
 use super::write::{PathData, Svg, TextStyle, fit, hex, num, text_width};
 use super::{Area, BASELINE_RATIO, GRID, HAIRLINE_PT, LINE_RATIO, SMALL, TEXT_SIZE_PT};
@@ -13,6 +14,8 @@ use crate::excel::numfmt::NumFmt;
 const MAX_SLICES: usize = 720;
 /// The most rings of a doughnut.
 const MAX_RINGS: usize = 10;
+/// The labels of a pie are this share of the radius out from its centre.
+const PIE_LABEL_RATIO: f32 = 0.66;
 /// The colour of the slice the smallest ones are folded into.
 const FOLDED_COLOR: Rgb = [0xc3, 0xc2, 0xb7];
 /// The surface line between two slices, in points.
@@ -37,8 +40,9 @@ const RADAR_SIDE_SIN: f32 = 0.05;
 const RADAR_LABEL_GAP_PT: f32 = 4.0;
 
 /// Draws the pie or doughnut `group` in `area`: the first series of a
-/// pie, a ring per series (the first outermost) of a doughnut.
-pub(super) fn pie(out: &mut Svg, group: &PlotGroup, area: Area) {
+/// pie, a ring per series (the first outermost) of a doughnut, with the
+/// data labels the file asks for inside the slices they fit in.
+pub(super) fn pie(out: &mut Svg, group: &PlotGroup, area: Area, date1904: bool) {
     let (start, hole) = match group.kind {
         ChartKind::Pie { first_slice_deg } => (first_slice_deg, 0.0),
         ChartKind::Doughnut {
@@ -56,17 +60,22 @@ pub(super) fn pie(out: &mut Svg, group: &PlotGroup, area: Area) {
     };
     let thickness = radius * (1.0 - hole) / rings.len().max(1) as f32;
     let per_ring = MAX_SLICES / rings.len().max(1);
+    let mut labels = Labels::new();
     for (ring, series) in rings.iter().enumerate() {
         let outer = radius - ring as f32 * thickness;
         let inner = if hole > 0.0 { outer - thickness } else { 0.0 };
         let slices = slices(series, per_ring);
-        let total: f64 = slices.iter().map(|(value, _)| value).sum();
+        let total: f64 = slices.iter().map(|(_, value, _)| value).sum();
         if total <= 0.0 {
             continue;
         }
         let mut angle = start;
-        for (value, color) in slices {
+        for (index, value, color) in slices {
             let sweep = (value / total * 360.0) as f32;
+            if let Some(text) = labels::text(series, index, value, Some(value / total), date1904) {
+                let ring = Ring { outer, inner };
+                slice_label(center, ring, angle + sweep / 2.0, sweep, text, color, &mut labels);
+            }
             let data = slice_path(center, outer, inner, angle, sweep.min(FULL_TURN_DEG));
             out.path(
                 "slice",
@@ -80,11 +89,46 @@ pub(super) fn pie(out: &mut Svg, group: &PlotGroup, area: Area) {
             angle += sweep;
         }
     }
+    labels.write(out);
 }
 
-/// The slices of `series`: its positive values with their colours, the
-/// smallest folded into one past `max` slices.
-fn slices(series: &Series, max: usize) -> Vec<(f64, Rgb)> {
+/// The radii of a ring of a doughnut, or of a pie (`inner` 0).
+#[derive(Debug, Clone, Copy)]
+struct Ring {
+    /// The outer radius.
+    outer: f32,
+    /// The inner radius.
+    inner: f32,
+}
+
+/// Adds the label `text` of a slice of `ring` about `center`, whose middle
+/// is at `angle` and which sweeps `sweep` degrees, to `labels`, inside the
+/// slice when it fits there (half way across a ring, two thirds of the
+/// way out of a pie); a label that does not fit is left out.
+fn slice_label(center: (f32, f32), ring: Ring, angle: f32, sweep: f32, text: String, color: Rgb, labels: &mut Labels) {
+    let radius = if ring.inner > 0.0 {
+        f32::midpoint(ring.inner, ring.outer)
+    } else {
+        ring.outer * PIE_LABEL_RATIO
+    };
+    let (width, height) = labels::size(&text);
+    // The room across the slice at that radius, and along its radius.
+    let chord = 2.0 * radius * (sweep.min(180.0).to_radians() / 2.0).sin();
+    let depth = if ring.inner > 0.0 {
+        ring.outer - ring.inner
+    } else {
+        2.0 * (ring.outer - radius)
+    };
+    if chord < width.min(height * 2.0) || depth < height + LABEL_OFFSET_PT {
+        return;
+    }
+    labels.add(polar(center, radius, angle), text, ink_on(color));
+}
+
+/// The slices of `series`: its positive values with their point index and
+/// colours, the smallest folded into one past `max` slices (whose index is
+/// `usize::MAX`).
+fn slices(series: &Series, max: usize) -> Vec<(usize, f64, Rgb)> {
     let points = series
         .values
         .as_ref()
@@ -121,7 +165,7 @@ fn slices(series: &Series, max: usize) -> Vec<(f64, Rgb)> {
         });
         slices.push((usize::MAX, folded, FOLDED_COLOR));
     }
-    slices.into_iter().map(|(_, value, color)| (value, color)).collect()
+    slices
 }
 
 /// The point at `angle` degrees clockwise from the top, `radius` from

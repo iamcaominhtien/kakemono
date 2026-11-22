@@ -15,6 +15,7 @@
 //! and legends and labels are cut to what fits.
 
 mod axis;
+mod labels;
 mod plane;
 mod round;
 mod write;
@@ -178,7 +179,7 @@ pub(crate) fn svg(chart: &Chart, size_pt: (f32, f32)) -> Option<String> {
     }
     match plan {
         Plan::Plane => plane::draw(&mut out, chart, area),
-        Plan::Round(group) => round::pie(&mut out, group, area),
+        Plan::Round(group) => round::pie(&mut out, group, area, chart.date1904),
         Plan::Radar => round::radar(&mut out, chart, area),
     }
     Some(out.finish())

@@ -209,6 +209,66 @@ pub(crate) struct Series {
     /// The points are joined by a line (a line or scatter series whose
     /// line is not `a:noFill`).
     pub(crate) line: bool,
+    /// The labels shown at its points (`c:dLbls`).
+    pub(crate) labels: DataLabels,
+}
+
+/// The data labels of a series (`c:dLbls` of the series, else of its
+/// group): what each point shows beside its mark.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DataLabels {
+    /// Each point shows its value (`c:showVal`).
+    pub(crate) value: bool,
+    /// Each point of a pie or doughnut shows its share of the total
+    /// (`c:showPercent`).
+    pub(crate) percent: bool,
+    /// Where the labels are (`c:dLblPos`); `None` for the chart type's
+    /// default.
+    pub(crate) position: Option<LabelPosition>,
+    /// The number format of the values (`c:numFmt` not linked to the
+    /// source); `None` for the series' own.
+    pub(crate) format: Option<NumFmt>,
+    /// The points whose label says otherwise (`c:dLbl`): their index, and
+    /// whether they show their value and their share. Sorted by index.
+    pub(crate) points: Vec<(usize, bool, bool)>,
+}
+
+impl DataLabels {
+    /// Whether point `index` shows its value and its share.
+    pub(crate) fn shown(&self, index: usize) -> (bool, bool) {
+        match self.points.binary_search_by_key(&index, |(point, _, _)| *point) {
+            Ok(found) => (self.points[found].1, self.points[found].2),
+            Err(_) => (self.value, self.percent),
+        }
+    }
+
+    /// Whether any point shows a label.
+    pub(crate) fn any(&self) -> bool {
+        self.value || self.percent || self.points.iter().any(|(_, value, percent)| *value || *percent)
+    }
+}
+
+/// Where a data label is, from its mark (`c:dLblPos`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LabelPosition {
+    /// Past the end of a bar, or outside a slice (`outEnd`).
+    OutsideEnd,
+    /// Inside the end of a bar (`inEnd`).
+    InsideEnd,
+    /// In the middle of a bar or slice, on a point (`ctr`).
+    Center,
+    /// Inside the base of a bar (`inBase`).
+    InsideBase,
+    /// Above a point (`t`).
+    Above,
+    /// Below a point (`b`).
+    Below,
+    /// Left of a point (`l`).
+    Left,
+    /// Right of a point (`r`).
+    Right,
+    /// Where it fits best (`bestFit`, pies).
+    BestFit,
 }
 
 /// Categories of a series, or the x values of a scatter series.
