@@ -271,7 +271,7 @@ impl Pictures {
 
     /// The size in points of the picture `index` at 96 pixels per inch.
     fn pixel_size_pt(&self, index: usize) -> Option<(f32, f32)> {
-        pixel_size_pt(&self.files.get(index)?.data)
+        pixel_size_pt(self.files.get(index)?)
     }
 }
 

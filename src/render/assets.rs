@@ -64,6 +64,9 @@ pub(crate) struct ImageStore<'r> {
     pub(crate) opts: &'r HtmlOptions,
     /// The pictures recorded so far; a placeholder holds an index into it.
     pub(crate) jobs: Vec<ImageJob>,
+    /// An SVG picture is written as a PDF of one page (for LaTeX, whose
+    /// engines read PDF pictures but not SVG).
+    pub(crate) svg_as_pdf: bool,
 }
 
 /// A drawn picture: (data, mime type, file extension, name hint).
@@ -97,21 +100,23 @@ impl<'a> Pictures<'a> {
     }
 
     /// The picture of `spec` at `scale` pixels per point: a stored picture
-    /// as it is, or the area of the page drawn by `renderer`. Returns the
-    /// data and whether it is a JPEG (a PNG otherwise), or `None` when it
-    /// cannot be drawn.
+    /// as it is (an SVG too), or the area of the page drawn by `renderer`
+    /// (a PNG or a JPEG). Returns the data and its format, or `None` when
+    /// it cannot be drawn.
     pub(crate) fn region(
         &self,
         renderer: Option<&PageRenderer<'_>>,
         spec: &ImageSpec,
         scale: f32,
-    ) -> Option<(Vec<u8>, bool)> {
+    ) -> Option<(Vec<u8>, PictureFormat)> {
         match spec.embedded {
             Some(index) => self
                 .stored
                 .get(index)
-                .map(|picture| (picture.data.clone(), picture.jpeg)),
-            None => renderer?.region_picture(spec.page, spec.rect, scale, spec.transparent),
+                .map(|picture| (picture.data.clone(), picture.format)),
+            None => renderer?
+                .region_picture(spec.page, spec.rect, scale, spec.transparent)
+                .map(|(data, jpeg)| (data, if jpeg { PictureFormat::Jpeg } else { PictureFormat::Png })),
         }
     }
 }
@@ -165,12 +170,11 @@ impl ImageStore<'_> {
         let page_hint = |page: usize| format!("page-{}", page + 1);
         match job {
             ImageJob::Region(spec, hint) => {
-                let (data, jpeg) = pictures.region(renderer, spec, self.opts.scale)?;
-                Some(if jpeg {
-                    (data, "image/jpeg", "jpg", hint.clone())
-                } else {
-                    (data, "image/png", "png", hint.clone())
-                })
+                let (data, format) = pictures.region(renderer, spec, self.opts.scale)?;
+                if format == PictureFormat::Svg && self.svg_as_pdf {
+                    return svg_as_pdf(data, hint);
+                }
+                Some((data, format.mime(), format.extension(), hint.clone()))
             }
             ImageJob::Page(page) => {
                 let renderer = renderer?;
@@ -304,6 +308,23 @@ impl ImageStore<'_> {
         }
         writer.out.write_all(rest.as_bytes())
     }
+}
+
+/// The SVG picture `svg` (as [`Picture`] holds it) as a PDF picture, still
+/// vector, with the name hint `hint`; a PNG drawn of it when it cannot be
+/// made one (see `backend::svg_to_png`), `None` when neither can.
+fn svg_as_pdf(svg: Vec<u8>, hint: &str) -> Option<DrawnImage> {
+    let svg = String::from_utf8(svg).ok()?;
+    if let Some(pdf) = crate::backend::svg_to_pdf(&svg) {
+        return Some((pdf, "application/pdf", "pdf", hint.to_string()));
+    }
+    let png = svg_to_png(&svg, crate::backend::svg::SVG_PNG_SCALE)?;
+    Some((
+        png,
+        PictureFormat::Png.mime(),
+        PictureFormat::Png.extension(),
+        hint.to_string(),
+    ))
 }
 
 /// The text before the next placeholder of `html`, the index in the

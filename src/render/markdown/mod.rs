@@ -100,6 +100,7 @@ pub fn render_markdown(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &Markdo
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        svg_as_pdf: false,
     };
     let doc = &analysis.doc;
     let anchors = linked_anchors(doc);

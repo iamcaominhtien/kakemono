@@ -121,12 +121,18 @@ mod tests {
         let paper = Paper::from_bytes(sample_with_picture(&png)).unwrap();
         assert!(paper.analyze().doc.pictures.is_empty());
         assert!(paper.to_pdf().is_ok());
-        // An SVG of 30000 × 30000 points: drawn smaller.
+        // An SVG of 30000 × 30000 points: kept as SVG; its PNG, where an
+        // output needs one, drawn smaller.
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
         let paper = Paper::from_bytes(sample_with_picture(svg)).unwrap();
-        let doc = paper.analyze().doc;
-        assert_eq!(doc.pictures.len(), 1);
-        assert!(doc.pictures[0].data.starts_with(b"\x89PNG"));
+        let analysis = paper.analyze();
+        assert_eq!(analysis.doc.pictures.len(), 1);
+        assert_eq!(analysis.doc.pictures[0].format, crate::model::PictureFormat::Svg);
         assert!(paper.to_pdf().is_ok());
+        let docx = paper.to_docx(&analysis, &crate::render::DocxOptions::default());
+        let zip = super::zip::ZipArchive::new(&docx).unwrap();
+        let png = zip.read("word/media/image1.png").unwrap().expect("the PNG fallback");
+        let (width, height) = crate::backend::declared_size(&png).unwrap();
+        assert!(u64::from(width) * u64::from(height) <= crate::backend::MAX_RASTER_PIXELS);
     }
 }

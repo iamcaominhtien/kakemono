@@ -470,6 +470,7 @@ mod tests {
         let mut images = ImageStore {
             opts: &opts,
             jobs: Vec::new(),
+            svg_as_pdf: false,
         };
         render(&doc, &mut images, InputFormat::Docx)
     }

@@ -4,6 +4,7 @@
 
 use super::display::{Destination, Item, Page, TextRun};
 use super::fonts::FontBook;
+use crate::model::PictureFormat;
 use crate::word::fmt::model::{FImage, Rgb};
 use anyhow::{Result, anyhow};
 use krilla::color::rgb;
@@ -31,7 +32,26 @@ struct Loaded<'a> {
     /// Fonts loaded so far, by face.
     fonts: HashMap<usize, Font>,
     /// Pictures loaded so far, by index (`None` for one that does not decode).
-    pictures: HashMap<usize, Option<Image>>,
+    pictures: HashMap<usize, Option<LoadedPicture<'a>>>,
+}
+
+/// A picture loaded for the PDF.
+enum LoadedPicture<'a> {
+    /// A bitmap.
+    Raster(Image),
+    /// An SVG drawing, parsed, with its text (drawn as a bitmap when it has
+    /// filters: see `backend::svg::draw`).
+    Vector(Box<resvg::usvg::Tree>, &'a str),
+}
+
+impl LoadedPicture<'_> {
+    /// Draws the picture on `surface` at its origin, `size` large.
+    fn draw(&self, surface: &mut krilla::surface::Surface<'_>, size: Size) {
+        match self {
+            Self::Raster(image) => surface.draw_image(image.clone(), size),
+            Self::Vector(tree, svg) => crate::backend::svg::draw(surface, tree, svg, size),
+        }
+    }
 }
 
 /// Writes `pages` as a PDF.
@@ -154,20 +174,11 @@ fn draw_item(surface: &mut krilla::surface::Surface<'_>, item: &Item, loaded: &m
             crop,
         } => {
             let images = loaded.images;
-            let picture = loaded.pictures.entry(*index).or_insert_with(|| {
-                let image = images.get(*index)?;
-                // A metafile's lines of text are drawn as text over it.
-                if let Some(bare) = &image.bare {
-                    return Image::from_png(bare.clone().into(), true).ok();
-                }
-                let data = image.data.clone().into();
-                if image.jpeg {
-                    Image::from_jpeg(data, true).ok()
-                } else {
-                    Image::from_png(data, true).ok()
-                }
-            });
-            let Some(picture) = picture.clone() else { return };
+            let picture = loaded
+                .pictures
+                .entry(*index)
+                .or_insert_with(|| load_picture(images.get(*index)?));
+            let Some(picture) = picture.as_ref() else { return };
             draw_image(surface, picture, *x, *y, *width, *height, *crop);
         }
         Item::Link { .. } => {}
@@ -264,7 +275,7 @@ fn draw_text(surface: &mut krilla::surface::Surface<'_>, run: &TextRun, font: Fo
 /// Draws a picture in a box, with its cropping.
 fn draw_image(
     surface: &mut krilla::surface::Surface<'_>,
-    image: Image,
+    image: &LoadedPicture<'_>,
     x: f32,
     y: f32,
     width: f32,
@@ -294,11 +305,31 @@ fn draw_image(
     }
     surface.push_transform(&Transform::from_translate(x - left * full_w, y - top * full_h));
     if let Some(size) = Size::from_wh(full_w, full_h) {
-        surface.draw_image(image, size);
+        image.draw(surface, size);
     }
     surface.pop();
     if cropped {
         surface.pop();
+    }
+}
+
+/// The picture `image` loaded for the PDF: a metafile without its lines
+/// of text, which are drawn as text over it; an SVG as vector; `None` when
+/// it does not decode.
+fn load_picture(image: &FImage) -> Option<LoadedPicture<'_>> {
+    fn vector(data: &[u8]) -> Option<LoadedPicture<'_>> {
+        let svg = std::str::from_utf8(data).ok()?;
+        let tree = crate::backend::parse_svg(svg)?;
+        Some(LoadedPicture::Vector(Box::new(tree), svg))
+    }
+    if let Some(bare) = &image.bare {
+        return vector(bare);
+    }
+    let data = || image.data.clone().into();
+    match image.format {
+        PictureFormat::Svg => vector(&image.data),
+        PictureFormat::Jpeg => Image::from_jpeg(data(), true).ok().map(LoadedPicture::Raster),
+        PictureFormat::Png => Image::from_png(data(), true).ok().map(LoadedPicture::Raster),
     }
 }
 

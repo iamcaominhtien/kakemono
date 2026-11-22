@@ -9,7 +9,9 @@ use super::model::{
 };
 use super::props::{RawCell, RawPara, RawRun, TWIPS_PER_PT, ThemeFonts, is_on, parse_color, theme_fonts};
 use super::styles::{Conditional, Numbering, Styles, TableStyle, parse_num_format};
-use crate::word::docx::{Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of};
+use crate::word::docx::{
+    Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of, svg_blip,
+};
 use crate::word::omml;
 use crate::word::pictures::{MAX_PICTURE_BYTES, bounded_size, store_for_layout};
 use crate::word::xml::{
@@ -921,9 +923,12 @@ impl Reader<'_> {
         let Some(fill) = pic.descendants().find(|item| is(*item, PIC_NS, "blipFill")) else {
             return (None, [0.0; 4]);
         };
-        let index = child(fill, DRAWING_NS, "blip")
-            .and_then(|blip| attr(blip, REL_NS, "embed"))
-            .and_then(|id| self.image(id));
+        // The SVG of a picture Word stores with a PNG beside it.
+        let index = child(fill, DRAWING_NS, "blip").and_then(|blip| {
+            svg_blip(blip)
+                .and_then(|svg| self.image(svg))
+                .or_else(|| attr(blip, REL_NS, "embed").and_then(|id| self.image(id)))
+        });
         let crop = child(fill, DRAWING_NS, "srcRect").map_or([0.0; 4], |rect| {
             let share = |name: &str| {
                 rect.attribute(name)

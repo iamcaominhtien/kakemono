@@ -19,6 +19,8 @@ pub(crate) const VML_NS: &str = "urn:schemas-microsoft-com:vml";
 pub(crate) const OFFICE_NS: &str = "urn:schemas-microsoft-com:office:office";
 /// Namespace of the markup compatibility elements (`mc:`).
 pub(crate) const MC_NS: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+/// Namespace of the SVG picture of an `a:blip` (`asvg:svgBlip`, Office 2016).
+pub(crate) const SVG_BLIP_NS: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
 /// Namespace of the package relationships (`.rels` parts).
 pub(crate) const PACKAGE_REL_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 /// Namespace of Dublin Core (`dc:`), in the document properties.

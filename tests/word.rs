@@ -1,9 +1,10 @@
 //! Word documents as input: the sample `.docx` and `.doc` of
 //! `tests/data/word` (written from `sample.md` by pandoc, and saved as
-//! `.doc` by LibreOffice), and the LIGO paper made into a Word document by
+//! `.doc` by LibreOffice), the vector pictures of `vector.docx` (written by
+//! `make-vector-docx.py`), and the LIGO paper made into a Word document by
 //! kakemono and read back.
 
-use kakemono::model::{Block, BlockKind, Document, FloatKind, Span};
+use kakemono::model::{Block, BlockKind, Document, FloatKind, PictureFormat, Span};
 use kakemono::{
     Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
     Paper,
@@ -15,6 +16,9 @@ use std::path::{Path, PathBuf};
 const SAMPLE_DOCX: &str = "word/sample.docx";
 /// The same document saved as a Word 97–2003 file.
 const SAMPLE_DOC: &str = "word/sample.doc";
+/// An SVG drawing with a PNG fallback, an EMF metafile and an SVG alone,
+/// written by `make-vector-docx.py`.
+const VECTOR_DOCX: &str = "word/vector.docx";
 /// Lists inside lists, written by pandoc from `lists.md`.
 const LISTS_DOCX: &str = "word/lists.docx";
 /// The LIGO paper, the one test PDF in the repository.
@@ -317,7 +321,7 @@ fn every_output_can_be_written_from_word() {
 #[test]
 fn word_outputs_match_their_snapshot() {
     let mut text = String::new();
-    for name in [SAMPLE_DOCX, SAMPLE_DOC] {
+    for name in [SAMPLE_DOCX, SAMPLE_DOC, VECTOR_DOCX] {
         let (paper, analysis) = load(name);
         let html_opts = HtmlOptions {
             embed_fonts: false,
@@ -389,4 +393,86 @@ fn nested_list_items_keep_their_level() {
             ("2. Second item".to_string(), 0),
         ]
     );
+}
+
+/// The SVG of each picture of `doc`, which must all be SVG.
+fn svg_pictures(doc: &Document) -> Vec<String> {
+    doc.pictures
+        .iter()
+        .map(|picture| {
+            assert_eq!(picture.format, PictureFormat::Svg);
+            String::from_utf8(picture.data.clone()).unwrap()
+        })
+        .collect()
+}
+
+/// The pictures of the PDF `pdf` (`/Subtype/Image`, as krilla writes it).
+fn pdf_bitmaps(pdf: &[u8]) -> usize {
+    String::from_utf8_lossy(pdf).matches("/Subtype/Image").count()
+}
+
+/// An SVG picture (the SVG of a picture that has a PNG fallback too), an EMF
+/// and an SVG alone are read as SVG, without what could run or reach out,
+/// and stay vector in every output.
+#[test]
+fn vector_pictures_stay_vector_in_every_output() {
+    let (paper, analysis) = load(VECTOR_DOCX);
+    let svgs = svg_pictures(&analysis.doc);
+    assert_eq!(svgs.len(), 3);
+    // The SVG, not its grey PNG: its blue rectangle and green triangle.
+    assert!(
+        svgs[0].contains("#1f77b4") && svgs[0].contains("#2ca02c"),
+        "{}",
+        svgs[0]
+    );
+    for svg in &svgs {
+        for gone in [
+            "script",
+            "alert",
+            "foreignObject",
+            "file:",
+            "https:",
+            "javascript",
+            "<style",
+        ] {
+            assert!(!svg.contains(gone), "{gone} in {svg}");
+        }
+    }
+
+    // HTML: each picture an <img> of its SVG, as a data URI.
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert_eq!(html.matches("<img src=\"data:image/svg+xml;base64,").count(), 3);
+    // Markdown, JSON: SVG files.
+    let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default());
+    let content = paper.to_json(&analysis, &JsonOptions::default());
+    for files in [&markdown.files, &content.files] {
+        assert_eq!(files.len(), 3);
+        assert!(
+            files
+                .iter()
+                .all(|(name, data)| name.ends_with(".svg") && data.starts_with(b"<svg"))
+        );
+    }
+    // LaTeX: each picture a PDF of one page, still vector.
+    let latex = paper.to_latex(&analysis, &LatexOptions::default());
+    assert_eq!(latex.files.len(), 3);
+    for (name, pdf) in &latex.files {
+        assert!(name.ends_with(".pdf") && latex.latex.contains(name.as_str()), "{name}");
+        assert!(pdf.starts_with(b"%PDF") && pdf_bitmaps(pdf) == 0, "{name}");
+    }
+    // EPUB: the SVG files in the book.
+    let epub = paper.to_epub(&analysis, &EpubOptions::default());
+    assert!(String::from_utf8_lossy(&epub).matches(".svg").count() >= 3);
+    // Word: each picture as Word writes an SVG, a PNG fallback with the
+    // SVG beside it, which a reader that knows SVG (kakemono) takes.
+    let docx = paper.to_docx(&analysis, &DocxOptions::default());
+    let text = String::from_utf8_lossy(&docx);
+    for media in ["word/media/image1.png", "word/media/image2.svg"] {
+        assert!(text.contains(media), "{media}");
+    }
+    let again = Paper::from_bytes(docx).unwrap();
+    assert_eq!(svg_pictures(&again.analyze().doc).len(), 3);
+    // The page layout: drawn as vector, no bitmap in the PDF.
+    let pdf = paper.to_pdf().unwrap();
+    assert_eq!(pdf_bitmaps(&pdf), 0);
 }

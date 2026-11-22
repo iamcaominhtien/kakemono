@@ -14,9 +14,10 @@ use crate::analysis::semantics::text::{slug, unique_anchor};
 use crate::common::geom::Rect;
 use crate::common::patterns::CAP_LABEL;
 use crate::model::{
-    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Span, Table, TableCell,
+    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Picture, Span, Table, TableCell,
 };
 use regex::Regex;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -100,8 +101,12 @@ struct Builder<'a> {
     in_references: bool,
     /// Code lines being gathered into one listing.
     code: Vec<Vec<Span>>,
-    /// Sizes of the pictures in points (96 pixels per inch), by index.
-    picture_sizes: Vec<Option<(f32, f32)>>,
+    /// The pictures of the document, by index.
+    pictures: &'a [Picture],
+    /// Sizes of the pictures in points (96 pixels per inch), by index,
+    /// found when first needed: only a picture whose document gives it no
+    /// size needs its own, and an SVG is parsed to know it.
+    picture_sizes: Vec<OnceCell<Option<(f32, f32)>>>,
 }
 
 /// Builds the document of a Word file.
@@ -111,11 +116,7 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         .iter()
         .map(|note| ((note.endnote, note.id.clone()), note.body.as_slice()))
         .collect();
-    let picture_sizes = word
-        .pictures
-        .iter()
-        .map(|picture| pixel_size_pt(&picture.data))
-        .collect();
+    let picture_sizes = word.pictures.iter().map(|_| OnceCell::new()).collect();
     let mut builder = Builder {
         notes,
         note_numbers: HashMap::new(),
@@ -131,6 +132,7 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         in_abstract: false,
         in_references: false,
         code: Vec::new(),
+        pictures: &word.pictures,
         picture_sizes,
     };
     builder.items(&word.body);
@@ -425,7 +427,10 @@ impl Builder<'_> {
     /// The picture `index` at its size in the document (or its own size).
     fn picture_spec(&self, index: usize, width_pt: f32, height_pt: f32) -> ImageSpec {
         let (width, height) = bounded_size((width_pt, height_pt))
-            .or_else(|| self.picture_sizes.get(index).copied().flatten())
+            .or_else(|| {
+                let picture = self.pictures.get(index)?;
+                *self.picture_sizes.get(index)?.get_or_init(|| pixel_size_pt(picture))
+            })
             .unwrap_or(FALLBACK_PICTURE_PT);
         ImageSpec {
             page: 0,

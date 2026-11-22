@@ -115,6 +115,7 @@ pub fn render_epub(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &EpubOption
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        svg_as_pdf: false,
     };
     let blocks = book_blocks(doc, opts.max_math_width_em);
     let chapters = split_chapters(&blocks);

@@ -76,9 +76,9 @@ fn resolve_images(html: &str, images: &[FImage]) -> String {
     }
     let data_uri = |index: usize| {
         let image = &images[index];
-        let kind = if image.jpeg { "jpeg" } else { "png" };
         format!(
-            "data:image/{kind};base64,{}",
+            "data:{};base64,{}",
+            image.format.mime(),
             base64::engine::general_purpose::STANDARD.encode(&image.data)
         )
     };

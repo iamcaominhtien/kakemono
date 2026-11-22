@@ -92,8 +92,12 @@ read directly, without the layout analysis a PDF needs, and turned into the same
 - hyperlinks, cross-references to bookmarks, citations and references to figures and tables become
   links, as for a PDF;
 - pictures stored as Windows metafiles (EMF, WMF: charts, older drawings) are drawn by kakemono
-  (as SVG), formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and
-  `.docx` files) become real formulas, floating shapes and text boxes of `.doc` files are read,
+  as SVG; they and SVG pictures (the SVG Word keeps beside a PNG too) stay vector in every output:
+  an `<img>` of the SVG in HTML, an `.svg` file in Markdown, JSON and EPUB, a PDF picture in LaTeX,
+  an SVG with a PNG beside it in Word, vector drawing in the PDF. An SVG is written again by
+  kakemono first, with only its drawing (no script, link or style sheet);
+- formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and `.docx`
+  files) become real formulas, floating shapes and text boxes of `.doc` files are read,
   and nested lists keep their level.
 
 **Pages as Word lays them out.** kakemono also lays a Word document out in pages itself, the way

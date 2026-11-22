@@ -7,8 +7,8 @@ use super::pictures::{MAX_PICTURE_BYTES, bounded_size, store};
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
-    DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child,
-    children, is, val,
+    DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, SVG_BLIP_NS, VML_NS, WORD_NS, WP_NS, attr,
+    child, children, is, val,
 };
 use super::zip::ZipArchive;
 use crate::model::{MathNode, Span};
@@ -589,7 +589,10 @@ impl Reader<'_> {
                 .unwrap_or_default()
                 .to_string();
             if let Some(id) = attr(blip, REL_NS, "embed") {
-                let index = self.picture(id);
+                // The SVG of a picture Word stores with a PNG beside it.
+                let index = svg_blip(blip)
+                    .and_then(|svg| self.picture(svg))
+                    .or_else(|| self.picture(id));
                 para.inlines.push(Inline::Picture {
                     index,
                     width_pt,
@@ -650,6 +653,14 @@ impl Reader<'_> {
         self.picture_index.insert(rel.target.clone(), index);
         index
     }
+}
+
+/// The relationship of the SVG picture of the `a:blip` `blip`
+/// (`asvg:svgBlip`, in an extension), whose own relationship is a PNG drawn
+/// of it for readers that do not know SVG.
+pub(crate) fn svg_blip<'a>(blip: Node<'a, '_>) -> Option<&'a str> {
+    let svg = blip.descendants().find(|item| is(*item, SVG_BLIP_NS, "svgBlip"))?;
+    attr(svg, REL_NS, "embed")
 }
 
 /// The content of an `mc:AlternateContent` to read: its first choice

@@ -262,6 +262,7 @@ pub fn render_latex(
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
+        svg_as_pdf: true,
     };
     let doc = &analysis.doc;
     let anchors = linked_anchors(doc);
@@ -1790,6 +1791,7 @@ mod tests {
         let mut images = ImageStore {
             opts: &html,
             jobs: Vec::new(),
+            svg_as_pdf: true,
         };
         let opts = LatexOptions::default();
         let mut writer = Writer {
@@ -2260,6 +2262,7 @@ mod tests {
         let mut images = ImageStore {
             opts: &HtmlOptions::default(),
             jobs: Vec::new(),
+            svg_as_pdf: true,
         };
         let opts = LatexOptions::default();
         let writer = Writer {

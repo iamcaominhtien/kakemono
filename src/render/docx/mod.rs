@@ -20,7 +20,7 @@ use super::zip::{Compression, ZipWriter};
 use super::{Equations, InputFormat, doc_title};
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
-use crate::model::ImageSpec;
+use crate::model::{ImageSpec, PictureFormat};
 use crate::render::Pictures;
 use parts::{
     APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, PACKAGE_RELS, SETTINGS, STYLES, XML_DECL, core_props, document_rels,
@@ -76,6 +76,11 @@ pub struct DocxOutput {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
+/// The URI of the extension of an `a:blip` that holds an SVG picture.
+const SVG_BLIP_EXT: &str = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}";
+/// The namespace of `asvg:svgBlip`.
+const SVG_BLIP_NS: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
+
 /// The parts of the package made from the drawn pictures.
 #[derive(Default)]
 struct Media {
@@ -83,8 +88,27 @@ struct Media {
     files: Vec<(String, Vec<u8>)>,
     /// Their relationships: (id, target relative to `word/`).
     rels: Vec<(String, String)>,
-    /// What each picture shows (see [`PendingImage::hint`]).
-    hints: Vec<&'static str>,
+    /// Each picture of the document: the index of its file in
+    /// [`Media::files`] (its SVG, not the PNG beside it), and what it shows
+    /// (see [`PendingImage::hint`]).
+    shown: Vec<(usize, &'static str)>,
+}
+
+impl Media {
+    /// Adds the file `data` as `word/media/image{number}.{ext}` with its
+    /// relationship, and returns the relationship's id.
+    fn add(&mut self, data: Vec<u8>, ext: &str) -> String {
+        let number = self.files.len() + 1;
+        let id = format!("rIdImg{number}");
+        self.rels.push((id.clone(), format!("media/image{number}.{ext}")));
+        self.files.push((format!("word/media/image{number}.{ext}"), data));
+        id
+    }
+
+    /// Whether one of the files is an SVG picture.
+    fn has_svg(&self) -> bool {
+        self.files.iter().any(|(name, _)| name.ends_with(".svg"))
+    }
 }
 
 /// Writes an analysed document as a `.docx` file and returns its bytes.
@@ -107,14 +131,18 @@ pub fn render_docx_with_images(
     opts: &DocxOptions,
     image_dir: &str,
 ) -> DocxOutput {
-    let (docx, media) = write_package(analysis, pdf, input, opts);
+    let (docx, mut media) = write_package(analysis, pdf, input, opts);
     let files = media
-        .files
-        .into_iter()
-        .zip(media.hints)
+        .shown
+        .iter()
         .enumerate()
-        .map(|(i, ((name, data), hint))| {
-            let ext = if name.ends_with(".jpeg") { "jpg" } else { "png" };
+        .map(|(i, &(file, hint))| {
+            let (name, data) = std::mem::take(&mut media.files[file]);
+            let ext = match name.rsplit_once('.') {
+                Some((_, "jpeg")) => "jpg",
+                Some((_, "svg")) => "svg",
+                _ => "png",
+            };
             (format!("{image_dir}/{:03}-{hint}.{ext}", i + 1), data)
         })
         .collect();
@@ -151,7 +179,17 @@ fn write_package(
     let document = format!("{XML_DECL}<w:document {DOCUMENT_NAMESPACES}><w:body>{content}</w:body></w:document>");
     let mut zip = ZipWriter::default();
     let mut text = |name: &str, data: &str| zip.add(name, data.as_bytes(), Compression::Deflated);
-    text("[Content_Types].xml", &format!("{XML_DECL}{CONTENT_TYPES}"));
+    let content_types = if media.has_svg() {
+        // SVG pictures are rare: the other documents keep the bytes they had.
+        CONTENT_TYPES.replacen(
+            "<Override",
+            "<Default Extension=\"svg\" ContentType=\"image/svg+xml\"/><Override",
+            1,
+        )
+    } else {
+        CONTENT_TYPES.to_string()
+    };
+    text("[Content_Types].xml", &format!("{XML_DECL}{content_types}"));
     text("_rels/.rels", &format!("{XML_DECL}{PACKAGE_RELS}"));
     text(
         "docProps/core.xml",
@@ -169,15 +207,22 @@ fn write_package(
 }
 
 /// Replaces the picture placeholders of `xml` with the drawn pictures
-/// (`drawn[i]` for `images[i]`: data and whether it is a JPEG), adding
-/// their files and relationships to `media`. A picture that could not be
-/// drawn leaves nothing.
+/// (`drawn[i]` for `images[i]`: data and format), adding their files and
+/// relationships to `media`. An SVG picture is written as Word writes one:
+/// a PNG drawn of it, which any reader shows, with the SVG beside it
+/// (`asvg:svgBlip`), which Word 2016 and later show. A picture that could
+/// not be drawn leaves nothing.
 ///
 /// # Panics
 /// When `xml` holds a placeholder that is not closed or whose index is not
 /// a number (it was not written by the body).
-fn fill_images(xml: &str, images: &[PendingImage], drawn: Vec<Option<(Vec<u8>, bool)>>, media: &mut Media) -> String {
-    let mut drawn: Vec<Option<(Vec<u8>, bool)>> = drawn;
+fn fill_images(
+    xml: &str,
+    images: &[PendingImage],
+    drawn: Vec<Option<(Vec<u8>, PictureFormat)>>,
+    media: &mut Media,
+) -> String {
+    let mut drawn = drawn;
     let mut out = String::with_capacity(xml.len());
     let mut rest = xml;
     while let Some(start) = rest.find(MARK) {
@@ -185,14 +230,28 @@ fn fill_images(xml: &str, images: &[PendingImage], drawn: Vec<Option<(Vec<u8>, b
         let after = &rest[start + MARK.len_utf8()..];
         let end = after.find(MARK).expect("placeholders are closed");
         let index: usize = after[..end].parse().expect("placeholder index");
-        if let Some((data, jpeg)) = drawn[index].take() {
-            let number = media.files.len() + 1;
-            let ext = if jpeg { "jpeg" } else { "png" };
-            let id = format!("rIdImg{number}");
-            out.push_str(&drawing_xml(number, &id, &images[index]));
-            media.rels.push((id, format!("media/image{number}.{ext}")));
-            media.files.push((format!("word/media/image{number}.{ext}"), data));
-            media.hints.push(images[index].hint);
+        if let Some((data, format)) = drawn[index].take() {
+            let (id, svg_id) = match format {
+                PictureFormat::Svg => {
+                    let png = std::str::from_utf8(&data)
+                        .ok()
+                        .and_then(|svg| crate::backend::svg_to_png(svg, crate::backend::svg::SVG_PNG_SCALE));
+                    match png {
+                        Some(png) => {
+                            let id = media.add(png, "png");
+                            let svg_id = media.add(data, "svg");
+                            (id, Some(svg_id))
+                        }
+                        // No PNG can be drawn of it: the SVG alone.
+                        None => (media.add(data, "svg"), None),
+                    }
+                }
+                PictureFormat::Jpeg => (media.add(data, "jpeg"), None),
+                PictureFormat::Png => (media.add(data, "png"), None),
+            };
+            media.shown.push((media.files.len() - 1, images[index].hint));
+            let number = media.shown.len();
+            out.push_str(&drawing_xml(number, &id, svg_id.as_deref(), &images[index]));
         }
         rest = &after[end + MARK.len_utf8()..];
     }
@@ -200,17 +259,24 @@ fn fill_images(xml: &str, images: &[PendingImage], drawn: Vec<Option<(Vec<u8>, b
     out
 }
 
-/// The run that shows picture number `number` (relationship `rel_id`) in
-/// line with the text.
-fn drawing_xml(number: usize, rel_id: &str, image: &PendingImage) -> String {
+/// The run that shows picture number `number` (relationship `rel_id`, and
+/// `svg_id` that of its SVG when it has one) in line with the text.
+fn drawing_xml(number: usize, rel_id: &str, svg_id: Option<&str>, image: &PendingImage) -> String {
     let (cx, cy) = (image.width_emu, image.height_emu);
+    let blip = match svg_id {
+        Some(svg_id) => format!(
+            "<a:blip r:embed=\"{rel_id}\"><a:extLst><a:ext uri=\"{SVG_BLIP_EXT}\">\
+<asvg:svgBlip xmlns:asvg=\"{SVG_BLIP_NS}\" r:embed=\"{svg_id}\"/></a:ext></a:extLst></a:blip>"
+        ),
+        None => format!("<a:blip r:embed=\"{rel_id}\"/>"),
+    };
     format!(
         "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{cx}\" cy=\"{cy}\"/>\
 <wp:docPr id=\"{number}\" name=\"Picture {number}\" descr=\"{alt}\"/>\
 <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr>\
 <a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic>\
 <pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"image{number}\"/><pic:cNvPicPr/></pic:nvPicPr>\
-<pic:blipFill><a:blip r:embed=\"{rel_id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
+<pic:blipFill>{blip}<a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
 <pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>\
 </pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>",
         alt = xml::esc(&image.alt)

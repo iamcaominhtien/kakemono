@@ -246,14 +246,48 @@ impl ImageSpec {
     }
 }
 
-/// A picture file stored in the document (a picture of a Word document),
-/// ready to be written as it is.
+/// A picture file stored in the document (a picture of a Word document or
+/// of a workbook), ready to be written as it is.
 #[derive(Debug, Clone)]
 pub struct Picture {
-    /// The PNG or JPEG data.
+    /// The file, in the format [`Picture::format`].
     pub data: Vec<u8>,
-    /// The data is a JPEG (a PNG otherwise).
-    pub jpeg: bool,
+    /// The format of [`Picture::data`].
+    pub format: PictureFormat,
+}
+
+/// The format of a [`Picture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PictureFormat {
+    /// A PNG file.
+    Png,
+    /// A JPEG file.
+    Jpeg,
+    /// An SVG drawing, already written again by usvg (see
+    /// `backend::sanitize_svg`): it holds only drawing, no script, link or
+    /// style sheet, and can be written out as it is.
+    Svg,
+}
+
+impl PictureFormat {
+    /// The media type of a file of this format (`image/png`, ...).
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Svg => "image/svg+xml",
+        }
+    }
+
+    /// The extension of a file of this format, without its dot (`png`,
+    /// `jpg`, `svg`).
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Svg => "svg",
+        }
+    }
 }
 
 /// What a [`Block`] is, with the data specific to that kind. Serialised as
