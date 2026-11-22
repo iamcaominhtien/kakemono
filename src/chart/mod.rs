@@ -16,12 +16,14 @@
 
 mod chartex;
 mod read;
+mod svg;
 mod table;
 mod theme;
 
 use crate::excel::numfmt::NumFmt;
 
 pub(crate) use read::read;
+pub(crate) use svg::svg;
 pub(crate) use table::data_table;
 pub(crate) use theme::Theme;
 
@@ -334,6 +336,9 @@ mod tests {
     use crate::word::zip::ZipArchive;
     use std::path::{Path, PathBuf};
 
+    /// The size the corpus charts are drawn at: 6 by 3.5 inches.
+    const DRAWN_SIZE_PT: (f32, f32) = (432.0, 252.0);
+
     /// The workbooks and Word documents under `dir`, sorted.
     fn office_files(dir: &Path) -> Vec<PathBuf> {
         let mut found = Vec::new();
@@ -393,8 +398,39 @@ mod tests {
         )
     }
 
+    /// `chart` drawn as SVG without a panic; with `KAKEMONO_CHART_PNG_DIR`,
+    /// written there as `name.svg` and `name.png` (drawn by resvg with the
+    /// system's fonts, at 2 pixels per point).
+    fn draw(chart: &Chart, name: &str) -> bool {
+        let Ok(svg) = std::panic::catch_unwind(|| super::svg(chart, DRAWN_SIZE_PT)) else {
+            println!("    svg: PANIC");
+            return false;
+        };
+        let Some(svg) = svg else {
+            println!("    svg: not drawn");
+            return true;
+        };
+        println!("    svg: {} bytes", svg.len());
+        if let Ok(dir) = std::env::var("KAKEMONO_CHART_PNG_DIR") {
+            let dir = Path::new(&dir);
+            std::fs::write(dir.join(format!("{name}.svg")), &svg).unwrap();
+            let mut options = resvg::usvg::Options::default();
+            options.fontdb_mut().load_system_fonts();
+            let tree = resvg::usvg::Tree::from_str(&svg, &options).unwrap();
+            let size = tree.size().to_int_size();
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width() * 2, size.height() * 2).unwrap();
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+                &mut pixmap.as_mut(),
+            );
+            pixmap.save_png(dir.join(format!("{name}.png"))).unwrap();
+        }
+        true
+    }
+
     /// Every chart part of the files under `KAKEMONO_CHART_CORPUS` reads
-    /// without a panic; one line per chart is printed.
+    /// and draws without a panic; one line per chart is printed.
     #[test]
     #[ignore = "reads the files under KAKEMONO_CHART_CORPUS"]
     fn corpus_charts_read_without_panics() {
@@ -424,7 +460,15 @@ mod tests {
                 let result = std::panic::catch_unwind(|| read(&xml, &theme, &ChartConfig::default()));
                 let file = path.file_name().unwrap().to_string_lossy();
                 match result {
-                    Ok(Ok(chart)) => println!("{file} {part}: {}", describe(&chart)),
+                    Ok(Ok(chart)) => {
+                        println!("{file} {part}: {}", describe(&chart));
+                        let name = format!(
+                            "{}-{}",
+                            file.trim_end_matches(".xlsx"),
+                            part.rsplit('/').next().unwrap_or_default()
+                        );
+                        panics += usize::from(!draw(&chart, &name.replace(".xml", "")));
+                    }
                     Ok(Err(error)) => println!("{file} {part}: error {error:#}"),
                     Err(_) => {
                         panics += 1;
