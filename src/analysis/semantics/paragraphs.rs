@@ -66,6 +66,10 @@ pub struct ParagraphsConfig {
     /// A last line ending within this distance (multiple of its font size)
     /// of the right edge of its block is a full line, as in running text.
     pub full_line_max_gap_em: f32,
+    /// A block of at most this many characters (spaces aside), none a
+    /// letter or a digit, right under a heading is the ornament of a
+    /// chapter heading ("◄○►", "* * *", "❦").
+    pub ornament_max_chars_count: usize,
 }
 
 impl Default for ParagraphsConfig {
@@ -86,6 +90,7 @@ impl Default for ParagraphsConfig {
             same_leaf_max_gap_leading: 1.6,
             cut_prose_min_letter_ratio: 0.6,
             full_line_max_gap_em: 0.6,
+            ornament_max_chars_count: 12,
         }
     }
 }
@@ -147,6 +152,7 @@ pub(crate) fn merge_paragraphs(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &
         spaced: stats.spaced_paragraphs,
     };
     join_chapter_labels(nodes);
+    join_heading_ornaments(nodes, cfg);
     merge_cut_paragraphs(nodes, stats, cfg);
     merge_split_blocks(nodes, &style, cfg);
     merge_split_footnotes(nodes, cfg);
@@ -170,6 +176,38 @@ fn join_chapter_labels(nodes: &mut Vec<Node>) {
         }
         i += 1;
     }
+}
+
+/// Joins the ornament set under a chapter heading ("◄○►", "* * *") to the
+/// heading, as it is when the ornament shares the heading's line ("3
+/// ANDOVER ◄○►"), rather than leaving it a paragraph of its own.
+fn join_heading_ornaments(nodes: &mut Vec<Node>, cfg: &ParagraphsConfig) {
+    let mut i = 0;
+    while i + 1 < nodes.len() {
+        let joins = matches!(nodes[i].class, Class::Heading { .. })
+            && nodes[i].text_block().is_some()
+            && nodes[i + 1].loc.page == nodes[i].loc.page
+            && nodes[i + 1]
+                .text_block()
+                .is_some_and(|block| is_ornament(&block_text(&block.lines), cfg));
+        if joins {
+            if let NodeKind::Text(ornament) = &nodes[i + 1].kind {
+                let bbox = ornament.bbox;
+                if let NodeKind::Text(heading) = &mut nodes[i].kind {
+                    heading.bbox = heading.bbox.union(&bbox);
+                }
+            }
+            append_text_node(nodes, i, i + 1);
+        }
+        i += 1;
+    }
+}
+
+/// Whether `text` is an ornament: a few characters, none a letter or a
+/// digit.
+fn is_ornament(text: &str, cfg: &ParagraphsConfig) -> bool {
+    let chars: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    !chars.is_empty() && chars.len() <= cfg.ornament_max_chars_count && chars.iter().all(|ch| !ch.is_alphanumeric())
 }
 
 /// The class of the heading made of the chapter label `label` and the
@@ -574,4 +612,20 @@ fn has_footnote_mark(block: &TextBlock) -> bool {
             .glyphs
             .first()
             .is_some_and(|glyph| is_footnote_symbol(&glyph.text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParagraphsConfig, is_ornament};
+
+    #[test]
+    fn ornaments_have_no_letters_or_digits() {
+        let cfg = ParagraphsConfig::default();
+        for ornament in ["◄○►", "* * *", "❦", "~ ~"] {
+            assert!(is_ornament(ornament, &cfg), "{ornament}");
+        }
+        for text in ["2", "A", "* * * * * * * * * * * * *", "", "(1)"] {
+            assert!(!is_ornament(text, &cfg), "{text}");
+        }
+    }
 }

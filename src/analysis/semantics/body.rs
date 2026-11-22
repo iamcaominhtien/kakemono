@@ -215,7 +215,8 @@ pub(crate) fn classify_body(nodes: &mut Vec<Node>, stats: &DocStats, fonts: &[Fo
     super::contents::mark_contents(nodes, fonts, cfg);
     super::code::mark_code(nodes, fonts, cfg);
     split_run_in_headings(nodes, fonts, cfg);
-    let candidates = find_heading_candidates(nodes, stats, fonts, cfg);
+    let mut candidates = find_heading_candidates(nodes, stats, fonts, cfg);
+    add_bare_chapter_numbers(nodes, &mut candidates, fonts, &cfg.body);
     assign_heading_levels(nodes, candidates, stats, &cfg.body);
     unmark_contents_entries(nodes);
     classify_running_text(nodes, &cfg.body);
@@ -368,6 +369,9 @@ fn find_heading_candidates(
     let mut seen_refs = false;
     // The numbers of the numbered headings found so far.
     let mut numbers: HashSet<String> = HashSet::new();
+    // The node of the last chapter label set alone ("CHAPTER TWO"), whose
+    // title may follow on a line of its own.
+    let mut last_label: Option<usize> = None;
     let page_body_sizes = page_body_sizes(nodes, stats);
     for (idx, node) in nodes.iter().enumerate() {
         if node.class != Class::Unknown {
@@ -383,13 +387,22 @@ fn find_heading_candidates(
             continue;
         }
         let sentence = is_list_sentence(&features, &cfg.body);
-        let number = heading_number(&features, seen_refs, &cfg.body)
-            .filter(|_| !sentence)
+        let label = chapter_label_number(&features, block.lines.len());
+        let label_title = idx > 0
+            && last_label == Some(idx - 1)
+            && nodes[idx - 1].loc.page == node.loc.page
+            && is_chapter_title(&features, block.lines.len(), &cfg.body);
+        if label.is_some() {
+            last_label = Some(idx);
+        }
+        let number = label
+            .or_else(|| heading_number(&features, seen_refs, &cfg.body).filter(|_| !sentence))
             .or_else(|| child_number(&features, block.lines.len(), &numbers, &cfg.body));
         if let Some(found) = &number {
             numbers.insert(found.number.clone());
         }
         let is_heading = number.is_some()
+            || label_title
             || is_known_heading(&features, &cfg.body)
             || is_styled_heading(&features, block, &cfg.body);
         if !is_heading || (number.is_none() && !features.known && is_embedded_title(node, block, &features, &cfg.body))
@@ -413,6 +426,107 @@ fn find_heading_candidates(
         });
     }
     drop_repeated_labels(candidates, &cfg.body)
+}
+
+/// Adds to the `candidates` the chapters headed by their number alone ("2"
+/// between "1 ROGER" and "3 ANDOVER", the chapters of a detective story
+/// told in the third person): an unclassified block of one line holding
+/// only an Arabic or Roman number, of the size and weight of the numbered
+/// level-1 headings, and in sequence with them: the chapter before it has
+/// the number before, or the chapter after it the number after (counting
+/// the bare chapters already accepted, so that "24", "25", "26" follow
+/// "23"). A number some chapter already has, or out of sequence (a page
+/// number, a label), stays text.
+fn add_bare_chapter_numbers(
+    nodes: &[Node],
+    candidates: &mut Vec<HeadingCandidate>,
+    fonts: &[FontInfo],
+    cfg: &BodyConfig,
+) {
+    let bold = |idx: usize| {
+        nodes[idx]
+            .text_block()
+            .is_some_and(|block| text_frac(&block.lines, fonts, |font| font.bold) >= cfg.bold_min_ratio)
+    };
+    // (node, value, size, bold) of the numbered chapters, in order.
+    let mut chapters: Vec<(usize, u32, f32, bool)> = candidates
+        .iter()
+        .filter(|candidate| candidate.level == Some(1))
+        .filter_map(|candidate| {
+            let value = chapter_value(candidate.number.as_deref()?)?;
+            Some((candidate.idx, value, candidate.size, bold(candidate.idx)))
+        })
+        .collect();
+    if chapters.is_empty() {
+        return;
+    }
+    let taken: HashSet<usize> = candidates.iter().map(|candidate| candidate.idx).collect();
+    let mut bare: Vec<(usize, u32, f32, String)> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(idx, node)| node.class == Class::Unknown && !taken.contains(idx))
+        .filter_map(|(idx, node)| {
+            let block = node.text_block().filter(|block| block.lines.len() == 1)?;
+            let text = block_text(&block.lines).trim().to_string();
+            let value = BARE_NUMBER.is_match(&text).then(|| chapter_value(&text)).flatten()?;
+            Some((idx, value, block_size(&block.lines), text))
+        })
+        .collect();
+    // Accept the bare numbers next in sequence until none is left to add.
+    loop {
+        let found = bare.iter().position(|&(idx, value, size, _)| {
+            let before = chapters.iter().rev().find(|chapter| chapter.0 < idx);
+            let after = chapters.iter().find(|chapter| chapter.0 > idx);
+            let follows = |chapter: Option<&(usize, u32, f32, bool)>, expected: u32| {
+                chapter.is_some_and(|&(_, number, chapter_size, chapter_bold)| {
+                    number == expected
+                        && (size - chapter_size).abs() <= cfg.level_size_tolerance_pt
+                        && bold(idx) == chapter_bold
+                })
+            };
+            !chapters.iter().any(|chapter| chapter.1 == value)
+                && (follows(before, value.wrapping_sub(1)) || follows(after, value + 1))
+        });
+        let Some(found) = found else { break };
+        let (idx, value, size, text) = bare.remove(found);
+        let at = chapters.partition_point(|chapter| chapter.0 < idx);
+        chapters.insert(at, (idx, value, size, bold(idx)));
+        candidates.push(HeadingCandidate {
+            idx,
+            level: Some(1),
+            number: Some(text.clone()),
+            size,
+            known: false,
+            text,
+        });
+    }
+    candidates.sort_by_key(|candidate| candidate.idx);
+}
+
+/// The value of a chapter number in figures ("12") or Roman numerals
+/// ("IV"), or `None` for a section number of several parts or a word.
+fn chapter_value(number: &str) -> Option<u32> {
+    if let Ok(value) = number.parse() {
+        return Some(value);
+    }
+    let digit = |ch: char| match ch {
+        'I' => Some(1),
+        'V' => Some(5),
+        'X' => Some(10),
+        'L' => Some(50),
+        'C' => Some(100),
+        _ => None,
+    };
+    let digits: Vec<u32> = number.chars().map(digit).collect::<Option<_>>()?;
+    // A numeral before a larger one is subtracted ("IV", "XC").
+    let value = digits.iter().enumerate().fold(0i64, |sum, (pos, &numeral)| {
+        if digits.get(pos + 1).is_some_and(|&next| next > numeral) {
+            sum - i64::from(numeral)
+        } else {
+            sum + i64::from(numeral)
+        }
+    });
+    u32::try_from(value).ok().filter(|&value| value > 0)
 }
 
 /// Whether a block that reads as numbered is an item of a list rather than
@@ -604,6 +718,29 @@ fn child_number(
     let ends_sentence = features.text.ends_with(['.', ':']);
     (lines_count == 1 && short && capital && !ends_sentence && numbers.contains(parent))
         .then(|| dotted_number(&captures["num"]))
+}
+
+/// "CHAPTER TWO", "Chapter 3": a chapter label set alone on one line, in
+/// capitals or otherwise styled (even in the body font, as in a novel made
+/// in Word), is a heading of level 1; a number in words is given in figures.
+fn chapter_label_number(features: &HeadingFeatures<'_>, lines_count: usize) -> Option<HeadingNumber> {
+    whole_chapter_label_number(features.text)
+        .filter(|_| lines_count == 1 && (features.strong || features.weak))
+        .map(|number| HeadingNumber { level: 1, number })
+}
+
+/// Whether a block right after a chapter label set alone is the chapter's
+/// title ("THE VANISHING GLASS" under "CHAPTER TWO"): short, in capitals or
+/// strong, not a sentence.
+fn is_chapter_title(features: &HeadingFeatures<'_>, lines_count: usize, cfg: &BodyConfig) -> bool {
+    lines_count <= cfg.styled_heading_max_lines_count
+        && features.words <= cfg.letter_heading_max_words_count
+        && (features.caps || features.strong)
+        && !features
+            .text
+            .trim_end_matches(CLOSING_QUOTES)
+            .ends_with(['.', ',', ';', ':'])
+        && whole_chapter_label_number(features.text).is_none()
 }
 
 /// "IV. EXPERIMENTS": a Roman numeral, always level 1; the block must be in
@@ -958,6 +1095,15 @@ fn list_item_rule(trimmed: &str) -> Option<Class> {
 #[allow(clippy::missing_docs_in_private_items)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chapter_numbers_in_figures_or_roman_numerals() {
+        assert_eq!(chapter_value("12"), Some(12));
+        assert_eq!(chapter_value("IV"), Some(4));
+        assert_eq!(chapter_value("XIX"), Some(19));
+        assert_eq!(chapter_value("3.2"), None);
+        assert_eq!(chapter_value("A"), None);
+    }
 
     fn candidate(text: &str, number: Option<&str>, known: bool) -> HeadingCandidate {
         HeadingCandidate {
