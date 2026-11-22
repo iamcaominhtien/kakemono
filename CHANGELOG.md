@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.13.2](https://github.com/iamcaominhtien/kakemono/compare/v0.13.1...v0.13.2) - 2026-11-22
+
+### Fixed
+
+- *(book)* No page under the cover while the book opens or closes ([#21](https://github.com/iamcaominhtien/kakemono/pull/21))
+
+Fixes #20.
+
+In the book view with two pages per spread, turning the cover showed the destination's left page at once, while the cover was still lying on the right. Now the left side shows only the desk until the leaf lands, both when the book opens and when it closes.
+
+- `begin()` changes in two ways when a turn starts from the closed cover:
+  - it hides the destination's `.verso`;
+  - it clips `.bk-window` to the right of the spine, measured from the `.recto` box so the right page's first letters are not cut.
+- `end()` clears the clip.
+
+##### Releases: the merged commit of a PR is the release
+
+Until now, the Release workflow committed `chore: release vX.Y.Z` to `main` after each merge and tagged that commit, so a GitHub release pointed at a bot commit, not at the merged PR. Now each PR carries its own version (`Cargo.toml`, `Cargo.lock`) and its own `CHANGELOG.md` entry.
+
+- **`scripts/release.py bump --pr <N>`** writes both:
+  - the version comes from the last tag and the PR title: `feat` gives a minor release, a breaking change a major one (minor while 0.x), and anything else a patch;
+  - the entry is the title followed by the description, cleaned as `release-plz.toml` cleaned it.
+- **`.github/workflows/pr.yml`** (new) checks the title, the version and the entry.
+- **On merge,** the Release workflow tags the pushed commit and creates the release from that entry. It no longer commits to `main`.
+- `release-plz.toml` is removed.
+
 ## [0.13.1](https://github.com/iamcaominhtien/kakemono/compare/v0.13.0...v0.13.1) - 2026-11-20
 
 ### Added
