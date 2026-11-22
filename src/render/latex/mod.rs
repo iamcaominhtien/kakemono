@@ -1096,6 +1096,15 @@ impl Writer<'_, '_> {
         } else {
             (&rows[..0], &rows[..])
         };
+        // LaTeX sets a head apart from the body on its first run: a row of
+        // empty cells, not printed (`\kill`), gives each wrapped column its
+        // width there, so that a `\multicolumn` of the head does not widen
+        // the last column it spans.
+        let mut head = head.to_vec();
+        let head_spans = table.rows[..header].iter().flatten().any(|cell| cell.colspan > 1);
+        if head_spans && !head.is_empty() && cols.wrap.iter().any(|&wrap| wrap) {
+            head.insert(0, format!("{}\\kill", " & ".repeat(n_cols - 1)));
+        }
         lines.extend(head.iter().cloned());
         // A header too tall to repeat is only on the first page.
         let repeat = !head.is_empty()
@@ -1135,8 +1144,9 @@ impl Writer<'_, '_> {
         let n_cols = table.n_cols.max(1);
         let n_rows = table.rows.len();
         // For each position covered by a cell spanning from an earlier
-        // row: the number of columns that cell spans, at its first column.
-        let mut covered: Vec<Vec<Option<usize>>> = vec![vec![None; n_cols]; n_rows];
+        // row: the number of columns that cell spans and its column
+        // specification, at its first column.
+        let mut covered: Vec<Vec<Option<(usize, String)>>> = vec![vec![None; n_cols]; n_rows];
         let mut lines = Vec::new();
         for (row_idx, row) in table.rows.iter().enumerate() {
             let last_row = if split_header && row_idx < table.header_rows {
@@ -1149,16 +1159,17 @@ impl Writer<'_, '_> {
             let mut row_cells = row.iter().filter(|cell| cell.col < n_cols).peekable();
             while col < n_cols {
                 while row_cells.next_if(|cell| cell.col < col).is_some() {}
-                if let Some(width) = covered[row_idx][col] {
-                    cells.push(multicolumn(width, &cols.span_spec(col, width), String::new()));
+                if let Some((width, spec)) = covered[row_idx][col].take() {
+                    cells.push(multicolumn(width, &spec, String::new()));
                     col += width;
                 } else if let Some(cell) = row_cells.next_if(|cell| cell.col == col) {
                     let colspan = cell.colspan.clamp(1, n_cols - col);
                     let rowspan = cell.rowspan.clamp(1, last_row - row_idx);
+                    let spec = cols.cell_spec(col, colspan, &cell.spans);
                     for below in covered.iter_mut().take(row_idx + rowspan).skip(row_idx + 1) {
-                        below[col] = Some(colspan);
+                        below[col] = Some((colspan, spec.clone()));
                     }
-                    cells.push(self.cell(cell, col, colspan, rowspan, cols));
+                    cells.push(self.cell(cell, colspan, rowspan, &spec));
                     col += colspan;
                 } else {
                     cells.push(String::new());
@@ -1173,18 +1184,19 @@ impl Writer<'_, '_> {
         lines
     }
 
-    /// One cell of a table, at column `col` of `cols`, in `\multirow` and
-    /// `\multicolumn` when it spans several rows or columns.
-    fn cell(&self, cell: &TableCell, col: usize, colspan: usize, rowspan: usize, cols: &Columns) -> String {
+    /// One cell of a table, in `\multirow` and `\multicolumn` (of the column
+    /// specification `spec`, from [`Columns::cell_spec`]) when it spans
+    /// several rows or columns.
+    fn cell(&self, cell: &TableCell, colspan: usize, rowspan: usize, spec: &str) -> String {
         let text = self.text.spans(&cell.spans);
         let text = if rowspan > 1 {
-            // In a wrapped column, `=` sets the text at the column's width.
-            let width = if cols.paragraph(col, colspan) { "=" } else { "*" };
+            // In a `p` column, `=` sets the text at the column's width.
+            let width = if spec.contains("p{") { "=" } else { "*" };
             format!("\\multirow{{{rowspan}}}{{{width}}}{{{text}}}")
         } else {
             text
         };
-        multicolumn(colspan, &cols.span_spec(col, colspan), protect_start(&text))
+        multicolumn(colspan, spec, protect_start(&text))
     }
 }
 
@@ -1205,7 +1217,7 @@ struct Columns {
     /// See [`Columns::em_share`].
     pad_share: f32,
     /// The least share of the width each column can take: its longest word
-    /// (at least 1 em) when it wraps, its text otherwise.
+    /// when it wraps, its text otherwise; at least 1 em either way.
     least: Vec<f32>,
 }
 
@@ -1293,7 +1305,10 @@ impl Columns {
                 if breaks[col] {
                     share_of(typical(col))
                 } else {
-                    share_of(natural[col])
+                    // An empty column, or one of narrow characters, still
+                    // keeps an em inside its `\tabcolsep`: a `p` column of
+                    // no width (or less) runs its text into the next.
+                    share_of(natural[col].max(MIN_COLUMN_EM))
                 }
             })
             .collect();
@@ -1375,6 +1390,27 @@ impl Columns {
         let fitted = self.share.iter().any(|&share| share > 0.0);
         let wrapping = self.wrap.iter().any(|&wrap| wrap);
         self.wraps(col, width) || (fitted && (width > 1 || wrapping))
+    }
+
+    /// The column specification of a cell of the text `spans` over the
+    /// `width` columns from `col`: [`Columns::span_spec`], but the
+    /// alignment of the first column for a cell over several columns of a
+    /// table none of whose columns wraps, when its text fits on one line in
+    /// them. A `p` column there is as wide as its columns are guessed to be,
+    /// wider than they are when the guess runs long: LaTeX sets a long
+    /// table's head apart from its body on its first run, and a `p` cell of
+    /// the head over columns as narrow as their header then widens the last
+    /// of them, and the table, by the difference.
+    fn cell_spec(&self, col: usize, width: usize, spans: &[Span]) -> String {
+        let wrapping = self.wrap.iter().any(|&wrap| wrap);
+        if width > 1 && !wrapping && self.paragraph(col, width) {
+            let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+            let share: f32 = self.share[col..col + width].iter().sum();
+            if text_em(&text) * BOLD_WIDTH_RATIO * self.em_share + 2.0 * self.pad_share <= share {
+                return self.align[col].to_string();
+            }
+        }
+        self.span_spec(col, width)
     }
 
     /// The column specification of the `width` columns from `col` taken
@@ -1891,6 +1927,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_column_of_a_long_table_keeps_one_em_inside_its_padding() {
+        // An empty column and a column of single characters next to wrapped
+        // ones: a share of only the two `\tabcolsep` leaves no room, or a
+        // negative one, for the text.
+        let table = table_of(16, 40, |row, col| match col {
+            0 => String::new(),
+            1 => "x".to_string(),
+            _ => format!("{row} {col} {}", "語".repeat(10 + col * 20)),
+        });
+        for &(_, _, size_pt, tabcolsep_pt) in LONG_TABLE_SIZES {
+            for width_pt in [TEXT_WIDTH_PT, TEXT_HEIGHT_PT] {
+                let cols = Columns::fitted(&table, size_pt, tabcolsep_pt, width_pt);
+                if !cols.wrap.iter().any(|&wrap| wrap) {
+                    continue;
+                }
+                for col in 0..16 {
+                    let content_pt = cols.share[col] * width_pt - 2.0 * tabcolsep_pt;
+                    assert!(
+                        content_pt >= size_pt * 0.999,
+                        "column {col}: {content_pt} pt at {size_pt} pt in {width_pt} pt"
+                    );
+                }
+            }
+        }
+    }
+
     /// The text of each page of the PDF that pdfLaTeX makes of `tex` in a
     /// scratch folder named after `name`; `None` (said on the standard
     /// error) when pdfLaTeX or pdftotext is not installed.
@@ -1926,6 +1989,91 @@ mod tests {
                 .map(str::to_string)
                 .collect(),
         )
+    }
+
+    /// The widths of the alignments pdfLaTeX reports as too wide (`Overfull
+    /// \hbox (..pt too wide) in alignment`) on its first run over `tex`, in
+    /// a scratch folder named after `name`; `None` (said on the standard
+    /// error) when pdfLaTeX is not installed.
+    fn first_run_overfull_alignments(name: &str, tex: &str) -> Option<Vec<f32>> {
+        let dir = std::env::temp_dir().join(format!("kakemono-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.tex"), tex).unwrap();
+        let Ok(out) = std::process::Command::new("pdflatex")
+            .args(["-interaction=nonstopmode", "-halt-on-error", "t.tex"])
+            .current_dir(&dir)
+            .output()
+        else {
+            eprintln!("SKIPPED {name}: pdflatex is not installed, the LaTeX was not compiled");
+            return None;
+        };
+        assert!(
+            out.status.success(),
+            "pdflatex failed:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let log = std::fs::read(dir.join("t.log")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let overfull = String::from_utf8_lossy(&log)
+            .lines()
+            .filter(|line| line.starts_with("Overfull \\hbox (") && line.contains("in alignment"))
+            .filter_map(|line| line["Overfull \\hbox (".len()..].split("pt").next()?.parse().ok())
+            .collect();
+        Some(overfull)
+    }
+
+    /// A long table's head is set apart from its body on LaTeX's first run:
+    /// a `\multicolumn` in it over columns of no width there widens the last
+    /// of them, and the table runs off the page until LaTeX is run again.
+    /// One of wrapped columns (a form, labels over several of them) and one
+    /// of numbers under a header over twelve of them.
+    #[test]
+    fn a_long_table_with_spans_in_its_head_fits_on_the_first_run() {
+        let span = |col: usize, colspan: usize, rowspan: usize, text: &str| TableCell {
+            col,
+            colspan,
+            rowspan,
+            spans: vec![Span::plain(text)],
+        };
+        let mut form = table_of(20, 40, |row, col| match col {
+            1 => format!("{row} {}", "a note on what to do ".repeat(4)),
+            5..=12 if row % 3 == 0 => "y".to_string(),
+            14 => "Labour office".to_string(),
+            16 => format!("{row} the witness, with address and phone number"),
+            19 => "TEL".to_string(),
+            _ => String::new(),
+        });
+        form.rows[0] = vec![
+            span(2, 4, 1, "Work name"),
+            span(6, 1, 1, ":"),
+            span(7, 13, 1, "Outer walls"),
+        ];
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let mut prices = table_of(14, 40, |row, col| match (row, col) {
+            (_, 0) => format!("{} ...", 1990 + row),
+            (..=20, _) => "-".to_string(),
+            _ => format!("1{}.{}0", 80 + (row * 7 + col) % 40, col % 10),
+        });
+        prices.header_rows = 2;
+        prices.rows[0] = vec![
+            span(0, 1, 2, "reporting year"),
+            span(1, 12, 1, "reporting month"),
+            span(13, 1, 2, "yearly average"),
+        ];
+        prices.rows[1] = months
+            .iter()
+            .enumerate()
+            .map(|(i, month)| span(i + 1, 1, 1, month))
+            .collect();
+        prices.rows[2] = vec![span(1, 13, 1, "Wood products for energy production 1 2015 = 100")];
+        let body = format!("{}\n\n{}", table_latex(form), table_latex(prices));
+        let tex = document(&doc_of("x"), &body, InputFormat::Pdf);
+        let Some(overfull) = first_run_overfull_alignments("long-table-heads", &tex) else {
+            return;
+        };
+        assert!(overfull.iter().all(|&pt| pt <= 5.0), "too wide by {overfull:?} pt");
     }
 
     /// The caption of a long table is on the page of its first row, wherever
