@@ -6,6 +6,9 @@
 //! ```text
 //! soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods
 //! ```
+//!
+//! The workbook of charts and pictures, `charts.xlsx`, is written by
+//! `python3 -I tests/data/excel/make-chart-xlsx.py`.
 
 use kakemono::model::{Block, BlockKind, FloatKind, Table};
 use kakemono::{
@@ -17,6 +20,9 @@ use std::path::{Path, PathBuf};
 
 /// The sample workbook.
 const SAMPLE_XLSX: &str = "excel/sample.xlsx";
+/// Charts, a picture in a group and pictures placed in cells, written by
+/// `make-chart-xlsx.py`.
+const CHARTS_XLSX: &str = "excel/charts.xlsx";
 
 /// The path of a file of `tests/data`.
 fn data(name: &str) -> PathBuf {
@@ -211,11 +217,11 @@ fn latex_of_a_workbook_names_its_source() {
     );
 }
 
-#[test]
-fn excel_outputs_match_their_snapshot() {
-    let (paper, analysis) = load(SAMPLE_XLSX);
+/// The hash of each output of the workbook `name`, one line each.
+fn output_hashes(name: &str) -> String {
+    let (paper, analysis) = load(name);
     let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();
-    for (name, mode) in [
+    for (mode_name, mode) in [
         ("hard", Mode::Hard),
         ("hard-95", Mode::Hard95),
         ("medium", Mode::Medium),
@@ -227,7 +233,7 @@ fn excel_outputs_match_their_snapshot() {
             ..Default::default()
         };
         outputs.push((
-            format!("html-{name}"),
+            format!("html-{mode_name}"),
             paper.to_html(&analysis, &options).html.into_bytes(),
         ));
     }
@@ -261,8 +267,14 @@ fn excel_outputs_match_their_snapshot() {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        text.push_str(&format!("{SAMPLE_XLSX} {output} {hash}\n"));
+        text.push_str(&format!("{name} {output} {hash}\n"));
     }
+    text
+}
+
+#[test]
+fn excel_outputs_match_their_snapshot() {
+    let text = output_hashes(SAMPLE_XLSX) + &output_hashes(CHARTS_XLSX);
     let file = data("snapshots/excel-sample.txt");
     if std::env::var("KAKEMONO_UPDATE_SNAPSHOTS").is_ok_and(|value| value == "1") {
         std::fs::write(&file, &text).unwrap();
@@ -271,8 +283,68 @@ fn excel_outputs_match_their_snapshot() {
     let old = std::fs::read_to_string(&file).unwrap_or_default();
     assert_eq!(
         old, text,
-        "the output of the sample workbook changed; if this is intended, run \
+        "the output of the sample workbooks changed; if this is intended, run \
          KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test excel"
+    );
+}
+
+/// The charts of a sheet take their place among its drawn objects, in
+/// anchor order: a figure of the SVG drawing (captioned with the chart's
+/// title, else "Chart N"), then the data table with the same caption; a
+/// chart without cached data says so. Pictures in groups and pictures
+/// placed in cells are figures too.
+#[test]
+fn charts_and_pictures_take_their_place() {
+    let (paper, analysis) = load(CHARTS_XLSX);
+    let doc = &analysis.doc;
+    let shown: Vec<String> = doc
+        .blocks
+        .iter()
+        .map(|block| match (&block.kind, &block.table) {
+            (BlockKind::Figure { image: Some(image), .. }, _) => {
+                let picture = &doc.pictures[image.embedded.unwrap()];
+                format!("{} {}", picture.format.extension(), block.text())
+            }
+            (_, Some(table)) => format!("table {} ({} rows)", block.text(), table.rows.len()),
+            _ => block.text(),
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "Sales",
+            "table  (5 rows)",
+            "svg Sales by quarter",
+            "table Sales by quarter (5 rows)",
+            "svg Chart 2",
+            "table Chart 2 (5 rows)",
+            "Our logo",
+            "png ",
+            "svg Channels",
+            "table Channels (4 rows)",
+            "Forecast",
+            "The data of this chart is not stored in the file.",
+            "Photos",
+            "table  (3 rows)",
+            "png ",
+            "png ",
+        ]
+    );
+    // The column chart is drawn at the size of its cells, from the top
+    // left of E2 to that of L17: seven columns of 75 pixels (10.71
+    // characters), fifteen rows of 15 points.
+    let BlockKind::Figure { image: Some(image), .. } = &doc.blocks[2].kind else {
+        panic!("a chart");
+    };
+    assert_eq!((image.rect.width(), image.rect.height()), (393.75, 225.0));
+    // Its values are on its bars.
+    let svg = String::from_utf8(doc.pictures[image.embedded.unwrap()].data.clone()).unwrap();
+    assert!(svg.contains(">170</text>") && svg.contains(">140</text>"), "{svg}");
+    // The chunks give the data, under the chart's caption.
+    let chunks = chunks_jsonl(&paper.to_chunks(&analysis, &ChunkOptions::default()));
+    assert!(
+        chunks.contains("Sales by quarter\\n| North | South\\nQ1 | 120 | 90"),
+        "{chunks}"
     );
 }
 
