@@ -112,6 +112,18 @@ enum Command {
         #[arg(long, hide = true)]
         scores: bool,
     },
+    /// Draw an SVG as a PNG, the way kakemono draws the SVG pictures it is
+    /// given (fonts, pictures named relative to the SVG).
+    RenderSvg {
+        /// The SVG file
+        input: PathBuf,
+        /// The PNG file to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Pixels per SVG unit
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+    },
 }
 
 /// Values of `--mode`; the doc comments are the help texts.
@@ -384,7 +396,20 @@ fn run() -> Result<()> {
             }
         }
         Command::Formula { images, scores } => formula(&images, scores),
+        Command::RenderSvg { input, output, scale } => render_svg(&input, &output, scale),
     }
+}
+
+/// Draws the SVG file `input` as the PNG file `output` at `scale` pixels
+/// per SVG unit.
+///
+/// # Errors
+/// When `input` cannot be read or drawn, or `output` cannot be written.
+fn render_svg(input: &Path, output: &Path, scale: f32) -> Result<()> {
+    let svg = std::fs::read_to_string(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let png = kakemono::backend::svg_to_png_in(&svg, scale, input.parent())
+        .map_err(|why| anyhow::anyhow!("cannot read {} as SVG: {why}", input.display()))?;
+    std::fs::write(output, png).with_context(|| format!("writing {}", output.display()))
 }
 
 /// Loads the PDF named by `input` (an existing file, else an arXiv id or

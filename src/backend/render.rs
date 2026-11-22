@@ -308,21 +308,35 @@ pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
 /// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
 /// at `scale` pixels per point. Returns `None` when the SVG cannot be read.
 pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
+    svg_to_png_in(svg, scale, None).ok()
+}
+
+/// [`svg_to_png`] for an SVG whose pictures are named by paths relative to
+/// the folder `resources`. The error says why the SVG cannot be drawn.
+///
+/// # Errors
+/// When `svg` does not parse, or has no size.
+pub fn svg_to_png_in(svg: &str, scale: f32, resources: Option<&std::path::Path>) -> Result<Vec<u8>, String> {
     use resvg::{tiny_skia, usvg};
     let options = usvg::Options {
         fontdb: svg_fonts(),
+        resources_dir: resources.map(std::path::Path::to_path_buf),
         ..Default::default()
     };
-    let tree = usvg::Tree::from_str(svg, &options).ok()?;
-    let size = tree.size().to_int_size().scale_by(scale)?;
-    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
+    let tree = usvg::Tree::from_str(svg, &options).map_err(|err| err.to_string())?;
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .ok_or("the scaled size is empty")?;
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("the picture is too large")?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
         &tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.encode_png().ok()
+    pixmap.encode_png().map_err(|err| err.to_string())
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are

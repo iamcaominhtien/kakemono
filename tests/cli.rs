@@ -670,3 +670,44 @@ fn hard95_draws_a_replaced_figure_over_its_box_without_its_old_text() {
     assert!(!html.contains(&format!(r#"data-kind="figure-text" data-block="{with_text}""#)));
     assert!(html.contains("data:image/svg+xml"));
 }
+
+/// `render-svg` draws an SVG as a PNG of its size times `--scale`, with a
+/// picture it names by a path relative to the SVG; a file that is not an
+/// SVG is an error that says so.
+#[test]
+fn render_svg_writes_a_png_of_the_scaled_size() {
+    let dir = scratch("cli-render-svg");
+    std::fs::write(dir.join("square.png"), square_png()).unwrap();
+    std::fs::write(
+        dir.join("a.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="20"><image href="square.png" width="20" height="20"/></svg>"#,
+    )
+    .unwrap();
+    let png = dir.join("a.png");
+    let out = kakemono_in(
+        &std::env::temp_dir(),
+        &[
+            "render-svg",
+            dir.join("a.svg").to_str().unwrap(),
+            "-o",
+            png.to_str().unwrap(),
+            "--scale",
+            "2",
+        ],
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(image::image_dimensions(&png).unwrap(), (80, 40));
+    // The picture it names is drawn: the left half is not white.
+    let pixel = image::open(&png).unwrap().to_rgb8().get_pixel(10, 20).0;
+    assert_eq!(pixel, [0, 128, 255]);
+
+    std::fs::write(dir.join("bad.svg"), "not svg").unwrap();
+    let out = kakemono(&[
+        "render-svg",
+        dir.join("bad.svg").to_str().unwrap(),
+        "-o",
+        dir.join("b.png").to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
+}
