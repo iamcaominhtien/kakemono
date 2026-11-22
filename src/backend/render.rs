@@ -310,17 +310,14 @@ fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
         .clone()
 }
 
-/// Draws an SVG picture of a page (one written by
-/// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
-/// at `scale` pixels per point, or smaller when it would have more than
-/// [`MAX_RASTER_PIXELS`]. Returns `None` when the SVG cannot be read.
-pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
-    use resvg::{tiny_skia, usvg};
-    let options = usvg::Options {
+/// The options SVG pictures are read with: the fonts of [`svg_fonts`], and
+/// only the pictures inside that are data (a path would read a file of this
+/// machine into the output) and whose size is known and within the pixel
+/// cap, or SVG (drawn within this one).
+pub(crate) fn svg_options() -> resvg::usvg::Options<'static> {
+    use resvg::usvg;
+    usvg::Options {
         fontdb: svg_fonts(),
-        // Pictures inside the SVG: data only (a path would read a file of
-        // this machine into the output), and only those whose size is known
-        // and within the pixel cap, or SVG (drawn within this one).
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: Box::new(|mime, data, options| {
                 let allowed = match declared_size(&data) {
@@ -334,8 +331,13 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
             resolve_string: Box::new(|_, _| None),
         },
         ..Default::default()
-    };
-    let tree = usvg::Tree::from_str(svg, &options).ok()?;
+    }
+}
+
+/// The scale (pixels per point) and the pixel size at which `tree` is drawn
+/// at `scale`, or smaller when it would have more than [`MAX_RASTER_PIXELS`];
+/// `None` when it cannot be drawn within them.
+pub(crate) fn plan_raster(tree: &resvg::usvg::Tree, scale: f32) -> Option<(f32, resvg::tiny_skia::IntSize)> {
     // The pixmap is the size rounded up to whole pixels: counted so. Each
     // nested group drawn apart (opacity, clip, mask, filter) takes a
     // pixmap of its own, at most the size of the picture: they share the
@@ -354,6 +356,17 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
     if u64::from(size.width()) * u64::from(size.height()) > budget {
         return None;
     }
+    Some((scale, size))
+}
+
+/// Draws an SVG picture of a page (one written by
+/// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
+/// at `scale` pixels per point, or smaller when it would have more than
+/// [`MAX_RASTER_PIXELS`]. Returns `None` when the SVG cannot be read.
+pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_str(svg, &svg_options()).ok()?;
+    let (scale, size) = plan_raster(&tree, scale)?;
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
