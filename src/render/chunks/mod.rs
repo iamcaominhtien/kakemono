@@ -13,8 +13,9 @@
 //! metadata instead, to filter or prefix when searching several papers.
 //!
 //! Figures and tables give their caption and, for a rebuilt table, its rows
-//! (cells joined by ` | `); formulas are written as `$$LaTeX$$` when their
-//! structure is known. Pictures are left out.
+//! (one field per column, joined by ` | `, empty where no cell starts);
+//! formulas are written as `$$LaTeX$$` when their structure is known.
+//! Pictures are left out.
 
 mod tokens;
 
@@ -133,17 +134,24 @@ fn block_text(block: &Block) -> String {
     parts.join("\n").trim().to_string()
 }
 
-/// The rows of `table` as text, one string per row, cells joined by
-/// [`CELL_SEPARATOR`].
+/// The rows of `table` as text, one string per row: one field per column
+/// of the table, joined by [`CELL_SEPARATOR`], so that a field is under
+/// its header in every row. A cell's text is at its first column; the
+/// other columns it spans, those covered by a cell from a row above, and
+/// those without a cell are empty fields. The line is then trimmed: a row
+/// whose last fields are empty ends with `" |"`, but every row has as many
+/// `|` as the table has columns less one.
 fn table_rows(table: &Table) -> Vec<String> {
+    let n_cols = table.n_cols.max(1);
     table
         .rows
         .iter()
         .map(|row| {
-            row.iter()
-                .map(|cell| plain_of(&cell.spans))
-                .collect::<Vec<_>>()
-                .join(CELL_SEPARATOR)
+            let mut fields = vec![String::new(); n_cols];
+            for cell in row.iter().filter(|cell| cell.col < n_cols) {
+                fields[cell.col] = plain_of(&cell.spans);
+            }
+            fields.join(CELL_SEPARATOR).trim().to_string()
         })
         .collect()
 }
@@ -546,6 +554,56 @@ mod tests {
             max_tokens,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn empty_and_spanned_cells_keep_the_columns_of_a_row() {
+        use crate::model::TableCell;
+        let cell = |col: usize, text: &str, colspan: usize, rowspan: usize| TableCell {
+            col,
+            colspan,
+            rowspan,
+            spans: vec![Span::plain(text)],
+        };
+        let mut block = table_block("", 1, 0);
+        let table = block.table.as_mut().unwrap();
+        table.n_cols = 5;
+        table.rows = vec![
+            ["STT", "Chỉ tiêu", "Đơn vị tính", "Cơ quan báo cáo", "Kỳ báo cáo"]
+                .iter()
+                .enumerate()
+                .map(|(col, text)| cell(col, text, 1, 1))
+                .collect(),
+            // The unit and the period are empty: no cell is stored there.
+            vec![
+                cell(0, "I.", 1, 1),
+                cell(1, "TỔNG SẢN PHẨM", 1, 1),
+                cell(3, "BKHĐT", 1, 1),
+            ],
+            // A cell over two columns, and one over two rows.
+            vec![
+                cell(0, "1", 1, 2),
+                cell(1, "GDP", 2, 1),
+                cell(3, "TCTK", 1, 1),
+                cell(4, "Năm", 1, 1),
+            ],
+            vec![
+                cell(1, "Tốc độ", 1, 1),
+                cell(2, "%", 1, 1),
+                cell(3, "TCTK", 1, 1),
+                cell(4, "Quý", 1, 1),
+            ],
+        ];
+        let text = block_text(&block);
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "STT | Chỉ tiêu | Đơn vị tính | Cơ quan báo cáo | Kỳ báo cáo",
+                "I. | TỔNG SẢN PHẨM |  | BKHĐT |",
+                "1 | GDP |  | TCTK | Năm",
+                "| Tốc độ | % | TCTK | Quý",
+            ]
+        );
     }
 
     #[test]
