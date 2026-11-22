@@ -98,7 +98,7 @@ pub(crate) struct Text<'a> {
     /// Write the formulas inside the text as `$…$` (see
     /// [`inline_math`](crate::render::inline_math)).
     pub(crate) math: bool,
-    /// While a table is written: the texts of its translator's notes, whose
+    /// While a table is written: the texts of its added notes, whose
     /// cells hold only their marks (LaTeX loses a footnote in a table).
     pub(crate) table_notes: RefCell<Option<Vec<String>>>,
 }
@@ -125,7 +125,7 @@ impl Text<'_> {
         out.trim().to_string()
     }
 
-    /// Text spans as LaTeX (not trimmed), a translator's note as a
+    /// Text spans as LaTeX (not trimmed), an added note as a
     /// `\footnote` (LaTeX numbers them).
     fn runs(&self, spans: &[Span]) -> String {
         let mut out = String::new();

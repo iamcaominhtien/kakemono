@@ -101,7 +101,7 @@ pub fn render_markdown(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &Markdo
         opts: &html_opts,
         jobs: Vec::new(),
     };
-    // Translator's notes are numbered across the document.
+    // Added notes are numbered across the document.
     let numbered = super::notes::numbered_analysis(analysis);
     let doc = &numbered.as_ref().unwrap_or(analysis).doc;
     let anchors = linked_anchors(doc);
@@ -277,8 +277,8 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// Writes the translator's notes of `block` as footnote definitions
-    /// (`[^tn1]: …`), after the block.
+    /// Writes the added notes of `block` as footnote definitions
+    /// (`[^n1]: …`), after the block.
     fn note_definitions(&mut self, block: &Block) {
         for call in super::notes::calls(&[block]) {
             let text = self.inline.spans(call.note.as_deref().unwrap_or_default());

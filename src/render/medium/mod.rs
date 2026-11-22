@@ -79,8 +79,8 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
     } else {
         String::new()
     };
-    // The style of the translator's notes goes with it, when there are any.
-    if pages.contains("<aside class=\"tn\"") {
+    // The style of the added notes goes with it, when there are any.
+    if pages.contains("<aside class=\"an\"") {
         math_css.push_str(NOTES_CSS);
     }
     format!(

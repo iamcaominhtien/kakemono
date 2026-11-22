@@ -135,14 +135,14 @@ pub fn render_epub(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &EpubOption
         if i > 0 {
             text.push(SPLIT);
         }
-        // The translator's notes are numbered from 1 in each chapter, and
+        // The added notes are numbered from 1 in each chapter, and
         // set at its end as EPUB footnotes.
         if chapter.iter().any(|block| has_notes(block)) {
             let mut numbered: Vec<Block> = chapter.iter().map(|block| (*block).clone()).collect();
             number_blocks(&mut numbered, &format!("c{}-", i + 1));
             let numbered: Vec<&Block> = numbered.iter().collect();
             let html = chapter_html(doc, &numbered, &mut images, &ctx)
-                .replace("<a class=\"tn-call\"", "<a epub:type=\"noteref\" class=\"tn-call\"");
+                .replace("<a class=\"an-call\"", "<a epub:type=\"noteref\" class=\"an-call\"");
             text.push_str(&html);
             text.push_str(&epub_asides(&numbered, ctx.math));
         } else {
@@ -247,7 +247,7 @@ impl Book<'_> {
             toc_ncx(&info, &entries).as_bytes(),
             Compression::Deflated,
         );
-        let css = if self.bodies.iter().any(|body| body.contains("<aside class=\"tn\"")) {
+        let css = if self.bodies.iter().any(|body| body.contains("<aside class=\"an\"")) {
             format!("{CSS}{NOTES_CSS}")
         } else {
             CSS.to_string()

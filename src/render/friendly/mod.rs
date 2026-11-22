@@ -131,7 +131,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
     } else {
         String::new()
     };
-    let notes = if content.contains("<aside class=\"tn\"") || head.contains("<aside class=\"tn\"") {
+    let notes = if content.contains("<aside class=\"an\"") || head.contains("<aside class=\"an\"") {
         NOTES_CSS
     } else {
         ""
@@ -152,7 +152,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
 
 /// The parts of the page, put together by [`Page::html`].
 struct Page<'a> {
-    /// Style of the translator's notes (empty when the paper has none).
+    /// Style of the added notes (empty when the paper has none).
     notes: &'a str,
     /// Title of the paper (plain text).
     title: &'a str,

@@ -75,7 +75,7 @@ pub(super) struct Body<'a> {
     bookmarks: usize,
     /// The last thing written is a table.
     after_table: bool,
-    /// The runs of each translator's note, in order: note `i` is the
+    /// The runs of each added note, in order: note `i` is the
     /// footnote with id `i + 1` (see [`super::footnotes_xml`]).
     pub(super) notes: Vec<String>,
 }
@@ -257,7 +257,7 @@ impl<'a> Body<'a> {
 
     /// Styled spans as runs, with their links: a link to an anchor of the
     /// document points to its bookmark, a web link to its URL; other
-    /// targets are left out. A translator's note becomes a Word footnote,
+    /// targets are left out. An added note becomes a Word footnote,
     /// which Word numbers.
     fn styled_runs(&mut self, spans: &[Span]) -> String {
         let mut out = String::new();
@@ -281,7 +281,7 @@ impl<'a> Body<'a> {
         out
     }
 
-    /// Registers a translator's note as a footnote and returns the run of
+    /// Registers an added note as a footnote and returns the run of
     /// its reference. The note's links stay text: the footnotes part has no
     /// relationships of its own.
     fn footnote(&mut self, note: &[Span]) -> String {

@@ -43,12 +43,12 @@ pub(crate) const CONTENT_TYPES: &str = "<Types xmlns=\"http://schemas.openxmlfor
 </Types>";
 
 /// The content type of the footnotes part, added to `[Content_Types].xml`
-/// when the document has translator's notes.
+/// when the document has added notes.
 pub(crate) const FOOTNOTES_TYPE: &str = "<Override PartName=\"/word/footnotes.xml\" \
 ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>";
 
 /// The relationship of the main document to its footnotes part, added
-/// when the document has translator's notes.
+/// when the document has added notes.
 pub(crate) const FOOTNOTES_REL: &str = "<Relationship Id=\"rIdFootnotes\" \
 Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes\" Target=\"footnotes.xml\"/>";
 

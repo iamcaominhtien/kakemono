@@ -81,7 +81,7 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 }
 
 /// Renders an analysed document as HTML in the mode chosen in `opts`.
-/// Translator's notes are numbered in reading order across the document.
+/// Added notes are numbered in reading order across the document.
 ///
 /// The HTML is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either

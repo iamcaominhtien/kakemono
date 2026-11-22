@@ -80,7 +80,7 @@ pub(crate) struct FlowCtx {
     /// Write the formulas inside running text as MathML (see
     /// [`inline_math`](super::inline_math)); otherwise as styled text.
     pub math: bool,
-    /// List the translator's notes of each block in an aside right after
+    /// List the added notes of each block in an aside right after
     /// it; otherwise the mode writes them elsewhere (EPUB: at the end of
     /// the chapter).
     pub note_asides: bool,
@@ -398,7 +398,7 @@ pub(crate) fn is_scene_break(spans: &[Span]) -> bool {
 }
 
 /// Writes one block, like [`block_html`], followed by the aside of its
-/// translator's notes when the mode wants one there: inside the item for a
+/// added notes when the mode wants one there: inside the item for a
 /// list item or a reference, after the block otherwise. The notes of a
 /// heading are added to `held` instead, and come after the next block that
 /// is not a heading (a heading stays with its text).

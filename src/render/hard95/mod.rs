@@ -32,10 +32,10 @@ use std::collections::HashSet;
 const CSS: &str = include_str!("hard95.css");
 /// Script of the mode (zoom, line widths, reflow), embedded in the page.
 const JS: &str = include_str!("hard95.js");
-/// Style of the calls of translator's notes and of their popup, embedded
+/// Style of the calls of added notes and of their popup, embedded
 /// only in a page that has notes.
 const NOTES_CSS: &str = include_str!("notes.css");
-/// Script that shows a translator's note in a popup when its call is
+/// Script that shows an added note in a popup when its call is
 /// tapped, embedded only in a page that has notes.
 const NOTES_JS: &str = include_str!("notes.js");
 
@@ -487,7 +487,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
     } else {
         String::new()
     };
-    let (notes_css, notes_js) = if pages.contains("<sup class=\"tn\"") {
+    let (notes_css, notes_js) = if pages.contains("<sup class=\"an\"") {
         (NOTES_CSS, format!("<script>\n{NOTES_JS}</script>\n"))
     } else {
         ("", String::new())
@@ -748,7 +748,7 @@ fn flow_block(doc: &Document, block: &Block, page_idx: usize, units: &Units) -> 
     fragment_boxes(block, &frags, page_idx, &style, &placement.extra, &inner, edited, units)
 }
 
-/// The call of a translator's note: its number (the text of the numbered
+/// The call of an added note: its number (the text of the numbered
 /// call), raised, with the note as its tooltip and, hidden, as the content
 /// of the popup that `notes.js` opens when the call is tapped. The page has
 /// no room for the note itself.
@@ -756,7 +756,7 @@ fn note_call(call: &Span, note: &[Span]) -> String {
     let plain: String = note.iter().map(|span| span.text.as_str()).collect();
     let content: String = note.iter().map(|span| wrap_span(span, esc(&span.text))).collect();
     format!(
-        "<sup class=\"tn\" tabindex=\"0\" role=\"button\" title=\"{}\">{}<span class=\"tn-c\" hidden>{content}</span></sup>",
+        "<sup class=\"an\" tabindex=\"0\" role=\"button\" title=\"{}\">{}<span class=\"an-c\" hidden>{content}</span></sup>",
         esc(plain.trim()),
         esc(&call.text)
     )

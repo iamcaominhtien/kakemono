@@ -36,7 +36,7 @@ pub struct Span {
     /// their styles.
     #[serde(skip)]
     pub math: Option<Box<MathNode>>,
-    /// A translator's note attached at this point of the text (the `<tn>`
+    /// An added note attached at this point of the text (the `<note>`
     /// tag of the editable JSON): the span is the note's call, and the
     /// note's content is these spans (styled text, without formulas or
     /// other notes). The call's `text` is its mark: empty in the document,

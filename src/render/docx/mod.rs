@@ -143,7 +143,7 @@ fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions)
         .collect();
 
     let document = format!("{XML_DECL}<w:document {DOCUMENT_NAMESPACES}><w:body>{content}</w:body></w:document>");
-    // A document with translator's notes has a footnotes part too.
+    // A document with added notes has a footnotes part too.
     let mut content_types = format!("{XML_DECL}{CONTENT_TYPES}");
     let mut rels = document_rels(&media.rels, &links);
     if !body.notes.is_empty() {

@@ -36,7 +36,7 @@ pub(crate) fn esc(text: &str) -> String {
 
 /// Styled spans as semantic HTML (`<code>`, `<strong>`, `<em>`, `<sup>`,
 /// `<sub>`), with links: internal ones (`#anchor`) get the `xref` class,
-/// external ones open in a new tab. The call of a numbered translator's
+/// external ones open in a new tab. The call of a numbered added
 /// note is a raised link to the note.
 pub(crate) fn spans_html(spans: &[Span]) -> String {
     let mut out = String::new();

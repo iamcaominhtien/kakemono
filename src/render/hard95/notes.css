@@ -1,6 +1,6 @@
-/* Translator's notes: the call is raised, its note opens in a popup (added only when the paper has notes). */
-.tl .tn{cursor:pointer;color:#1a56c4}
-.tl .tn:focus-visible{outline:1px dotted #1a56c4}
-.tn-pop{position:fixed;z-index:40;max-width:min(24rem,calc(100vw - 16px));padding:.5rem .7rem;background:#fff;color:#111;
+/* Added notes: the call is raised, its note opens in a popup (added only when the paper has notes). */
+.tl .an{cursor:pointer;color:#1a56c4}
+.tl .an:focus-visible{outline:1px dotted #1a56c4}
+.an-pop{position:fixed;z-index:40;max-width:min(24rem,calc(100vw - 16px));padding:.5rem .7rem;background:#fff;color:#111;
   border:1px solid #c8cbd1;border-radius:6px;box-shadow:0 4px 18px rgba(0,0,0,.22);font:15px/1.45 var(--serif);white-space:normal}
-.tn-pop[hidden]{display:none}
+.an-pop[hidden]{display:none}

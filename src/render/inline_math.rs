@@ -77,7 +77,7 @@ struct Token {
 /// The pieces of `spans`: text, and the formulas found in it. The text of
 /// the pieces, put together, is the text of the spans. A span that carries
 /// its formula ([`Span::math`], from a Word document) is that formula as it
-/// is. The call of a translator's note ([`Span::note`]) is a text piece of
+/// is. The call of an added note ([`Span::note`]) is a text piece of
 /// its own, which no formula reaches over.
 pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
     if spans.iter().all(|span| span.math.is_none() && span.note.is_none()) {

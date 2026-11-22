@@ -18,13 +18,15 @@
 //! | `<a href="…">` | a link |
 //! | `<font color="#rrggbb">` | coloured text |
 //! | `<m id="n">…</m>` | the n-th formula of the block, with its LaTeX |
-//! | `<tn>…</tn>` | a translator's note attached at that point of the text |
+//! | `<note>…</note>` | an added note attached at that point of the text |
 //!
-//! A translator's note (`“<i>Mon ami</i><tn>Tiếng Pháp: <i>bạn tôi</i>.
-//! (ND)</tn> Hastings!”`) holds styled text and links, but no formula and
+//! An added note (`“<i>Mon ami</i><note>French: <i>my friend</i>.</note>
+//! Hastings!”`) holds styled text and links, but no formula and
 //! no other note; it does not take the styles open around it. Its text is
 //! printed exactly as it is given; the outputs number the notes and show
-//! them as footnotes (see [`crate::model::Span::note`]).
+//! them as footnotes (see [`crate::model::Span::note`]). A note added to the text
+//! (for example a translator's, an editor's or a reviewer's) is a `<note>` tag inside the text, not a
+//! block of type `note`.
 //!
 //! A formula is not text: reading the markup back puts the original spans
 //! of formula `n` where `<m id="n">` stands, whatever is between the tags
@@ -174,9 +176,9 @@ pub(crate) fn from_markup(text: &str, formulas: &[Vec<Span>]) -> Result<Parsed, 
                 .get(id.wrapping_sub(1))
                 .ok_or_else(|| format!("there is no formula {id} in this block"))?;
             if reader.note.is_some() {
-                reader.warnings.push(format!(
-                    "a translator's note cannot hold a formula: <m id=\"{id}\"> left out"
-                ));
+                reader
+                    .warnings
+                    .push(format!("an added note cannot hold a formula: <m id=\"{id}\"> left out"));
             } else {
                 reader.formula(id, spans);
             }
@@ -265,8 +267,8 @@ fn entity(text: &str) -> (String, usize) {
     }
 }
 
-/// The tag of a translator's note.
-const NOTE_TAG: &str = "tn";
+/// The tag of an added note.
+const NOTE_TAG: &str = "note";
 
 /// Longest entity read (`&#x10FFFF;` without the `;`).
 const MAX_ENTITY_LEN: usize = 10;
@@ -314,8 +316,8 @@ impl Writer {
         self.out.push_str(&escape(&span.text));
     }
 
-    /// Writes a translator's note: `<tn>`, its content with tags of its own
-    /// (the wraps open around it are closed first), `</tn>`.
+    /// Writes an added note: `<note>`, its content with tags of its own
+    /// (the wraps open around it are closed first), `</note>`.
     fn note(&mut self, content: &[Span]) {
         self.close_all();
         let mut inner = Writer::default();
@@ -339,7 +341,7 @@ enum Tag {
     Open(Wrap),
     /// A closing tag, by name.
     Close(String),
-    /// The opening tag of a translator's note.
+    /// The opening tag of an added note.
     Note,
     /// A formula: `<m id="n">` (`closed` false) or `<m id="n"/>`.
     Formula {
@@ -446,15 +448,15 @@ struct Reader {
     formulas_used: Vec<usize>,
     /// Problems that did not stop the reading.
     warnings: Vec<String>,
-    /// While a translator's note is read: the text around it, set aside
+    /// While an added note is read: the text around it, set aside
     /// until the note is closed.
     note: Option<Outside>,
-    /// `<tn>` tags met inside a note, which hold no note of their own: as
-    /// many `</tn>` are skipped.
+    /// `<note>` tags met inside a note, which hold no note of their own: as
+    /// many `</note>` are skipped.
     nested_notes: usize,
 }
 
-/// The state of the text around a translator's note, while the note is
+/// The state of the text around an added note, while the note is
 /// read.
 #[derive(Default)]
 struct Outside {
@@ -518,13 +520,12 @@ impl Reader {
         }
     }
 
-    /// Starts a translator's note: the text read from here on is its
+    /// Starts an added note: the text read from here on is its
     /// content, without the styles open around it.
     fn open_note(&mut self) {
         if self.note.is_some() {
-            self.warnings.push(format!(
-                "a translator's note cannot hold another note: <{NOTE_TAG}> left out"
-            ));
+            self.warnings
+                .push(format!("an added note cannot hold another note: <{NOTE_TAG}> left out"));
             self.nested_notes += 1;
             return;
         }
@@ -535,7 +536,7 @@ impl Reader {
         });
     }
 
-    /// Ends a translator's note: its content becomes the note of a call
+    /// Ends an added note: its content becomes the note of a call
     /// placed after the text before it. An empty note is left out.
     fn close_note(&mut self) {
         if self.nested_notes > 0 {
@@ -548,7 +549,7 @@ impl Reader {
         };
         for wrap in &self.open {
             self.warnings
-                .push(format!("<{}> is not closed inside a translator's note", wrap.name()));
+                .push(format!("<{}> is not closed inside an added note", wrap.name()));
         }
         let content = std::mem::replace(&mut self.spans, outside.spans);
         self.open = outside.open;
@@ -684,21 +685,17 @@ mod tests {
     }
 
     #[test]
-    fn translator_notes_become_tags_and_come_back() {
+    fn added_notes_become_tags_and_come_back() {
         let spans = vec![
             span("“", 0),
             span("Mon ami", ITALIC),
-            note(vec![
-                span("Tiếng Pháp: ", 0),
-                span("bạn tôi", ITALIC),
-                span(". (ND)", 0),
-            ]),
+            note(vec![span("French: ", 0), span("my friend", ITALIC), span(".", 0)]),
             span(" Hastings!”", 0),
         ];
         let markup = to_markup(&spans);
         assert_eq!(
             markup.text,
-            "“<i>Mon ami</i><tn>Tiếng Pháp: <i>bạn tôi</i>. (ND)</tn> Hastings!”"
+            "“<i>Mon ami</i><note>French: <i>my friend</i>.</note> Hastings!”"
         );
         let parsed = from_markup(&markup.text, &markup.formulas).unwrap();
         assert_eq!(parsed.spans, spans);
@@ -707,10 +704,10 @@ mod tests {
 
     #[test]
     fn a_note_inside_italic_text_does_not_take_its_style() {
-        let parsed = from_markup("<i>Mon ami<tn>bạn <b>tôi</b></tn> Hastings</i>!", &[]).unwrap();
+        let parsed = from_markup("<i>Mon ami<note>my <b>friend</b></note> Hastings</i>!", &[]).unwrap();
         let expected = vec![
             span("Mon ami", ITALIC),
-            note(vec![span("bạn ", 0), span("tôi", BOLD)]),
+            note(vec![span("my ", 0), span("friend", BOLD)]),
             span(" Hastings", ITALIC),
             span("!", 0),
         ];
@@ -719,26 +716,30 @@ mod tests {
         // Written back, the italic text is closed around the note.
         assert_eq!(
             to_markup(&expected).text,
-            "<i>Mon ami</i><tn>bạn <b>tôi</b></tn><i> Hastings</i>!"
+            "<i>Mon ami</i><note>my <b>friend</b></note><i> Hastings</i>!"
         );
         // Text on both sides of a note is never joined with it.
-        let parsed = from_markup("a<tn>b</tn>c", &[]).unwrap();
+        let parsed = from_markup("a<note>b</note>c", &[]).unwrap();
         assert_eq!(parsed.spans, vec![span("a", 0), note(vec![span("b", 0)]), span("c", 0)]);
     }
 
     #[test]
     fn faulty_notes_are_read_with_warnings() {
         // Not closed: the note runs to the end of the text.
-        let parsed = from_markup("ami<tn>bạn tôi", &[]).unwrap();
-        assert_eq!(parsed.spans, vec![span("ami", 0), note(vec![span("bạn tôi", 0)])]);
-        assert_eq!(parsed.warnings, vec!["<tn> is not closed".to_string()]);
-        // A note in a note, a formula in a note, a stray </tn>, an empty note.
+        let parsed = from_markup("ami<note>my friend", &[]).unwrap();
+        assert_eq!(parsed.spans, vec![span("ami", 0), note(vec![span("my friend", 0)])]);
+        assert_eq!(parsed.warnings, vec!["<note> is not closed".to_string()]);
+        // A note in a note, a formula in a note, a stray </note>, an empty note.
         let formulas = vec![vec![span("x", MATH | ITALIC)]];
-        let parsed = from_markup("a<tn>b<tn>c</tn> <m id=\"1\">x</m></tn></tn><tn> </tn>", &formulas).unwrap();
+        let parsed = from_markup(
+            "a<note>b<note>c</note> <m id=\"1\">x</m></note></note><note> </note>",
+            &formulas,
+        )
+        .unwrap();
         assert_eq!(parsed.spans, vec![span("a", 0), note(vec![span("bc ", 0)])]);
         assert_eq!(parsed.warnings.len(), 4, "{:?}", parsed.warnings);
         assert!(parsed.formulas_used.is_empty());
-        let parsed = from_markup("<tn><b>x</tn>", &[]).unwrap();
+        let parsed = from_markup("<note><b>x</note>", &[]).unwrap();
         assert_eq!(parsed.spans, vec![note(vec![span("x", BOLD)])]);
         assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
     }

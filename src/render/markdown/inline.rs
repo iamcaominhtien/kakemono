@@ -67,7 +67,7 @@ impl Inline<'_> {
     }
 
     /// Text spans as inline Markdown (not trimmed), the call of a numbered
-    /// translator's note as a footnote reference (`[^tn1]`).
+    /// added note as a footnote reference (`[^n1]`).
     fn text(&self, spans: &[Span]) -> String {
         let mut out = String::new();
         for segment in segments(spans) {
@@ -110,9 +110,9 @@ impl Inline<'_> {
     }
 }
 
-/// The label of the footnote of a numbered translator's note (`tn1`).
+/// The label of the footnote of a numbered added note (`n1`).
 pub(crate) fn note_label(call: &Span) -> String {
-    format!("tn{}", call.text)
+    format!("n{}", call.text)
 }
 
 /// Neighbouring spans with the same Markdown style and link, joined:
@@ -232,7 +232,7 @@ fn destination(href: &str) -> String {
 }
 
 /// Spans as HTML for the cells of a table written as HTML (Markdown is not
-/// read inside them by every reader). The call of a numbered translator's
+/// read inside them by every reader). The call of a numbered added
 /// note is its raised number: footnote references are not read in HTML.
 pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
     let mut out = String::new();

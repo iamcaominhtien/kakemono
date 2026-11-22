@@ -1,4 +1,4 @@
-//! Translator's notes ([`Span::note`], the `<tn>` tag of the editable
+//! Added notes ([`Span::note`], the `<note>` tag of the editable
 //! JSON) in the outputs: their numbering, and the HTML of their calls and
 //! of the notes themselves, shared by the flowing modes and EPUB.
 //!
@@ -13,16 +13,16 @@ use crate::analysis::pipeline::Analysis;
 use crate::model::{Block, BlockKind, Span};
 
 /// Prefix of the anchor of a note.
-const NOTE_ANCHOR: &str = "tn-";
+const NOTE_ANCHOR: &str = "an-";
 /// Prefix of the anchor of the call of a note, which the note links back
 /// to.
-const CALL_ANCHOR: &str = "tnref-";
+const CALL_ANCHOR: &str = "anref-";
 
 /// Style of the notes in the flowing HTML modes and in EPUB, added to the
 /// page only when it has notes: a small aside with a rule on its left.
-pub(crate) const NOTES_CSS: &str = "aside.tn{font-size:.85em;line-height:1.45;margin:.3em 0 1em;padding-left:.75em;\
-border-left:2px solid rgba(128,128,128,.45)}\naside.tn p{margin:.15em 0;text-indent:0}\n\
-sup.tn-ref{line-height:0}\na.tn-call,a.tn-back{text-decoration:none;font-weight:600}\n";
+pub(crate) const NOTES_CSS: &str = "aside.an{font-size:.85em;line-height:1.45;margin:.3em 0 1em;padding-left:.75em;\
+border-left:2px solid rgba(128,128,128,.45)}\naside.an p{margin:.15em 0;text-indent:0}\n\
+sup.an-ref{line-height:0}\na.an-call,a.an-back{text-decoration:none;font-weight:600}\n";
 
 /// A piece of a run of spans: text spans, or the call of a note.
 pub(crate) enum Segment<'a> {
@@ -53,7 +53,7 @@ pub(crate) fn segments(spans: &[Span]) -> Vec<Segment<'_>> {
     out
 }
 
-/// Whether the text of `block` holds a translator's note.
+/// Whether the text of `block` holds an added note.
 pub(crate) fn has_notes(block: &Block) -> bool {
     span_lists(block)
         .iter()
@@ -77,7 +77,7 @@ pub(crate) fn numbered_analysis(analysis: &Analysis) -> Option<Analysis> {
 
 /// Numbers the notes of `blocks` from 1, in reading order: the call of
 /// each note gets its number as its text, and the anchor of the note
-/// (`#tn-` + `scope` + number) as its link. `scope` keeps the anchors of
+/// (`#an-` + `scope` + number) as its link. `scope` keeps the anchors of
 /// notes numbered apart (the chapters of a book) different.
 pub(crate) fn number_blocks(blocks: &mut [Block], scope: &str) {
     let mut number = 0;
@@ -99,7 +99,7 @@ pub(crate) fn call_html(span: &Span) -> String {
         return String::new();
     };
     format!(
-        "<sup class=\"tn-ref\"><a class=\"tn-call\" id=\"{}\" href=\"#{}\" role=\"doc-noteref\">{}</a></sup>",
+        "<sup class=\"an-ref\"><a class=\"an-call\" id=\"{}\" href=\"#{}\" role=\"doc-noteref\">{}</a></sup>",
         esc(&call_anchor(target)),
         esc(target),
         esc(&span.text)
@@ -115,7 +115,7 @@ pub(crate) fn aside_html(blocks: &[&Block], math: bool) -> String {
         .filter_map(|call| {
             let target = note_anchor(call)?;
             Some(format!(
-                "<p id=\"{}\"><a class=\"tn-back\" href=\"#{}\" role=\"doc-backlink\">{}</a> {}</p>",
+                "<p id=\"{}\"><a class=\"an-back\" href=\"#{}\" role=\"doc-backlink\">{}</a> {}</p>",
                 esc(target),
                 esc(&call_anchor(target)),
                 esc(&call.text),
@@ -126,7 +126,7 @@ pub(crate) fn aside_html(blocks: &[&Block], math: bool) -> String {
     if items.is_empty() {
         return String::new();
     }
-    format!("<aside class=\"tn\" role=\"note\">{}</aside>\n", items.concat())
+    format!("<aside class=\"an\" role=\"note\">{}</aside>\n", items.concat())
 }
 
 /// The numbered notes of `blocks` as EPUB 3 footnotes: one `aside` per
@@ -138,8 +138,8 @@ pub(crate) fn epub_asides(blocks: &[&Block], math: bool) -> String {
         .filter_map(|call| {
             let target = note_anchor(call)?;
             Some(format!(
-                "<aside class=\"tn\" epub:type=\"footnote\" role=\"doc-footnote\" id=\"{}\"><p>\
-<a class=\"tn-back\" href=\"#{}\" role=\"doc-backlink\">{}</a> {}</p></aside>\n",
+                "<aside class=\"an\" epub:type=\"footnote\" role=\"doc-footnote\" id=\"{}\"><p>\
+<a class=\"an-back\" href=\"#{}\" role=\"doc-backlink\">{}</a> {}</p></aside>\n",
                 esc(target),
                 esc(&call_anchor(target)),
                 esc(&call.text),
@@ -227,16 +227,16 @@ mod tests {
         assert!(has_notes(&blocks[0]) && !has_notes(&blocks[1]));
         number_blocks(&mut blocks, "c2-");
         assert_eq!(blocks[0].spans[3].text, "2");
-        assert_eq!(blocks[2].spans[0].href.as_deref(), Some("#tn-c2-3"));
+        assert_eq!(blocks[2].spans[0].href.as_deref(), Some("#an-c2-3"));
         let html = call_html(&blocks[0].spans[1]);
         assert_eq!(
             html,
-            "<sup class=\"tn-ref\"><a class=\"tn-call\" id=\"tnref-c2-1\" href=\"#tn-c2-1\" role=\"doc-noteref\">1</a></sup>"
+            "<sup class=\"an-ref\"><a class=\"an-call\" id=\"anref-c2-1\" href=\"#an-c2-1\" role=\"doc-noteref\">1</a></sup>"
         );
         let aside = aside_html(&[&blocks[0]], false);
-        assert!(aside.starts_with("<aside class=\"tn\""), "{aside}");
+        assert!(aside.starts_with("<aside class=\"an\""), "{aside}");
         assert!(
-            aside.contains("<p id=\"tn-c2-2\"><a class=\"tn-back\" href=\"#tnref-c2-2\""),
+            aside.contains("<p id=\"an-c2-2\"><a class=\"an-back\" href=\"#anref-c2-2\""),
             "{aside}"
         );
         assert!(aside.contains("</a> two</p>"), "{aside}");
