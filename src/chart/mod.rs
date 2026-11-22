@@ -153,9 +153,14 @@ pub(crate) enum ChartKind {
         /// The lines between the points are smoothed.
         smooth: bool,
     },
-    /// A type that is not drawn (radar, bubble, stock, surface, a pie of
+    /// A radar: a spoke per category, a polygon per series.
+    Radar {
+        /// The polygons are filled (`radarStyle="filled"`).
+        filled: bool,
+    },
+    /// A type that is not drawn (bubble, stock, surface, a pie of
     /// pie, an extended chart): its title and data only. `name` is the
-    /// element (`radarChart`) or the extended chart's layout
+    /// element (`stockChart`) or the extended chart's layout
     /// (`waterfall`).
     NotDrawn {
         /// The name of the type.

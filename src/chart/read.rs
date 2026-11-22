@@ -220,7 +220,10 @@ fn plot_group(node: Node<'_, '_>, theme: &Theme, limits: &mut Limits<'_>) -> Opt
         "scatterChart" => ChartKind::Scatter {
             smooth: matches!(val(node, "scatterStyle"), Some("smooth" | "smoothMarker")),
         },
-        "ofPieChart" | "radarChart" | "bubbleChart" | "stockChart" | "surfaceChart" | "surface3DChart" => {
+        "radarChart" => ChartKind::Radar {
+            filled: val(node, "radarStyle") == Some("filled"),
+        },
+        "ofPieChart" | "bubbleChart" | "stockChart" | "surfaceChart" | "surface3DChart" => {
             ChartKind::NotDrawn { name: name.to_string() }
         }
         _ => return None,
@@ -309,8 +312,10 @@ fn read_series(
     let values = chart_el(ser, "val")
         .or_else(|| chart_el(ser, "yVal"))
         .and_then(|source| numbers(source, limits));
-    let line_like =
-        matches!(kind, ChartKind::Line { .. } | ChartKind::Scatter { .. }) || group.tag_name().name() == "radarChart";
+    let line_like = matches!(
+        kind,
+        ChartKind::Line { .. } | ChartKind::Scatter { .. } | ChartKind::Radar { filled: false }
+    );
     let automatic = theme.automatic(index as usize);
     let props = chart_el(ser, "spPr");
     let color = series_color(ser, props, line_like, theme, automatic);
@@ -328,6 +333,7 @@ fn read_series(
     let group_markers = match kind {
         ChartKind::Line { .. } => flag(group, "marker").unwrap_or(true),
         ChartKind::Scatter { .. } => matches!(scatter_style, "lineMarker" | "marker" | "smoothMarker"),
+        ChartKind::Radar { filled } => !filled && val(group, "radarStyle") == Some("marker"),
         _ => false,
     };
     let series = Series {
@@ -861,19 +867,38 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn radar_chart_is_not_drawn_but_keeps_its_data() {
+    fn radar_chart_keeps_its_style_and_data() {
         let plot = format!(
             r#"<c:radarChart><c:radarStyle val="marker"/>{}{AXES}</c:radarChart>"#,
             ser(0, "R", &["a", "b"], &["1", "2"], "")
         );
         let chart = chart(&space("", &plot));
+        assert_eq!(chart.groups[0].kind, ChartKind::Radar { filled: false });
+        assert_eq!(values(&chart, 0, 0), vec![Some(1.0), Some(2.0)]);
+        assert!(chart.groups[0].series[0].markers && chart.groups[0].series[0].line);
+        let filled = format!(
+            r#"<c:radarChart><c:radarStyle val="filled"/>{}</c:radarChart>"#,
+            ser(0, "R", &["a"], &["1"], "")
+        );
+        let chart = super::tests::chart(&space("", &filled));
+        assert_eq!(chart.groups[0].kind, ChartKind::Radar { filled: true });
+        assert!(!chart.groups[0].series[0].markers);
+    }
+
+    #[test]
+    fn stock_chart_is_not_drawn_but_keeps_its_data() {
+        let plot = format!(
+            r#"<c:stockChart>{}{AXES}</c:stockChart>"#,
+            ser(0, "S", &["a"], &["1"], "")
+        );
+        let chart = chart(&space("", &plot));
         assert_eq!(
             chart.groups[0].kind,
             ChartKind::NotDrawn {
-                name: "radarChart".into()
+                name: "stockChart".into()
             }
         );
-        assert_eq!(values(&chart, 0, 0), vec![Some(1.0), Some(2.0)]);
+        assert_eq!(values(&chart, 0, 0), vec![Some(1.0)]);
     }
 
     #[test]
