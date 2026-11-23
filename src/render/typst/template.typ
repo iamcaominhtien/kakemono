@@ -1,18 +1,26 @@
 // The layout. The text below calls the functions `kakemono-…` for the
 // parts that the layout decides on.
 
-// Pages that are part of the front matter: up to the title page (and the
-// cover).
-#let kakemono-front(p) = query(<kakemono-front>).any(m => m.location().page() >= p)
+// The pages of a book that the layout marks, recorded as it goes: the
+// last page of the front matter, and for each chapter the page where the
+// chapter before it ends and the page where it opens (a right-hand page:
+// the pages between them are blank).
+#let kakemono-marks = state("kakemono-marks", (front: 0, ends: (), openings: ()))
 
-// The blank page that a chapter leaves before the next one, which starts
-// on a right-hand page: the end of a chapter (marked where the next one
-// starts) is before page `p` and its next chapter after it.
-#let kakemono-blank(p, chapters) = {
-  let ends = query(<kakemono-chapter-end>)
-  chapters.enumerate().any(((i, h)) => (
-    h.location().page() > p and i < ends.len() and ends.at(i).location().page() < p
-  ))
+// The title of the chapter being read, for the running heads.
+#let kakemono-chapter = state("kakemono-chapter", none)
+
+// What each page that has no running head is, by its number: "front",
+// "opening" or "blank". Computed once from the marks (Typst keeps the
+// result of a call), so that the head of each page is a lookup.
+#let kakemono-plain-pages(marks) = {
+  let pages = (:)
+  for p in range(1, marks.front + 1) { pages.insert(str(p), "front") }
+  for (end, opening) in marks.ends.zip(marks.openings) {
+    for p in range(end + 1, opening) { pages.insert(str(p), "blank") }
+    pages.insert(str(opening), "opening")
+  }
+  pages
 }
 
 #let kakemono(body) = {
@@ -44,23 +52,19 @@
     numbering: "1",
     header: context {
       let p = here().page()
-      let chapters = query(heading.where(level: 1))
-      if kakemono-front(p) or chapters.any(h => h.location().page() == p) or kakemono-blank(p, chapters) {
-        return
-      }
+      if str(p) in kakemono-plain-pages(kakemono-marks.final()) { return }
       let number = counter(page).display()
-      let before = chapters.filter(h => h.location().page() < p)
       set text(size: 0.85em)
       if calc.even(p) {
         [#number #h(1fr) #smallcaps(doc-title)]
       } else {
-        [#if before.len() > 0 { emph(before.last().body) } #h(1fr) #number]
+        let chapter = kakemono-chapter.get()
+        [#if chapter != none { emph(chapter) } #h(1fr) #number]
       }
     },
     footer: context {
       let p = here().page()
-      let chapters = query(heading.where(level: 1))
-      if not kakemono-front(p) and chapters.any(h => h.location().page() == p) {
+      if kakemono-plain-pages(kakemono-marks.final()).at(str(p), default: none) == "opening" {
         align(center, text(size: 0.85em, counter(page).display()))
       }
     },
@@ -71,8 +75,10 @@
   show heading.where(level: 1): set align(center)
   show heading.where(level: 1): set block(above: 0pt, below: 2.2em)
   show heading.where(level: 1): it => {
-    [#metadata(none) <kakemono-chapter-end>]
+    context { let p = here().page(); kakemono-marks.update(marks => { marks.ends.push(p); marks }) }
     pagebreak(weak: true, to: "odd")
+    context { let p = here().page(); kakemono-marks.update(marks => { marks.openings.push(p); marks }) }
+    kakemono-chapter.update(it.body)
     counter(footnote).update(0)
     v(18%)
     it
@@ -80,7 +86,7 @@
   show heading.where(level: 2): set text(size: 1.1em)
   if cover != none {
     page(margin: 0pt, header: none, footer: none, image(cover, width: 100%, height: 100%, fit: "cover"))
-    [#metadata(none) <kakemono-front>]
+    context { let p = here().page(); kakemono-marks.update(marks => { marks.front = p; marks }) }
     pagebreak(to: "odd")
   }
   body
@@ -89,7 +95,7 @@
 // The title: on a title page of its own in a book.
 #let kakemono-title(body) = {
   if doc-layout == "book" {
-    [#metadata(none) <kakemono-front>]
+    context { let p = here().page(); kakemono-marks.update(marks => { marks.front = calc.max(marks.front, p); marks }) }
     v(22%)
     align(center, par(justify: false, text(size: 1.9em, body)))
     v(2em)
