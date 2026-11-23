@@ -15,10 +15,11 @@ mod richdata;
 mod sheet;
 mod strings;
 mod styles;
+mod view;
 mod workbook;
 
 use crate::analysis::semantics::text::{slug, unique_anchor};
-use crate::chart::Charts;
+use crate::chart::{Charts, Theme};
 use crate::model::{Block, BlockKind, Document, Meta, Picture};
 use crate::word::docx::{parse, read_rels, related_part};
 use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store, store_chart};
@@ -126,6 +127,17 @@ pub fn detect(data: &[u8]) -> bool {
             .is_some_and(|zip| workbook::workbook_part(&zip).is_some())
 }
 
+/// The sheets of the workbook `data` as one HTML page that shows them as
+/// Excel does: a tab per visible sheet, the grid of its cells with their
+/// look, its charts, pictures and shapes where they are drawn; `name`
+/// (where it came from) titles it when the workbook has no title.
+///
+/// # Errors
+/// When the file is damaged or is not a workbook.
+pub(crate) fn sheet_view(data: &[u8], config: &ExcelConfig, name: Option<&str>) -> Result<String> {
+    view::to_html(data, config, &view::ViewConfig::default(), name)
+}
+
 /// Reads an Excel workbook into a document. `source` names where it came
 /// from ([`Meta::source`]).
 ///
@@ -148,8 +160,8 @@ pub fn read_with_paper(
 ) -> Result<(Document, Option<(f32, f32)>)> {
     let zip = ZipArchive::new(data)?;
     let workbook = Workbook::read(&zip)?;
-    let mut pictures = Pictures::default();
-    let sheets = read_sheets(&zip, &workbook, config, &mut pictures)?;
+    let mut pictures = Pictures::new(&zip);
+    let sheets = read_sheets(&zip, &workbook, config, &mut pictures, false)?;
     let paper = sheets.iter().find_map(|(_, grid, _)| grid.paper_pt);
     Ok((build(&workbook, &sheets, pictures.files, config, source), paper))
 }
@@ -157,7 +169,8 @@ pub fn read_with_paper(
 /// The grid of each visible sheet of `workbook`, with its name. A sheet
 /// whose part is missing or damaged has no cells; its damaged
 /// relationships or table parts are left out. Damaged styles give the
-/// default ones: the cells keep their text, with General formats.
+/// default ones: the cells keep their text, with General formats. With
+/// `view`, the sheets are read for the sheet view ([`SheetContext::view`]).
 ///
 /// # Errors
 /// When the shared strings are damaged: the text of every string cell
@@ -167,7 +180,27 @@ fn read_sheets<'w>(
     workbook: &'w Workbook,
     config: &ExcelConfig,
     pictures: &mut Pictures,
+    view: bool,
 ) -> Result<Vec<(&'w str, Grid, Vec<Shape>)>> {
+    Ok(read_sheets_with_styles(zip, workbook, config, pictures, view)?.0)
+}
+
+/// The visible sheets of a workbook: each one's name, grid and drawn
+/// objects.
+type Sheets<'w> = Vec<(&'w str, Grid, Vec<Shape>)>;
+
+/// The sheets as [`read_sheets`] reads them, with the styles of the
+/// workbook.
+///
+/// # Errors
+/// As [`read_sheets`].
+fn read_sheets_with_styles<'w>(
+    zip: &ZipArchive<'_>,
+    workbook: &'w Workbook,
+    config: &ExcelConfig,
+    pictures: &mut Pictures,
+    view: bool,
+) -> Result<(Sheets<'w>, styles::Styles)> {
     // A workbook without string cells has no shared strings part.
     let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
         Some(xml) => strings::read(&xml)?,
@@ -202,6 +235,7 @@ fn read_sheets<'w>(
                     tables,
                     print_title_rows: workbook.print_titles.get(&index).copied(),
                     config,
+                    view,
                 };
                 let mut grid = sheet::read(&xml, &ctx).unwrap_or_default();
                 shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
@@ -212,7 +246,7 @@ fn read_sheets<'w>(
         };
         sheets.push((sheet.name.as_str(), grid, shapes));
     }
-    Ok(sheets)
+    Ok((sheets, styles))
 }
 
 /// The relationships of a sheet part: the URLs of its external hyperlinks
@@ -244,19 +278,22 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pi
     for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
         if kind == DRAWING_REL && !rel.external {
             let drawing = zip.read_text(&rel.target).ok().flatten();
-            let items = drawing.and_then(|xml| drawing::items(&xml).ok()).unwrap_or_default();
+            let items = drawing
+                .and_then(|xml| drawing::items(&xml, &pictures.theme).ok())
+                .unwrap_or_default();
             let files: HashMap<String, String> = read_rels(zip, &rel.target)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(_, _, rel)| !rel.external)
                 .map(|(id, _, rel)| (id, rel.target))
                 .collect();
-            shapes.extend(items.into_iter().filter_map(|(anchor, item)| match item {
+            shapes.extend(items.into_iter().filter_map(|mut shape| match shape.drawn {
                 Drawn::Picture(mut picture) => {
                     let index = pictures.read(zip, files.get(&picture.rel)?)?;
                     picture.size_pt = picture.size_pt.or_else(|| pictures.pixel_size_pt(index));
                     picture.index = Some(index);
-                    Some((anchor, Drawn::Picture(picture)))
+                    shape.drawn = Drawn::Picture(picture);
+                    Some(shape)
                 }
                 Drawn::Chart(mut chart) => {
                     let size = match chart.cells {
@@ -264,19 +301,20 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pi
                         None => chart.size_pt.unwrap_or_default(),
                     };
                     let xml = zip.read(files.get(&chart.rel)?).ok()??;
-                    let mut placed = pictures.charts(zip).place(&xml, size)?;
+                    let mut placed = pictures.charts().place(&xml, size)?;
                     let index = placed
                         .svg
                         .take()
                         .and_then(|svg| store_chart(&mut pictures.files, svg, placed.size_pt, MAX_PICTURE_BYTES));
                     chart.placed = Some(Box::new((placed, index)));
-                    Some((anchor, Drawn::Chart(chart)))
+                    shape.drawn = Drawn::Chart(chart);
+                    Some(shape)
                 }
-                text => Some((anchor, text)),
+                Drawn::Text(_) | Drawn::CellPicture(_) => Some(shape),
             }));
         }
     }
-    shapes.sort_by_key(|(anchor, _)| *anchor);
+    shapes.sort_by_key(|shape| shape.at);
     shapes
 }
 
@@ -305,33 +343,64 @@ fn cell_pictures(
             size_pt: pictures.pixel_size_pt(index),
             index: Some(index),
         };
-        shapes.push((at, Drawn::CellPicture(picture)));
+        let from = grid::Marker {
+            row: at.0,
+            row_off_pt: 0.0,
+            col: at.1,
+            col_off_pt: 0.0,
+        };
+        shapes.push(Shape {
+            at,
+            frame: drawing::Frame {
+                from: Some(from),
+                to: Some(grid::Marker {
+                    row: at.0 + 1,
+                    col: at.1 + 1,
+                    ..from
+                }),
+                ..drawing::Frame::default()
+            },
+            drawn: Drawn::CellPicture(picture),
+        });
     }
     shapes
 }
 
 /// The picture files of a workbook, each read and made ready for every
 /// output (as a Word document's are) once, and the drawings of its charts.
-#[derive(Default)]
 struct Pictures {
     /// The pictures read, which [`Drawn::Picture`] and [`Drawn::Chart`]
     /// refer to by index.
     files: Vec<Picture>,
     /// The index of each part read, `None` when it cannot be shown.
     parts: HashMap<String, Option<usize>>,
+    /// The theme part of the workbook, when it has one.
+    theme_part: Option<Vec<u8>>,
+    /// The colours of the workbook's theme.
+    theme: Theme,
     /// The charts read so far, with the workbook's theme; made at the
     /// first chart.
     charts: Option<Charts>,
 }
 
 impl Pictures {
-    /// The charts of the workbook `zip`, coloured by its theme.
-    fn charts(&mut self, zip: &ZipArchive<'_>) -> &mut Charts {
-        self.charts.get_or_insert_with(|| {
-            let theme = workbook::workbook_part(zip)
-                .and_then(|part| zip.read(&related_part(zip, &part, THEME_REL)).ok().flatten());
-            Charts::new(theme.as_deref())
-        })
+    /// No pictures yet, for the workbook `zip`.
+    fn new(zip: &ZipArchive<'_>) -> Self {
+        let theme_part =
+            workbook::workbook_part(zip).and_then(|part| zip.read(&related_part(zip, &part, THEME_REL)).ok().flatten());
+        Self {
+            files: Vec::new(),
+            parts: HashMap::new(),
+            theme: Theme::read(theme_part.as_deref()),
+            theme_part,
+            charts: None,
+        }
+    }
+
+    /// The charts of the workbook, coloured by its theme.
+    fn charts(&mut self) -> &mut Charts {
+        self.charts
+            .get_or_insert_with(|| Charts::new(self.theme_part.as_deref()))
     }
 
     /// The index of the picture of the part `part`, read once; `None` when
@@ -467,7 +536,14 @@ mod tests {
         assert!(doc.blocks.is_empty());
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
+        let sheets = read_sheets(
+            &zip,
+            &workbook,
+            &ExcelConfig::default(),
+            &mut Pictures::new(&zip),
+            false,
+        )
+        .unwrap();
         assert_eq!(sheets.len(), 1);
         assert!(sheets[0].1.cells.is_empty());
     }
@@ -489,7 +565,14 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
+        let sheets = read_sheets(
+            &zip,
+            &workbook,
+            &ExcelConfig::default(),
+            &mut Pictures::new(&zip),
+            false,
+        )
+        .unwrap();
         assert_eq!(sheets[0].1.cells.len(), 1);
         assert!(sheets[0].1.declared.tables.is_empty());
         assert!(read(&data, &ExcelConfig::default(), None).is_ok());
@@ -536,7 +619,14 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
+        let sheets = read_sheets(
+            &zip,
+            &workbook,
+            &ExcelConfig::default(),
+            &mut Pictures::new(&zip),
+            false,
+        )
+        .unwrap();
         assert_eq!(sheets[0].1.cells.len(), 1);
     }
 
@@ -553,7 +643,14 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
+        let sheets = read_sheets(
+            &zip,
+            &workbook,
+            &ExcelConfig::default(),
+            &mut Pictures::new(&zip),
+            false,
+        )
+        .unwrap();
         let read: Vec<_> = sheets.iter().map(|(name, grid, _)| (*name, grid.cells.len())).collect();
         assert_eq!(read, [("Bad", 0), ("Good", 1)]);
         let doc = super::read(&data, &ExcelConfig::default(), None).unwrap();
@@ -582,7 +679,14 @@ mod tests {
         ]);
         let zip = ZipArchive::new(&data).unwrap();
         let workbook = Workbook::read(&zip).unwrap();
-        let sheets = read_sheets(&zip, &workbook, &ExcelConfig::default(), &mut Pictures::default()).unwrap();
+        let sheets = read_sheets(
+            &zip,
+            &workbook,
+            &ExcelConfig::default(),
+            &mut Pictures::new(&zip),
+            false,
+        )
+        .unwrap();
         assert_eq!(sheets.len(), 1);
         let (name, grid, _) = &sheets[0];
         assert_eq!(*name, "Data");

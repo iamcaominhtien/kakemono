@@ -53,6 +53,10 @@ pub(crate) struct SheetContext<'a> {
     pub(crate) print_title_rows: Option<(u32, u32)>,
     /// The limits of rows and columns.
     pub(crate) config: &'a ExcelConfig,
+    /// The sheet is read for the sheet view: the cell formats of every
+    /// cell, row and column are kept ([`Grid::looks`]), and the height of
+    /// every row the file gives, not only the custom ones.
+    pub(crate) view: bool,
 }
 
 /// The limits of a sheet, as cell indices: rows and columns at or past
@@ -372,6 +376,7 @@ impl SheetReader<'_, '_> {
             }
             (Place::SheetViews, "sheetView") if !self.seen_view => {
                 self.seen_view = true;
+                self.grid.looks.no_grid_lines = matches!(tag.attr("showGridLines").as_deref(), Some("0" | "false"));
                 Place::SheetView
             }
             (Place::SheetView, "pane") => {
@@ -409,10 +414,17 @@ impl SheetReader<'_, '_> {
             self.grid.hidden_rows.insert(index);
         }
         if !self.row_past_limit
-            && is_on(tag.attr("customHeight").as_deref())
+            && (self.ctx.view || is_on(tag.attr("customHeight").as_deref()))
             && let Some(height) = tag.attr("ht").and_then(|value| points(&value))
         {
             self.grid.sizes.rows.insert(index, height);
+        }
+        if self.ctx.view
+            && !self.row_past_limit
+            && is_on(tag.attr("customFormat").as_deref())
+            && let Some(style) = tag.attr("s").and_then(|value| value.parse::<u32>().ok())
+        {
+            self.grid.looks.rows.insert(index, style);
         }
     }
 
@@ -440,6 +452,14 @@ impl SheetReader<'_, '_> {
             && max >= min
         {
             self.grid.sizes.cols.push((min - 1, max - 1, width));
+        }
+        if self.ctx.view
+            && let (Some(min), Some(max), Some(style)) = (bound("min"), bound("max"), bound("style"))
+            && min >= 1
+            && max >= min
+            && style != 0
+        {
+            self.grid.looks.cols.push((min - 1, max - 1, style));
         }
     }
 
@@ -503,6 +523,12 @@ impl SheetReader<'_, '_> {
                         self.cols_past_limit.insert(col);
                     }
                     return;
+                }
+                if self.ctx.view
+                    && let Some(at) = raw.at
+                    && raw.style != 0
+                {
+                    self.grid.looks.cells.insert(at, u32::try_from(raw.style).unwrap_or(0));
                 }
                 if let Some(at) = raw.at
                     && let Some(cell) = read_cell(raw, self.ctx)
@@ -801,6 +827,7 @@ mod tests {
             tables: Vec::new(),
             print_title_rows: None,
             config,
+            view: false,
         };
         read(&sheet(body), &ctx).unwrap()
     }
@@ -1008,6 +1035,7 @@ mod tests {
             tables: Vec::new(),
             print_title_rows: None,
             config: &config,
+            view: false,
         };
         let xml = concat!(
             r#"<x:worksheet xmlns:x="http://purl.oclc.org/ooxml/spreadsheetml/main" xmlns:rel="http://purl.oclc.org/ooxml/officeDocument/relationships">"#,
@@ -1050,6 +1078,7 @@ mod tests {
             tables: vec![(table, 1)],
             print_title_rows: Some((0, 2)),
             config: &config,
+            view: false,
         };
         let xml = sheet(concat!(
             r#"<sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>"#,
@@ -1202,6 +1231,7 @@ mod tests {
             tables: Vec::new(),
             print_title_rows: None,
             config: &config,
+            view: false,
         };
         assert!(read("<worksheet", &ctx).is_err());
         let dtd = r#"<!DOCTYPE worksheet [<!ENTITY e "x">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>"#;

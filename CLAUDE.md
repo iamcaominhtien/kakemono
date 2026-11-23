@@ -132,8 +132,9 @@ committing.
   and `charts.xlsx` (charts, pictures in a group and in cells), written by
   `python3 -I tests/data/excel/make-chart-xlsx.py`; a change to the reading shows in
   `tests/data/snapshots/excel-sample.txt`.
-- A workbook has no pages (`Document::pages` is empty): the HTML modes other than friendly give the
-  friendly page. Its PDF (`Paper::to_pdf`) is laid out by `src/layout/workbook/`, which turns the
+- A workbook has no pages (`Document::pages` is empty): the HTML modes other than friendly show the
+  sheet view (`src/excel/view.rs`): a second reading of the file with the look of every cell
+  (`styles.rs` looks, `Grid::looks`, drawing frames), drawn as Excel shows the sheets. Its PDF (`Paper::to_pdf`) is laid out by `src/layout/workbook/`, which turns the
   `Document` into the Word layout engine's `FDoc` (tables fitted to the page: smaller, landscape, or
   column groups; header rows repeated); its thresholds are `WorkbookPdfConfig`. A change to the
   shared layout code (`flow.rs`, `para.rs`) must keep `scripts/word-fidelity.py` where it was. Dates are always written ISO, and

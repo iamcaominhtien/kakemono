@@ -77,10 +77,12 @@ enum Source {
     /// A Word document, read into its structure when loaded, with its file
     /// (read again with its formatting for the layout).
     Word(Box<Document>, InputFormat, Vec<u8>),
-    /// An Excel workbook, read into its structure when loaded (no file is
-    /// kept: its pages are laid out from that structure), with the paper
-    /// its print settings name (width and height in points).
-    Sheet(Box<Document>, Option<(f32, f32)>),
+    /// An Excel workbook, read into its structure when loaded (its pages
+    /// are laid out from that structure), with the paper its print
+    /// settings name (width and height in points), its file (read again
+    /// with the look of every cell for the sheet view) and the thresholds
+    /// it was read with.
+    Sheet(Box<Document>, Option<(f32, f32)>, Vec<u8>, ExcelConfig),
 }
 
 /// A loaded PDF, Word document or Excel workbook, ready to be analysed and
@@ -134,7 +136,7 @@ impl Paper {
         // Both are ZIP packages: each looks for its own main part.
         if excel::detect(&data) {
             let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
-            return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper), sha256));
+            return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper, data, *excel), sha256));
         }
         let file = match word::detect(&data) {
             Some(format) => {
@@ -205,9 +207,19 @@ impl Paper {
 
     /// The HTML of a Word document in a mode that shows its layout: its
     /// pages (`hard`, `hard-95`), or Word's formatting in one continuous
-    /// page (`medium`). `None` for a PDF, the `friendly` mode, or when the
-    /// layout failed.
+    /// page (`medium`); of a workbook in a mode other than `friendly`, its
+    /// sheets as Excel shows them. `None` for a PDF, the `friendly` mode,
+    /// or when the layout failed.
     fn word_layout_html(&self, opts: &HtmlOptions) -> Option<HtmlOutput> {
+        if let Source::Sheet(_, _, data, config) = &self.file {
+            if opts.mode == Mode::Friendly {
+                return None;
+            }
+            return Some(HtmlOutput {
+                html: excel::sheet_view(data, config, self.source.as_deref()).ok()?,
+                files: Vec::new(),
+            });
+        }
         let Source::Word(_, _, data) = &self.file else {
             return None;
         };
@@ -249,7 +261,7 @@ impl Paper {
     pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
-            Source::Sheet(doc, paper) => crate::layout::workbook::to_pdf(doc, *paper, config),
+            Source::Sheet(doc, paper, ..) => crate::layout::workbook::to_pdf(doc, *paper, config),
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,
@@ -301,7 +313,7 @@ impl Paper {
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Sheet(doc, _) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, ..) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 return Analysis {
@@ -337,7 +349,9 @@ impl Paper {
     /// document is first laid out as Word lays it out: `hard` and `hard-95`
     /// show its pages, `medium` its formatting in one continuous page
     /// (neither shows text edited with [`Paper::apply_content`]); when the
-    /// layout fails, they give the `friendly` page.
+    /// layout fails, they give the `friendly` page. A workbook shows its
+    /// sheets as Excel does, a tab per sheet, in every mode but `friendly`
+    /// (nor do they show edited text).
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         if let Some(output) = self.word_layout_html(opts) {
             return output;
@@ -371,8 +385,9 @@ impl Paper {
         out: &mut dyn std::io::Write,
         file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        if self.word_format().is_some() && opts.mode != Mode::Friendly {
-            if opts.mode == Mode::Medium {
+        let sheet = matches!(self.file, Source::Sheet(..));
+        if (self.word_format().is_some() || sheet) && opts.mode != Mode::Friendly {
+            if opts.mode == Mode::Medium || sheet {
                 if let Some(output) = self.word_layout_html(opts) {
                     return out.write_all(output.html.as_bytes());
                 }

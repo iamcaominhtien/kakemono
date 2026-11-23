@@ -219,7 +219,7 @@ fn transformed(base: Rgb, element: Node<'_, '_>) -> Rgb {
 }
 
 /// `rgb` with its HSL luminance changed by `change`, clamped to 0..1.
-fn with_luminance(rgb: Rgb, change: impl Fn(f32) -> f32) -> Rgb {
+pub(crate) fn with_luminance(rgb: Rgb, change: impl Fn(f32) -> f32) -> Rgb {
     let [red, green, blue] = rgb.map(|channel| f32::from(channel) / 255.0);
     let max = red.max(green).max(blue);
     let min = red.min(green).min(blue);

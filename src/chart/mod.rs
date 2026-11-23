@@ -33,7 +33,7 @@ pub(crate) use read::read;
 pub(crate) use read::tests as test_parts;
 pub(crate) use svg::{drawn_size, svg};
 pub(crate) use table::data_table;
-pub(crate) use theme::Theme;
+pub(crate) use theme::{Theme, color as drawing_color, with_luminance};
 
 /// An RGB colour.
 pub(crate) type Rgb = [u8; 3];

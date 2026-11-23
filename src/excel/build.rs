@@ -53,8 +53,8 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
     // The pictures placed in cells, shown after the table of their cell.
     let mut in_cells: Vec<(&(u32, u32), &PictureRef)> = shapes
         .iter()
-        .filter_map(|(at, item)| match item {
-            Drawn::CellPicture(picture) => Some((at, picture)),
+        .filter_map(|shape| match &shape.drawn {
+            Drawn::CellPicture(picture) => Some((&shape.at, picture)),
             _ => None,
         })
         .collect();
@@ -146,10 +146,11 @@ fn drawn_blocks(shapes: &[Shape]) -> Vec<Block> {
     // its figure and its data table, named "Chart N" of the sheet when it
     // has no title.
     let mut charts = 0;
-    for (_, item) in shapes {
-        match item {
+    for shape in shapes {
+        match &shape.drawn {
             Drawn::Text(text) => blocks.extend(
-                text.lines()
+                text.text
+                    .lines()
                     .filter(|line| !line.trim().is_empty())
                     .map(|line| paragraph(vec![Span::plain(line)])),
             ),
@@ -576,6 +577,18 @@ impl<'g> RegionCells<'g> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shape at `at` with the text `text`.
+    fn text_shape(at: (u32, u32), text: &str) -> Shape {
+        Shape {
+            at,
+            frame: crate::excel::drawing::Frame::default(),
+            drawn: Drawn::Text(crate::excel::drawing::TextShape {
+                text: text.to_string(),
+                ..Default::default()
+            }),
+        }
+    }
     use crate::excel::grid::GridCell;
     use crate::model::{HEAVY_RULE, THIN_RULE};
 
@@ -1047,10 +1060,7 @@ mod tests {
     #[test]
     fn shape_text_follows_the_regions_one_paragraph_per_line() {
         let grid = grid(&[&["A", "B"], &["1", "2"]]);
-        let shapes = [
-            ((0, 0), Drawn::Text("Emergency\n03-1234".to_string())),
-            ((9, 9), Drawn::Text("Last".to_string())),
-        ];
+        let shapes = [text_shape((0, 0), "Emergency\n03-1234"), text_shape((9, 9), "Last")];
         let blocks = sheet_blocks("Data", &grid, &shapes, &ExcelConfig::default());
         let texts: Vec<_> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts[2..], ["Emergency", "03-1234", "Last"]);
@@ -1060,7 +1070,7 @@ mod tests {
 
     #[test]
     fn a_sheet_with_only_shapes_has_a_heading() {
-        let shapes = [((0, 0), Drawn::Text("Org chart".to_string()))];
+        let shapes = [text_shape((0, 0), "Org chart")];
         let blocks = sheet_blocks("Chart", &Grid::default(), &shapes, &ExcelConfig::default());
         let texts: Vec<_> = blocks.iter().map(Block::text).collect();
         assert_eq!(texts, ["Chart", "Org chart"]);

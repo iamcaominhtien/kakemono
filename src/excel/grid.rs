@@ -41,6 +41,25 @@ pub(crate) struct Grid {
     /// and height in points; `None` when the file names none, or one of
     /// the sizes not known here.
     pub(crate) paper_pt: Option<(f32, f32)>,
+    /// How the sheet looks, read only for the sheet view.
+    pub(crate) looks: Looks,
+}
+
+/// The cell formats of a sheet's cells, rows and columns, and whether it
+/// shows its gridlines: what the sheet view draws, read only for it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Looks {
+    /// The cell format (`s`, an index of the styles) of each cell that
+    /// has one other than 0, with a value or not.
+    pub(crate) cells: BTreeMap<(u32, u32), u32>,
+    /// The cell format of the columns that have one (`col style`): first
+    /// and last column, format.
+    pub(crate) cols: Vec<(u32, u32, u32)>,
+    /// The cell format of the rows that have one (`row s`, with
+    /// `customFormat`).
+    pub(crate) rows: BTreeMap<u32, u32>,
+    /// The sheet hides its gridlines (`sheetView showGridLines="0"`).
+    pub(crate) no_grid_lines: bool,
 }
 
 /// The widths of the columns and the heights of the rows of a sheet, as
@@ -82,7 +101,8 @@ const DEFAULT_ROW_PT: f32 = 15.0;
 
 impl Sizes {
     /// The width and height in points of the box from `from` to `to`;
-    /// hidden rows and columns (`hidden_rows`, `hidden_cols`) take no room.
+    /// hidden rows and columns (`hidden_rows`, `hidden_cols`) take no room,
+    /// and an offset larger than its cell ends at the cell's edge.
     /// A box whose `to` comes before its `from` has no size on that side.
     pub(crate) fn span_pt(
         &self,
@@ -125,8 +145,12 @@ impl Sizes {
                 .map(col_width)
                 .sum()
         };
-        let width = cols_between(from.col, to.col) - from.col_off_pt + to.col_off_pt;
-        let height = rows_between(from.row, to.row) - from.row_off_pt + to.row_off_pt;
+        // An offset past its cell ends at the cell's edge, as in Excel.
+        let row_height = |row: u32| rows_between(row, row.saturating_add(1));
+        let col_off = |marker: Marker| marker.col_off_pt.clamp(0.0, col_width(marker.col));
+        let row_off = |marker: Marker| marker.row_off_pt.clamp(0.0, row_height(marker.row));
+        let width = cols_between(from.col, to.col) - col_off(from) + col_off(to);
+        let height = rows_between(from.row, to.row) - row_off(from) + row_off(to);
         (width.max(0.0), height.max(0.0))
     }
 }

@@ -24,9 +24,9 @@ for Word documents; `.xlsm` files are the same format. Excel 97–2003 files (`.
 
 ## What a workbook becomes
 
-A workbook has no pages, like a Word document: `Document::pages` is empty; the HTML modes that
-show pages give the friendly page, and the PDF is laid out from the document (see
-[The PDF](#the-pdf)).
+A workbook has no pages, like a Word document: `Document::pages` is empty. The HTML modes other
+than friendly show the sheets as Excel does (see [The sheet view](#the-sheet-view)), and the PDF is
+laid out from the document (see [The PDF](#the-pdf)).
 
 Each **visible** sheet, in workbook order, becomes a section. Hidden and very hidden sheets, hidden
 rows and hidden columns are left out; an empty sheet gives nothing, not even a heading.
@@ -142,13 +142,41 @@ would be lost without a word.
 | Output | A workbook gives |
 | --- | --- |
 | friendly HTML (`-m friendly`, the default) | headings, captioned tables, notes and paragraphs |
-| `-m hard`, `hard-95`, `medium` (`--all`) | the friendly page: there are no pages to copy or place, as for a Word document without layout |
+| `-m medium`, `hard`, `hard-95` (`--all`) | the sheet view: the sheets as Excel shows them (see [The sheet view](#the-sheet-view)); it does not show text edited with `--content` |
 | Word, Markdown, LaTeX, EPUB | the same document; with `-m medium`, Markdown keeps HTML tables |
 | editable JSON (`--content` applies it back) | the blocks and tables; `source.format` is `xlsx` |
 | chunks (`.jsonl`) | the text cut along the sheets; a table is cut only between rows, and **every chunk of a table repeats its caption and header rows**, unless together they would take more than half of a chunk: then no chunk of the table has them |
 | PDF (`-o x.pdf`) | the document laid out in pages, without TeX (see [The PDF](#the-pdf)) |
 
 `kakemono inspect book.xlsx` prints the blocks found; it takes `--header-rows` too.
+
+
+## The sheet view
+
+`-m medium` (also `hard` and `hard-95`, which have no pages to copy) reads the workbook a second
+time, with the look of every cell (`src/excel/view.rs`), as the medium mode of a Word document reads
+its formatting:
+
+- a tab per visible sheet (without scripts, the sheets follow each other, each under its name);
+- the grid from A1 to the last cell with a value, a format, a merge or a drawn object: the column
+  widths and row heights of the file, hidden rows and columns left out, merged cells spanning their
+  area, the column letters and row numbers kept in view when scrolling, the gridlines unless the
+  sheet hides them;
+- each cell's font (family with fallbacks of its kind, Japanese ones included, size, colour, bold,
+  italic, underline, strike), fill (solid and shaded patterns; a gradient's first colour), borders
+  (thin, medium, thick, dashed, dotted, double), alignment (numbers right, text left unless the
+  cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
+  and tints and the legacy palette; formats of whole rows and columns too;
+- text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
+  next cell with a value;
+- charts (SVG), pictures, pictures placed in cells, shapes (preset outlines such as arrows,
+  triangles, brackets, cylinders; fill, outline, text) and connectors (straight and elbow, with
+  arrow heads) at the place and size of their anchors, groups included.
+
+Not drawn: conditional formats, data bars and icons, sparklines, comments, number colours of a
+format (`[Red]`), text turned by an angle other than ±90°, and the curves of curved connectors
+(drawn straight). A sheet is drawn up to 200 000 cells read and 600 000 positions (rows × columns)
+and 300 columns, the rows past them left out with a note.
 
 ## The PDF
 

@@ -155,8 +155,11 @@ kakemono convert sales.xlsx -o sales.jsonl               # chunks for retrieval 
 kakemono convert sales.xlsx --header-rows 2 -o sales.md  # two header rows in every table (0: none)
 ```
 
-A workbook has no pages: `hard`, `hard-95` and `medium` give the friendly page, as for a Word
-document. `-o sales.pdf` lays it out as a document, without TeX: each sheet after its heading,
+`-m medium` (and `hard`, `hard-95`) shows the workbook as Excel does: a tab per sheet, and on each
+the grid of its cells with their widths, heights, merges, fonts, fills, borders and alignment, the
+column letters and row numbers, and its charts, pictures, shapes and connectors drawn where they
+are anchored. `friendly` is the workbook as a document, the form every other output takes.
+`-o sales.pdf` lays it out as a document, without TeX: each sheet after its heading,
 tables with rules and their cells wrapped in their columns, a long table broken between rows with
 its header rows repeated on each page, a wide one set smaller, then on landscape pages, then in
 groups of columns (no column is ever cut off), charts drawn as vector, CJK text in CJK fonts; on A4
