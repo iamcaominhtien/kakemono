@@ -421,21 +421,24 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     }
 }
 
+/// The LaTeX commands of the accents, in the order of [`Accent`].
+const ACCENT_COMMANDS: [&str; 11] = [
+    "\\hat",
+    "\\grave",
+    "\\acute",
+    "\\breve",
+    "\\check",
+    "\\tilde",
+    "\\bar",
+    "\\overline",
+    "\\dot",
+    "\\ddot",
+    "\\vec",
+];
+
 /// The LaTeX command of an accent.
 fn accent_command(accent: Accent) -> &'static str {
-    match accent {
-        Accent::Hat => "\\hat",
-        Accent::Grave => "\\grave",
-        Accent::Acute => "\\acute",
-        Accent::Breve => "\\breve",
-        Accent::Caron => "\\check",
-        Accent::Tilde => "\\tilde",
-        Accent::Bar => "\\bar",
-        Accent::Overline => "\\overline",
-        Accent::Dot => "\\dot",
-        Accent::DoubleDot => "\\ddot",
-        Accent::Arrow => "\\vec",
-    }
+    ACCENT_COMMANDS[accent as usize]
 }
 
 /// Writes the nodes of a row. A table between two tall delimiters is a

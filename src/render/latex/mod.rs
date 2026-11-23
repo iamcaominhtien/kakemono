@@ -15,7 +15,7 @@ mod text;
 mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
-use super::sequence::{AuthorMarkup, Step, author_lines, steps, title_spans, write_authors};
+use super::sequence::{AuthorMarkup, Step, author_lines, linked_anchor, push_line, steps, title_spans, write_authors};
 use super::{
     CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, doc_title, equation_math,
     float_class, heading_tag, is_scene_break,
@@ -399,10 +399,7 @@ impl Writer<'_, '_> {
     /// The `\label` that marks the place of a block that some text links
     /// to, or nothing.
     fn anchor_label(&self, block: &Block) -> String {
-        block
-            .anchor
-            .as_deref()
-            .filter(|anchor| self.text.anchors.contains(*anchor))
+        linked_anchor(block, self.text.anchors)
             .map(|anchor| format!("\\phantomsection\\label{{{}}}", label(anchor)))
             .unwrap_or_default()
     }
@@ -411,10 +408,7 @@ impl Writer<'_, '_> {
     /// of its own.
     fn anchor(&mut self, block: &Block) {
         let label = self.anchor_label(block);
-        if !label.is_empty() {
-            self.out.push_str(&label);
-            self.out.push('\n');
-        }
+        push_line(&mut self.out, &label);
     }
 
     /// Writes a link to the arXiv page of the paper, after the front matter.
@@ -737,13 +731,9 @@ impl AuthorMarkup for Writer<'_, '_> {
         author_lines(
             block,
             |row| self.text.spans(row),
-            |i, text| {
-                if i == 0 && !text.is_empty() && !text.starts_with("\\textbf{") {
-                    format!("\\textbf{{{text}}}")
-                } else {
-                    protect_start(&text)
-                }
-            },
+            "\\textbf{",
+            |name| format!("\\textbf{{{name}}}"),
+            |line| protect_start(&line),
         )
     }
 

@@ -159,21 +159,24 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     out
 }
 
+/// The Typst functions that set the accents, in the order of [`Accent`].
+const ACCENT_FUNCTIONS: [&str; 11] = [
+    "hat",
+    "grave",
+    "acute",
+    "breve",
+    "caron",
+    "tilde",
+    "macron",
+    "overline",
+    "dot",
+    "dot.double",
+    "arrow",
+];
+
 /// The Typst function that sets an accent.
 fn accent_function(accent: Accent) -> &'static str {
-    match accent {
-        Accent::Hat => "hat",
-        Accent::Grave => "grave",
-        Accent::Acute => "acute",
-        Accent::Breve => "breve",
-        Accent::Caron => "caron",
-        Accent::Tilde => "tilde",
-        Accent::Bar => "macron",
-        Accent::Overline => "overline",
-        Accent::Dot => "dot",
-        Accent::DoubleDot => "dot.double",
-        Accent::Arrow => "arrow",
-    }
+    ACCENT_FUNCTIONS[accent as usize]
 }
 
 /// Writes the nodes of a row. A table between two tall delimiters is a

@@ -8,6 +8,7 @@
 
 use super::{code_run, is_abstract_text, plain, stray_equation_number};
 use crate::model::{Block, BlockKind, Span};
+use std::collections::HashSet;
 
 /// Longest line (in characters) of an author group set as a card beside
 /// the others; a group with a longer line is a paragraph of its own.
@@ -112,20 +113,42 @@ pub(crate) fn author_rows(block: &Block) -> &[Vec<Span>] {
     }
 }
 
-/// The lines of an author group, written by `text`, each then given to
-/// `line` with its index (the name is the first); empty lines are left
-/// out.
+/// The lines of an author group, written by `text`: the name (the first
+/// line) set in `bold` unless it already starts with `bold_prefix`, the
+/// others given to `other`; empty lines are left out.
 pub(crate) fn author_lines(
     block: &Block,
     text: impl Fn(&[Span]) -> String,
-    line: impl Fn(usize, String) -> String,
+    bold_prefix: &str,
+    bold: impl Fn(&str) -> String,
+    other: impl Fn(String) -> String,
 ) -> Vec<String> {
     author_rows(block)
         .iter()
         .enumerate()
-        .map(|(i, row)| line(i, text(row)))
-        .filter(|text| !text.is_empty())
+        .map(|(i, row)| {
+            let line = text(row);
+            if i == 0 && !line.is_empty() && !line.starts_with(bold_prefix) {
+                bold(&line)
+            } else {
+                other(line)
+            }
+        })
+        .filter(|line| !line.is_empty())
         .collect()
+}
+
+/// The anchor of `block` when some text links to it (it is in `linked`).
+pub(crate) fn linked_anchor<'b>(block: &'b Block, linked: &HashSet<String>) -> Option<&'b str> {
+    block.anchor.as_deref().filter(|anchor| linked.contains(*anchor))
+}
+
+/// Appends `line` and a line break to `out`, unless `line` is empty.
+pub(crate) fn push_line(out: &mut String, line: &str) {
+    if !line.is_empty() {
+        out.push_str(line);
+        out.push('\n');
+    }
 }
 
 /// How a text format writes the author groups.
