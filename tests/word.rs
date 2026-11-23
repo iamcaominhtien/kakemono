@@ -6,7 +6,7 @@
 use kakemono::model::{Block, BlockKind, Document, FloatKind, Span};
 use kakemono::{
     Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    Paper,
+    Paper, TypstOptions,
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -293,6 +293,9 @@ fn every_output_can_be_written_from_word() {
         let latex = paper.to_latex(&analysis, &LatexOptions::default());
         assert!(latex.latex.contains("Converted from a Word document"));
         assert!(latex.latex.contains("\\begin{tabular}"));
+        let typst = paper.to_typst(&analysis, &TypstOptions::default());
+        assert!(typst.typst.contains("Converted from a Word document"));
+        assert!(typst.typst.contains("#kakemono-table("));
         let epub = paper.to_epub(&analysis, &EpubOptions::default());
         assert!(epub.starts_with(b"PK"));
         let content = paper.to_json(&analysis, &JsonOptions::default());
@@ -336,6 +339,10 @@ fn word_outputs_match_their_snapshot() {
             (
                 "latex",
                 paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+            ),
+            (
+                "typst",
+                paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
             ),
             ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
             (

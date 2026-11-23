@@ -18,6 +18,7 @@ pages = kakemono.convert_all("paper.pdf")                  # {"hard": ..., "hard
 kakemono.to_docx("paper.pdf", "paper.docx")               # a Word document (also returns its bytes)
 text = kakemono.to_markdown("paper.pdf", "paper.md")       # Markdown, pictures in paper_assets/
 tex = kakemono.to_latex("paper.pdf", "paper.tex")          # LaTeX, pictures in paper_assets/
+typ = kakemono.to_typst("book.pdf", "book.typ")            # Typst, pictures in book_assets/
 book = kakemono.to_epub("paper.pdf", "paper.epub")         # an EPUB book (also returns its bytes)
 content = kakemono.to_json("paper.pdf", "paper.json")      # the editable JSON, as a dict
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
@@ -70,6 +71,11 @@ Without a path, or with `inline_images=True`, the pictures are embedded as data 
 document that compiles with pdfLaTeX, XeLaTeX or LuaLaTeX: sections, `tabular` tables, LaTeX
 math. LaTeX cannot embed pictures, so they are written to `image_dir` next to the file; without a
 path, only the source is returned.
+
+`to_typst` takes the same, and `layout` (`"auto"`, `"article"` or `"book"`), and returns a Typst
+document that compiles with `typst compile`: a printed book (title page, chapters on right-hand
+pages, running heads, footnotes on the page of their call) for a document with chapters, an
+article otherwise; its settings (page size, fonts, language) are at the top of the file.
 
 `to_epub` takes `tables`, `equations`, `scale` and `jobs`, plus `max_math_width_em` (displayed
 formulas wider than this, in multiples of the text size, become pictures; default 20), `cover`

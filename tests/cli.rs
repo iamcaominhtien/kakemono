@@ -217,6 +217,80 @@ fn convert_writes_latex_that_compiles() {
     }
 }
 
+/// Runs `typst compile` on `file` in `dir`, when Typst is installed: the
+/// output is a PDF. Returns whether it ran.
+fn compile_typst(dir: &Path, file: &str) -> bool {
+    match Command::new("typst").args(["compile", file]).current_dir(dir).output() {
+        Ok(out) => {
+            assert!(
+                out.status.success(),
+                "typst failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            true
+        }
+        Err(err) => {
+            eprintln!("typst not run ({err}): the Typst output was not compiled");
+            false
+        }
+    }
+}
+
+#[test]
+fn convert_writes_typst_that_compiles() {
+    let dir = scratch("cli-typst");
+    // `-o x.typ` is enough to choose the format; pictures go to a folder.
+    let typ = dir.join("ligo.typ");
+    let out = kakemono(&["convert", LIGO, "-j", "1", "-o", typ.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&typ).unwrap();
+    assert!(text.contains("#let doc-layout = \"article\""));
+    assert!(text.contains("#kakemono-title[Observation of Gravitational Waves from a Binary Black Hole Merger]"));
+    assert!(text.contains("\"ligo_assets/001-fig.png\""));
+    assert!(dir.join("ligo_assets/001-fig.png").is_file());
+    if compile_typst(&dir, "ligo.typ") {
+        assert!(dir.join("ligo.pdf").is_file(), "typst wrote no PDF");
+    }
+
+    // The layout can be chosen, for Typst only; Typst cannot embed pictures.
+    let book = dir.join("book.typ");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--layout",
+        "book",
+        "-o",
+        book.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        std::fs::read_to_string(&book)
+            .unwrap()
+            .contains("#let doc-layout = \"book\"")
+    );
+    if compile_typst(&dir, "book.typ") {
+        assert!(dir.join("book.pdf").is_file(), "typst wrote no PDF");
+    }
+    let md = dir.join("ligo.md");
+    let wrong = kakemono(&["convert", LIGO, "--layout", "book", "-o", md.to_str().unwrap()]);
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("--layout"));
+    let inline = kakemono(&[
+        "convert",
+        LIGO,
+        "-f",
+        "typst",
+        "--images",
+        "inline",
+        "-o",
+        typ.to_str().unwrap(),
+    ]);
+    assert!(!inline.status.success());
+    assert!(String::from_utf8_lossy(&inline.stderr).contains("--images inline"));
+}
+
 #[test]
 fn word_document_can_also_write_its_pictures() {
     let dir = scratch("cli-docx-images");
@@ -327,6 +401,35 @@ fn edited_json_gives_latex_that_compiles_in_vietnamese() {
         if compile_tex(engine, &dir, "vi.tex") {
             assert!(dir.join("vi.pdf").is_file(), "{engine} wrote no PDF");
         }
+    }
+
+    // In Typst, every paragraph translated, with a translator's note, which
+    // is a footnote; the language is Vietnamese.
+    let mut noted = content.clone();
+    for block in noted["blocks"].as_array_mut().unwrap() {
+        if block["type"] == "paragraph" {
+            block["text"] =
+                "Sóng hấp dẫn<note>Gravitational waves: <i>sóng hấp dẫn</i>.</note> được dự đoán từ năm 1916.".into();
+        }
+    }
+    std::fs::write(&edited, serde_json::to_string(&noted).unwrap()).unwrap();
+    let typ = dir.join("vi.typ");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--content",
+        edited.to_str().unwrap(),
+        "-o",
+        typ.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&typ).unwrap();
+    assert!(text.contains("#let lang = \"vi\""));
+    assert!(text.contains("Sóng hấp dẫn#footnote[Gravitational waves: #emph[sóng hấp dẫn];.] được dự đoán"));
+    if compile_typst(&dir, "vi.typ") {
+        assert!(dir.join("vi.pdf").is_file(), "typst wrote no PDF");
     }
 
     // A JSON file of another PDF, or the --json document, is refused.

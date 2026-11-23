@@ -2,7 +2,7 @@
 
 `kakemono` is a **pipeline**: a PDF passes through a chain of stages. Each stage takes one clearly
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
-(`Document` → HTML, Word, Markdown, LaTeX, EPUB, JSON or chunks) meet at exactly one place: the `Document` model in `model`.
+(`Document` → HTML, Word, Markdown, LaTeX, Typst, EPUB, JSON or chunks) meet at exactly one place: the `Document` model in `model`.
 A Word document (`.docx`, `.doc`) skips the analysis: `word/` reads it straight into a `Document`.
 An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figure's `replace_image` by `render/json/replace.rs`) before any output is written.
 
@@ -41,6 +41,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
     ├► render/docx/      the same Document as a Word file (.docx): no Renderer, its own writer
     ├► render/markdown/  the same Document as Markdown (.md): pictures through the assets store
     ├► render/latex/     the same Document as LaTeX (.tex): pictures through the assets store
+    ├► render/typst/     the same Document as Typst (.typ), an article or a book: pictures through the assets store
     ├► render/epub/      the same Document as an EPUB book (.epub): the flowing HTML as XHTML
     ├► render/chunks/    the text cut into chunks for retrieval (.jsonl)
     └► render/json/      the content as editable JSON (.json) ─┐
@@ -54,7 +55,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | --- | --- |
 | `lib.rs` | Public API (the semver promise of the crate on crates.io): `Paper`, `convert`, `Analysis`, the Options types, `config`, `model`, `source`. The other modules are `#[doc(hidden)]` internals, public only for the CLI, examples and tests |
 | `main.rs` | CLI: only reads the arguments, then calls the API |
-| `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
+| `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), Typst (`to_typst`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
@@ -68,10 +69,11 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
 | `render/` | HTML output: a `Renderer` for each mode, the `assets` image store (pictures drawn from the pages of the PDF, or stored in the document for a Word input or as the `replace_image` of an edited JSON: `Pictures`; a stored picture may be an SVG, kept as one or drawn as a PNG by format), shared HTML parts |
 | `render/docx/` | Word output: `body` (blocks → `word/document.xml`), `omml` (`MathNode` → Office Math), `table` (Word tables), `parts` (styles, relationships, page); the package is written by `render/zip.rs` (a minimal ZIP writer shared with EPUB). Pictures are placeholders drawn afterwards on several threads, as in `assets`; `to_docx_with_images` also returns them as files |
-| `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math), Markdown and LaTeX (`$…$`) |
-| `render/notes.rs` | Added notes (`Span::note`, the `<note>` tag of the editable JSON) in the outputs: the HTML modes, Markdown and EPUB number a copy of the document (the call's text becomes its number, its link the note's anchor); the call and the asides of the flowing modes and EPUB. Word and LaTeX let the format number them (footnotes) |
+| `render/inline_math.rs` | Formulas inside running text: runs of math-font spans, their scripts and the symbols between them, rebuilt as `MathNode` trees; shared by the medium and friendly modes (MathML), Word (Office Math), Markdown, LaTeX and Typst (`$…$`) |
+| `render/notes.rs` | Added notes (`Span::note`, the `<note>` tag of the editable JSON) in the outputs: the HTML modes, Markdown and EPUB number a copy of the document (the call's text becomes its number, its link the note's anchor); the call and the asides of the flowing modes and EPUB. Word, LaTeX and Typst let the format number them (footnotes) |
 | `render/markdown/` | Markdown output: `inline` (spans → emphasis, code, links; escaping), tables as pipe tables (friendly: header rows joined, spanning cells repeated) or, in medium, HTML tables when cells span. Pictures go through the `assets` store, as files or data URIs |
 | `render/latex/` | LaTeX output: `math` (`MathNode` → LaTeX, also used by Markdown for `$$`), `text` (spans → escaped text, `\textbf`, links, symbols in math mode), `preamble.tex` (packages and the commands for pictures and wide tables), tables as `tabular`. Pictures go through the `assets` store, always as files; characters pdfLaTeX has no glyph for are declared in the preamble |
+| `render/typst/` | Typst output: `template.typ` (the layout: the functions `kakemono-…` that the text calls, the `kakemono` show rule with the article and the book layouts), `mod.rs` (the settings at the top of the file, the layout chosen from the document, blocks as calls of the template, tables as `table`s with each cell at its place), `math` (`MathNode` → Typst math: tokens apart, delimiters and separators escaped, words as strings), `text` (spans → escaped markup, `#emph`, links, notes as `#footnote`; a mark after each call becomes `;` where the text would continue it). Pictures go through the `assets` store, always as files |
 | `render/epub/` | EPUB output: the blocks written by the shared flow (`render_flow`, with the friendly-mode markup) and turned into XHTML (`xhtml`: closed void elements, MathML namespace, links between chapters), one content document per top-level section; `package` writes the package document, the navigation document and the NCX; `epub.css` is the style sheet. Pictures go through the `assets` store and are stored in the book |
 | `render/json/` | Editable JSON output: `markup` (spans ↔ one string with HTML-like tags; a formula in running text becomes `<m id>` and comes back as its original spans), `mod.rs` (the file: source, blocks with their section, layout, LaTeX/MathML, pictures through the `assets` store), `apply` (an edited file back into the `Document`: only text that differs from what would be written is applied; edited blocks lose their per-line text — `hlines`, `line_texts`, a table's `inner_spans` — which is how hard-95 knows to flow them in their box); read-only fields derived from the text: `plain_text` (`plain`: no tags, formulas as `$LaTeX$`), `citation` (a reference's authors, title, venue, year, identifiers, by the shapes of the usual citation styles), `front` (`meta`: authors with affiliations, e-mail addresses and notes, arXiv category, date, DOI, keywords, abstract) |
 | `render/chunks/` | Chunks for retrieval (RAG): `mod.rs` groups the blocks by section (text as the JSON's `plain`, tables as rows), cuts a block that does not fit at sentence ends, heads each chunk with its section path; `tokens` counts tokens, by an estimate fitted on two tokenizers or by a real tokenizer (Hugging Face `tokenizers`, OpenAI's through `tiktoken-rs`; optional cargo features) |
@@ -137,6 +139,6 @@ CI checks these conventions (`clippy.toml`, lints in `lib.rs`).
 ## Guarantee of unchanged behavior
 
 Every structural change must keep the output the same. `tests/real_papers.rs` compares the output
-hashes of 8 real papers, in all four modes, in Word, in Markdown, in LaTeX, in EPUB, in editable JSON, in chunks and in `--json`, with `tests/data/snapshots`; one character of
+hashes of 8 real papers, in all four modes, in Word, in Markdown, in LaTeX, in Typst, in EPUB, in editable JSON, in chunks and in `--json`, with `tests/data/snapshots`; one character of
 difference turns the test red. When you change the output on purpose, run
 `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --test real_papers` and commit the snapshots with the change.

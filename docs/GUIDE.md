@@ -107,6 +107,54 @@ XeLaTeX and LuaLaTeX print it when their font has it. Vietnamese letters (ơ, ư
 are set in the T5 encoding of the `vntex` package by pdfLaTeX, the rest of the text staying in
 T1. `--scale` and `--equations` apply.
 
+## Typst
+
+`kakemono convert book.pdf -o book.typ` (or `--format typst`) writes a [Typst](https://typst.app)
+document, from the same analysis, that compiles as it is with `typst compile book.typ` (no TeX
+installation; the fonts it uses by default come with Typst). Typst breaks each paragraph as a
+whole, so justified lines have no wide gaps, and keeps every footnote on the page of its call: it
+is the output for printing a book, a translated one above all.
+
+The file starts with its settings, which can be changed there: the layout (`doc-layout`), the page
+size (`paper`: `"a4"`, `"a5"`, `(width: 110mm, height: 180mm)` for a phone, ...), the fonts
+(`fonts`: each character is taken from the first font that has it; Libertinus Serif, the default,
+has the Vietnamese letters), the size of the text, the language (`lang`: hyphenation and quotation
+marks; Vietnamese, which is not hyphenated, is found from the text) and a cover picture
+(`cover`). The template comes next: the Typst functions (`kakemono-…`) that lay the document
+out, which can be changed too.
+
+There are two layouts, chosen with `--layout` or from the document (`auto`, the default):
+
+- `book`, for a document with chapters and nothing of a paper (no abstract, references or arXiv
+  identifier): A5 pages, a title page, chapters that open on a right-hand page a third of the way
+  down, their first words in small capitals (except in Vietnamese, which most fonts lack small
+  capitals for) and their notes numbered from 1; mirrored margins; running heads with the title of
+  the book on the left-hand pages and that of the chapter on the right-hand ones, none on the title
+  page, on the opening page of a chapter (which has its number at the foot) or on a blank page;
+- `article`: A4 pages, the title, authors and abstract at the top of the first page, page numbers
+  at the foot.
+
+In both:
+
+- headings become Typst headings, without numbers of their own (theirs are part of their text);
+  the outermost level is `=`; lists keep the markers of the document;
+- a table of contents is Typst's own (`outline`), with the page numbers of the new layout and
+  links to the headings;
+- rebuilt tables become `table`s with rules above, below and under the header and their spanning
+  cells; text is set in a smaller size and wraps when the table is wider than the text;
+- formulas whose structure is clear become Typst math (with their number at the right), the others
+  pictures; formulas inside the text become `$…$`;
+- added notes (`<note>` in the editable JSON) become footnotes; the footnotes of the PDF stay
+  where they were, small, with their mark;
+- figures are pictures, always written to `<name>_assets/` next to the file (`--image-dir` to
+  choose it): Typst cannot embed them in its source, so `--images inline` is refused; a picture is
+  as wide as in the PDF, at most as wide as the text, and stays on one page with its caption;
+- figures and tables stay where they were in the text (they are not floats) and keep the label of
+  their caption ("Figure 3:"); citations and references to figures, tables and sections are links,
+  as are web addresses.
+
+`--scale` and `--equations` apply. The tests compile the Typst output with Typst 0.15.
+
 ## EPUB
 
 `kakemono convert paper.pdf -o paper.epub` (or `--format epub`) writes an EPUB 3 book, from the
@@ -227,6 +275,7 @@ markup cannot be read (an unknown tag) keeps its text, with a warning.
 Added notes (`<note>`) are printed as they are written and numbered in reading order: in
 friendly and medium a raised number links to the note, listed in a small aside after its block;
 in hard-95 the number opens the note in a popup; Word gets real footnotes, LaTeX `\footnote`s,
+Typst footnotes (numbered again in each chapter of a book),
 Markdown `[^n1]` footnotes and EPUB popup footnotes at the end of each chapter (numbered again in
 each chapter). `plain` and the chunks leave the notes out. A `<note>` that is not closed, or that
 holds a formula or another note, is read with a warning.
@@ -247,7 +296,7 @@ words of a label next to it.
 SVG file, named by a path relative to the JSON file, or a data URI. Every output then draws it in
 place of the figure's picture (a translated or redrawn figure, say). An SVG stays an SVG in the
 HTML modes, EPUB, Markdown and JSON, with its text turned into paths so that it looks the same
-without its fonts; Word and LaTeX get it as a PNG at `--scale`. In `hard-95` the picture covers the
+without its fonts; Word, LaTeX and Typst get it as a PNG at `--scale`. In `hard-95` the picture covers the
 figure's box on the page, and the figure's old text layer is left out. In every output a picture
 of another shape than the figure is fitted into its box and centred, never stretched, and the
 pictures an SVG names (relative to the SVG) are kept inside it.
@@ -350,6 +399,10 @@ kakemono convert paper.pdf -o paper.tex
 ```
 
 ```bash
+kakemono convert book.pdf -o book.typ && typst compile book.typ
+```
+
+```bash
 kakemono convert paper.pdf -o paper.epub
 ```
 
@@ -365,16 +418,17 @@ The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.0
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`); for Markdown, `friendly` or `medium` (how tables are written) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` |
-| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
+| `-f, --format <html\|docx\|md\|tex\|typst\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, Typst, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but `hard` mode for PDF input; Word page-layout outputs do not use edited text |
-| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX; Word keeps them embedded too; never for EPUB) |
+| `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX and Typst; Word keeps them embedded too; never for EPUB) |
 | `--image-dir <dir>` | That folder, relative to the output file (default `<name>_assets`); with `--all`, one subfolder per mode |
 | `--scale <number>` | Image resolution in pixels per PDF point (default 3 ≈ 216 dpi), HTML, Word and EPUB |
 | `--page-image <svg\|svg-only\|png>` | Page background of `hard`/`hard-95` (default `svg`; PNG for a page whose SVG would pass 1.5 MB, when smaller) |
 | `--png-compression <fast\|balanced\|high>` | How hard PNG pictures are compressed (default `balanced`); `fast` draws them several times faster for files about a quarter larger, `high` makes them a tenth smaller for ten times the time. The pixels are the same |
 | `--tables <auto\|image>` | Rebuild tables when their grid is clear (default), or keep pictures |
-| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
+| `--layout <auto\|article\|book>` | Layout of the Typst output: a printed book or an article, chosen from the document by default (it is also a setting at the top of the `.typ` file) |
+| `--equations <mathml\|image>` | Formulas as MathML (Word equations in `.docx`, LaTeX in `.md` and `.tex`, Typst math in `.typ`, MathML in `.epub`) where the structure is clear, also inside the text (default); or display formulas as pictures and inline ones as styled text |
 | `--fonts <embed\|system>` | Embed the reading and math fonts (default, works offline) or use the reader's fonts |
 | `--json` | Also write `<name>.json`, the document structure with every field of the analysis (see below; to edit the text, use `--format json`) |
 | `--chunk-tokens <N>` | Largest chunk, in tokens (default 512), for `--format chunks` |
@@ -429,6 +483,7 @@ std::fs::write("paper.html", out.html)?;
 (`to_docx_with_images` also returns its pictures as files), and
 `paper.to_markdown(&analysis, &MarkdownOptions::default())` returns Markdown with its picture files,
 `paper.to_latex(&analysis, &LatexOptions::default())` a LaTeX document with its picture files,
+`paper.to_typst(&analysis, &TypstOptions::default())` a Typst document with its picture files,
 `paper.to_epub(&analysis, &EpubOptions::default())` the bytes of an EPUB book, and
 `paper.to_json(&analysis, &JsonOptions::default())` the editable JSON with its picture files, and
 `paper.to_chunks(&analysis, &ChunkOptions::default())` the chunks for retrieval
@@ -551,8 +606,8 @@ cargo test --release
   (`KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture`).
 - **Editable JSON**: on every paper, an unedited file changes nothing and edited text comes back
   exactly as written; edited text reaches every output with its formulas and links.
-- **Snapshots**: a hash of each mode's HTML, of the Word, Markdown, LaTeX and EPUB documents, of the
-  editable JSON, of the chunks and of the `--json` document per paper, in `tests/data/snapshots/`.
+- **Snapshots**: a hash of each mode's HTML, of the Word, Markdown, LaTeX, Typst and EPUB documents,
+  of the editable JSON, of the chunks and of the `--json` document per paper, in `tests/data/snapshots/`.
   When the output changes on purpose, update them and commit them with the code:
   `KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers`.
 

@@ -6,6 +6,7 @@
 >>> data = kakemono.to_docx("paper.pdf")                  # a Word document (bytes)
 >>> text = kakemono.to_markdown("paper.pdf", "out/paper.md")  # Markdown + out/paper_assets/
 >>> tex = kakemono.to_latex("paper.pdf", "out/paper.tex")     # LaTeX + out/paper_assets/
+>>> typ = kakemono.to_typst("book.pdf", "out/book.typ")       # Typst + out/book_assets/
 >>> book = kakemono.to_epub("paper.pdf", "out/paper.epub")    # an EPUB book (also returns its bytes)
 >>> content = kakemono.to_json("paper.pdf", "out/paper.json")  # editable JSON + out/paper_assets/
 >>> html = kakemono.convert("paper.pdf", "hard-95", content="out/paper.vi.json")  # with the edited text
@@ -52,6 +53,7 @@ __all__ = [
     "to_latex",
     "to_markdown",
     "to_pdf",
+    "to_typst",
     "__version__",
 ]
 
@@ -365,6 +367,35 @@ class Document:
             _write(path, text, files)
         return text
 
+    def to_typst(
+        self,
+        path: Optional[PathArg] = None,
+        *,
+        equations: Equations = "mathml",
+        scale: float = 3.0,
+        image_dir: Optional[str] = None,
+        layout: str = "auto",
+    ) -> str:
+        """A Typst document (``.typ``): its source.
+
+        The document compiles with ``typst compile``. `layout` is
+        ``"book"`` (a printed book: a title page, chapters on right-hand
+        pages, running heads, footnotes), ``"article"``, or ``"auto"`` (a
+        book when the document has chapters and nothing of a paper); the
+        settings at the top of the file (page size, fonts, language) can be
+        changed there. Formulas whose structure is clear are Typst math.
+
+        Typst cannot embed pictures in its source: when `path` is given, the
+        document is written there and its pictures to `image_dir` (default
+        ``<name>_assets``, relative to the file); without `path`, only the
+        source is returned, and it refers to pictures in ``images/``.
+        """
+        folder = _image_dir(path, image_dir) if path is not None else "images"
+        text, files = self._doc.to_typst(equations=equations, scale=scale, image_dir=folder, layout=layout)
+        if path is not None:
+            _write(path, text, files)
+        return text
+
     def to_epub(
         self,
         path: Optional[PathArg] = None,
@@ -577,6 +608,28 @@ def to_latex(
     """
     doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
     return doc.to_latex(path, equations=equations, scale=scale, image_dir=image_dir)
+
+
+def to_typst(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    tables: bool = True,
+    equations: Equations = "mathml",
+    scale: float = 3.0,
+    jobs: int = 0,
+    png_compression: PngCompression = "balanced",
+    image_dir: Optional[str] = None,
+    layout: str = "auto",
+    content: Optional[Content] = None,
+) -> str:
+    """Convert a PDF or Word document to a Typst document (``.typ``) and return its source.
+
+    See :meth:`Document.to_typst`; ``tables``, ``jobs``, ``png_compression``
+    and ``content`` are those of :class:`Document`.
+    """
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout)
 
 
 def to_epub(
