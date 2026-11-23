@@ -531,6 +531,10 @@ kakemono.to_epub("paper.pdf", "paper.epub")            # an EPUB book (also retu
 content = kakemono.to_json("paper.pdf", "paper.json")  # the editable JSON (a dict), pictures in paper_assets/
 html = kakemono.convert("paper.pdf", "hard-95", content=content)  # any output with the edited text
 doc = kakemono.analyze("paper.pdf")                    # the structure, as with --json
+kakemono.to_pdf("report.docx", "report.pdf")           # a Word document laid out in pages
+kakemono.render_svg("figure.svg", "figure.png")        # an SVG drawn as a PNG, as render-svg does
+doc = kakemono.Document("paper.pdf", content=content)  # analysed once, for several outputs:
+doc.to_docx("paper.vi.docx"); doc.to_epub("paper.vi.epub")
 ```
 
 The wheels (Linux, macOS, Windows; Python 3.9+) contain the Rust library: nothing else to install.
