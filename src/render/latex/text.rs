@@ -12,9 +12,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
-/// Link schemes written as `\href`; other targets stay text.
-const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
-
 /// Prefix of the `\label` of an anchor of the document, so that the labels
 /// cannot clash with those of packages.
 const LABEL_PREFIX: &str = "k:";
@@ -183,7 +180,7 @@ impl Text<'_> {
                 body.to_string()
             };
         }
-        if LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)) && !href.contains('&') {
+        if crate::common::links::is_web_link(href) && !href.contains('&') {
             format!("\\href{{{}}}{{{body}}}", url(href))
         } else {
             body.to_string()

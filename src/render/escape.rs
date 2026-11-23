@@ -1,5 +1,6 @@
 //! HTML for text: escaping, styled spans, captions and small attributes.
 
+use crate::common::links::is_web_link;
 use crate::model::*;
 
 /// Extra bytes reserved when escaping a string, so that a few entities fit
@@ -87,12 +88,13 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
             }
             // A link whose text is an address may break anywhere; one on
             // words breaks between them.
-            Some(href) => out.push_str(&format!(
+            Some(href) if is_web_link(href) => out.push_str(&format!(
                 "<a{} href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{body}</a>",
                 if looks_like_address(text) { " class=\"url\"" } else { "" },
                 esc(href)
             )),
-            None => out.push_str(&body),
+            // Other schemes (`javascript:`, local files) keep their text only.
+            _ => out.push_str(&body),
         }
     }
     out

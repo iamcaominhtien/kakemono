@@ -436,14 +436,16 @@ impl Reader<'_> {
         }
     }
 
-    /// The target of a `w:hyperlink`: its web address, or `#bookmark` for
-    /// a place in the document.
+    /// The target of a `w:hyperlink`: its web or mail address, or
+    /// `#bookmark` for a place in the document. Other targets
+    /// (`javascript:`, another file) are no link.
     fn hyperlink(&self, node: Node<'_, '_>) -> Option<String> {
         if let Some(anchor) = attr(node, WORD_NS, "anchor") {
             return Some(format!("#{anchor}"));
         }
         let id = attr(node, REL_NS, "id")?;
-        self.rels.get(id).map(|rel| rel.target.clone())
+        let target = &self.rels.get(id)?.target;
+        crate::common::links::is_web_link(target).then(|| target.clone())
     }
 
     /// Reads a run: its text with its style, pictures, note marks and the
@@ -663,7 +665,8 @@ pub(crate) fn alternate<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, '
 }
 
 /// The link of a field instruction: a web address or a bookmark for
-/// `HYPERLINK`, a bookmark for `REF` and `PAGEREF` with `\h`.
+/// `HYPERLINK`, a bookmark for `REF` and `PAGEREF` with `\h`. Other
+/// targets (`javascript:`, another file) are no link.
 pub(crate) fn field_link(instr: &str) -> Option<String> {
     let words = field_words(instr);
     let (name, args) = words.split_first()?;
@@ -683,12 +686,13 @@ pub(crate) fn field_link(instr: &str) -> Option<String> {
                     _ => {}
                 }
             }
-            match (target, bookmark) {
+            let link = match (target, bookmark) {
                 (Some(target), Some(bookmark)) => Some(format!("{target}#{bookmark}")),
                 (Some(target), None) => Some(target),
                 (None, Some(bookmark)) => Some(format!("#{bookmark}")),
                 (None, None) => None,
-            }
+            };
+            link.filter(|link| crate::common::links::is_safe_link(link))
         }
         "REF" | "PAGEREF" | "NOTEREF" => {
             let bookmark = args.first().filter(|arg| !arg.starts_with('\\'))?;

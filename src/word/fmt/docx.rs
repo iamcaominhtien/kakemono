@@ -673,13 +673,15 @@ impl Reader<'_> {
         fmt
     }
 
-    /// The target of a `w:hyperlink`.
+    /// The target of a `w:hyperlink`: a web or mail address, or a bookmark
+    /// (`javascript:` and other targets are no link).
     fn hyperlink(&self, node: Node<'_, '_>) -> Option<String> {
         if let Some(anchor) = attr(node, WORD_NS, "anchor") {
             return Some(format!("#{anchor}"));
         }
         let id = attr(node, REL_NS, "id")?;
-        self.rels.get(id).map(|rel| rel.target.clone())
+        let target = &self.rels.get(id)?.target;
+        crate::common::links::is_web_link(target).then(|| target.clone())
     }
 
     /// Whether text read now is hidden by a field: its instruction, or a

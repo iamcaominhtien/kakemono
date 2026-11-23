@@ -689,11 +689,12 @@ fn wrap_span(span: &Span, inner: String) -> String {
     }
     match &span.href {
         Some(href) if href.starts_with('#') => format!("<a href=\"{}\">{out}</a>", esc(href)),
-        Some(href) => format!(
+        Some(href) if crate::common::links::is_web_link(href) => format!(
             "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{out}</a>",
             esc(href)
         ),
-        None => out,
+        // Other schemes (`javascript:`, local files) keep their text only.
+        _ => out,
     }
 }
 

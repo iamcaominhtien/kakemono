@@ -92,6 +92,12 @@ impl<'a> ZipArchive<'a> {
         Ok(Self { data, entries })
     }
 
+    /// The names of the entries, in no order.
+    #[cfg(test)]
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
     /// Whether the archive has an entry named `name`.
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.find(name).is_some()

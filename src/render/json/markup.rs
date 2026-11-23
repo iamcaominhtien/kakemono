@@ -15,7 +15,7 @@
 //! | `<b>`, `<i>`, `<code>` | bold, italic, monospaced |
 //! | `<sup>`, `<sub>` | raised, lowered |
 //! | `<sf>`, `<sc>`, `<mf>` | sans-serif, small capitals, math font |
-//! | `<a href="…">` | a link |
+//! | `<a href="…">` | a link (to `#anchor`, `http(s)://`, `mailto:`, `ftp://`; others keep the text only) |
 //! | `<font color="#rrggbb">` | coloured text |
 //! | `<m id="n">…</m>` | the n-th formula of the block, with its LaTeX |
 //! | `<note>…</note>` | an added note attached at that point of the text |
@@ -477,7 +477,8 @@ impl Reader {
         let mut span = Span::plain(text);
         for wrap in &self.open {
             match wrap {
-                Wrap::Link(href) => span.href = Some(href.clone()),
+                Wrap::Link(href) if crate::common::links::is_safe_link(href) => span.href = Some(href.clone()),
+                Wrap::Link(_) => {}
                 Wrap::Color(color) => span.color = *color,
                 Wrap::Style(flag) => span.style |= flag,
             }
@@ -675,6 +676,21 @@ mod tests {
         let parsed = from_markup("<a href='#sec-2'>x", &[]).unwrap();
         assert_eq!(parsed.spans, vec![link("x", "#sec-2")]);
         assert_eq!(parsed.warnings.len(), 1);
+    }
+
+    /// An edited link to a script or a local file keeps its text and loses
+    /// its link; web addresses and anchors stay links.
+    #[test]
+    fn edited_script_links_are_dropped() {
+        let parsed = from_markup(
+            "<a href=\"javascript:alert(1)\">x</a> <a href='https://a.org'>y</a> <a href=\"file:///etc\">z</a>",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.spans,
+            vec![span("x ", 0), link("y", "https://a.org"), span(" z", 0)]
+        );
     }
 
     fn note(content: Vec<Span>) -> Span {

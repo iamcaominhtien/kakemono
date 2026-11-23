@@ -1599,7 +1599,11 @@ fn emit_piece(piece: &Piece, x: f32, extra: f32, items: &mut Vec<Item>) -> f32 {
     if fmt.strike || fmt.dstrike {
         emit_strike(piece, x, width, color, items);
     }
-    if let Some(href) = &fmt.href {
+    if let Some(href) = fmt
+        .href
+        .as_ref()
+        .filter(|href| crate::common::links::is_safe_link(href))
+    {
         items.push(Item::Link {
             x,
             y: top,

@@ -452,3 +452,120 @@ pub fn convert(data: Vec<u8>, opts: &HtmlOptions) -> Result<HtmlOutput> {
     let analysis = paper.analyze();
     Ok(paper.to_html(&analysis, opts))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Paper;
+    use crate::render::zip::{Compression, ZipWriter};
+    use crate::render::{
+        ChunkOptions, DocxOptions, EpubOptions, HtmlOptions, JsonOptions, LatexOptions, MarkdownOptions, Mode,
+    };
+    use crate::word::zip::ZipArchive;
+
+    /// A Word document with a hyperlink and a `HYPERLINK` field to scripts,
+    /// and a hyperlink to a web address.
+    fn script_links_docx() -> Vec<u8> {
+        const WORD: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        const PKG: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
+        let document = format!(
+            r#"<w:document xmlns:w="{WORD}" xmlns:r="{REL}"><w:body><w:p>
+<w:hyperlink r:id="rId2"><w:r><w:t>ClickMe</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve"> and </w:t></w:r>
+<w:fldSimple w:instr=" HYPERLINK &quot;javascript:alert(2)&quot; "><w:r><w:t>FieldMe</w:t></w:r></w:fldSimple><w:r><w:t xml:space="preserve"> and </w:t></w:r>
+<w:hyperlink r:id="rId3"><w:r><w:t>WebMe</w:t></w:r></w:hyperlink>
+</w:p></w:body></w:document>"#
+        );
+        let rels = format!(
+            r#"<Relationships xmlns="{PKG}"><Relationship Id="rId2" Type="{REL}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/><Relationship Id="rId3" Type="{REL}/hyperlink" Target="https://example.org/" TargetMode="External"/></Relationships>"#
+        );
+        let package = format!(
+            r#"<Relationships xmlns="{PKG}"><Relationship Id="rId1" Type="{REL}/officeDocument" Target="word/document.xml"/></Relationships>"#
+        );
+        let types = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+        let mut zip = ZipWriter::default();
+        zip.add("[Content_Types].xml", types.as_bytes(), Compression::Deflated);
+        zip.add("_rels/.rels", package.as_bytes(), Compression::Deflated);
+        zip.add("word/document.xml", document.as_bytes(), Compression::Deflated);
+        zip.add("word/_rels/document.xml.rels", rels.as_bytes(), Compression::Deflated);
+        zip.finish()
+    }
+
+    /// The text of every part of a ZIP package (Word document, EPUB book).
+    fn package_text(data: &[u8]) -> String {
+        let zip = ZipArchive::new(data).unwrap();
+        zip.names()
+            .filter_map(|name| zip.read(name).ok().flatten())
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .collect()
+    }
+
+    /// A Word link to `javascript:` (a hyperlink relationship or a
+    /// `HYPERLINK` field) keeps its text in every output but is no link
+    /// anywhere; a web address stays a link.
+    #[test]
+    fn word_script_links_are_dropped_from_every_output() {
+        let paper = Paper::from_bytes(script_links_docx()).unwrap();
+        let analysis = paper.analyze();
+        let mut outputs = Vec::new();
+        for mode in [Mode::Friendly, Mode::Medium, Mode::Hard, Mode::Hard95] {
+            let opts = HtmlOptions {
+                mode,
+                ..Default::default()
+            };
+            outputs.push((format!("{mode:?}"), paper.to_html(&analysis, &opts).html));
+        }
+        outputs.push((
+            "docx".into(),
+            package_text(&paper.to_docx(&analysis, &DocxOptions::default())),
+        ));
+        outputs.push((
+            "epub".into(),
+            package_text(&paper.to_epub(&analysis, &EpubOptions::default())),
+        ));
+        outputs.push((
+            "md".into(),
+            paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown,
+        ));
+        outputs.push(("tex".into(), paper.to_latex(&analysis, &LatexOptions::default()).latex));
+        outputs.push(("json".into(), paper.to_json(&analysis, &JsonOptions::default()).json));
+        let chunks = paper.to_chunks(&analysis, &ChunkOptions::default());
+        outputs.push(("chunks".into(), format!("{chunks:?}")));
+        for (name, text) in &outputs {
+            assert!(!text.to_ascii_lowercase().contains("javascript"), "{name}");
+            assert!(
+                text.contains("ClickMe") && text.contains("FieldMe"),
+                "{name}: the text is kept"
+            );
+        }
+        // The hard mode draws Word's pages without their links.
+        for (name, text) in outputs.iter().take(4).filter(|(name, _)| name != "Hard") {
+            assert!(
+                text.contains("href=\"https://example.org/\""),
+                "{name}: the web link is kept"
+            );
+        }
+        let pdf = String::from_utf8_lossy(&paper.to_pdf().unwrap()).to_ascii_lowercase();
+        assert!(
+            !pdf.contains("javascript") && pdf.contains("https://example.org/"),
+            "pdf"
+        );
+    }
+
+    /// An edited JSON whose text links to `javascript:` shows the text, not
+    /// the link.
+    #[test]
+    fn edited_script_links_are_not_written() {
+        let paper = Paper::from_bytes(script_links_docx()).unwrap();
+        let mut analysis = paper.analyze();
+        let content = paper.to_json(&analysis, &JsonOptions::default());
+        let edited = content.json.replace(
+            "<a href=\\\"https://example.org/\\\">WebMe</a>",
+            "<a href=\\\"javascript:alert(3)\\\">WebMe</a>",
+        );
+        assert_ne!(edited, content.json, "the JSON has the web link");
+        let report = paper.apply_content(&mut analysis, &edited).unwrap();
+        assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+        let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+        assert!(!html.contains("javascript") && html.contains("WebMe"));
+    }
+}

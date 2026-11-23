@@ -33,8 +33,6 @@ const EMU_PER_PT: f32 = 12700.0;
 const EQ_SIDE_TWIPS: u32 = TEXT_WIDTH_TWIPS / 10;
 /// Width of the middle column of that table, which holds the equation.
 const EQ_MIDDLE_TWIPS: u32 = TEXT_WIDTH_TWIPS - 2 * EQ_SIDE_TWIPS;
-/// Link schemes written as external hyperlinks; other targets stay text.
-const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
 /// The marker of an item of a bullet list.
 const BULLET: &str = "•";
 /// Indent of each level of a table of contents below the first (twips,
@@ -304,7 +302,7 @@ impl<'a> Body<'a> {
                 .contains(anchor)
                 .then(|| LinkTarget::Bookmark(bookmark_name(anchor)));
         }
-        if !LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)) {
+        if !crate::common::links::is_web_link(href) {
             return None;
         }
         let next = self.links.len();

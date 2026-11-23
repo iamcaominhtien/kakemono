@@ -14,9 +14,6 @@ use std::collections::HashSet;
 /// Markdown readers that typeset TeX) inline math.
 const ESCAPED: &[char] = &['\\', '`', '*', '_', '[', ']', '<', '>', '|', '$'];
 
-/// Link schemes written as Markdown links; other targets stay text.
-const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
-
 /// The style bits that change how a span is written in Markdown (colour,
 /// font family and the like are dropped).
 const MARKDOWN_STYLE: u8 = BOLD | ITALIC | MONO | SUP | SUB;
@@ -105,7 +102,7 @@ impl Inline<'_> {
     fn is_link(&self, href: &str) -> bool {
         match href.strip_prefix('#') {
             Some(anchor) => self.anchors.contains(anchor),
-            None => LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)),
+            None => crate::common::links::is_web_link(href),
         }
     }
 }

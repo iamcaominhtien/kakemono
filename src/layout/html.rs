@@ -445,7 +445,11 @@ impl Writer<'_> {
     /// A run of text.
     fn text(&mut self, text: &str, fmt: &RunFmt) {
         let css = run_css(fmt);
-        match &fmt.href {
+        match fmt
+            .href
+            .as_deref()
+            .filter(|href| crate::common::links::is_safe_link(href))
+        {
             Some(href) => {
                 let _ = write!(self.out, "<a href=\"{}\" style=\"{css}\">{}</a>", esc(href), esc(text));
             }

@@ -226,10 +226,6 @@ pub struct LinkArea {
     pub uri: std::sync::Arc<str>,
 }
 
-/// URL schemes kept from link annotations; others (`javascript:`, local
-/// files) are dropped.
-const LINK_SCHEMES: &[&str] = &["http://", "https://", "mailto:", "ftp://"];
-
 /// The link annotations of `page` that open a URL, in page coordinates.
 fn uri_links(page: &Page<'_>) -> Vec<LinkArea> {
     use hayro_syntax::object::{Array, Dict, Name, Rect as PdfRect, String as PdfString};
@@ -249,8 +245,8 @@ fn uri_links(page: &Page<'_>) -> Vec<LinkArea> {
             }
             let uri = action.get::<PdfString>(b"URI")?;
             let uri = std::str::from_utf8(uri.as_bytes()).ok()?.trim();
-            let lower = uri.to_ascii_lowercase();
-            if !LINK_SCHEMES.iter().any(|scheme| lower.starts_with(scheme)) {
+            // Other schemes (`javascript:`, local files) are dropped.
+            if !crate::common::links::is_web_link(uri) {
                 return None;
             }
             let area = annot.get::<PdfRect>(b"Rect")?;
