@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "kakemono"
-version = "0.12.0"
+version = "0.15.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1176,6 +1176,7 @@ dependencies = [
 name = "kakemono-python"
 version = "0.3.0"
 dependencies = [
+ "image",
  "kakemono",
  "pyo3",
  "serde_json",
