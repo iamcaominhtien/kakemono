@@ -16,6 +16,10 @@ A hard-95 page fits its text when it comes near the screen, so printing or savin
 
 The page now fits every page just before printing (`beforeprint`), so Ctrl+P / "Save as PDF" gives the same pages as the screen. An HTML file written by an earlier version can be fixed the same way by running `kakemonoFitAll()` in the browser console before printing.
 
+#### Release script
+
+`scripts/release.py` now checks what it is given: the PR number must be a positive integer, and `--body-file` must be a file in the repository or in a temporary directory (or `-` for the standard input). SonarCloud counted both as vulnerabilities (3 issues), which failed the quality gate of `main`.
+
 ## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
 
 ### Fixed
