@@ -44,7 +44,8 @@ A PR therefore carries its own version and changelog entry:
    It reads the PR's title and description with `gh`, works out the version from the last
    `vX.Y.Z` tag and the title, writes it into `Cargo.toml` and `Cargo.lock`, and writes the
    entry at the top of `CHANGELOG.md`. Commit it (`chore(release): vX.Y.Z`) and push. Without
-   `gh`: `--title "fix(tables): ..." --body-file description.md`.
+   `gh`: `--title "fix(tables): ..." --body-file description.md` (a file in the repository or a
+   temporary directory, or `-` for the standard input).
 2. Run it again after changing the title or the description: it rewrites the same entry.
 3. The PR workflow fails while the version is not the one the title asks for, or
    `CHANGELOG.md` has no entry for it.
