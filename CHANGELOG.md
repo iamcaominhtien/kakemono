@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.15.2](https://github.com/iamcaominhtien/kakemono/compare/v0.15.1...v0.15.2) - 2026-11-23
+
+### Fixed
+
+- *(hard-95)* Fit every page before printing
+
+A hard-95 page fits its text when it comes near the screen, so printing or saving as PDF from the browser laid out every page that had never been scrolled to without fitting it. Edited or translated text longer than the original then wrapped onto extra lines (headings above all) and overlapped the text below.
+
+The page now fits every page just before printing (`beforeprint`), so Ctrl+P / "Save as PDF" gives the same pages as the screen. An HTML file written by an earlier version can be fixed the same way by running `kakemonoFitAll()` in the browser console before printing.
+
 ## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
 
 ### Fixed
