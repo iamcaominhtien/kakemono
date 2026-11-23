@@ -30,7 +30,9 @@ use kakemono::{
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 
 struct Expect {
     id: &'static str,
@@ -73,6 +75,43 @@ fn load(id: &str) -> Option<Paper> {
             eprintln!("skipping {id}: not downloaded (run scripts/fetch-test-pdfs.sh)");
             None
         }
+    }
+}
+
+/// A test paper and its analysis.
+struct Analysed {
+    paper: Paper,
+    analysis: kakemono::Analysis,
+}
+
+/// A test paper, loaded and analysed once and shared by every test of this
+/// file: the analysis is the slow part (several times slower when coverage
+/// is measured), and each paper is used by several tests. Different papers
+/// are analysed in parallel; a test that needs a paper another test is
+/// analysing waits for it. `None` when the paper is not downloaded.
+fn analysed(id: &str) -> Option<&'static Analysed> {
+    type Cells = HashMap<String, &'static OnceLock<Option<Analysed>>>;
+    static PAPERS: LazyLock<Mutex<Cells>> = LazyLock::new(Mutex::default);
+    let cell: &'static OnceLock<Option<Analysed>> = PAPERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(id.to_string())
+        .or_insert_with(|| Box::leak(Box::default()));
+    cell.get_or_init(|| {
+        load(id).map(|paper| {
+            let analysis = paper.analyze();
+            Analysed { paper, analysis }
+        })
+    })
+    .as_ref()
+}
+
+/// A copy of a shared analysis, for a test that changes it.
+fn copy(analysis: &kakemono::Analysis) -> kakemono::Analysis {
+    kakemono::Analysis {
+        doc: analysis.doc.clone(),
+        loose: analysis.loose.clone(),
+        rotated: analysis.rotated.clone(),
     }
 }
 
@@ -506,9 +545,8 @@ fn check_snapshot(id: &str, snap: &Snapshot) {
     panic!("{msg}");
 }
 
-/// Analyses a paper, renders every mode and measures it.
-fn measure(paper: &Paper) -> (Metrics, Snapshot) {
-    let analysis = paper.analyze();
+/// Renders every mode of an analysed paper and measures it.
+fn measure(paper: &Paper, analysis: &kakemono::Analysis) -> (Metrics, Snapshot) {
     let doc = &analysis.doc;
 
     let title = doc
@@ -573,7 +611,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     let mut glyphs_left = 0;
     for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
         let out = paper.to_html(
-            &analysis,
+            analysis,
             &HtmlOptions {
                 mode,
                 inline_images: false,
@@ -602,7 +640,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
             // is drawn in the figure's own order); the rest should be HTML.
             // Glyphs are counted in SVG pictures, so every page is one.
             let out = paper.to_html(
-                &analysis,
+                analysis,
                 &HtmlOptions {
                     mode,
                     inline_images: false,
@@ -621,7 +659,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     }
     // Friendly mode with every formula as a picture.
     let out = paper.to_html(
-        &analysis,
+        analysis,
         &HtmlOptions {
             mode: Mode::Friendly,
             inline_images: false,
@@ -633,12 +671,12 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     fingerprints.push(("friendly-image", fingerprint(&out.html, &out.files)));
     fingerprints.push(("json", hex(Sha256::digest(json.as_bytes()))));
     // The Word document.
-    let docx = paper.to_docx(&analysis, &DocxOptions::default());
+    let docx = paper.to_docx(analysis, &DocxOptions::default());
     let parts = zip_parts(&docx);
     check_docx(&parts, math);
     fingerprints.push(("docx", package_fingerprint(&parts)));
     // The Markdown document, with its pictures as files.
-    let md = paper.to_markdown(&analysis, &MarkdownOptions::default());
+    let md = paper.to_markdown(analysis, &MarkdownOptions::default());
     check_markdown(&md.markdown, &md.files, math);
     fingerprints.push(("markdown", fingerprint(&md.markdown, &md.files)));
     // Friendly Markdown adapts every table to a pipe table; medium keeps
@@ -648,7 +686,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
         "markdown: friendly tables are pipe tables"
     );
     let medium = paper.to_markdown(
-        &analysis,
+        analysis,
         &MarkdownOptions {
             mode: Mode::Medium,
             ..MarkdownOptions::default()
@@ -657,7 +695,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     check_markdown(&medium.markdown, &medium.files, math);
     fingerprints.push(("markdown-medium", fingerprint(&medium.markdown, &medium.files)));
     // The LaTeX document, with its pictures.
-    let tex = paper.to_latex(&analysis, &LatexOptions::default());
+    let tex = paper.to_latex(analysis, &LatexOptions::default());
     check_latex(&tex.latex, &tex.files, math);
     fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
     // The EPUB book.
@@ -674,11 +712,11 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
             _ => b.math.is_some(),
         })
         .count();
-    let epub = zip_parts(&paper.to_epub(&analysis, &epub_opts));
+    let epub = zip_parts(&paper.to_epub(analysis, &epub_opts));
     check_epub(&epub, narrow_math);
     fingerprints.push(("epub", package_fingerprint(&epub)));
     // The content as JSON, with its pictures as files.
-    let content = paper.to_json(&analysis, &JsonOptions::default());
+    let content = paper.to_json(analysis, &JsonOptions::default());
     check_content(&content.json, &content.files);
     // The `generator` line holds the crate version: leave it out, or every
     // release would change the fingerprint.
@@ -688,7 +726,7 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
     fingerprints.push(("content", fingerprint(&stable_json, &content.files)));
     // The chunks for retrieval.
     let chunk_opts = ChunkOptions::default();
-    let chunks = paper.to_chunks(&analysis, &chunk_opts);
+    let chunks = paper.to_chunks(analysis, &chunk_opts);
     check_chunks(&chunks, doc.blocks.len(), chunk_opts.max_tokens);
     fingerprints.push((
         "chunks",
@@ -707,8 +745,8 @@ fn measure(paper: &Paper) -> (Metrics, Snapshot) {
 }
 
 fn check(e: &Expect) -> Option<Metrics> {
-    let paper = load(e.id)?;
-    let (m, snapshot) = measure(&paper);
+    let Analysed { paper, analysis } = analysed(e.id)?;
+    let (m, snapshot) = measure(paper, analysis);
     if std::env::var("KAKEMONO_PRINT_METRICS").is_ok() {
         eprintln!("{}: {m:?}", e.id);
     }
@@ -763,8 +801,7 @@ fn check(e: &Expect) -> Option<Metrics> {
 /// a colon or a full stop), as rows of cell texts. `None` when the paper is
 /// not downloaded.
 fn table(id: &str, label: &str) -> Option<Vec<Vec<String>>> {
-    let paper = load(id)?;
-    let analysis = paper.analyze();
+    let Analysed { analysis, .. } = analysed(id)?;
     let block = analysis
         .doc
         .blocks
@@ -1014,8 +1051,9 @@ fn detection_tables_keep_every_class_column() {
 /// `f` and `g` are braces. The text must say what the glyphs show.
 #[test]
 fn mislabelled_math_glyphs_are_read_by_shape() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
     let text: String = analysis
         .doc
         .blocks
@@ -1051,8 +1089,10 @@ fn mislabelled_math_glyphs_are_read_by_shape() {
 /// mode: numbered statements, indentation and right-aligned comments.
 #[test]
 fn adam_algorithms_are_text() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let html = paper.to_html(&paper.analyze(), &HtmlOptions::default()).html;
+    let Some(Analysed { paper, analysis }) = analysed("1412.6980v9") else {
+        return;
+    };
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     assert_eq!(
         html.matches("<div class=\"algo\">").count(),
         2,
@@ -1070,8 +1110,9 @@ fn adam_algorithms_are_text() {
 /// paragraph instead of joining the display below it.
 #[test]
 fn adam_fraction_bars_are_not_tables() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1412.6980v9") else {
+        return;
+    };
     let graphics: Vec<usize> = analysis
         .doc
         .blocks
@@ -1108,8 +1149,9 @@ fn adam_fraction_bars_are_not_tables() {
 /// introduction.
 #[test]
 fn faster_rcnn_affiliations_are_footnotes() {
-    let Some(paper) = load("1506.01497v3") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1506.01497v3") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     for start in ["S. Ren is with", "K. He and J. Sun are with", "R. Girshick is with"] {
         let block = blocks
@@ -1140,8 +1182,9 @@ fn faster_rcnn_affiliations_are_footnotes() {
 /// not two pictures with a paragraph "(2)" between them.
 #[test]
 fn faster_rcnn_equation_number_is_attached() {
-    let Some(paper) = load("1506.01497v3") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1506.01497v3") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     assert!(
         blocks
@@ -1163,8 +1206,9 @@ fn faster_rcnn_equation_number_is_attached() {
 /// not headings.
 #[test]
 fn faster_rcnn_footnotes_and_tables() {
-    let Some(paper) = load("1506.01497v3") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1506.01497v3") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     let markers: Vec<&str> = blocks
         .iter()
@@ -1207,7 +1251,7 @@ fn faster_rcnn_footnotes_and_tables() {
         .count();
     assert_eq!(graphics, 0, "Table 4 left without its caption");
     // A URL broken across lines after "_" is one link.
-    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     assert!(
         html.contains("href=\"https://github.com/shaoqingren/faster_rcnn\""),
         "broken GitHub link"
@@ -1220,8 +1264,10 @@ fn faster_rcnn_footnotes_and_tables() {
 /// ("ope-" / "nai.com").
 #[test]
 fn urls_broken_across_lines_are_whole() {
-    let Some(paper) = load("2303.08774v6") else { return };
-    let html = paper.to_html(&paper.analyze(), &HtmlOptions::default()).html;
+    let Some(Analysed { paper, analysis }) = analysed("2303.08774v6") else {
+        return;
+    };
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     for url in [
         "https://github.com/inverse-scaling/prize",
         "https://bounded-regret.ghost.io/emergent-deception-optimization/",
@@ -1249,8 +1295,9 @@ fn pictures_do_not_cut_text() {
         "2010.11929v2",
         "2303.08774v6",
     ] {
-        let Some(paper) = load(id) else { continue };
-        let analysis = paper.analyze();
+        let Some(Analysed { analysis, .. }) = analysed(id) else {
+            continue;
+        };
         for cut in kakemono::analysis::crops::cut_glyphs(&analysis.doc, &analysis.loose) {
             report.push(format!(
                 "{id} p{} {} #{}: {} glyphs cut by [{:.0},{:.0} {:.0}x{:.0}]: {}",
@@ -1303,8 +1350,9 @@ fn threads_do_not_change_real_output() {
 /// box covers tick labels there), with a transparent copy for selecting.
 #[test]
 fn vit_captions_and_figure_text() {
-    let Some(paper) = load("2010.11929v2") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("2010.11929v2") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     let caption = |label: &str| {
         blocks
@@ -1327,7 +1375,7 @@ fn vit_captions_and_figure_text() {
     );
     let html = paper
         .to_html(
-            &analysis,
+            analysis,
             &HtmlOptions {
                 mode: Mode::Hard95,
                 ..Default::default()
@@ -1357,8 +1405,9 @@ fn vit_captions_and_figure_text() {
 /// construction" in the acknowledgements of the LIGO paper.
 #[test]
 fn ligo_tight_word_spaces() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
     let text: String = analysis
         .doc
         .blocks
@@ -1378,8 +1427,9 @@ fn ligo_tight_word_spaces() {
 /// column stays text. The display equation beside it is a picture.
 #[test]
 fn ligo_figure_keeps_to_its_column() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     let fig = blocks
         .iter()
@@ -1400,8 +1450,9 @@ fn ligo_figure_keeps_to_its_column() {
 /// headings or paragraphs (GPT-4 Figures 1-3).
 #[test]
 fn gpt4_chart_titles_stay_in_figures() {
-    let Some(paper) = load("2303.08774v6") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("2303.08774v6") else {
+        return;
+    };
     for title in [
         "OpenAI codebase next word prediction",
         "Capability prediction on 23 coding problems",
@@ -1423,8 +1474,9 @@ fn gpt4_chart_titles_stay_in_figures() {
 /// paragraph above it.
 #[test]
 fn ligo_first_page_foot_is_furniture() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
     assert!(!analysis.doc.blocks.iter().any(|block| {
         plain(&block.spans).contains("Published by the American Physical Society")
             && !plain(&block.spans).contains("Creative Commons")
@@ -1433,8 +1485,7 @@ fn ligo_first_page_foot_is_furniture() {
 
 /// Text of the blocks of the GPT-4 paper whose kind satisfies `pred`.
 fn gpt4_blocks_where(pred: impl Fn(&BlockKind) -> bool) -> Option<Vec<String>> {
-    let paper = load("2303.08774v6")?;
-    let analysis = paper.analyze();
+    let Analysed { analysis, .. } = analysed("2303.08774v6")?;
     Some(
         analysis
             .doc
@@ -1523,10 +1574,11 @@ fn gpt4_response_labels_are_not_headings() {
 /// MathML in HTML, Office Math in Word.
 #[test]
 fn adam_inline_formulas_are_math() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1412.6980v9") else {
+        return;
+    };
     // "the online prediction fₜ(θₜ) and": one formula, brackets included.
-    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    let md = paper.to_markdown(analysis, &MarkdownOptions::default()).markdown;
     for formula in [
         "online prediction $f_{t}(\\theta_{t})$ and",
         "$\\alpha=0.001$, $\\beta_{1}=0.9$, $\\beta_{2}=0.999$ and $\\varepsilon=10^{-8}$",
@@ -1535,11 +1587,11 @@ fn adam_inline_formulas_are_math() {
     ] {
         assert!(md.contains(formula), "markdown: {formula} not found");
     }
-    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     assert!(html.contains(
         "online prediction <math class=\"eq-math im\" alttext=\"ft(θt)\"><mrow><msub><mi>f</mi><mi>t</mi></msub>"
     ));
-    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let parts = zip_parts(&paper.to_docx(analysis, &DocxOptions::default()));
     let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
     let document = String::from_utf8_lossy(document);
     assert!(document.matches("<m:oMath>").count() > document.matches("<m:oMathPara>").count() + 100);
@@ -1551,9 +1603,10 @@ fn adam_inline_formulas_are_math() {
 /// formula, a term with many scripts (g⁴_{T,i} over 4‖g₁:T,i‖²₂). They used to come out as loose scripts ("β2 √β12", "t−12").
 #[test]
 fn adam_inline_fractions_are_read_whole() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let analysis = paper.analyze();
-    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    let Some(Analysed { paper, analysis }) = analysed("1412.6980v9") else {
+        return;
+    };
+    let md = paper.to_markdown(analysis, &MarkdownOptions::default()).markdown;
     for formula in [
         "$\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}$",
         "rate of $t^{-1/2}$ and",
@@ -1563,13 +1616,13 @@ fn adam_inline_fractions_are_read_whole() {
     ] {
         assert!(md.contains(formula), "markdown: {formula} not found");
     }
-    let tex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    let tex = paper.to_latex(analysis, &LatexOptions::default()).latex;
     assert!(tex.contains("\\gamma\\triangleq\\beta_{1}^{2}/\\sqrt{\\beta_{2}}"));
-    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     assert!(html.contains(
         "<mo>≜</mo><msubsup><mi>β</mi><mn>1</mn><mn>2</mn></msubsup><mo stretchy=\"false\" lspace=\"0\" rspace=\"0\">/</mo><msqrt>"
     ));
-    let parts = zip_parts(&paper.to_docx(&analysis, &DocxOptions::default()));
+    let parts = zip_parts(&paper.to_docx(analysis, &DocxOptions::default()));
     let document = &parts.iter().find(|(name, _)| name == "word/document.xml").unwrap().1;
     assert!(
         !String::from_utf8_lossy(document).contains("<m:t>12</m:t>"),
@@ -1580,9 +1633,10 @@ fn adam_inline_fractions_are_read_whole() {
 /// "scaled by 1/√dₖ": the fraction is one formula, not "1" and "√dₖ".
 #[test]
 fn attention_scaling_factor_is_a_fraction() {
-    let Some(paper) = load("1706.03762v7") else { return };
-    let analysis = paper.analyze();
-    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    let Some(Analysed { paper, analysis }) = analysed("1706.03762v7") else {
+        return;
+    };
+    let md = paper.to_markdown(analysis, &MarkdownOptions::default()).markdown;
     assert!(md.contains("scaling factor of $1/\\sqrt{d_{k}}$."));
     assert!(md.contains("dot products by $1/\\sqrt{d_{k}}$."));
 }
@@ -1591,8 +1645,9 @@ fn attention_scaling_factor_is_a_fraction() {
 /// bar on "ffi": the formula reads with a square root, not "pffi2ffiffi".
 #[test]
 fn ligo_radical_is_a_square_root() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
     let text: String = analysis
         .doc
         .blocks
@@ -1656,8 +1711,7 @@ fn tex(node: &MathNode) -> String {
 /// the formulas that stay pictures), or `None` when the paper is not
 /// downloaded.
 fn formulas(id: &str) -> Option<Vec<Option<String>>> {
-    let paper = load(id)?;
-    let analysis = paper.analyze();
+    let Analysed { analysis, .. } = analysed(id)?;
     let all = analysis
         .doc
         .blocks
@@ -1732,8 +1786,9 @@ fn math_alphabets_are_unicode_letters() {
 /// picture, though formulas are written as MathML.
 #[test]
 fn ligo_formula_with_unmapped_brackets_stays_a_picture() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1602.03837v1") else {
+        return;
+    };
     let equations: Vec<_> = analysis
         .doc
         .blocks
@@ -1742,7 +1797,7 @@ fn ligo_formula_with_unmapped_brackets_stays_a_picture() {
         .collect();
     assert_eq!(equations.len(), 1);
     assert!(equations[0].math.is_none());
-    let out = paper.to_html(&analysis, &HtmlOptions::default());
+    let out = paper.to_html(analysis, &HtmlOptions::default());
     assert!(!out.html.contains("<math display=\"block\""));
     assert!(out.html.contains("<div class=\"eq\""));
 }
@@ -1752,8 +1807,9 @@ fn ligo_formula_with_unmapped_brackets_stays_a_picture() {
 /// included, and the title is not left over as a paragraph after the caption.
 #[test]
 fn attention_figure_keeps_its_panel_titles() {
-    let Some(paper) = load("1706.03762v7") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1706.03762v7") else {
+        return;
+    };
     let blocks = &analysis.doc.blocks;
     let fig = blocks
         .iter()
@@ -1785,8 +1841,9 @@ fn attention_figure_keeps_its_panel_titles() {
 /// single caption: one picture with all of them, not one per column.
 #[test]
 fn bert_four_panel_figure_is_one_picture() {
-    let Some(paper) = load("1810.04805v2") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { analysis, .. }) = analysed("1810.04805v2") else {
+        return;
+    };
     let figures: Vec<_> = analysis
         .doc
         .blocks
@@ -1823,8 +1880,10 @@ fn bert_four_panel_figure_is_one_picture() {
 /// "s t r i n g"), and nothing else in the report is.
 #[test]
 fn gpt4_go_listing_is_code() {
-    let Some(paper) = load("2303.08774v6") else { return };
-    let html = paper.to_html(&paper.analyze(), &HtmlOptions::default()).html;
+    let Some(Analysed { paper, analysis }) = analysed("2303.08774v6") else {
+        return;
+    };
+    let html = paper.to_html(analysis, &HtmlOptions::default()).html;
     assert_eq!(html.matches("<pre class=\"listing").count(), 1, "one listing");
     assert!(html.contains("data-lang=\"go\""), "recognised as Go");
     let text = html_text(&html);
@@ -1863,8 +1922,9 @@ fn html_text(html: &str) -> String {
 /// inlined or as files, and on one thread or several.
 #[test]
 fn written_html_matches_to_html() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1602.03837v1") else {
+        return;
+    };
     for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
         for inline_images in [true, false] {
             for jobs in [1, 3] {
@@ -1874,11 +1934,11 @@ fn written_html_matches_to_html() {
                     jobs,
                     ..Default::default()
                 };
-                let expected = paper.to_html(&analysis, &opts);
+                let expected = paper.to_html(analysis, &opts);
                 let mut html = Vec::new();
                 let mut files: Vec<(String, Vec<u8>)> = Vec::new();
                 paper
-                    .write_html(&analysis, &opts, &mut html, &mut |name, data| {
+                    .write_html(analysis, &opts, &mut html, &mut |name, data| {
                         files.push((name.to_string(), data.to_vec()));
                         Ok(())
                     })
@@ -1900,16 +1960,17 @@ fn written_html_matches_to_html() {
 fn png_compression_keeps_the_pixels() {
     use base64::Engine;
     use kakemono::PngCompression;
-    let Some(paper) = load("1602.03837v1") else { return };
-    let analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1602.03837v1") else {
+        return;
+    };
     let opts = HtmlOptions {
         mode: Mode::Friendly,
         ..Default::default()
     };
-    let default = paper.to_html(&analysis, &opts).html;
+    let default = paper.to_html(analysis, &opts).html;
     let pictures = |compression: PngCompression| {
         let paper = load("1602.03837v1").unwrap().with_png_compression(compression);
-        let html = paper.to_html(&analysis, &opts).html;
+        let html = paper.to_html(analysis, &opts).html;
         let uris: Vec<String> = Regex::new(r#"data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)"#)
             .unwrap()
             .captures_iter(&html)
@@ -1983,8 +2044,10 @@ fn edit_content(json: &str, edit: impl Fn(u64, &str) -> String) -> String {
 #[test]
 fn content_json_round_trips() {
     for id in paper_ids() {
-        let Some(paper) = load(&id) else { continue };
-        let mut analysis = paper.analyze();
+        let Some(Analysed { paper, analysis }) = analysed(&id) else {
+            continue;
+        };
+        let mut analysis = copy(analysis);
         let json = paper.to_json(&analysis, &JsonOptions::default()).json;
         let report = paper.apply_content(&mut analysis, &json).unwrap();
         assert_eq!(report.edited_blocks, 0, "{id}: an unedited JSON changed blocks");
@@ -2037,8 +2100,10 @@ fn without_plain(table: &serde_json::Value) -> serde_json::Value {
 fn edited_content_reaches_every_output() {
     let tag = Regex::new(r"<m\b[^>]*>.*?</m>|<[^>]*>|&[#\w]+;").unwrap();
     for id in ["1602.03837v1", "1706.03762v7", "1412.6980v9"] {
-        let Some(paper) = load(id) else { continue };
-        let mut analysis = paper.analyze();
+        let Some(Analysed { paper, analysis }) = analysed(id) else {
+            continue;
+        };
+        let mut analysis = copy(analysis);
         let friendly = |analysis: &kakemono::Analysis, mode: Mode| {
             paper
                 .to_html(
@@ -2137,9 +2202,8 @@ fn edited_content_reaches_every_output() {
 
 /// The JSON output of `id`, parsed.
 fn content_json(id: &str) -> Option<serde_json::Value> {
-    let paper = load(id)?;
-    let analysis = paper.analyze();
-    Some(serde_json::from_str(&paper.to_json(&analysis, &JsonOptions::default()).json).unwrap())
+    let Analysed { paper, analysis } = analysed(id)?;
+    Some(serde_json::from_str(&paper.to_json(analysis, &JsonOptions::default()).json).unwrap())
 }
 
 /// The front matter gives the authors with their affiliations, addresses
@@ -2284,8 +2348,10 @@ fn json_references_have_citations() {
 /// plain text is not read back, and editing it alone gives a warning.
 #[test]
 fn json_plain_text_is_read_only() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let mut analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1412.6980v9") else {
+        return;
+    };
+    let mut analysis = copy(analysis);
     let json = paper.to_json(&analysis, &JsonOptions::default()).json;
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let blocks = value["blocks"].as_array_mut().unwrap();
@@ -2312,8 +2378,10 @@ fn json_plain_text_is_read_only() {
 /// entries, labelled [1] to [118], are references all the same.
 #[test]
 fn ligo_references_without_heading_are_references() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let doc = paper.analyze().doc;
+    let Some(Analysed { analysis, .. }) = analysed("1602.03837v1") else {
+        return;
+    };
+    let doc = &analysis.doc;
     let labels: Vec<String> = doc
         .blocks
         .iter()
@@ -2342,8 +2410,10 @@ fn ligo_references_without_heading_are_references() {
 /// note out.
 #[test]
 fn ligo_added_notes_reach_every_output() {
-    let Some(paper) = load("1602.03837v1") else { return };
-    let mut analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1602.03837v1") else {
+        return;
+    };
+    let mut analysis = copy(analysis);
     let json = paper.to_json(&analysis, &JsonOptions::default()).json;
     let note = "<note>In English: <i>gravitational waves</i>.</note>";
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -2461,8 +2531,10 @@ fn ligo_added_notes_reach_every_output() {
 /// left as they are.
 #[test]
 fn adam_chart_titles_are_translated_in_place() {
-    let Some(paper) = load("1412.6980v9") else { return };
-    let mut analysis = paper.analyze();
+    let Some(Analysed { paper, analysis }) = analysed("1412.6980v9") else {
+        return;
+    };
+    let mut analysis = copy(analysis);
     let json = paper.to_json(&analysis, &JsonOptions::default()).json;
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let figure = value["blocks"]
