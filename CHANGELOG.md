@@ -32,6 +32,10 @@ The Python package reads EPUB books too (`kakemono.Document("book.epub")`).
 
 Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB 3 samples; 294 MB), a book is written as Markdown in 0.03 s (median; 0.11 s at the 95th percentile) with 28 MB of memory, about 1,300 books a minute in one process and 5,300 on 4 cores.
 
+##### Performance
+
+- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) reads each font once instead of once per new piece of text: a book in Devanagari (the Mahabharata sample, 3,767 pages) is laid out in 17 s instead of 35 s, and Word documents 4–30% faster, with the same PDF.
+
 ##### Fixed
 
 - Code listings of Word documents came out empty in every output (HTML, Word, Markdown, LaTeX, EPUB): a listing was rebuilt only from the lines of PDF pages, which a Word document does not have.
