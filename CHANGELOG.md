@@ -18,7 +18,7 @@ The page now fits every page just before printing (`beforeprint`), so Ctrl+P / "
 
 #### Release script
 
-`scripts/release.py` now checks what it is given: the PR number must be a positive integer, and `--body-file` must be a file in the repository or in a temporary directory (or `-` for the standard input). SonarCloud counted both as vulnerabilities (3 issues), which failed the quality gate of `main`.
+`scripts/release.py` now checks what it is given: the PR number must be a positive integer, and `--body-file` must be a file in the repository or in a temporary directory (or `-` for the standard input). SonarCloud counted both as vulnerabilities (3 issues), which failed the quality gate of `main`. The SonarQube job now also runs the tests of the release script, which it measured at 0% coverage.
 
 ## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
 
