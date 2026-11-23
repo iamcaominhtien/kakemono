@@ -50,6 +50,33 @@ python3 scripts/word-crash-test.py DIR...                            # every out
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
 `playwright install`.
 
+## Tools
+
+Besides Rust and Node, the tests and scripts need:
+
+- TeX: `pdflatex`, `xelatex`, `lualatex`, with `vntex` (T5, Vietnamese), `fontspec`,
+  `multirow`, `booktabs`, `mathtools`, `lmodern`.
+- The CI fonts for `word-fidelity.py`: Liberation, Carlito, Caladea, DejaVu, FreeFont.
+- Python: `maturin`, `pytest`, `pytest-cov` (pinned in `python/requirements-dev.txt`, installed
+  in a venv), and `fonttools`, `pypdf` for `scripts/`; `pipx` for `pipx run pytest scripts/tests`.
+- `eval/qasper/`: torch (CPU), sentence-transformers, transformers, docling, `unstructured[pdf]`,
+  anthropic, numpy. Install torch and torchvision together from the same index, or docling's
+  torchvision does not match torch and transformers fails to import.
+
+A missing tool is installed, not a reason to skip a step (for example compiling the LaTeX
+output):
+
+```bash
+sudo apt-get install --no-install-recommends texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex texlive-lang-other lmodern fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fonts-freefont-ttf pipx   # Debian/Ubuntu
+brew install --cask mactex-no-gui && brew install pipx   # macOS
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # eval, in its own venv, then the rest
+```
+
+In the cloud environment `kakemono` the setup script installs all of these, fetches the test
+papers and builds the release binary. Its venvs are `/root/.venvs/kakemono-py` (the Python
+package: `maturin develop` there) and `/root/.venvs/kakemono-eval` (`eval/qasper/`). In
+another environment (for example `Default`) none of this is installed: check, then install.
+
 ## Automatic hooks (`.claude/settings.json`)
 
 - **After each Edit/Write** (`.claude/hooks/after-edit.sh`):
