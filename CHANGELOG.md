@@ -34,7 +34,7 @@ Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB
 
 ##### Performance
 
-- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) is faster, with byte-for-byte the same PDF:
+- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) is faster, with the same PDF:
   - each font is read once, instead of once per new piece of text (rustybuzz parses the font's substitution and positioning tables each time it reads it);
   - a shaping plan is made once per font, script and direction, instead of once per piece of text;
   - the font of a run is resolved once per piece of text, instead of once per character.
