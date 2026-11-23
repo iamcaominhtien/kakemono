@@ -23,9 +23,10 @@ mod math;
 mod text;
 
 use super::markdown::{linked_anchors, strip_label};
+use super::sequence::{AuthorMarkup, Step, author_lines, steps, title_spans, write_authors};
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
-    equation_math, float_class, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, doc_title, equation_math,
+    float_class, is_abstract_text, is_scene_break, plain,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
@@ -323,85 +324,55 @@ struct Writer<'a, 'r> {
 }
 
 impl Writer<'_, '_> {
-    /// Writes every block of `doc`. Runs of code paragraphs become one
-    /// listing, the title blocks one title, the entries of a table of
-    /// contents Typst's own table of contents.
+    /// Writes every block of `doc`, in the steps of [`steps`]. The entries
+    /// of a table of contents become Typst's own table of contents.
     fn write(&mut self, doc: &Document) {
         let blocks: Vec<&Block> = doc.blocks.iter().collect();
-        let mut idx = 0;
-        let mut after_front = false;
-        while idx < blocks.len() {
-            let block = blocks[idx];
-            if !after_front && !matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note) {
-                self.arxiv_link(doc);
-                after_front = true;
-            }
-            let in_abstract = match &block.kind {
-                BlockKind::Paragraph { in_abstract } => *in_abstract,
-                BlockKind::Equation { .. } => self.in_abstract,
-                _ => false,
+        let steps = steps(&blocks, doc.meta.arxiv_id.is_some());
+        for (i, step) in steps.iter().enumerate() {
+            let first = match step {
+                Step::Source => None,
+                Step::Code(run) | Step::Title(run) | Step::Authors(run) | Step::Contents(run) => Some(run[0]),
+                Step::AbstractHeading(block) | Step::NumberedEquation(block, _) | Step::Block(block) => Some(*block),
             };
-            self.set_abstract(in_abstract);
-            if let Some(end) = code_run(&blocks, idx) {
-                self.anchor(block);
-                self.code(&code::listing_lines(&blocks[idx..end]));
-                idx = end;
-                continue;
+            if let Some(block) = first {
+                let in_abstract = match &block.kind {
+                    BlockKind::Paragraph { in_abstract } => *in_abstract,
+                    BlockKind::Equation { .. } => self.in_abstract,
+                    _ => false,
+                };
+                self.set_abstract(in_abstract);
             }
-            match &block.kind {
-                BlockKind::Title => {
-                    idx = self.title(doc, &blocks, idx);
-                    continue;
+            match step {
+                Step::Source => self.arxiv_link(doc),
+                Step::Code(run) => {
+                    self.anchor(run[0]);
+                    self.code(&code::listing_lines(run));
                 }
-                BlockKind::Authors => {
-                    idx = self.authors(&blocks, idx);
-                    continue;
-                }
-                BlockKind::Heading { .. }
-                    if is_abstract_text(&block.spans)
-                        && blocks
-                            .get(idx + 1)
-                            .is_some_and(|next| matches!(next.kind, BlockKind::Paragraph { in_abstract: true })) =>
-                {
+                Step::Title(run) => self.title(doc, run),
+                Step::Authors(run) => write_authors(self, run),
+                Step::AbstractHeading(block) => {
                     self.anchor(block);
                     self.abstract_title = Some(self.text.spans(&block.spans));
-                    idx += 1;
-                    continue;
                 }
-                BlockKind::Heading { level }
-                    if blocks
-                        .get(idx + 1)
-                        .is_some_and(|next| matches!(next.kind, BlockKind::ContentsEntry { .. })) =>
-                {
-                    self.heading(block, *level, false);
-                    idx += 1;
-                    continue;
-                }
-                BlockKind::ContentsEntry { .. } => {
-                    self.anchor(block);
-                    self.paragraph("#kakemono-contents()");
-                    idx += blocks[idx..]
-                        .iter()
-                        .take_while(|block| matches!(block.kind, BlockKind::ContentsEntry { .. }))
-                        .count();
-                    continue;
-                }
-                // An equation whose number was read as a paragraph of its
-                // own takes it back.
-                BlockKind::Equation { image, number: None } => {
-                    if let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next)) {
-                        self.equation(block, image.as_ref(), Some(&number));
-                        idx += 2;
-                        continue;
+                Step::NumberedEquation(block, number) => {
+                    if let BlockKind::Equation { image, .. } = &block.kind {
+                        self.equation(block, image.as_ref(), Some(number));
                     }
                 }
-                _ => {}
+                Step::Contents(run) => {
+                    self.anchor(run[0]);
+                    self.paragraph("#kakemono-contents()");
+                }
+                // The heading of a table of contents stays out of it.
+                Step::Block(block)
+                    if let BlockKind::Heading { level } = block.kind
+                        && matches!(steps.get(i + 1), Some(Step::Contents(_))) =>
+                {
+                    self.heading(block, level, false);
+                }
+                Step::Block(block) => self.block(block),
             }
-            self.block(block);
-            idx += 1;
-        }
-        if !after_front {
-            self.arxiv_link(doc);
         }
         self.set_abstract(false);
     }
@@ -428,9 +399,7 @@ impl Writer<'_, '_> {
         let opening = std::mem::take(&mut self.opening);
         match &block.kind {
             BlockKind::Title => self.title_text(&self.text.spans(&block.spans)),
-            BlockKind::Authors => {
-                self.authors(std::slice::from_ref(&block), 0);
-            }
+            BlockKind::Authors => write_authors(self, std::slice::from_ref(&block)),
             BlockKind::Note => self.text_paragraph(block, false),
             BlockKind::Heading { level } => self.heading(block, *level, true),
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
@@ -568,95 +537,22 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// Writes the title blocks that start at `blocks[start]` as one title
-    /// and returns the index of the block after them.
-    fn title(&mut self, doc: &Document, blocks: &[&Block], start: usize) -> usize {
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Title))
-                .count();
-        let mut spans: Vec<Span> = Vec::new();
-        for block in &blocks[start..end] {
+    /// Writes a run of title blocks as one title.
+    fn title(&mut self, doc: &Document, run: &[&Block]) {
+        for block in run {
             self.anchor(block);
-            if !spans.is_empty() {
-                spans.push(Span::plain(" "));
-            }
-            spans.extend(block.spans.iter().cloned());
         }
-        let text = self.text.spans(&spans);
+        let text = self.text.spans(&title_spans(run));
         if text.is_empty() {
             self.title_text(&protect_start(&escape(&doc_title(doc))));
         } else {
             self.title_text(&text);
         }
-        end
     }
 
     /// Writes the title of the document.
     fn title_text(&mut self, text: &str) {
         self.paragraph(&format!("#kakemono-title[{text}]"));
-    }
-
-    /// Writes the author groups that start at `blocks[start]` and returns
-    /// the index of the block after them. Each group (the name in bold,
-    /// then the affiliation lines) is a card, and the cards stand side by
-    /// side as far as the width allows; a group with a line too long for a
-    /// card (a list of many authors) is a paragraph of its own.
-    fn authors(&mut self, blocks: &[&Block], start: usize) -> usize {
-        /// Longest line (in characters) of an author group set as a card.
-        const CARD_MAX_CHARS: usize = 60;
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Authors))
-                .count();
-        let mut cards: Vec<String> = Vec::new();
-        for block in &blocks[start..end] {
-            self.anchor(block);
-            let lines = self.author_lines(block);
-            if lines.is_empty() {
-                continue;
-            }
-            if author_rows(block)
-                .iter()
-                .all(|row| plain(row).chars().count() <= CARD_MAX_CHARS)
-            {
-                cards.push(format!("[{}]", lines.join(" \\ ")));
-            } else {
-                self.author_cards(&mut cards);
-                self.paragraph(&format!("#kakemono-byline[{}]", lines.join(" \\ ")));
-            }
-        }
-        self.author_cards(&mut cards);
-        end
-    }
-
-    /// Writes the author cards collected so far, side by side, and empties
-    /// `cards`.
-    fn author_cards(&mut self, cards: &mut Vec<String>) {
-        if !cards.is_empty() {
-            self.paragraph(&format!("#kakemono-authors({})", cards.join(", ")));
-            cards.clear();
-        }
-    }
-
-    /// The lines of an author group: the name in bold, then the
-    /// affiliation lines.
-    fn author_lines(&self, block: &Block) -> Vec<String> {
-        author_rows(block)
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let text = self.text.spans(row);
-                if i == 0 && !text.is_empty() && !text.starts_with("#strong[") {
-                    format!("#strong[{text}]{CALL_END}")
-                } else {
-                    text
-                }
-            })
-            .filter(|text| !text.is_empty())
-            .collect()
     }
 
     /// Writes a heading at its level below the outermost one (`=` for the
@@ -866,6 +762,40 @@ impl Writer<'_, '_> {
     }
 }
 
+/// The author groups: each card the name in bold, then the affiliation
+/// lines; the template sets the cards side by side.
+impl AuthorMarkup for Writer<'_, '_> {
+    fn anchor(&mut self, block: &Block) {
+        Writer::anchor(self, block);
+    }
+
+    fn lines(&self, block: &Block) -> Vec<String> {
+        author_lines(
+            block,
+            |row| self.text.spans(row),
+            |i, text| {
+                if i == 0 && !text.is_empty() && !text.starts_with("#strong[") {
+                    format!("#strong[{text}]{CALL_END}")
+                } else {
+                    text
+                }
+            },
+        )
+    }
+
+    fn card(&self, lines: &[String]) -> String {
+        format!("[{}]", lines.join(" \\ "))
+    }
+
+    fn cards(&mut self, cards: &[String]) {
+        self.paragraph(&format!("#kakemono-authors({})", cards.join(", ")));
+    }
+
+    fn byline(&mut self, lines: &[String]) {
+        self.paragraph(&format!("#kakemono-byline[{}]", lines.join(" \\ ")));
+    }
+}
+
 /// `code` as a Typst string for a listing: tabs as four spaces.
 fn code_string(code: &str) -> String {
     let mut out = String::from("\"");
@@ -881,15 +811,6 @@ fn code_string(code: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// The rows of an author group: its lines, or its text as one line.
-fn author_rows(block: &Block) -> &[Vec<Span>] {
-    if block.rows.is_empty() {
-        std::slice::from_ref(&block.spans)
-    } else {
-        &block.rows[..]
-    }
 }
 
 #[cfg(test)]

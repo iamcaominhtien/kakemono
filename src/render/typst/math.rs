@@ -9,15 +9,7 @@
 //! escaped; words are strings (`"where"`).
 
 use crate::model::MathNode;
-use unicode_normalization::UnicodeNormalization;
-
-/// Function names that Typst sets upright as operators of its own (`sin`,
-/// `lim`): written as they are.
-const FUNCTIONS: &[&str] = &[
-    "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim", "exp", "gcd", "inf",
-    "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min", "Pr", "sec", "sin", "sinh", "sup", "tan",
-    "tanh",
-];
+use crate::render::formula::{Accent, FUNCTIONS, MatrixKind, accent_of, accented_letter, is_delimiter, matrix, primes};
 
 /// Characters of a formula that Typst gives a meaning to, written escaped
 /// (`\(`): delimiters (which Typst would pair and stretch), argument
@@ -49,36 +41,6 @@ const REPLACED: &[(char, &str)] = &[
     ('–', "−"),
     ('-', "−"),
     ('˜', "∼"),
-];
-
-/// Accents above a base, by the character the analysis reads for them, and
-/// the Typst function that sets each.
-const ACCENTS: &[(char, &str)] = &[
-    ('^', "hat"),
-    ('ˆ', "hat"),
-    ('\u{302}', "hat"),
-    ('\u{300}', "grave"),
-    ('\u{301}', "acute"),
-    ('\u{306}', "breve"),
-    ('\u{30C}', "caron"),
-    ('~', "tilde"),
-    ('˜', "tilde"),
-    ('\u{303}', "tilde"),
-    ('¯', "macron"),
-    ('\u{304}', "macron"),
-    ('‾', "overline"),
-    ('―', "overline"),
-    ('—', "overline"),
-    ('−', "overline"),
-    ('˙', "dot"),
-    ('·', "dot"),
-    ('\u{307}', "dot"),
-    ('¨', "dot.double"),
-    ('\u{308}', "dot.double"),
-    ('→', "arrow"),
-    ('⃗', "arrow"),
-    ('ˇ', "caron"),
-    ('˘', "breve"),
 ];
 
 /// Width of a space (em) from which it is written as `quad`.
@@ -149,7 +111,7 @@ fn arg(node: &MathNode) -> String {
 fn scripts(base: &MathNode, sub: Option<&MathNode>, sup: Option<&MathNode>) -> String {
     let text = arg(base);
     let single = !text.contains(' ') || matches!(base, MathNode::Text(_));
-    let primes = sup.and_then(primes);
+    let primes = sup.and_then(primes).map(|count| "'".repeat(count));
     let sup = sup.filter(|_| primes.is_none());
     let mut out = if single || (sub.is_none() && sup.is_none()) {
         let mut out = text;
@@ -176,21 +138,6 @@ fn scripts(base: &MathNode, sub: Option<&MathNode>, sup: Option<&MathNode>) -> S
     out
 }
 
-/// A superscript made only of primes, as Typst writes it (`'`, `''`).
-fn primes(sup: &MathNode) -> Option<String> {
-    let MathNode::Operator { text, .. } = sup else {
-        return None;
-    };
-    let count = text.chars().map(|ch| match ch {
-        '′' | '\'' => Some(1),
-        '″' => Some(2),
-        '‴' => Some(3),
-        _ => None,
-    });
-    let total: Option<usize> = count.sum();
-    total.filter(|&n| n > 0).map(|n| "'".repeat(n))
-}
-
 /// Limits or an accent above and below `base`: an accent function, or the
 /// base with `limits` (so that the limits go above and below it even
 /// inside the text).
@@ -198,9 +145,9 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     if accent
         && under.is_none()
         && let Some(MathNode::Operator { text, .. }) = over
-        && let Some(function) = accent_function(text)
+        && let Some(found) = accent_of(text)
     {
-        return format!("{function}({})", arg(base));
+        return format!("{}({})", accent_function(found), arg(base));
     }
     let mut out = format!("limits({})", arg(base));
     if let Some(under) = under {
@@ -212,24 +159,21 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     out
 }
 
-/// The Typst accent function for the accent character `text`.
-fn accent_function(text: &str) -> Option<&'static str> {
-    let mut chars = text.chars();
-    let (Some(ch), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
-    ACCENTS
-        .iter()
-        .find(|(accent, _)| *accent == ch)
-        .map(|(_, function)| *function)
-}
-
-/// Whether `text` is a delimiter that `lr` can stretch.
-fn is_delimiter(text: &str) -> bool {
-    matches!(
-        text,
-        "(" | ")" | "[" | "]" | "{" | "}" | "|" | "‖" | "⟨" | "⟩" | "⌊" | "⌋" | "⌈" | "⌉" | "/"
-    )
+/// The Typst function that sets an accent.
+fn accent_function(accent: Accent) -> &'static str {
+    match accent {
+        Accent::Hat => "hat",
+        Accent::Grave => "grave",
+        Accent::Acute => "acute",
+        Accent::Breve => "breve",
+        Accent::Caron => "caron",
+        Accent::Tilde => "tilde",
+        Accent::Bar => "macron",
+        Accent::Overline => "overline",
+        Accent::Dot => "dot",
+        Accent::DoubleDot => "dot.double",
+        Accent::Arrow => "arrow",
+    }
 }
 
 /// Writes the nodes of a row. A table between two tall delimiters is a
@@ -238,9 +182,9 @@ fn is_delimiter(text: &str) -> bool {
 fn write_row(nodes: &[MathNode], out: &mut String) {
     let mut i = 0;
     while i < nodes.len() {
-        if let Some((matrix, used)) = matrix(&nodes[i..]) {
-            push(out, &matrix);
-            i += used;
+        if let Some(found) = matrix(&nodes[i..]) {
+            push(out, &matrix_typst(found.kind, found.rows));
+            i += found.used;
         } else {
             write_node(&nodes[i], out);
             i += 1;
@@ -248,39 +192,22 @@ fn write_row(nodes: &[MathNode], out: &mut String) {
     }
 }
 
-/// The matrix or `cases` that starts `nodes` (a tall opening delimiter, a
-/// table and, for a matrix, the matching tall closing one), and how many
-/// nodes it takes; `None` when `nodes` starts otherwise.
-fn matrix(nodes: &[MathNode]) -> Option<(String, usize)> {
-    fn tall(node: &MathNode) -> Option<&str> {
-        match node {
-            MathNode::Operator {
-                text,
-                height_em: Some(_),
-            } => Some(text.as_str()),
-            _ => None,
-        }
-    }
-    let open = tall(nodes.first()?)?;
-    let MathNode::Table { rows, .. } = nodes.get(1)? else {
-        return None;
-    };
-    let close = nodes.get(2).and_then(tall);
+/// A matrix (`mat(delim: "[", …)`) or `cases` in Typst.
+fn matrix_typst(kind: MatrixKind, rows: &[Vec<MathNode>]) -> String {
     let cells = |sep: &str| -> Vec<String> {
         rows.iter()
             .map(|row| row.iter().map(arg).collect::<Vec<_>>().join(sep))
             .collect()
     };
-    let delim = match (open, close) {
-        ("(", Some(")")) => "\"(\"",
-        ("[", Some("]")) => "\"[\"",
-        ("{", Some("}")) => "\"{\"",
-        ("|", Some("|")) => "\"|\"",
-        ("‖", Some("‖")) => "\"||\"",
-        ("{", None) => return Some((format!("cases({})", cells(" & ").join(", ")), 2)),
-        _ => return None,
+    let delim = match kind {
+        MatrixKind::Paren => "\"(\"",
+        MatrixKind::Bracket => "\"[\"",
+        MatrixKind::Brace => "\"{\"",
+        MatrixKind::Bar => "\"|\"",
+        MatrixKind::DoubleBar => "\"||\"",
+        MatrixKind::Cases => return format!("cases({})", cells(" & ").join(", ")),
     };
-    Some((format!("mat(delim: {delim}, {})", cells(", ").join("; ")), 3))
+    format!("mat(delim: {delim}, {})", cells(", ").join("; "))
 }
 
 /// A multi-line display: aligned at `&` when its columns alternate right
@@ -383,24 +310,13 @@ fn symbols(text: &str) -> String {
             push(&mut out, &format!("\\{ch}"));
         } else if ch.is_control() {
             // Control characters have no glyph.
-        } else if let Some(accented) = accented_letter(ch) {
-            push(&mut out, &accented);
+        } else if let Some((base, accent)) = accented_letter(ch) {
+            push(&mut out, &format!("{}({base})", accent_function(accent)));
         } else {
             push(&mut out, ch.encode_utf8(&mut [0; 4]));
         }
     }
     out
-}
-
-/// A letter with an accent written as one character (`ã`, `ĝ`) as an accent
-/// over the letter (`tilde(a)`), or `None` when `ch` is no such letter.
-fn accented_letter(ch: char) -> Option<String> {
-    let mut parts = std::iter::once(ch).nfd();
-    let (Some(base), Some(mark), None) = (parts.next(), parts.next(), parts.next()) else {
-        return None;
-    };
-    let (_, function) = ACCENTS.iter().find(|(accent, _)| *accent == mark)?;
-    Some(format!("{function}({base})"))
 }
 
 /// `text` as a Typst string (`"…"`), which math sets as upright text.

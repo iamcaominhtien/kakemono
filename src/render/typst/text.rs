@@ -6,8 +6,7 @@
 use super::math::{string, typst};
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::inline_math::{Piece, has_math, split};
-use crate::render::markdown::inline::merge;
-use crate::render::notes::{Segment, segments};
+use crate::render::runs::{RunMarkup, label_name, runs};
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
@@ -68,41 +67,18 @@ impl Text<'_> {
     /// Text spans as Typst markup (not trimmed), an added note as a
     /// `#footnote` (Typst numbers them).
     fn runs(&self, spans: &[Span]) -> String {
-        let mut out = String::new();
-        for segment in segments(spans) {
-            match segment {
-                Segment::Text(spans) => out.push_str(&self.text_runs(spans)),
-                Segment::Note(call) => {
-                    let note = self.spans(call.note.as_deref().unwrap_or_default());
-                    out.push_str(&format!("#footnote[{note}]{CALL_END}"));
-                }
-            }
-        }
-        out
+        runs(self, spans)
+    }
+}
+
+impl RunMarkup for Text<'_> {
+    fn styled(&self, text: &str, style: u8) -> String {
+        styled(text, style)
     }
 
-    /// Text spans without notes as markup (not trimmed). Neighbouring spans
-    /// of the same style and link are joined first, so that a word is not
-    /// cut by calls.
-    fn text_runs(&self, spans: &[Span]) -> String {
-        let mut out = String::new();
-        for (text, style, href) in merge(spans) {
-            let body = styled(&text, style);
-            if body.trim().is_empty() {
-                out.push_str(&body);
-                continue;
-            }
-            match href.as_deref() {
-                Some(href) => {
-                    // The spaces around the text stay outside the link.
-                    let lead = &body[..body.len() - body.trim_start().len()];
-                    let trail = &body[body.trim_end().len()..];
-                    out.push_str(&format!("{lead}{}{trail}", self.link(href, body.trim())));
-                }
-                None => out.push_str(&body),
-            }
-        }
-        out
+    fn note(&self, call: &Span) -> String {
+        let note = self.spans(call.note.as_deref().unwrap_or_default());
+        format!("#footnote[{note}]{CALL_END}")
     }
 
     /// `body` as a link to `href`: to an anchor of the document that is
@@ -128,17 +104,7 @@ impl Text<'_> {
 /// The label of the anchor `anchor`: the anchor with the characters that
 /// labels cannot hold replaced.
 pub(crate) fn label(anchor: &str) -> String {
-    let name: String = anchor
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | ':' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("{LABEL_PREFIX}{name}")
+    label_name(LABEL_PREFIX, anchor, &['-', '.', ':', '_'])
 }
 
 /// The text of one run with its style, as nested calls (`#emph[…]`). The

@@ -6,7 +6,9 @@
 //! (MathJax), which the preamble of the LaTeX output defines.
 
 use crate::model::MathNode;
-use unicode_normalization::UnicodeNormalization;
+use crate::render::formula::{
+    Accent, FUNCTIONS, MatrixKind, accent_of, accented_letter, is_big_operator, is_delimiter, matrix, primes,
+};
 
 /// Symbols written as a LaTeX command (or escaped) rather than as the
 /// character itself: Greek letters, operators, relations, arrows,
@@ -209,42 +211,6 @@ const SYMBOLS: &[(char, &str)] = &[
     ('^', "\\hat{}"),
 ];
 
-/// Function names that LaTeX sets upright with a command of their own.
-const FUNCTIONS: &[&str] = &[
-    "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim", "exp", "gcd", "inf",
-    "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min", "Pr", "sec", "sin", "sinh", "sup", "tan",
-    "tanh",
-];
-
-/// Accents above a base, by the character the analysis reads for them.
-const ACCENTS: &[(char, &str)] = &[
-    ('^', "\\hat"),
-    ('ˆ', "\\hat"),
-    ('\u{302}', "\\hat"),
-    ('\u{300}', "\\grave"),
-    ('\u{301}', "\\acute"),
-    ('\u{306}', "\\breve"),
-    ('\u{30C}', "\\check"),
-    ('~', "\\tilde"),
-    ('˜', "\\tilde"),
-    ('\u{303}', "\\tilde"),
-    ('¯', "\\bar"),
-    ('\u{304}', "\\bar"),
-    ('‾', "\\overline"),
-    ('―', "\\overline"),
-    ('—', "\\overline"),
-    ('−', "\\overline"),
-    ('˙', "\\dot"),
-    ('·', "\\dot"),
-    ('\u{307}', "\\dot"),
-    ('¨', "\\ddot"),
-    ('\u{308}', "\\ddot"),
-    ('→', "\\vec"),
-    ('⃗', "\\vec"),
-    ('ˇ', "\\check"),
-    ('˘', "\\breve"),
-];
-
 /// The math alphabets of Unicode (block "Mathematical Alphanumeric
 /// Symbols"): first code point of the capital A, and the LaTeX command of
 /// the alphabet (empty for math italic, the default for letters).
@@ -383,7 +349,7 @@ fn write_node(node: &MathNode, out: &mut String) {
             }
             if let Some(sup) = sup {
                 match primes(sup) {
-                    Some(primes) => push(out, &primes),
+                    Some(count) => push(out, &"'".repeat(count)),
                     None => push(out, &format!("^{{{}}}", group(sup))),
                 }
             }
@@ -417,21 +383,6 @@ fn script_base(base: &MathNode) -> String {
     }
 }
 
-/// A superscript made only of primes, as TeX writes it (`'`, `''`).
-fn primes(sup: &MathNode) -> Option<String> {
-    let MathNode::Operator { text, .. } = sup else {
-        return None;
-    };
-    let count = text.chars().map(|ch| match ch {
-        '′' | '\'' => Some(1),
-        '″' => Some(2),
-        '‴' => Some(3),
-        _ => None,
-    });
-    let total: Option<usize> = count.sum();
-    total.filter(|&n| n > 0).map(|n| "'".repeat(n))
-}
-
 /// Limits or an accent above and below `base`: an accent command, a big
 /// operator or `\lim` with its limits, or `\underset`/`\overset` for
 /// anything else.
@@ -439,8 +390,9 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     if accent
         && under.is_none()
         && let Some(MathNode::Operator { text, .. }) = over
-        && let Some(command) = accent_command(text)
+        && let Some(found) = accent_of(text)
     {
+        let command = accent_command(found);
         return format!("{command}{{{}}}", group(base));
     }
     let limits = |base: String| {
@@ -469,29 +421,21 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     }
 }
 
-/// The LaTeX accent command for the accent character `text`.
-fn accent_command(text: &str) -> Option<&'static str> {
-    let mut chars = text.chars();
-    let (Some(ch), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
-    ACCENTS
-        .iter()
-        .find(|(accent, _)| *accent == ch)
-        .map(|(_, command)| *command)
-}
-
-/// Whether `text` is a big operator (∑, ∫, ⋃, …) that takes limits.
-fn is_big_operator(text: &str) -> bool {
-    matches!(text, "∑" | "∏" | "∐" | "∫" | "∬" | "∭" | "∮" | "⋃" | "⋂" | "⨁" | "⨂")
-}
-
-/// Whether `text` is a delimiter that a size command (`\big`) can enlarge.
-fn is_delimiter(text: &str) -> bool {
-    matches!(
-        text,
-        "(" | ")" | "[" | "]" | "{" | "}" | "|" | "‖" | "⟨" | "⟩" | "⌊" | "⌋" | "⌈" | "⌉" | "/"
-    )
+/// The LaTeX command of an accent.
+fn accent_command(accent: Accent) -> &'static str {
+    match accent {
+        Accent::Hat => "\\hat",
+        Accent::Grave => "\\grave",
+        Accent::Acute => "\\acute",
+        Accent::Breve => "\\breve",
+        Accent::Caron => "\\check",
+        Accent::Tilde => "\\tilde",
+        Accent::Bar => "\\bar",
+        Accent::Overline => "\\overline",
+        Accent::Dot => "\\dot",
+        Accent::DoubleDot => "\\ddot",
+        Accent::Arrow => "\\vec",
+    }
 }
 
 /// Writes the nodes of a row. A table between two tall delimiters is a
@@ -500,48 +444,27 @@ fn is_delimiter(text: &str) -> bool {
 fn write_row(nodes: &[MathNode], out: &mut String) {
     let mut i = 0;
     while i < nodes.len() {
-        if let Some((env, used)) = matrix(&nodes[i..]) {
-            push(out, &env);
-            i += used;
+        if let Some(found) = matrix(&nodes[i..]) {
+            let env = match found.kind {
+                MatrixKind::Paren => "pmatrix",
+                MatrixKind::Bracket => "bmatrix",
+                MatrixKind::Brace => "Bmatrix",
+                MatrixKind::Bar => "vmatrix",
+                MatrixKind::DoubleBar => "Vmatrix",
+                MatrixKind::Cases => "cases",
+            };
+            let body: Vec<String> = found
+                .rows
+                .iter()
+                .map(|row| row.iter().map(group).collect::<Vec<_>>().join(" & "))
+                .collect();
+            push(out, &format!("\\begin{{{env}}} {} \\end{{{env}}}", body.join(" \\\\ ")));
+            i += found.used;
         } else {
             write_node(&nodes[i], out);
             i += 1;
         }
     }
-}
-
-/// The matrix or `cases` environment that starts `nodes` (a tall opening
-/// delimiter, a table and, for a matrix, the matching tall closing one),
-/// and how many nodes it takes; `None` when `nodes` starts otherwise.
-fn matrix(nodes: &[MathNode]) -> Option<(String, usize)> {
-    fn tall(node: &MathNode) -> Option<&str> {
-        match node {
-            MathNode::Operator {
-                text,
-                height_em: Some(_),
-            } => Some(text.as_str()),
-            _ => None,
-        }
-    }
-    let open = tall(nodes.first()?)?;
-    let MathNode::Table { rows, .. } = nodes.get(1)? else {
-        return None;
-    };
-    let close = nodes.get(2).and_then(tall);
-    let (env, used) = match (open, close) {
-        ("(", Some(")")) => ("pmatrix", 3),
-        ("[", Some("]")) => ("bmatrix", 3),
-        ("{", Some("}")) => ("Bmatrix", 3),
-        ("|", Some("|")) => ("vmatrix", 3),
-        ("‖", Some("‖")) => ("Vmatrix", 3),
-        ("{", None) => ("cases", 2),
-        _ => return None,
-    };
-    let body: Vec<String> = rows
-        .iter()
-        .map(|row| row.iter().map(group).collect::<Vec<_>>().join(" & "))
-        .collect();
-    Some((format!("\\begin{{{env}}} {} \\end{{{env}}}", body.join(" \\\\ ")), used))
 }
 
 /// A multi-line display as an `array`, with its column alignments.
@@ -604,25 +527,16 @@ fn symbols(text: &str) -> String {
             }
         } else if let Some((_, command)) = SYMBOLS.iter().find(|(symbol, _)| *symbol == ch) {
             push(&mut out, command);
-        } else if let Some(accented) = accented_letter(ch) {
-            push(&mut out, &accented);
+        } else if let Some((base, accent)) = accented_letter(ch) {
+            push(
+                &mut out,
+                &format!("{}{{{}}}", accent_command(accent), symbols(&base.to_string())),
+            );
         } else {
             push(&mut out, ch.encode_utf8(&mut [0; 4]));
         }
     }
     out
-}
-
-/// A letter with an accent written as one character (`ã`, `ĝ`) as an accent
-/// command over the letter (`\tilde{a}`), or `None` when `ch` is no such
-/// letter.
-fn accented_letter(ch: char) -> Option<String> {
-    let mut parts = std::iter::once(ch).nfd();
-    let (Some(base), Some(mark), None) = (parts.next(), parts.next(), parts.next()) else {
-        return None;
-    };
-    let (_, command) = ACCENTS.iter().find(|(accent, _)| *accent == mark)?;
-    Some(format!("{command}{{{}}}", symbols(&base.to_string())))
 }
 
 /// The plain letter or digit and the alphabet command of a character of
