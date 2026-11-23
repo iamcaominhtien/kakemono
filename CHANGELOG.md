@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.16.0](https://github.com/iamcaominhtien/kakemono/compare/v0.15.3...v0.16.0) - 2026-11-23
+
+### Added
+
+- *(python)* Add Document, render_svg, read_formula and to_pdf ([#31](https://github.com/iamcaominhtien/kakemono/pull/31))
+
+The Python package can now do everything the command line does, and it writes several outputs of one document up to twice as fast. Closes #30.
+
+##### `render_svg`: draw an SVG as a PNG
+
+`kakemono.render_svg(svg, path=None, *, scale=1.0, resources_dir=None)` does what `kakemono render-svg` does, with the same renderer and fonts (the system's and those of `KAKEMONO_FONT_DIRS`). `svg` is a path, or the SVG as text or bytes. The function returns the PNG's bytes, and also writes them to `path` when it is given. Pictures named by relative paths are read from the SVG's folder, or from `resources_dir`. An SVG it cannot draw raises a `ValueError` that says what is wrong (`cannot draw the SVG: ...`). The fonts are loaded once per process, so drawing many previews from Python costs less than running the program each time.
+
+##### `to_pdf` and `read_formula`
+
+- `kakemono.to_pdf("report.docx", "report.pdf")` lays out a Word document in pages as Word does, like `convert -o x.pdf`. With `content`, it lays out the edited document.
+- `kakemono.read_formula(image)` reads a picture of a formula (PNG or JPEG, black on white, as LaTeX renders it) and returns its MathML, like `kakemono formula`. It returns `None` when the formula cannot be read with confidence.
+
+##### `Document`: analyse once, write every format
+
+Each module function reads and analyses its input again. Translating a paper this way (`to_json`, then six outputs with `content`) analyses it seven times. A `Document` is analysed once, and its methods (`convert`, `convert_all`, `to_docx`, `to_markdown`, `to_json`, `to_latex`, `to_epub`, `to_chunks`, `to_pdf`, `analyze`) all reuse that analysis. They take the same options as the functions, except the options of the analysis (`tables`, `jobs`, `png_compression`, `content`), which are given when the document is opened:
+
+```python
+doc = kakemono.Document("paper.pdf")
+content = doc.to_json("paper.json")
+### ... translate content ...
+vi = kakemono.Document("paper.pdf", content=content)
+vi.convert("hard-95"); vi.to_docx("paper.vi.docx"); vi.to_epub("paper.vi.epub")
+```
+
+Six outputs (friendly, hard-95, Word, Markdown, LaTeX, EPUB) with edited content, measured on 4 cores:
+
+| Paper | One function per output | One `Document` |
+| --- | --- | --- |
+| LIGO (16 pages) | 2.07 s | 1.07 s |
+| Attention (15 pages) | 2.48 s | 1.79 s |
+| GPT-4 (100 pages) | 6.66 s | 3.37 s |
+
+The module functions are unchanged and give the same output: each one now opens a `Document` and writes one output from it. A `Document` can be used from several threads at once, and the GIL is released while it works.
+
+##### `replace_image` next to the edited JSON
+
+When `content` is a path, a figure's `replace_image` given as a relative path is now read from the folder of that JSON file, as `--content` does on the command line. Before, the picture was not replaced, and a warning said so. When `content` is a dict or JSON text, relative paths are read from the current folder.
+
 ## [0.15.3](https://github.com/iamcaominhtien/kakemono/compare/v0.15.2...v0.15.3) - 2026-11-23
 
 ### Build and CI
