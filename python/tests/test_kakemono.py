@@ -222,7 +222,8 @@ def test_epub_book_is_an_input(tmp_path):
     assert "Convergence of Gradient Descent" in html
     assert "Converted from EPUB by kakemono" in html
     text = kakemono.to_markdown(EPUB_SAMPLE, tmp_path / "sample.md")
-    assert "$$" in text and "def step(x, grad, eta):" in text
+    assert "$$" in text
+    assert "def step(x, grad, eta):" in text
     with pytest.raises(ValueError, match="no pages"):
         kakemono.convert(EPUB_SAMPLE, mode="hard")
 
