@@ -5,12 +5,6 @@ name: PR
 #    the version);
 #  - it carries the version its title asks for, with its CHANGELOG.md entry
 #    (`scripts/release.py bump --pr N` writes both; see CONTRIBUTING.md).
-# When the version or the entry is not the one the title and description ask
-# for, this workflow writes them and pushes a `chore(release)` commit onto the
-# PR's branch, with the RELEASE_TOKEN secret (a token that may push to the
-# repository: a push made with the workflow's own token would not start the
-# other workflows). Without the secret, or on a fork, it fails as before and
-# the bump is run by hand.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
@@ -47,50 +41,12 @@ jobs:
           # every branch and tag: main and the last release tag are compared
           fetch-depth: 0
           persist-credentials: false
-      - name: Tests of the release script
-        run: pipx run pytest -q scripts/tests
-      - name: Write the version and CHANGELOG.md
-        id: bump
+      - name: Check the version and CHANGELOG.md
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
-          NUMBER: ${{ github.event.pull_request.number }}
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
-          python3 scripts/release.py bump --pr "$NUMBER" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
-          # The date in the heading of the entry changes from one day to the next:
-          # alone, it is no reason for a commit.
-          if git diff --quiet -I '^## \[' -- Cargo.toml Cargo.lock CHANGELOG.md; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-          git checkout -- Cargo.toml Cargo.lock CHANGELOG.md
-      - name: Push the release commit
-        id: push
-        if: steps.bump.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TITLE: ${{ github.event.pull_request.title }}
-          NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::No RELEASE_TOKEN secret: the version is not written for you."
-            exit 0
-          fi
-          python3 scripts/release.py bump --pr "$NUMBER" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
-          version=$(python3 scripts/release.py version)
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -q -m "chore(release): v$version" -- Cargo.toml Cargo.lock CHANGELOG.md
-          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
-          echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$HEAD_REF"
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
-          echo "v$version written and pushed: the workflow runs again on the new commit."
-      - name: Check the version and CHANGELOG.md
-        if: steps.push.outputs.pushed != 'true'
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: python3 scripts/release.py check --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
+          python3 scripts/release.py check --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
+      - name: Tests of the release script
+        run: pipx run pytest -q scripts/tests
