@@ -5,6 +5,22 @@ use super::fonts::{FaceId, FontBook};
 use rustybuzz::{Direction, Feature, UnicodeBuffer, ttf_parser::Tag};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+
+/// A face as rustybuzz reads it, `None` when the font cannot be read.
+type MaybeFace<'a> = Option<rustybuzz::Face<'a>>;
+
+self_cell::self_cell!(
+    /// A face read for shaping, with the font data it borrows: reading a
+    /// face parses its substitution and positioning tables, which for a
+    /// font of a complex script (Devanagari) costs far more than shaping
+    /// a word, so each face is read once.
+    struct ParsedFace {
+        owner: Arc<Vec<u8>>,
+        #[covariant]
+        dependent: MaybeFace,
+    }
+);
 
 /// A glyph, in multiples of the font size.
 #[derive(Debug, Clone, Copy)]
@@ -30,10 +46,13 @@ pub struct Shaped {
     pub width: f32,
 }
 
-/// Shapes text, keeping the results.
+/// Shapes text, keeping the results and the faces it has read.
 #[derive(Default)]
 pub struct Shaper {
+    /// Shaped text, by face, text, kerning and direction.
     cache: HashMap<(FaceId, String, bool, bool), Rc<Shaped>>,
+    /// The faces read so far.
+    faces: HashMap<FaceId, ParsedFace>,
 }
 
 impl Shaper {
@@ -44,22 +63,24 @@ impl Shaper {
         if let Some(shaped) = self.cache.get(&key) {
             return shaped.clone();
         }
-        let shaped = Rc::new(shape(book, face, text, kern, rtl));
+        let font = book.get(face);
+        let parsed = self.faces.entry(face).or_insert_with(|| {
+            ParsedFace::new(font.data.clone(), |data| rustybuzz::Face::from_slice(data, font.index))
+        });
+        let shaped = Rc::new(match parsed.borrow_dependent() {
+            Some(hb) => shape(hb, font.metrics.upem, text, kern, rtl),
+            None => Shaped {
+                glyphs: Vec::new(),
+                width: 0.0,
+            },
+        });
         self.cache.insert(key, shaped.clone());
         shaped
     }
 }
 
-/// Shapes `text` in `face`.
-fn shape(book: &FontBook, face: FaceId, text: &str, kern: bool, rtl: bool) -> Shaped {
-    let font = book.get(face);
-    let Some(hb) = rustybuzz::Face::from_slice(&font.data, font.index) else {
-        return Shaped {
-            glyphs: Vec::new(),
-            width: 0.0,
-        };
-    };
-    let upem = font.metrics.upem;
+/// Shapes `text` in the face `hb`, of `upem` units per em.
+fn shape(hb: &rustybuzz::Face<'_>, upem: f32, text: &str, kern: bool, rtl: bool) -> Shaped {
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.guess_segment_properties();
@@ -71,7 +92,7 @@ fn shape(book: &FontBook, face: FaceId, text: &str, kern: bool, rtl: bool) -> Sh
     if !kern {
         features.push(off(b"kern"));
     }
-    let output = rustybuzz::shape(&hb, &features, buffer);
+    let output = rustybuzz::shape(hb, &features, buffer);
     let mut glyphs = Vec::with_capacity(output.len());
     let mut width = 0.0;
     for (info, pos) in output.glyph_infos().iter().zip(output.glyph_positions()) {

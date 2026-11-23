@@ -59,6 +59,9 @@ krilla = { version = "0.8", default-features = false, features = ["raster-images
 # (about 6 MB; bpe-openai, faster, adds 70 MB of tables).
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
 tiktoken-rs = { version = "0.12", optional = true }
+# A rustybuzz face kept with the font data it borrows (src/layout/shape.rs),
+# so that a font is parsed once for the whole layout.
+self_cell = "1"
 
 [features]
 default = ["tokenizers", "openai-tokenizers"]
