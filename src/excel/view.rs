@@ -99,7 +99,7 @@ table.cells{border-collapse:collapse;table-layout:fixed;background:#fff}\
 .cells td>div{overflow:hidden}\
 .cells .w{white-space:pre-wrap;overflow-wrap:break-word}\
 .cells .ov{overflow:visible}\
-.cells .ov>div{overflow:visible;white-space:pre}\
+.cells .ov>div{overflow:hidden;white-space:pre}\
 .cells a{color:inherit}\
 .shape{position:absolute;display:flex;flex-direction:column;white-space:pre-wrap;line-height:1.2;padding:3px 5px;font-size:11pt}\
 .shape>span{position:relative}\
@@ -143,6 +143,7 @@ pub(crate) fn to_html(data: &[u8], config: &ExcelConfig, view: &ViewConfig, name
         pictures: &pictures.files,
         view,
         ids: std::cell::Cell::new(0),
+        classes: std::cell::RefCell::new(Classes::default()),
     };
     let title = workbook
         .title
@@ -164,6 +165,9 @@ struct Page<'a> {
     view: &'a ViewConfig,
     /// The next id of an arrow head.
     ids: std::cell::Cell<u32>,
+    /// The classes of the cell looks, shared by all the sheets: a class
+    /// name means the same look on every sheet of the page.
+    classes: std::cell::RefCell<Classes>,
 }
 
 impl Page<'_> {
@@ -221,7 +225,9 @@ impl Page<'_> {
         }
         out.push_str("</tr></thead><tbody>");
         let merges = Merges::new(grid, &area);
-        let mut classes = Classes::default();
+        let mut classes = self.classes.borrow_mut();
+        // Only the rules of the looks this sheet adds are written with it.
+        let known = classes.css.len();
         let mut body = String::new();
         for &row in &area.rows {
             let height = area.height(row);
@@ -236,9 +242,10 @@ impl Page<'_> {
         }
         out.push_str(&body);
         out.push_str("</tbody></table>");
-        if !classes.css.is_empty() {
-            let _ = write!(out, "<style>{}</style>", classes.css);
+        if classes.css.len() > known {
+            let _ = write!(out, "<style>{}</style>", &classes.css[known..]);
         }
+        drop(classes);
         for shape in shapes {
             self.shape(out, grid, &area, shape);
         }
@@ -608,7 +615,7 @@ impl Page<'_> {
     }
 }
 
-/// The classes of the looks of a sheet's cells: each look (and
+/// The classes of the looks of the cells of a page: each look (and
 /// alignment) is written once, as a CSS rule, not on every cell.
 #[derive(Default)]
 struct Classes {
@@ -1063,13 +1070,14 @@ mod tests {
     /// A workbook of one sheet, "Data": a bold red title in A1 that runs
     /// over B1, A2:B2 merged on a yellow fill with a border, a hidden
     /// column C, a cell D1 linked to a script, no gridlines, and a picture
-    /// anchored at E2 (two by one inches).
+    /// anchored at E2 (two by one inches); and a second sheet, "Notes",
+    /// whose A1 has the look of the merge and B1 one of its own.
     fn workbook() -> Vec<u8> {
         let sheet = format!(
             r#"<worksheet {NS}><sheetViews><sheetView showGridLines="0"/></sheetViews><cols><col min="3" max="3" width="9" hidden="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>A long title</t></is></c><c r="D1" t="inlineStr"><is><t>Click</t></is></c></row><row r="2" ht="30" customHeight="1"><c r="A2" s="2" t="inlineStr"><is><t>Merged</t></is></c><c r="B2" s="2"/></row></sheetData><mergeCells count="1"><mergeCell ref="A2:B2"/></mergeCells><hyperlinks><hyperlink ref="D1" r:id="rId2"/></hyperlinks><drawing r:id="rId1"/></worksheet>"#
         );
         let styles = format!(
-            r#"<styleSheet {NS}><fonts><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="FFFF0000"/><name val="Calibri"/></font></fonts><fills><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></fills><borders><border/><border><bottom style="thin"><color theme="4" tint="-0.5"/></bottom></border></borders><cellXfs><xf/><xf fontId="1"/><xf fillId="2" borderId="1"><alignment horizontal="center"/></xf></cellXfs></styleSheet>"#
+            r#"<styleSheet {NS}><fonts><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><color rgb="FFFF0000"/><name val="Calibri"/></font></fonts><fills><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></fills><borders><border/><border><bottom style="thin"><color theme="4" tint="-0.5"/></bottom></border></borders><cellXfs><xf/><xf fontId="1"/><xf fillId="2" borderId="1"><alignment horizontal="center"/></xf><xf><alignment vertical="top"/></xf></cellXfs></styleSheet>"#
         );
         let drawing = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:oneCellAnchor><xdr:from><xdr:col>4</xdr:col><xdr:row>1</xdr:row></xdr:from><xdr:ext cx="1828800" cy="914400"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="3" name="Logo"/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill></xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"#;
         let mut png = Vec::new();
@@ -1078,8 +1086,9 @@ mod tests {
             .unwrap();
         let parts: Vec<(String, Vec<u8>)> = vec![
             ("_rels/.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#).into_bytes()),
-            ("xl/workbook.xml".into(), format!(r#"<workbook {NS}><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"#).into_bytes()),
-            ("xl/_rels/workbook.xml.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{REL}/styles" Target="styles.xml"/></Relationships>"#).into_bytes()),
+            ("xl/workbook.xml".into(), format!(r#"<workbook {NS}><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" r:id="rId3"/></sheets></workbook>"#).into_bytes()),
+            ("xl/_rels/workbook.xml.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{REL}/styles" Target="styles.xml"/><Relationship Id="rId3" Type="{REL}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>"#).into_bytes()),
+            ("xl/worksheets/sheet2.xml".into(), format!(r#"<worksheet {NS}><sheetData><row r="1"><c r="A1" s="2" t="inlineStr"><is><t>Note</t></is></c><c r="B1" s="3" t="inlineStr"><is><t>Small</t></is></c></row></sheetData></worksheet>"#).into_bytes()),
             ("xl/styles.xml".into(), styles.into_bytes()),
             ("xl/worksheets/sheet1.xml".into(), sheet.into_bytes()),
             ("xl/worksheets/_rels/sheet1.xml.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/drawing" Target="../drawings/drawing1.xml"/><Relationship Id="rId2" Type="{REL}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/></Relationships>"#).into_bytes()),
@@ -1122,6 +1131,17 @@ mod tests {
         // The picture at E2: after columns A, B and D (48 points each) and
         // the row numbers; under row 1 (15 points) and the letters.
         assert!(html.contains(r#"<img class="pic" style="left:180pt;top:30pt;width:144pt;height:72pt" alt="Logo" src="data:image/png;base64,"#), "{html}");
+        // The classes are the page's: the second sheet's A1 has the class
+        // of the same look on the first, its new look a new class, and no
+        // class is defined twice.
+        let notes = &html[html.find(r#"id="sheet-2""#).unwrap()..];
+        assert!(notes.contains(r#"<td class="k2">"#) && notes.contains(r#"<td class="k3">"#));
+        for name in ["k0", "k1", "k2", "k3"] {
+            assert!(
+                html.matches(&format!(".cells td.{name}{{")).count() <= 1,
+                "{name} twice"
+            );
+        }
     }
 
     #[test]
