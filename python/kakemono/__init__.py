@@ -1,4 +1,4 @@
-"""Convert PDF papers and books, and Word documents (.docx, .doc), into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
+"""Convert PDF papers and books, Word documents (.docx, .doc) and EPUB books (.epub) into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -67,8 +67,9 @@ PngCompression = Literal["fast", "balanced", "high"]
 Equations = Literal["mathml", "image"]
 #: A path to a file, or a string.
 PathArg = Union[str, "os.PathLike[str]"]
-#: A PDF or a Word document (.docx, .doc): its bytes, a path to a file, or
-#: an arXiv id or URL. A Word document has only the friendly HTML mode.
+#: A PDF, a Word document (.docx, .doc) or an EPUB book (.epub): its bytes,
+#: a path to a file, or an arXiv id or URL. A Word document or a book has
+#: only the friendly HTML mode.
 Source = Union[bytes, bytearray, memoryview, PathArg]
 #: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
 Content = Union[Dict[str, Any], PathArg]

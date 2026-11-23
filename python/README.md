@@ -2,7 +2,7 @@
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
 documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval, and Word documents
-into PDFs, from Python. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
+into PDFs, from Python. Word documents (`.docx`, `.doc`) and EPUB books (`.epub`) are inputs too. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
 ```bash
@@ -111,7 +111,7 @@ keeps its own, with a `UserWarning`. The `hard` mode cannot show edited text. A 
 `replace_image` that is a relative path is read from the folder of the edited JSON file (from the
 current folder when `content` is a dict or text).
 
-`to_pdf` lays out a Word document (`.docx`, `.doc`) in pages as Word does and returns the PDF
+`to_pdf` lays out a Word document (`.docx`, `.doc`) or an EPUB book in pages as Word does and returns the PDF
 (with `content`, the edited document); a PDF input is a `ValueError`.
 
 `render_svg(svg, path=None, *, scale=1.0, resources_dir=None)` draws an SVG (a path, or the SVG
