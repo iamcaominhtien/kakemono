@@ -63,3 +63,29 @@ def test_the_entry_goes_on_top_and_a_new_bump_replaces_it():
 
 def test_the_version_files_agree():
     assert len(set(release.versions(release.ROOT).values())) == 1
+
+
+def test_the_description_file_is_read_only_from_the_repository_or_a_temporary_directory(tmp_path, monkeypatch):
+    note = tmp_path / "body.md"
+    note.write_text("text", encoding="utf-8")
+    assert release.read_body(str(note)) == "text"
+    assert release.read_body(None) == ""
+    assert release.read_body(str(release.ROOT / "CHANGELOG.md")).startswith("# Changelog")
+    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO("from stdin"))
+    assert release.read_body("-") == "from stdin"
+    for outside in ("/etc/passwd", str(release.ROOT / ".." / "elsewhere.md")):
+        try:
+            release.read_body(outside)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{outside} was read")
+
+
+def test_a_pull_request_number_is_a_positive_integer():
+    for bad in (0, -3):
+        try:
+            release.pull_request(bad)
+        except SystemExit as e:
+            assert "not a pull request number" in str(e)
+            continue
+        raise AssertionError(f"{bad} was accepted")

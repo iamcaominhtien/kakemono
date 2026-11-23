@@ -28,8 +28,10 @@ import argparse
 import datetime
 import json
 import re
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -230,18 +232,37 @@ def last_release(ref: str = MAIN) -> str:
 
 def pull_request(number: int) -> tuple[str, str]:
     """A pull request's title and description, read with `gh`."""
-    result = subprocess.run(["gh", "pr", "view", str(number), "--json", "title,body"], cwd=ROOT, capture_output=True, text=True, check=False)
+    pr = str(int(number))
+    if not pr.isdigit() or pr == "0":
+        raise SystemExit(f"not a pull request number: {number}")
+    result = subprocess.run(["gh", "pr", "view", pr, "--json", "title,body"], cwd=ROOT, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise SystemExit(f"gh cannot read PR #{number}: {result.stderr.strip()} (give --title and --body-file instead)")
     data = json.loads(result.stdout)
     return data["title"], data.get("body") or ""
 
 
+def read_body(name: str | None) -> str:
+    """The text of a PR description file given on the command line: `-` is the
+    standard input, any other file must be in the repository or in a temporary
+    directory (where CI writes it)."""
+    if not name:
+        return ""
+    if name == "-":
+        return sys.stdin.read()
+    path = os.path.realpath(name)
+    bases = [str(ROOT), tempfile.gettempdir(), os.environ.get("RUNNER_TEMP", "")]
+    if not any(base and path.startswith(os.path.realpath(base) + os.sep) for base in bases):
+        raise SystemExit(f"{name}: the description file must be in the repository or in a temporary directory (or - for the standard input)")
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 def cmd_bump(args: argparse.Namespace) -> int:
     """Writes the version a pull request's title asks for, and its entry."""
     if args.title:
         title = args.title
-        body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else ""
+        body = read_body(args.body_file)
     else:
         title, body = pull_request(args.pr)
     change = parse(title, body, args.pr)
@@ -258,7 +279,7 @@ def cmd_bump(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """Fails when the pull request does not hold the version its title asks
     for, or when the files disagree."""
-    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else ""
+    body = read_body(args.body_file)
     change = parse(args.title, body)
     found = versions(ROOT)
     problems = []
@@ -287,7 +308,7 @@ def main() -> int:
     p = sub.add_parser("bump", help="write the version a PR's title asks for, and its CHANGELOG.md entry")
     p.add_argument("--pr", type=int, help="the pull request's number (its title and description are read with gh)")
     p.add_argument("--title", help="the PR title, instead of reading it with gh")
-    p.add_argument("--body-file", help="the PR description, with --title")
+    p.add_argument("--body-file", help="the PR description, with --title (- for the standard input)")
     p = sub.add_parser("check", help="fail unless the version is the one the PR title asks for")
     p.add_argument("--title", required=True)
     p.add_argument("--body-file", help="the PR description")
