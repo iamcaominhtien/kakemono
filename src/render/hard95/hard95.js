@@ -221,6 +221,9 @@
   var main=doc.querySelector('.pages');
   if(main)mo.observe(main,{subtree:true,childList:true,characterData:true});
   window.kakemonoFitAll=function(){pages.forEach(fitPage);};
+  // Pages are fitted as they come near the screen; printing (or saving as
+  // PDF) lays out every page, so those never scrolled to are fitted first.
+  window.addEventListener('beforeprint',window.kakemonoFitAll);
 
   var root=doc.documentElement,zoom=1.5;
   function set(z){zoom=clamp(z,0.5,4);root.style.setProperty('--zoom',zoom);doc.body.classList.remove('fit');}

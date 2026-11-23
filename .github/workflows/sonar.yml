@@ -87,7 +87,7 @@ jobs:
           . .venv/bin/activate
           pip install --only-binary :all: --require-hashes -r python/requirements-dev.txt
           maturin develop --release -m python/Cargo.toml
-          pytest python/tests --cov=python/kakemono --cov=scripts --cov-report=xml:coverage-python.xml
+          pytest python/tests scripts/tests --cov=python/kakemono --cov=scripts --cov-report=xml:coverage-python.xml
 
       - name: SonarQube scan
         if: env.SONAR_TOKEN != ''
