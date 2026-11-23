@@ -4,12 +4,12 @@ build-backend = "maturin"
 
 [project]
 name = "kakemono"
-description = "Convert PDF papers and books into clean, readable HTML (pure Rust, no poppler or mupdf)"
+description = "Convert PDF and Word documents to HTML, Markdown, EPUB, LaTeX and JSON"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "Cao Minh Tiến" }]
-keywords = ["pdf", "html", "arxiv", "converter", "papers"]
+keywords = ["pdf", "docx", "document-conversion", "arxiv", "html", "markdown", "epub", "latex", "json", "rag"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
