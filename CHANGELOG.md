@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.16.1](https://github.com/iamcaominhtien/kakemono/compare/v0.16.0...v0.16.1) - 2026-11-23
+
+### Documentation
+
+- Streamline README and skip CI for documentation-only PRs ([#32](https://github.com/iamcaominhtien/kakemono/pull/32))
+
+- Shorten the README and preserve detailed documentation in a linked guide.
+- Clarify how edited JSON applies to Word page-layout outputs.
+- Update crate and Python package descriptions and PyPI keywords to reflect supported formats. Published package metadata will update with the next release.
+- Skip the builds and tests on pull requests that only change the documentation. `scripts/ci_changes.py` decides it: Markdown at the root, `docs/`, `python/README.md` or `LICENSE`, plus the release such a pull request carries (the version and metadata of `Cargo.toml` and `python/pyproject.toml`, the kakemono version in `Cargo.lock`). Lint, tests, Word fidelity, SonarQube and the Python tests and wheels are then skipped; the title and version check still runs.
+
 ## [0.16.0](https://github.com/iamcaominhtien/kakemono/compare/v0.15.3...v0.16.0) - 2026-11-23
 
 ### Added

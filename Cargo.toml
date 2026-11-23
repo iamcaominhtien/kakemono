@@ -1,8 +1,8 @@
 [package]
 name = "kakemono"
-version = "0.16.0"
+version = "0.16.1"
 edition = "2024"
-description = "Convert scientific-paper PDFs (arXiv) and Word documents into clean, readable HTML in four fidelity modes, Word documents, Markdown, LaTeX or EPUB books"
+description = "Convert PDF and Word documents to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
 repository = "https://github.com/iamcaominhtien/kakemono"
 documentation = "https://docs.rs/kakemono"
 readme = "README.md"
