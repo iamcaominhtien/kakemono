@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.15.3](https://github.com/iamcaominhtien/kakemono/compare/v0.15.2...v0.15.3) - 2026-11-23
+
+### Build and CI
+
+- Speed up the SonarQube coverage job
+
+The SonarQube job took about 16 minutes: 10 for the Rust coverage, 4 for the Python coverage. Two causes, both fixed here.
+
+##### Each real paper is analysed once
+
+Each test of `tests/real_papers.rs` loaded and analysed its paper again: the LIGO paper 12 times, Adam 6, GPT-4 at least 4. Under `cargo llvm-cov` the analysis is about 7 times slower than in `cargo test`, so this one file took 7 minutes of the job (419 s, against 62 s in the CI test job).
+
+The papers are now loaded and analysed once (a `OnceLock` per paper) and shared by every test; different papers are still analysed in parallel, and a test that changes the analysis works on a copy. Measured on 4 cores:
+
+| `tests/real_papers.rs` | Before | After |
+| --- | --- | --- |
+| with coverage (`cargo llvm-cov`) | 589 s | 85 s |
+| without (`cargo test`) | 63 s | 56 s |
+
+The coverage is the same (21 917 of 40 666 lines) and the snapshots are unchanged.
+
+##### The Python binding's build is cached
+
+`python/` is a separate crate with its own target directory, which `rust-cache` did not keep: the binding and all its dependencies were built from scratch on every run (4 min). `python/target` is now cached too; with the dependencies cached the release build takes about 1 minute. (A debug build was tried and is slower: 442 s from scratch and 82 s cached, against 238 s and 56 s, because of its debug info.) The first run after this change fills the new cache, so the gain shows from the second run.
+
 ## [0.15.2](https://github.com/iamcaominhtien/kakemono/compare/v0.15.1...v0.15.2) - 2026-11-23
 
 ### Fixed
