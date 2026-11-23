@@ -38,8 +38,10 @@ const CONTAINER: &str = "META-INF/container.xml";
 const OPF_NS: &str = "http://www.idpf.org/2007/opf";
 /// Namespace of Dublin Core (`dc:`), in the metadata of the package.
 const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
-/// Media types of the content documents read from the spine.
-const CONTENT_TYPES: [&str; 2] = ["application/xhtml+xml", "text/html"];
+/// Media types of the content documents read from the spine: XHTML, and
+/// SVG (a page of a comic or a picture book), whose drawing or picture
+/// becomes a figure.
+const CONTENT_TYPES: [&str; 3] = ["application/xhtml+xml", "text/html", "image/svg+xml"];
 /// Most nodes in one XML document: no limit, as for a Word document (a
 /// long chapter is one document).
 const MAX_XML_NODES: u32 = u32::MAX;

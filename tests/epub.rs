@@ -50,8 +50,9 @@ fn href<'a>(block: &'a Block, text: &str) -> Option<&'a str> {
         .as_deref()
 }
 
-/// An EPUB of the content documents `chapters` (name, XHTML body), with
-/// the style sheet `css` and the files `files`.
+/// An EPUB of the content documents `chapters` (name, XHTML body; a name
+/// ending in `.svg` is an SVG document, given whole), with the style
+/// sheet `css` and the files `files`.
 fn book(chapters: &[(&str, &str)], css: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut entries: Vec<(String, Vec<u8>)> = vec![
         ("mimetype".into(), b"application/epub+zip".to_vec()),
@@ -62,11 +63,14 @@ fn book(chapters: &[(&str, &str)], css: &str, files: &[(&str, &[u8])]) -> Vec<u8
     ];
     let manifest: String = chapters
         .iter()
-        .map(|(name, _)| format!(r#"<item id="{name}" href="{name}.xhtml" media-type="application/xhtml+xml"/>"#))
+        .map(|(name, _)| match name.strip_suffix(".svg") {
+            Some(id) => format!(r#"<item id="{id}" href="{name}" media-type="image/svg+xml"/>"#),
+            None => format!(r#"<item id="{name}" href="{name}.xhtml" media-type="application/xhtml+xml"/>"#),
+        })
         .collect();
     let spine: String = chapters
         .iter()
-        .map(|(name, _)| format!(r#"<itemref idref="{name}"/>"#))
+        .map(|(name, _)| format!(r#"<itemref idref="{}"/>"#, name.trim_end_matches(".svg")))
         .collect();
     entries.push((
         "OEBPS/content.opf".into(),
@@ -76,6 +80,10 @@ fn book(chapters: &[(&str, &str)], css: &str, files: &[(&str, &[u8])]) -> Vec<u8
         .into_bytes(),
     ));
     for (name, body) in chapters {
+        if name.ends_with(".svg") {
+            entries.push((format!("OEBPS/{name}"), body.as_bytes().to_vec()));
+            continue;
+        }
         entries.push((
             format!("OEBPS/{name}.xhtml"),
             format!(
@@ -364,6 +372,27 @@ fn book_pictures_come_from_the_archive() {
     assert!((image.rect.width() - 150.0).abs() < 0.5);
     assert!(image.rect.height() > 0.0, "the height follows the picture's shape");
     assert_eq!(doc.pictures.len(), 2, "the picture file and the drawing");
+}
+
+#[test]
+fn svg_pages_of_the_spine_are_pictures() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let linked = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="300" height="200"><image width="300" height="200" xlink:href="curve.png"/></svg>"#;
+    let drawn =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>"#;
+    let data = book(
+        &[("page1.svg", linked), ("page2.svg", drawn)],
+        "",
+        &[("curve.png", &png)],
+    );
+    let doc = Paper::from_bytes(data).unwrap().analyze().doc;
+    let figures = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { image: Some(_), .. }))
+        .count();
+    assert_eq!(figures, 2, "one figure per page");
+    assert!(doc.pictures[0].data.starts_with(b"\x89PNG"));
 }
 
 #[test]
