@@ -34,7 +34,12 @@ Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB
 
 ##### Performance
 
-- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) reads each font once instead of once per new piece of text: a book in Devanagari (the Mahabharata sample, 3,767 pages) is laid out in 17 s instead of 35 s, and Word documents 4–30% faster, with the same PDF.
+- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) is faster, with byte-for-byte the same PDF:
+  - each font is read once, instead of once per new piece of text (rustybuzz parses the font's substitution and positioning tables each time it reads it);
+  - a shaping plan is made once per font, script and direction, instead of once per piece of text;
+  - the font of a run is resolved once per piece of text, instead of once per character.
+
+  A book in Devanagari (the Mahabharata sample, 3,767 pages) is laid out in about 16 s instead of 35 s; measured in instructions, the layout of its first 150 chapters takes 35% fewer after the font fix. Word documents are 4–30% faster.
 
 ##### Fixed
 
