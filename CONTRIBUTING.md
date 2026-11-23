@@ -37,15 +37,21 @@ anything else → patch.
 
 A PR therefore carries its own version and changelog entry:
 
-1. Open the PR, then run on its branch:
+1. Open the PR. The PR workflow writes the version and the entry and pushes them onto the
+   PR's branch as a `chore(release): vX.Y.Z` commit, again whenever the title or the
+   description changes. It needs the `RELEASE_TOKEN` secret: a token that may push to the
+   repository (a fine-grained token with "Contents: read and write"), because a commit pushed
+   with the workflow's own token would not start the other workflows. Pull the branch before
+   pushing more commits to it.
+2. Without the secret, or on a PR from a fork, run it by hand on the PR's branch:
 
        python3 scripts/release.py bump --pr <number>
 
    It reads the PR's title and description with `gh`, works out the version from the last
    `vX.Y.Z` tag and the title, writes it into `Cargo.toml` and `Cargo.lock`, and writes the
    entry at the top of `CHANGELOG.md`. Commit it (`chore(release): vX.Y.Z`) and push. Without
-   `gh`: `--title "fix(tables): ..." --body-file description.md`.
-2. Run it again after changing the title or the description: it rewrites the same entry.
+   `gh`: `--title "fix(tables): ..." --body-file description.md`. Run it again after changing
+   the title or the description: it rewrites the same entry.
 3. The PR workflow fails while the version is not the one the title asks for, or
    `CHANGELOG.md` has no entry for it.
 4. On merge, `.github/workflows/release.yml` tags the merged commit `vX.Y.Z` and creates the

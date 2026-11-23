@@ -159,7 +159,9 @@ committing.
   A PR that mixes kinds gets every label that applies. If a PR fits none of these (for example
   CI only, or refactoring only), create a short, lowercase label that names it (`ci`,
   `refactor`, `tests`) rather than leaving the PR unlabelled.
-- **Version:** every PR carries its release. After creating it, run
+- **Version:** every PR carries its release. The PR workflow pushes the
+  `chore(release): vX.Y.Z` commit itself when the `RELEASE_TOKEN` secret is set: fetch and
+  merge the branch before pushing to it again. Otherwise, after creating the PR, run
   `python3 scripts/release.py bump --pr <N>` (or `--title ... --body-file ...` when `gh` cannot
   read the PR), commit `chore(release): vX.Y.Z` and push; again after changing the title or the
   description. Never tag or edit the version by hand (CONTRIBUTING.md, "Releases").
