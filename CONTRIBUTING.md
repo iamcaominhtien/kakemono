@@ -66,6 +66,17 @@ description, cleaned first:
 
 So write the description for users: what changed and why, with numbers where they help.
 
+## Pull requests that only change the documentation
+
+`scripts/ci_changes.py` decides whether a PR changes anything the build or the tests read. When
+it does not, CI (lint, tests, Word fidelity), SonarQube and the Python tests and wheels are
+skipped; the "Title and version" check still runs, since such a PR is released too. A PR counts
+as documentation only when every file it changes is a Markdown file at the root, a file under
+`docs/`, `python/README.md` or `LICENSE`, apart from `Cargo.toml` and `python/pyproject.toml`
+changed only in their package metadata (version, description, keywords, ...) and `Cargo.lock`
+changed only in the version of kakemono. Markdown read by the tests (`tests/data/word/*.md`) or
+next to the code (`src/**/README.md`) is code.
+
 ## Code quality: SonarQube Cloud
 
 `.github/workflows/sonar.yml` sends each push to `main` and each pull request to SonarQube Cloud,
