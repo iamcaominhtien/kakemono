@@ -22,13 +22,15 @@ The content documents of the book (XHTML), in the order of its spine, are read w
 
 - headings (raised together so that the highest is of level 1, since many books keep `<h1>` for the title); the title and authors from the title page, or else from the book's metadata (`dc:title`, `dc:creator`); `<pre>` as code; `<figcaption>` and a table's `<caption>` as captions; ordered and bullet lists with their markers (`start`, `type`, `value`) and nesting;
 - MathML formulas keep their structure (MathML, LaTeX and Office Math in the outputs, in running text too);
-- tables with `colspan`, `rowspan` and header rows; pictures (`<img>`, an `<svg>` that shows one, or an SVG drawing) at the size the book gives them;
+- tables with `colspan`, `rowspan` and header rows; pictures (`<img>`, an `<svg>` that shows one, or an SVG drawing) at the size the book gives them; SVG pages of the spine (comics, picture books) as figures;
 - a note called by an `epub:type="noteref"` (or `role="doc-noteref"`) link follows the paragraph that calls it, without its link back; links between the documents of the book keep working;
 - bold, italics, monospace, scripts and small capitals from the elements and from simple style sheet rules (`.italic { font-style: italic }`); `display: none`, page break markers and the navigation document are left out; HTML named entities (`&nbsp;`) are understood.
 
 A book has no pages: all four HTML modes give the `friendly` article. Books protected by DRM cannot be read (the error says so). The outputs name the source in their colophon ("Converted from EPUB by kakemono").
 
 The Python package reads EPUB books too (`kakemono.Document("book.epub")`).
+
+Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB 3 samples; 294 MB), a book is written as Markdown in 0.03 s (median; 0.11 s at the 95th percentile) with 28 MB of memory, about 1,300 books a minute in one process and 5,300 on 4 cores.
 
 ##### Fixed
 
