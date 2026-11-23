@@ -178,8 +178,8 @@ pub(crate) fn read_book(
             .read_text(path)?
             .with_context(|| format!("the EPUB has no content document {path}"))?;
         // A document with HTML's named references parses once they are
-        // numbers.
-        let text = if parse(&text).is_err() {
+        // numbers (parsed twice only then: most documents have none).
+        let text = if entities::has_html_names(&text) && parse(&text).is_err() {
             entities::to_numeric(&text)
         } else {
             text

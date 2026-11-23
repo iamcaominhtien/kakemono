@@ -102,6 +102,13 @@ const OTHERS: [(&str, u32); 62] = [
     ("ge", 0x2265),
 ];
 
+/// Whether `text` has a named reference that XML does not define.
+pub(crate) fn has_html_names(text: &str) -> bool {
+    NAMED
+        .captures_iter(text)
+        .any(|captures| !XML_NAMES.contains(&&captures[1]))
+}
+
 /// `text` with every named reference of HTML written as a numeric one; an
 /// unknown name is kept as text (`&amp;name;`).
 pub(crate) fn to_numeric(text: &str) -> String {
@@ -136,7 +143,7 @@ fn code_point(name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::to_numeric;
+    use super::{has_html_names, to_numeric};
 
     #[test]
     fn html_names_become_numbers() {
@@ -144,5 +151,7 @@ mod tests {
             to_numeric("a&nbsp;b &eacute; &amp; &Omega;&mdash;&bogus;"),
             "a&#160;b &#233; &amp; &#937;&#8212;&amp;bogus;"
         );
+        assert!(has_html_names("a&nbsp;b"));
+        assert!(!has_html_names("a &amp; b &lt; c"));
     }
 }
