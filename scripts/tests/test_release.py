@@ -63,3 +63,58 @@ def test_the_entry_goes_on_top_and_a_new_bump_replaces_it():
 
 def test_the_version_files_agree():
     assert len(set(release.versions(release.ROOT).values())) == 1
+
+
+def test_the_description_file_is_read_only_from_the_repository_or_a_temporary_directory(tmp_path, monkeypatch):
+    note = tmp_path / "body.md"
+    note.write_text("text", encoding="utf-8")
+    assert release.read_body(str(note)) == "text"
+    assert release.read_body(None) == ""
+    assert release.read_body(str(release.ROOT / "CHANGELOG.md")).startswith("# Changelog")
+    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO("from stdin"))
+    assert release.read_body("-") == "from stdin"
+    for outside in ("/etc/passwd", str(release.ROOT / ".." / "elsewhere.md")):
+        try:
+            release.read_body(outside)
+        except SystemExit:
+            continue
+        raise AssertionError(f"{outside} was read")
+
+
+def test_a_pull_request_number_is_a_positive_integer():
+    for bad in (0, -3):
+        try:
+            release.pull_request(bad)
+        except SystemExit as e:
+            assert "not a pull request number" in str(e)
+            continue
+        raise AssertionError(f"{bad} was accepted")
+
+
+def test_gh_is_asked_for_the_pull_request(monkeypatch):
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, stdout='{"title": "fix: a", "body": "b"}', stderr="")
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+    assert release.pull_request(28) == ("fix: a", "b")
+    assert seen == [["gh", "pr", "view", "28", "--json", "title,body"]]
+
+
+def test_bump_and_check_read_the_description_file(tmp_path, monkeypatch):
+    import argparse
+    import shutil
+
+    for name in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md"):
+        shutil.copy(release.ROOT / name, tmp_path / name)
+    note = tmp_path / "body.md"
+    note.write_text("The cover turns.\n", encoding="utf-8")
+    monkeypatch.setattr(release, "ROOT", tmp_path)
+    monkeypatch.setattr(release, "last_release", lambda ref=release.MAIN: "0.1.0")
+    args = argparse.Namespace(title="feat(book): turn the cover", body_file=str(note), pr=21)
+    assert release.cmd_bump(args) == 0
+    assert set(release.versions(tmp_path).values()) == {"0.2.0"}
+    assert "The cover turns." in (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert release.cmd_check(args) == 0

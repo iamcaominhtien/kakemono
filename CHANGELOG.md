@@ -6,6 +6,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.16.0](https://github.com/iamcaominhtien/kakemono/compare/v0.15.3...v0.16.0) - 2026-11-23
+
+### Added
+
+- *(python)* Add Document, render_svg, read_formula and to_pdf ([#31](https://github.com/iamcaominhtien/kakemono/pull/31))
+
+The Python package can now do everything the command line does, and it writes several outputs of one document up to twice as fast. Closes #30.
+
+##### `render_svg`: draw an SVG as a PNG
+
+`kakemono.render_svg(svg, path=None, *, scale=1.0, resources_dir=None)` does what `kakemono render-svg` does, with the same renderer and fonts (the system's and those of `KAKEMONO_FONT_DIRS`). `svg` is a path, or the SVG as text or bytes. The function returns the PNG's bytes, and also writes them to `path` when it is given. Pictures named by relative paths are read from the SVG's folder, or from `resources_dir`. An SVG it cannot draw raises a `ValueError` that says what is wrong (`cannot draw the SVG: ...`). The fonts are loaded once per process, so drawing many previews from Python costs less than running the program each time.
+
+##### `to_pdf` and `read_formula`
+
+- `kakemono.to_pdf("report.docx", "report.pdf")` lays out a Word document in pages as Word does, like `convert -o x.pdf`. With `content`, it lays out the edited document.
+- `kakemono.read_formula(image)` reads a picture of a formula (PNG or JPEG, black on white, as LaTeX renders it) and returns its MathML, like `kakemono formula`. It returns `None` when the formula cannot be read with confidence.
+
+##### `Document`: analyse once, write every format
+
+Each module function reads and analyses its input again. Translating a paper this way (`to_json`, then six outputs with `content`) analyses it seven times. A `Document` is analysed once, and its methods (`convert`, `convert_all`, `to_docx`, `to_markdown`, `to_json`, `to_latex`, `to_epub`, `to_chunks`, `to_pdf`, `analyze`) all reuse that analysis. They take the same options as the functions, except the options of the analysis (`tables`, `jobs`, `png_compression`, `content`), which are given when the document is opened:
+
+```python
+doc = kakemono.Document("paper.pdf")
+content = doc.to_json("paper.json")
+### ... translate content ...
+vi = kakemono.Document("paper.pdf", content=content)
+vi.convert("hard-95"); vi.to_docx("paper.vi.docx"); vi.to_epub("paper.vi.epub")
+```
+
+Six outputs (friendly, hard-95, Word, Markdown, LaTeX, EPUB) with edited content, measured on 4 cores:
+
+| Paper | One function per output | One `Document` |
+| --- | --- | --- |
+| LIGO (16 pages) | 2.07 s | 1.07 s |
+| Attention (15 pages) | 2.48 s | 1.79 s |
+| GPT-4 (100 pages) | 6.66 s | 3.37 s |
+
+The module functions are unchanged and give the same output: each one now opens a `Document` and writes one output from it. A `Document` can be used from several threads at once, and the GIL is released while it works.
+
+##### `replace_image` next to the edited JSON
+
+When `content` is a path, a figure's `replace_image` given as a relative path is now read from the folder of that JSON file, as `--content` does on the command line. Before, the picture was not replaced, and a warning said so. When `content` is a dict or JSON text, relative paths are read from the current folder.
+
+## [0.15.3](https://github.com/iamcaominhtien/kakemono/compare/v0.15.2...v0.15.3) - 2026-11-23
+
+### Build and CI
+
+- Speed up the SonarQube coverage job
+
+The SonarQube job took about 16 minutes: 10 for the Rust coverage, 4 for the Python coverage. Two causes, both fixed here.
+
+##### Each real paper is analysed once
+
+Each test of `tests/real_papers.rs` loaded and analysed its paper again: the LIGO paper 12 times, Adam 6, GPT-4 at least 4. Under `cargo llvm-cov` the analysis is about 7 times slower than in `cargo test`, so this one file took 7 minutes of the job (419 s, against 62 s in the CI test job).
+
+The papers are now loaded and analysed once (a `OnceLock` per paper) and shared by every test; different papers are still analysed in parallel, and a test that changes the analysis works on a copy. Measured on 4 cores:
+
+| `tests/real_papers.rs` | Before | After |
+| --- | --- | --- |
+| with coverage (`cargo llvm-cov`) | 589 s | 85 s |
+| without (`cargo test`) | 63 s | 56 s |
+
+The coverage is the same (21 917 of 40 666 lines) and the snapshots are unchanged.
+
+##### The Python binding's build is cached
+
+`python/` is a separate crate with its own target directory, which `rust-cache` did not keep: the binding and all its dependencies were built from scratch on every run (4 min). `python/target` is now cached too; with the dependencies cached the release build takes about 1 minute. (A debug build was tried and is slower: 442 s from scratch and 82 s cached, against 238 s and 56 s, because of its debug info.) The first run after this change fills the new cache, so the gain shows from the second run.
+
+## [0.15.2](https://github.com/iamcaominhtien/kakemono/compare/v0.15.1...v0.15.2) - 2026-11-23
+
+### Fixed
+
+- *(hard-95)* Fit every page before printing ([#28](https://github.com/iamcaominhtien/kakemono/pull/28))
+
+A hard-95 page fits its text when it comes near the screen, so printing or saving as PDF from the browser laid out every page that had never been scrolled to without fitting it. Edited or translated text longer than the original then wrapped onto extra lines (headings above all) and overlapped the text below.
+
+The page now fits every page just before printing (`beforeprint`), so Ctrl+P / "Save as PDF" gives the same pages as the screen. An HTML file written by an earlier version can be fixed the same way by running `kakemonoFitAll()` in the browser console before printing.
+
+#### Release script
+
+`scripts/release.py` now checks what it is given: the PR number must be a positive integer, and `--body-file` must be a file in the repository or in a temporary directory (or `-` for the standard input). SonarCloud counted both as vulnerabilities (3 issues), which failed the quality gate of `main`. The SonarQube job now also runs the tests of the release script, which it measured at 0% coverage.
+
 ## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
 
 ### Fixed

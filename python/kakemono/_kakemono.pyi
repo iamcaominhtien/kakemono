@@ -2,85 +2,63 @@ from typing import List, Optional, Tuple
 
 __version__: str
 
-def convert(
-    pdf: bytes,
-    modes: List[str],
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    page_image: str = "svg",
-    embed_fonts: bool = True,
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    content: Optional[str] = None,
-) -> List[str]: ...
-def to_docx(
-    pdf: bytes,
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    image_dir: Optional[str] = None,
-    content: Optional[str] = None,
-) -> Tuple[bytes, List[Tuple[str, bytes]]]: ...
-def to_markdown(
-    pdf: bytes,
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    image_dir: str = "images",
-    inline_images: bool = False,
-    content: Optional[str] = None,
-    mode: str = "friendly",
-) -> Tuple[str, List[Tuple[str, bytes]]]: ...
-def to_json(
-    pdf: bytes,
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    image_dir: str = "images",
-    inline_images: bool = False,
-    content: Optional[str] = None,
-) -> Tuple[str, List[Tuple[str, bytes]]]: ...
-def to_latex(
-    pdf: bytes,
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    image_dir: str = "images",
-    content: Optional[str] = None,
-) -> Tuple[str, List[Tuple[str, bytes]]]: ...
-def to_epub(
-    pdf: bytes,
-    *,
-    source: Optional[str] = None,
-    tables: bool = True,
-    equations: str = "mathml",
-    scale: float = 3.0,
-    jobs: int = 0,
-    png_compression: str = "balanced",
-    max_math_width_em: float = 20.0,
-    cover: bool = True,
-    modified: Optional[str] = None,
-    content: Optional[str] = None,
-) -> bytes: ...
-def analyze(pdf: bytes, *, tables: bool = True, jobs: int = 0) -> str: ...
+class Document:
+    def __init__(
+        self,
+        data: bytes,
+        *,
+        source: Optional[str] = None,
+        tables: bool = True,
+        jobs: int = 0,
+        png_compression: str = "balanced",
+        content: Optional[str] = None,
+        content_dir: Optional[str] = None,
+    ) -> None: ...
+    @property
+    def format(self) -> str: ...
+    @property
+    def page_count(self) -> int: ...
+    def convert(
+        self,
+        modes: List[str],
+        *,
+        equations: str = "mathml",
+        page_image: str = "svg",
+        embed_fonts: bool = True,
+        scale: float = 3.0,
+    ) -> List[str]: ...
+    def to_docx(
+        self, *, equations: str = "mathml", scale: float = 3.0, image_dir: Optional[str] = None
+    ) -> Tuple[bytes, List[Tuple[str, bytes]]]: ...
+    def to_markdown(
+        self,
+        *,
+        equations: str = "mathml",
+        scale: float = 3.0,
+        image_dir: str = "images",
+        inline_images: bool = False,
+        mode: str = "friendly",
+    ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+    def to_json(
+        self, *, equations: str = "mathml", scale: float = 3.0, image_dir: str = "images", inline_images: bool = False
+    ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+    def to_latex(
+        self, *, equations: str = "mathml", scale: float = 3.0, image_dir: str = "images"
+    ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+    def to_epub(
+        self,
+        *,
+        equations: str = "mathml",
+        scale: float = 3.0,
+        max_math_width_em: float = 20.0,
+        cover: bool = True,
+        modified: Optional[str] = None,
+    ) -> bytes: ...
+    def to_chunks(self, *, max_tokens: int = 512, tokenizer: Optional[str] = None) -> str: ...
+    def to_pdf(self) -> bytes: ...
+    def analyze(self) -> str: ...
+
+def render_svg(svg: str, *, scale: float = 1.0, resources_dir: Optional[str] = None) -> bytes: ...
+def read_formula(image: bytes) -> Optional[str]: ...
 def parse_arxiv_id(text: str) -> Optional[str]: ...
 def fetch_arxiv(id: str) -> bytes: ...
