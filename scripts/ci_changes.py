@@ -104,7 +104,7 @@ SAME = {
 
 # A commit given on the command line: a hash, or a branch or tag name, which
 # cannot start with `-` (git would take it for an option).
-REVISION = re.compile(r"[0-9A-Za-z_][0-9A-Za-z_./-]*")
+REVISION = re.compile(r"\w[\w./-]*", re.ASCII)
 # A full commit hash (SHA-1 or SHA-256), as `git rev-parse` prints it.
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
