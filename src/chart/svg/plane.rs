@@ -11,6 +11,7 @@ use crate::chart::{
     Axis, AxisKind, AxisPosition, Categories, Chart, ChartKind, Grouping, LabelPosition, PlotGroup, Series,
 };
 use crate::excel::numfmt::{self, NumFmt};
+use std::fmt::Write as _;
 use std::ops::Range;
 
 /// The most bars drawn; past it, categories are gathered into buckets.
@@ -27,6 +28,13 @@ const MARKER_SPACING_PT: f32 = 6.0;
 pub(super) const MARKER_RADIUS_PT: f32 = 3.0;
 /// The width of a line, in points: 2 pixels.
 pub(super) const LINE_WIDTH_PT: f32 = 1.5;
+/// The length of a dash of a dashed line, as a ratio of its width.
+const DASH_RATIO: f32 = 3.0;
+/// The gap between two dashes of a dashed line, as a ratio of its width.
+const DASH_GAP_RATIO: f32 = 2.0;
+/// The divisor of the neighbours' difference that gives a smoothed line's
+/// tangent at a point (Catmull-Rom as Bézier curves).
+const SPLINE_DIVISOR: f32 = 6.0;
 /// A value axis along the height has a tick every this many points,
 /// about.
 pub(super) const TICK_SPACING_PT: f32 = 20.0;
@@ -951,6 +959,7 @@ fn lines(
             .unwrap_or_default();
         let mut path = PathData::new();
         let mut dots = Vec::new();
+        let mut runs: Vec<Vec<(f32, f32)>> = vec![Vec::new()];
         for bucket in 0..buckets.count {
             let along = frame.center(bucket);
             let values: Vec<f64> = if grouping == Grouping::Standard {
@@ -966,16 +975,25 @@ fn lines(
             };
             if values.is_empty() {
                 path.gap();
+                runs.push(Vec::new());
                 continue;
             }
             for value in values {
                 let at = frame.point(along, frame.value(scale, value));
                 path.point(at);
+                if let Some(run) = runs.last_mut() {
+                    run.push(at);
+                }
                 dots.push(at);
             }
         }
         if series.line {
-            out.path("line", &path.into_string(), &line_attrs(series));
+            let data = if series.smooth {
+                smooth_path(&runs)
+            } else {
+                path.into_string()
+            };
+            out.path("line", &data, &line_attrs(series));
         }
         if series.markers && markers_fit && dots.len() <= *budget {
             *budget -= dots.len();
@@ -1334,11 +1352,57 @@ fn scatter_marks(out: &mut Svg, series: &[(&Series, Pairs)], to_point: impl Fn((
 
 /// The attributes of the line of `series`.
 fn line_attrs(series: &Series) -> String {
+    let dashes = if series.dashed {
+        format!(
+            r#" stroke-dasharray="{} {}""#,
+            num(LINE_WIDTH_PT * DASH_RATIO),
+            num(LINE_WIDTH_PT * DASH_GAP_RATIO)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        r#"fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="round" stroke-linecap="round""#,
+        r#"fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="round" stroke-linecap="round"{dashes}"#,
         hex(series.color),
         num(LINE_WIDTH_PT)
     )
+}
+
+/// The path data of lines through each of `runs` (the points between two
+/// gaps), smoothed: a cubic curve between two points, its tangents those
+/// of a Catmull-Rom spline.
+fn smooth_path(runs: &[Vec<(f32, f32)>]) -> String {
+    let mut data = String::new();
+    for run in runs.iter().filter(|run| !run.is_empty()) {
+        if !data.is_empty() {
+            data.push(' ');
+        }
+        let _ = write!(data, "M {} {}", num(run[0].0), num(run[0].1));
+        for index in 1..run.len() {
+            let before = run[index.saturating_sub(2)];
+            let (start, end) = (run[index - 1], run[index]);
+            let after = run[(index + 1).min(run.len() - 1)];
+            let first = (
+                start.0 + (end.0 - before.0) / SPLINE_DIVISOR,
+                start.1 + (end.1 - before.1) / SPLINE_DIVISOR,
+            );
+            let second = (
+                end.0 - (after.0 - start.0) / SPLINE_DIVISOR,
+                end.1 - (after.1 - start.1) / SPLINE_DIVISOR,
+            );
+            let _ = write!(
+                data,
+                " C {} {} {} {} {} {}",
+                num(first.0),
+                num(first.1),
+                num(second.0),
+                num(second.1),
+                num(end.0),
+                num(end.1)
+            );
+        }
+    }
+    data
 }
 
 /// Draws the tick labels and titles of the axes of a scatter chart.

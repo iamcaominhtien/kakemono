@@ -125,6 +125,8 @@ fn read_series(
         markers: false,
         labels: DataLabels::default(),
         line: false,
+        dashed: false,
+        smooth: false,
     }
 }
 

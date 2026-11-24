@@ -121,7 +121,8 @@ fn chart_space(root: Node<'_, '_>, theme: &Theme, config: &ChartConfig) -> Chart
             .collect();
         chart.axes = kids(plot).filter_map(|node| axis(node, &mut limits)).collect();
     }
-    chart.legend = chart_el(chart_node, "legend").map(|legend| legend_position(val(legend, "legendPos")));
+    chart.legend = chart_el(chart_node, "legend")
+        .map(|legend| placed_legend(legend).unwrap_or_else(|| legend_position(val(legend, "legendPos"))));
     chart.plot_visible_only = flag(chart_node, "plotVisOnly").unwrap_or(false);
     let title = chart_el(chart_node, "title")
         .and_then(|title| title_text(title, &mut limits).or_else(|| automatic_title(chart_node, &chart)));
@@ -341,6 +342,12 @@ fn read_series(
         point_colors,
         markers: symbol.map_or(group_markers, |symbol| symbol != "none"),
         line: line_like && !no_line && !matches!(scatter_style, "marker" | "none"),
+        dashed: props
+            .and_then(|props| child(props, DRAWING_NS, "ln"))
+            .and_then(|ln| child(ln, DRAWING_NS, "prstDash"))
+            .and_then(|dash| dash.attribute("val"))
+            .is_some_and(|dash| dash != "solid"),
+        smooth: matches!(kind, ChartKind::Line { .. }) && flag(ser, "smooth").unwrap_or(false),
         labels: chart_el(ser, "dLbls")
             .or_else(|| chart_el(group, "dLbls"))
             .map(|node| data_labels(node, count))
@@ -629,6 +636,38 @@ fn axis_id(text: &str) -> Option<u32> {
     text.parse::<u32>()
         .ok()
         .or_else(|| text.parse::<i32>().ok().map(|id| id.cast_unsigned()))
+}
+
+/// The side of the chart a legend placed by hand (`c:manualLayout`, its
+/// box given from the chart's edges) is on: a box wider than tall is
+/// below or above, another one right or left, by where its middle is;
+/// `None` for a legend not placed so.
+fn placed_legend(legend: Node<'_, '_>) -> Option<LegendPosition> {
+    let manual = chart_el(chart_el(legend, "layout")?, "manualLayout")?;
+    let edge = |name: &str| val(manual, name) == Some("edge");
+    if !edge("xMode") || !edge("yMode") {
+        return None;
+    }
+    let share = |name: &str| {
+        val(manual, name)?
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|share| share.is_finite() && (0.0..=1.0).contains(share))
+    };
+    let (x, y, width, height) = (share("x")?, share("y")?, share("w")?, share("h")?);
+    let half = 0.5;
+    Some(if width > height {
+        if y + height / 2.0 > half {
+            LegendPosition::Bottom
+        } else {
+            LegendPosition::Top
+        }
+    } else if x + width / 2.0 > half {
+        LegendPosition::Right
+    } else {
+        LegendPosition::Left
+    })
 }
 
 /// The legend position `pos` (`c:legendPos`); Excel's default, the right,
@@ -1225,6 +1264,39 @@ pub(crate) mod tests {
         assert_eq!(chart.legend, None);
         assert_eq!(chart.style, Some(2));
         assert!(chart.date1904 && !chart.plot_visible_only);
+    }
+
+    #[test]
+    fn a_legend_placed_by_hand_is_on_the_side_of_its_box() {
+        let legend = |pos: &str, (x, y, width, height): (f32, f32, f32, f32)| {
+            let xml = format!(
+                r#"<c:chartSpace {NS}><c:chart><c:plotArea><c:lineChart>{}</c:lineChart></c:plotArea><c:legend><c:legendPos val="{pos}"/><c:layout><c:manualLayout><c:xMode val="edge"/><c:yMode val="edge"/><c:x val="{x}"/><c:y val="{y}"/><c:w val="{width}"/><c:h val="{height}"/></c:manualLayout></c:layout></c:legend></c:chart></c:chartSpace>"#,
+                ser(0, "a", &["x"], &["1"], "")
+            );
+            chart(&xml).legend
+        };
+        assert_eq!(legend("r", (0.09, 0.91, 0.87, 0.08)), Some(LegendPosition::Bottom));
+        assert_eq!(legend("r", (0.1, 0.02, 0.8, 0.1)), Some(LegendPosition::Top));
+        assert_eq!(legend("b", (0.8, 0.2, 0.15, 0.6)), Some(LegendPosition::Right));
+        assert_eq!(legend("b", (0.02, 0.2, 0.15, 0.6)), Some(LegendPosition::Left));
+    }
+
+    #[test]
+    fn line_series_are_dashed_and_smoothed_as_the_file_says() {
+        let line = |dash: &str, smooth: &str| {
+            format!(r#"<c:spPr><a:ln w="25400"><a:prstDash val="{dash}"/></a:ln></c:spPr><c:smooth val="{smooth}"/>"#)
+        };
+        let xml = space(
+            "",
+            &format!(
+                "<c:lineChart>{}{}{AXES}</c:lineChart>",
+                ser(0, "a", &["x"], &["1"], &line("solid", "0")),
+                ser(1, "b", &["x"], &["2"], &line("sysDash", "1"))
+            ),
+        );
+        let chart = chart(&xml);
+        let looks: Vec<_> = chart.series().map(|series| (series.dashed, series.smooth)).collect();
+        assert_eq!(looks, [(false, false), (true, true)]);
     }
 
     #[test]

@@ -502,6 +502,8 @@ fn big(kind: ChartKind, n_series: usize, n_points: usize) -> Chart {
             markers: true,
             labels: crate::chart::DataLabels::default(),
             line: true,
+            dashed: false,
+            smooth: false,
         })
         .collect();
     Chart {

@@ -222,6 +222,10 @@ pub(crate) struct Series {
     /// The points are joined by a line (a line or scatter series whose
     /// line is not `a:noFill`).
     pub(crate) line: bool,
+    /// Its line is dashed or dotted (`a:prstDash` other than `solid`).
+    pub(crate) dashed: bool,
+    /// Its line is smoothed (`c:smooth` of a line series).
+    pub(crate) smooth: bool,
     /// The labels shown at its points (`c:dLbls`).
     pub(crate) labels: DataLabels,
 }
