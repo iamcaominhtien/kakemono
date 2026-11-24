@@ -20,6 +20,11 @@ use std::collections::HashMap;
 const FAKE_ITALIC_SLANT: f32 = 0.2;
 /// Width of the stroke that fakes bold, as a share of the font size.
 const FAKE_BOLD_STROKE_RATIO: f32 = 0.02;
+/// Two horizontal scales closer than this are the same, and a scale this
+/// close to 1 is none: the scale of a stand-in face is a ratio of widths
+/// that comes out as 1.0000001 or 0.9999999 for a face of the same widths,
+/// a difference no one can see.
+const SCALE_TOLERANCE: f32 = 1e-4;
 
 /// The fonts and pictures the items draw from, and those already loaded
 /// into the PDF, so that each is loaded once.
@@ -61,20 +66,36 @@ pub fn write(
         let mut links = Vec::new();
         {
             let mut surface = pdf_page.surface();
+            // Consecutive runs that continue one another are drawn as one
+            // (one text object per line of a face, instead of one per word
+            // and per space): a link is drawn apart, after the page, so it
+            // does not end a group; anything else drawn does.
+            let mut group: Vec<&TextRun> = Vec::new();
             for item in &page.items {
-                if let Item::Link {
-                    x,
-                    y,
-                    width,
-                    height,
-                    target,
-                } = item
-                {
-                    links.push((*x, *y, *width, *height, target.clone()));
-                } else {
-                    draw_item(&mut surface, item, &mut loaded);
+                match item {
+                    Item::Link {
+                        x,
+                        y,
+                        width,
+                        height,
+                        target,
+                    } => links.push((*x, *y, *width, *height, target.clone())),
+                    Item::Text(run) if run.glyphs.is_empty() || run.size <= 0.0 => {}
+                    Item::Text(run) => {
+                        if group.last().is_some_and(|last| !continues(last, run)) {
+                            draw_runs(&mut surface, &group, &mut loaded);
+                            group.clear();
+                        }
+                        group.push(run);
+                    }
+                    _ => {
+                        draw_runs(&mut surface, &group, &mut loaded);
+                        group.clear();
+                        draw_item(&mut surface, item, &mut loaded);
+                    }
                 }
             }
+            draw_runs(&mut surface, &group, &mut loaded);
             surface.finish();
         }
         for (x, y, width, height, target) in links {
@@ -92,17 +113,35 @@ pub fn write(
     Ok(bytes)
 }
 
-/// Draws one item that is not a link on a page's surface.
+/// Whether the run `next` continues the run `run` drawn just before it:
+/// the same face, size, colour, faked styles and horizontal scale, on the
+/// same baseline, so that both can be drawn as one.
+fn continues(run: &TextRun, next: &TextRun) -> bool {
+    run.face == next.face
+        && run.size == next.size
+        && run.y == next.y
+        && run.color == next.color
+        && run.fake_bold == next.fake_bold
+        && run.fake_italic == next.fake_italic
+        && (run.scale - next.scale).abs() < SCALE_TOLERANCE
+}
+
+/// Draws a group of runs that continue one another (none when `runs` is
+/// empty), in the face of the first.
+fn draw_runs(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], loaded: &mut Loaded<'_>) {
+    let Some(first) = runs.first() else { return };
+    let book = loaded.book;
+    let font = loaded.fonts.entry(first.face).or_insert_with(|| {
+        let face = book.get(first.face);
+        Font::new(face.data.clone().into(), face.index).expect("a font that was shaped loads")
+    });
+    draw_text(surface, runs, font.clone());
+}
+
+/// Draws one item that is neither text nor a link on a page's surface.
 fn draw_item(surface: &mut krilla::surface::Surface<'_>, item: &Item, loaded: &mut Loaded<'_>) {
     match item {
-        Item::Text(run) => {
-            let book = loaded.book;
-            let font = loaded.fonts.entry(run.face).or_insert_with(|| {
-                let face = book.get(run.face);
-                Font::new(face.data.clone().into(), face.index).expect("a font that was shaped loads")
-            });
-            draw_text(surface, run, font.clone());
-        }
+        Item::Text(_) | Item::Link { .. } => {}
         Item::Rect {
             x,
             y,
@@ -170,7 +209,6 @@ fn draw_item(surface: &mut krilla::surface::Surface<'_>, item: &Item, loaded: &m
             let Some(picture) = picture.clone() else { return };
             draw_image(surface, picture, *x, *y, *width, *height, *crop);
         }
-        Item::Link { .. } => {}
     }
 }
 
@@ -207,24 +245,33 @@ fn fill(color: Rgb) -> Fill {
     }
 }
 
-/// Draws a text run.
-fn draw_text(surface: &mut krilla::surface::Surface<'_>, run: &TextRun, font: Font) {
-    if run.glyphs.is_empty() || run.size <= 0.0 {
-        return;
+/// Draws runs that continue one another ([`continues`]; each with glyphs)
+/// as one: their glyphs one after another, each placed at its own pen
+/// position, and their text joined.
+fn draw_text(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], font: Font) {
+    let Some(&first) = runs.first() else { return };
+    let size = first.size;
+    let scale = if first.scale > 0.0 { first.scale } else { 1.0 };
+    let mut text = String::new();
+    // Each glyph's pen position on the page and its text range in `text`.
+    let mut placed = Vec::new();
+    for run in runs {
+        let base = text.len();
+        text.push_str(&run.text);
+        for glyph in &run.glyphs {
+            placed.push((run.x + glyph.x, glyph, base));
+        }
     }
-    let size = run.size;
-    let scale = if run.scale > 0.0 { run.scale } else { 1.0 };
     // Glyph advances are in points; krilla wants them relative to the size.
-    let glyphs: Vec<KrillaGlyph> = run
-        .glyphs
+    let glyphs: Vec<KrillaGlyph> = placed
         .iter()
         .enumerate()
-        .map(|(at, glyph)| {
-            let next = run.glyphs.get(at + 1).map_or(glyph.x + glyph.advance, |next| next.x);
+        .map(|(at, &(x, glyph, base))| {
+            let next = placed.get(at + 1).map_or(x + glyph.advance, |&(next, _, _)| next);
             KrillaGlyph {
                 glyph_id: GlyphId::new(u32::from(glyph.id)),
-                text_range: glyph.text.0..glyph.text.1,
-                x_advance: (next - glyph.x) / size / scale,
+                text_range: base + glyph.text.0..base + glyph.text.1,
+                x_advance: (next - x) / size / scale,
                 x_offset: glyph.dx / size / scale,
                 y_offset: -glyph.dy / size,
                 y_advance: 0.0,
@@ -232,29 +279,28 @@ fn draw_text(surface: &mut krilla::surface::Surface<'_>, run: &TextRun, font: Fo
             }
         })
         .collect();
-    let start = run.glyphs.first().map_or(0.0, |glyph| glyph.x);
-    let needs_transform = run.fake_italic || (scale - 1.0).abs() > f32::EPSILON;
-    let origin_x = run.x + start;
+    let origin_x = placed.first().map_or(first.x, |&(x, _, _)| x);
+    let needs_transform = first.fake_italic || (scale - 1.0).abs() > SCALE_TOLERANCE;
     if needs_transform {
-        let skew = if run.fake_italic { -FAKE_ITALIC_SLANT } else { 0.0 };
-        surface.push_transform(&Transform::from_row(scale, 0.0, skew, 1.0, origin_x, run.y));
+        let skew = if first.fake_italic { -FAKE_ITALIC_SLANT } else { 0.0 };
+        surface.push_transform(&Transform::from_row(scale, 0.0, skew, 1.0, origin_x, first.y));
     }
     let point = if needs_transform {
         Point::from_xy(0.0, 0.0)
     } else {
-        Point::from_xy(origin_x, run.y)
+        Point::from_xy(origin_x, first.y)
     };
-    surface.set_fill(Some(fill(run.color)));
-    if run.fake_bold {
+    surface.set_fill(Some(fill(first.color)));
+    if first.fake_bold {
         surface.set_stroke(Some(Stroke {
-            paint: rgb::Color::new(run.color[0], run.color[1], run.color[2]).into(),
+            paint: rgb::Color::new(first.color[0], first.color[1], first.color[2]).into(),
             width: size * FAKE_BOLD_STROKE_RATIO,
             ..Default::default()
         }));
     } else {
         surface.set_stroke(None);
     }
-    surface.draw_glyphs(point, &glyphs, font, &run.text, size, false);
+    surface.draw_glyphs(point, &glyphs, font, &text, size, false);
     surface.set_stroke(None);
     if needs_transform {
         surface.pop();
@@ -323,5 +369,48 @@ fn clear_small_caps(bytes: &mut [u8]) {
             bytes[start..end].copy_from_slice(text.as_bytes());
         }
         at = end.max(start);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TextRun, continues};
+
+    /// A run of plain black text at 11 pt on baseline 100, at pen `x`.
+    fn run(x: f32, text: &str) -> TextRun {
+        TextRun {
+            face: 0,
+            size: 11.0,
+            x,
+            y: 100.0,
+            color: [0, 0, 0],
+            glyphs: Vec::new(),
+            text: text.to_string(),
+            fake_bold: false,
+            fake_italic: false,
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn runs_of_one_face_on_one_baseline_continue() {
+        let word = run(10.0, "word");
+        let mut space = run(30.0, " ");
+        // A stand-in face of the same widths: a scale of 1 to within
+        // rounding is no scale.
+        space.scale = 1.000_000_1;
+        assert!(continues(&word, &space));
+        let mut other_face = run(30.0, "x");
+        other_face.face = 1;
+        assert!(!continues(&word, &other_face));
+        let mut next_line = run(10.0, "x");
+        next_line.y = 114.0;
+        assert!(!continues(&word, &next_line));
+        let mut red = run(30.0, "x");
+        red.color = [200, 0, 0];
+        assert!(!continues(&word, &red));
+        let mut narrowed = run(30.0, "x");
+        narrowed.scale = 0.95;
+        assert!(!continues(&word, &narrowed));
     }
 }

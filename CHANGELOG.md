@@ -6,36 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-## [0.18.0](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.18.0) - 2026-11-24
+## [0.17.1](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.17.1) - 2026-11-24
 
-### Added
+### Performance
 
-- *(typst)* Add Typst output with a printed-book layout ([#34](https://github.com/iamcaominhtien/kakemono/pull/34))
+- *(layout)* Draw each line's text of one font as one text object
 
-Closes #19.
+The PDF that the page layout writes (Word and EPUB input laid out as a PDF, and the `hard` and `hard-95` modes of Word input, which read that PDF) draws the text of a line in one font as one text object, instead of one per word and one per space. The PDF is faster to write and smaller, and looks the same.
 
-#### What
+Before, every text run was its own text object with its own text matrix, font and colour, and a run in a stand-in face (a metric-compatible font standing in for an Office font) was also wrapped in a transformation for its horizontal scale, even when that scale was 1 to within rounding (1.0000001). Now consecutive runs of one face, size, colour and faked styles on one baseline are drawn as one, each glyph still at its own position, and a scale within 1e-4 of 1 is none.
 
-A new output format, `-f typst` (or `-o x.typ`): a Typst document that compiles with `typst compile`, with no TeX installation. Typst breaks each paragraph as a whole (no wide gaps in justified lines) and keeps every footnote on the page of its call, which is what a translated book needs.
+| Document | Instructions to write the PDF (callgrind) | PDF size |
+| --- | --- | --- |
+| Ulysses (EPUB, 4,485 pages) | 23.8 → 19.1 billion (−20%) | 9.7 → 7.8 MB (−19%) |
+| A government report (Word, 48 pages) | 2.07 → 1.78 billion (−14%) | 516 → 324 KB (−37%) |
+| Another one (Word, 33 pages) | 1.36 → 1.14 billion (−16%) | 380 → 238 KB (−38%) |
+| Moby-Dick (EPUB, 323 pages) | | 4.9 → 3.2 MB (−35%) |
+| The Mahabharata, 150 chapters (EPUB, Devanagari) | 7.46 → 7.37 billion (−1%) | 3.52 → 3.60 MB (+2%) |
 
-- **The file** starts with its settings (layout, page size, fonts, language, cover), then the template (the `kakemono-…` functions that lay the document out), then the text. A reader changes the page size or the fonts there, so the CLI gains only `--layout`.
-- **Two layouts**, chosen from the document (`--layout auto`, the default) or forced with `--layout book|article`:
-  - `book`, for a document with chapters and no abstract, references or arXiv id: A5, a title page, chapters that open on a right-hand page and number their notes from 1, mirrored margins, running heads (book title on the left, chapter on the right, none on chapter openings or blank pages), opening words in small capitals (not in Vietnamese);
-  - `article`: A4, the title block at the top, page numbers at the foot.
-- **Content**:
-  - headings, lists with the document's markers, and tables as `table`s with spanning cells and booktabs-like rules;
-  - formulas as Typst math, built from the same `MathNode` structure as LaTeX and MathML;
-  - added notes (`<note>`) as `#footnote`;
-  - links, and pictures as files;
-  - a table of contents becomes Typst's `outline`, with the new page numbers.
-- **Language**: `lang` is found from the text (Vietnamese), for hyphenation and quotes. The default font, Libertinus Serif, ships with Typst and has the Vietnamese letters.
-- **Library**: `Paper::to_typst`, `TypstOptions`, `TypstLayout`. **Python**: `to_typst`.
-- **EPUB books** (now an input, #35) go to Typst too: a novel gets the book layout, with its title page and chapters.
-- Compiling to PDF inside kakemono (the optional point 3 of the issue) is left out: the `typst` crate would add a large dependency to the published crate, and the `typst` CLI is a single binary.
-
-#### Fixed: line breaks in every output
-
-A `<br>` of an EPUB book, or a manual line break of a Word document, is a `\n` in the text, and every output wrote it as a space, so the lines of a poem ran together (*The Divine Comedy* came out as prose). Each line of a run is now styled on its own, and the lines are joined by the format's line break: `<br>` in HTML, EPUB and Markdown, `\newline{}` in LaTeX (a space inside a table), `#linebreak()` in Typst. Word already wrote `<w:br/>`. The PDF papers have line breaks only in code, which is written apart, so their outputs are unchanged.
+A book in Devanagari gains nothing: its words are set in a fallback face and the spaces between them in the run's own font, so no two neighbouring runs share a face.
 
 ## [0.17.0](https://github.com/iamcaominhtien/kakemono/compare/v0.16.1...v0.17.0) - 2026-11-23
 
