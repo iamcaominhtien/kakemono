@@ -82,7 +82,9 @@ const SELF_LINK_MARKS: [&str; 6] = ["", "¶", "#", "§", "🔗", "\u{1f517}"];
 const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
 /// Words of a class or `id`, of a picture or of what holds it, that mark
 /// an icon or a logo of the site (`info-icon`, `div-logo`).
-const ICON_WORDS: [&str; 8] = ["icon", "icons", "logo", "logos", "avatar", "emoji", "sprite", "favicon"];
+const ICON_WORDS: [&str; 10] = [
+    "icon", "icons", "logo", "logos", "avatar", "avt", "avata", "emoji", "sprite", "favicon",
+];
 /// How many elements around a picture are looked at for [`ICON_WORDS`]:
 /// its parent and the parent of that.
 const ICON_ANCESTORS: usize = 2;
@@ -903,10 +905,11 @@ fn before_title(dom: &mut Dom, root: Id) {
 }
 
 /// Removes a link in `root` that repeats the link just before it, with no
-/// text between them (the author of an article, shown twice for wide and
-/// narrow screens).
+/// text between them: to the same address (the author of an article, then
+/// `See the articles of the author`), or with the same text when it leads
+/// nowhere (`javascript:;`).
 fn repeated_links(dom: &mut Dom, root: Id) {
-    let mut last: Option<(String, String)> = None;
+    let mut last: Option<String> = None;
     for node in dom.descendants(root) {
         if !dom.attached(node) {
             continue;
@@ -918,13 +921,18 @@ fn repeated_links(dom: &mut Dom, root: Id) {
                 }
             }
             Kind::Element { .. } if dom.is(node, "a") => {
-                let link = (
-                    dom.attr(node, "href").unwrap_or_default().to_string(),
-                    dom.clean_text(node),
-                );
-                if link.1.is_empty() {
+                let text = dom.clean_text(node);
+                if text.is_empty() {
                     continue;
                 }
+                let href = dom.attr(node, "href").unwrap_or_default().trim();
+                let nowhere =
+                    href.is_empty() || href.starts_with('#') || href.to_ascii_lowercase().starts_with("javascript:");
+                let link = if nowhere {
+                    format!("text:{text}")
+                } else {
+                    format!("href:{href}")
+                };
                 if last.as_ref() == Some(&link) {
                     dom.detach(node);
                 } else {
