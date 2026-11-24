@@ -155,6 +155,9 @@ pub(crate) struct Sizes {
     /// The height of the other rows (`sheetFormatPr`); `None` for Excel's
     /// default.
     pub(crate) default_row_pt: Option<f32>,
+    /// The width of a digit of the default font on the screen the sizes
+    /// were read for, in points (whole pixels); 0 when unknown.
+    pub(crate) screen_digit_pt: f32,
 }
 
 /// A corner of a drawing on the sheet: a cell (row, column, both

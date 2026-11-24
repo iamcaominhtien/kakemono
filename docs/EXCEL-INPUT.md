@@ -216,7 +216,14 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   does, those of a side not fitted kept, as LibreOffice does); the rows repeated at the top
   (`_xlnm.Print_Titles`) on every later page; pages down then over, or over then down
   (`pageOrder`); centred when `printOptions` says so; gridlines only when it asks for them;
-- column widths and row heights as on the screen the workbook was saved on (see the sheet view);
+- row heights as on the screen the workbook was saved on (see the sheet view); column widths as
+  the printer draws them: Excel keeps a width in digits of the default font, which the screen
+  measures in whole pixels and the printer nearly exactly (Microsoft's KB 214394), so a digit of
+  an 11-point MS P Gothic prints 5.5 points wide, not the screen's 8 pixels. The digit is half an
+  em in MS Gothic and MS Mincho, P or not, and measured in a Western default font when it (or a
+  font of its metrics) is installed; other fonts keep the screen's widths. The scales Excel
+  stores for sheets fitted to a page agree with this for Calibri, Arial and MS P Gothic, and with
+  the screen for Yu Gothic and MS P Mincho;
   row heights as Excel draws them, a whole number of pixels at 96 per inch (`ht="12.95"` is 17
   pixels, 12.75 points; a workbook saved on a screen of another resolution prints a little longer
   or shorter than Excel printed it there); a row whose height is not set by hand (no

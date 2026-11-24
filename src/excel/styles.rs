@@ -260,11 +260,7 @@ impl Styles {
     pub(crate) fn screen(&self, widths: &[f32]) -> Screen {
         let standard = Screen::standard(self.digit_px());
         let font = &self.look(0).font;
-        let Some(name) = font.name.as_deref().map(str::trim) else {
-            return standard;
-        };
-        let lower = name.to_lowercase();
-        if name.is_ascii() && !EAST_ASIAN_FONTS.contains(&lower.as_str()) {
+        if !self.east_asian_default() {
             return standard;
         }
         let mut distinct: Vec<f32> = widths.iter().copied().filter(|width| *width >= 1.0).collect();
@@ -291,6 +287,17 @@ impl Styles {
         standard
     }
 
+    /// Whether the default font is an East Asian one (MS Mincho, Meiryo,
+    /// SimSun, ...), whose digits are half an em.
+    pub(crate) fn east_asian_default(&self) -> bool {
+        self.look(0)
+            .font
+            .name
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|name| !name.is_ascii() || EAST_ASIAN_FONTS.contains(&name.to_lowercase().as_str()))
+    }
+
     /// The width in pixels of a digit of the workbook's default font (that
     /// of its first cell format): the unit of its column widths. Excel
     /// measures it on screen: an East Asian font's digits are half its size
@@ -301,11 +308,7 @@ impl Styles {
         const CALIBRI_DIGIT_PX: f32 = 7.0;
         const PT_PER_PX: f32 = 0.75;
         let font = &self.look(0).font;
-        let Some(name) = font.name.as_deref().map(str::trim) else {
-            return CALIBRI_DIGIT_PX;
-        };
-        let lower = name.to_lowercase();
-        if name.is_ascii() && !EAST_ASIAN_FONTS.contains(&lower.as_str()) {
+        if !self.east_asian_default() {
             return CALIBRI_DIGIT_PX;
         }
         let size_px = (font.size_pt.unwrap_or(DEFAULT_FONT_PT) / PT_PER_PX).round();

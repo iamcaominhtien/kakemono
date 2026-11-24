@@ -16,7 +16,7 @@ use super::super::shape::Shaper;
 use super::WorkbookPdfConfig;
 use crate::chart::{Rgb, Theme};
 use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
-use crate::excel::grid::{CellKind, Grid, GridCell, Marker, Merge};
+use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, Sizes};
 use crate::excel::styles::{Color, HAlign, Line, Look, Styles, VAlign};
 use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg};
 use crate::excel::{DrawnSheet, SheetBook};
@@ -33,6 +33,18 @@ const LETTER_PT: (f32, f32) = (612.0, 792.0);
 const DEFAULT_FONT: &str = "Calibri";
 /// Excel's default font size, in points.
 const DEFAULT_SIZE_PT: f32 = 11.0;
+/// Half an em: the width of a digit of `HALF_EM_DIGIT_FONTS`.
+const HALF_EM: f32 = 0.5;
+/// The East Asian fonts whose digits print half an em wide (their names as
+/// `table_name` folds them).
+const HALF_EM_DIGIT_FONTS: &[&str] = &[
+    "ms ゴシック",
+    "ms pゴシック",
+    "ms 明朝",
+    "ms gothic",
+    "ms pgothic",
+    "ms mincho",
+];
 /// The smallest scale a sheet is fitted to pages at (Excel's 10 %).
 const MIN_SCALE: f32 = 0.1;
 /// Points in a pixel at 96 pixels per inch: borders are given in pixels.
@@ -115,8 +127,10 @@ pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig) -> Result<Vec
             cjk: &cjk,
             images: &mut images,
             ctx: &mut ctx,
+            sizes: sheet.grid.sizes.clone(),
             placing: None,
         };
+        printer.printed_columns();
         pages.extend(printer.pages(left));
     }
     if pages.is_empty() {
@@ -147,9 +161,12 @@ struct Printer<'a, 'c, 'f> {
     images: &'a mut Vec<FImage>,
     /// The fonts and shaper.
     ctx: &'c mut Ctx<'f>,
-    /// The sizes of the sheet with its rows fitted to their text, where
-    /// its drawn objects are placed (they move with their cells); `None`
-    /// when no row was fitted.
+    /// The sizes of the sheet as it prints: its columns as wide as the
+    /// printer draws them (`printed_columns`).
+    sizes: Sizes,
+    /// The sizes of the sheet with its rows fitted to their text and its
+    /// columns as they print, where its drawn objects are placed (they
+    /// move with their cells); `None` when the sheet's own sizes are.
     placing: Option<Grid>,
 }
 
@@ -254,6 +271,42 @@ struct Columns {
 }
 
 impl Printer<'_, '_, '_> {
+    /// Sets the columns as wide as the printer draws them. Excel keeps a
+    /// column's width in digits of the default font; the screen measures a
+    /// digit in whole pixels (an 11-point MS P Gothic's 7.33 as 8), the
+    /// printer at its own resolution, nearly exactly, so a column prints
+    /// narrower or wider than the screen shows it (Microsoft's KB 214394).
+    /// The digit is half an em in MS Gothic or MS Mincho, measured in a
+    /// Western default font when it (or a font of its metrics) is
+    /// installed; the columns are left as the screen draws them otherwise
+    /// (the scales Excel stores for sheets fitted to a page agree with the
+    /// printer for Calibri, Arial and MS P Gothic, with the screen for Yu
+    /// Gothic and MS P Mincho).
+    fn printed_columns(&mut self) {
+        let screen_digit = self.sizes.screen_digit_pt;
+        let font = &self.styles.look(0).font;
+        let size = font.size_pt.unwrap_or(DEFAULT_SIZE_PT);
+        let name = font.name.as_deref().map(crate::layout::fonts::table_name);
+        let digit = if name.as_deref().is_some_and(|name| HALF_EM_DIGIT_FONTS.contains(&name)) {
+            HALF_EM * size
+        } else if self.styles.east_asian_default() {
+            return;
+        } else if font.name.as_deref().is_some_and(|name| self.ctx.book.has_family(name)) {
+            let base = self.run(self.styles.look(0), 1.0);
+            para::text_items(self.ctx, "0", &base, 0.0, 0.0).1
+        } else {
+            return;
+        };
+        if screen_digit <= 0.0 || digit <= 0.0 {
+            return;
+        }
+        let ratio = digit / screen_digit;
+        for (_, _, width) in &mut self.sizes.cols {
+            *width *= ratio;
+        }
+        self.sizes.default_col_pt = Some(self.sizes.default_col_pt.unwrap_or(DEFAULT_COL_PT) * ratio);
+    }
+
     /// The pages of the sheet, at most `max` of them.
     fn pages(&mut self, max: usize) -> Vec<Page> {
         let Some(area) = self.area() else {
@@ -397,7 +450,7 @@ impl Printer<'_, '_, '_> {
             col: range.left,
             col_off_pt: 0.0,
         };
-        let start = grid.sizes.span_pt(
+        let start = self.sizes.span_pt(
             Marker {
                 row: 0,
                 col: 0,
@@ -412,7 +465,7 @@ impl Printer<'_, '_, '_> {
             let width = if grid.hidden_cols.contains(&col) {
                 0.0
             } else {
-                col_width(&grid.sizes, col)
+                col_width(&self.sizes, col)
             };
             xs.push(xs[xs.len() - 1] + width);
         }
@@ -457,8 +510,8 @@ impl Printer<'_, '_, '_> {
             };
             ys.push(ys[ys.len() - 1] + height);
         }
-        if !fitted_rows.is_empty() {
-            let mut sizes = grid.sizes.clone();
+        if !fitted_rows.is_empty() || self.sizes != grid.sizes {
+            let mut sizes = self.sizes.clone();
             sizes.rows.extend(fitted_rows);
             self.placing = Some(Grid {
                 sizes,
@@ -542,12 +595,12 @@ impl Printer<'_, '_, '_> {
             let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
             let (_, text_w) = para::text_items(self.ctx, &text.replace(['\n', '\r', '\t'], " "), &base, 0.0, 0.0);
             let indent = f32::from(look.indent) * INDENT_STEP_PT;
-            let mut room = col_width(&self.grid.sizes, col) - 2.0 * CELL_PADDING_PT - indent;
+            let mut room = col_width(&self.sizes, col) - 2.0 * CELL_PADDING_PT - indent;
             let mut next = col;
             while room < text_w && next < col.saturating_add(MAX_OVERFLOW_COLS as u32) {
                 next += 1;
                 if !self.grid.hidden_cols.contains(&next) {
-                    room += col_width(&self.grid.sizes, next);
+                    room += col_width(&self.sizes, next);
                 }
             }
             spill = spill.max(next);

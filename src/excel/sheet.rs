@@ -704,6 +704,7 @@ impl SheetReader<'_, '_> {
         let sizes = &mut self.grid.sizes;
         let widths: Vec<f32> = sizes.cols.iter().map(|(_, _, chars)| *chars).collect();
         let screen = self.ctx.styles.screen(&widths);
+        sizes.screen_digit_pt = screen.digit_px * screen.pt_per_px;
         let whole = |points: f32| (points / screen.pt_per_px).round() * screen.pt_per_px;
         for (_, _, width) in &mut sizes.cols {
             *width = (*width * screen.digit_px).round() * screen.pt_per_px;
