@@ -324,6 +324,9 @@ struct ConvertArgs {
     /// Number of worker threads: 0 = one per CPU core, 1 = no parallelism
     #[arg(short, long, default_value_t = 0, value_name = "N")]
     jobs: usize,
+    /// Read a saved web page (an .html file) as the page at this address: its links point there, and its pictures are fetched from there
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
 }
 
 /// Where the files of one `convert` run go.
@@ -463,6 +466,29 @@ fn load(input: &str) -> Result<(Paper, String)> {
         return Ok((Paper::from_url(input)?, url_stem(input)));
     }
     bail!("'{input}' is neither an existing file, an arXiv id/URL nor an http(s) address")
+}
+
+/// Loads the saved web page `input` as the page at the address `url`, with
+/// the stem for output file names.
+///
+/// # Errors
+/// When the file cannot be read, is not a web page, or `url` is not an
+/// http(s) address.
+fn load_saved_page(input: &str, url: &str) -> Result<(Paper, String)> {
+    if !web::is_url(url) {
+        bail!("--base-url: '{url}' is not an http(s) address");
+    }
+    let path = Path::new(input);
+    let data = std::fs::read(path).with_context(|| format!("reading {input}"))?;
+    if !kakemono::html::is_html(&data) {
+        bail!("--base-url applies to a web page; {input} is not one");
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("page")
+        .to_string();
+    Ok((Paper::from_page_at(&data, url)?, stem))
 }
 
 /// The stem of output file names for the address `url`: its last path
@@ -620,7 +646,10 @@ fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
 /// LaTeX, the input cannot be loaded or an output file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     let format = check_args(&args)?;
-    let (paper, stem) = load(&args.input)?;
+    let (paper, stem) = match &args.base_url {
+        Some(url) => load_saved_page(&args.input, url)?,
+        None => load(&args.input)?,
+    };
     let paper = paper.with_png_compression(args.png_compression.into());
     if format == FormatArg::Pdf {
         return write_pdf(&paper, &args, &stem);

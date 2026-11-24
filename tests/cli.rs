@@ -967,3 +967,49 @@ fn word_pdf_shows_the_edited_text() {
     let lines = kakemono(&["lines", pdf.to_str().unwrap()]);
     assert!(String::from_utf8_lossy(&lines.stdout).contains("An edited heading"));
 }
+
+#[test]
+fn a_saved_page_is_read_at_its_address() {
+    let dir = scratch("cli-base-url");
+    let page = dir.join("saved.html");
+    std::fs::write(
+        &page,
+        r##"<!doctype html><html><head><title>Saved - Example</title></head><body><article>
+        <h1>Saved</h1><p>A page saved from the Web, with <a href="/other">a link</a> to another page
+        of its site and <a href="#end">one to its end</a>.</p><h2 id="end">End</h2><p>The end of the page.</p>
+        </article></body></html>"##,
+    )
+    .unwrap();
+    let md = dir.join("saved.md");
+    let out = kakemono(&[
+        "convert",
+        page.to_str().unwrap(),
+        "--base-url",
+        "https://example.org/a/saved.html",
+        "-o",
+        md.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(&md).unwrap();
+    assert!(text.contains("[a link](https://example.org/other)"), "{text}");
+    assert!(text.contains("[one to its end](#sec-end)"), "{text}");
+    // Not a web page, or not an address: refused.
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "--base-url",
+        "https://example.org/",
+        "-o",
+        md.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    let out = kakemono(&[
+        "convert",
+        page.to_str().unwrap(),
+        "--base-url",
+        "example.org",
+        "-o",
+        md.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+}

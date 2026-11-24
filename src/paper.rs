@@ -174,6 +174,20 @@ impl Paper {
         Ok(paper.with_source(url.trim()))
     }
 
+    /// Loads the web page `data` saved from the `http(s)` address `url`: its
+    /// links and pictures are read as at that address, and its pictures are
+    /// fetched. Its source ([`Meta::source`]) is the address.
+    ///
+    /// # Errors
+    /// When `url` is not a URL.
+    pub fn from_page_at(data: &[u8], url: &str) -> Result<Self> {
+        let origin = crate::html::Origin::Url {
+            url: url.trim(),
+            charset: None,
+        };
+        Ok(Self::from_html(data, origin)?.with_source(url.trim()))
+    }
+
     /// Loads the web page `data` from `origin`.
     fn from_html(data: &[u8], origin: crate::html::Origin<'_>) -> Result<Self> {
         Ok(Self {
