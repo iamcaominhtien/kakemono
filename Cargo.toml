@@ -1,6 +1,6 @@
 [package]
 name = "kakemono"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2024"
 description = "Convert PDF, Word and EPUB documents to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
 repository = "https://github.com/iamcaominhtien/kakemono"

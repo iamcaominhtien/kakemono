@@ -431,3 +431,55 @@ fn replace_image_works_on_a_word_picture() {
     });
     assert!(red, "the new picture is written");
 }
+
+/// The number of text objects (`BT` operators) in the content streams of
+/// `pdf`, the streams decompressed.
+fn text_objects(pdf: &[u8]) -> usize {
+    use std::io::Read;
+    let mut count = 0;
+    let mut rest = pdf;
+    while let Some(start) = rest.windows(7).position(|window| window == b"stream\n") {
+        let body = &rest[start + 7..];
+        let end = body
+            .windows(9)
+            .position(|window| window == b"endstream")
+            .unwrap_or(body.len());
+        let mut content = Vec::new();
+        if flate2::read::ZlibDecoder::new(&body[..end])
+            .read_to_end(&mut content)
+            .is_ok()
+        {
+            count += content
+                .split(|byte| byte.is_ascii_whitespace())
+                .filter(|token| *token == b"BT")
+                .count();
+        }
+        rest = &body[end..];
+    }
+    count
+}
+
+/// The page layout draws the words of a line set in one font as one text
+/// object, not one per word and per space: a few per line, the same text.
+#[test]
+fn word_pdf_draws_a_line_of_one_font_as_one_text_object() {
+    let pdf = Paper::from_bytes(std::fs::read(data(SAMPLE_DOCX)).unwrap())
+        .unwrap()
+        .to_pdf()
+        .unwrap();
+    let (lines, _) = kakemono::layout::lines::pdf_lines(pdf.clone()).unwrap();
+    let words: usize = lines.iter().map(|line| line.text.split_whitespace().count()).sum();
+    let objects = text_objects(&pdf);
+    assert!(lines.len() > 20 && words > 120, "{} lines, {words} words", lines.len());
+    assert!(
+        objects <= 2 * lines.len(),
+        "{objects} text objects for {} lines and {words} words",
+        lines.len()
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.text.starts_with("We study the convergence of gradient descent")),
+        "a line keeps its words"
+    );
+}
