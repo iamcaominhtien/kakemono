@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF or a Word document into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF, a Word document or an EPUB book into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -66,7 +66,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) and Word documents into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
+    about = "Convert scientific-paper PDFs (arXiv), Word documents and EPUB books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -78,7 +78,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL) or a Word document (.docx, .doc) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc) or an EPUB book (.epub) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -90,7 +90,7 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF or Word file, arXiv id or arXiv URL
+        /// Local PDF, Word or EPUB file, arXiv id or arXiv URL
         input: String,
     },
     /// Print the text lines of a PDF with their baselines, as tab-separated
@@ -173,7 +173,7 @@ enum FormatArg {
     Json,
     /// Chunks for retrieval (.jsonl): pieces of at most --chunk-tokens tokens that follow the sections, each headed by its section path, one JSON object per line
     Chunks,
-    /// A PDF (.pdf) of a Word document, laid out in pages as Word lays it out
+    /// A PDF (.pdf) of a Word document or an EPUB book, laid out in pages as Word lays it out
     Pdf,
 }
 
@@ -268,7 +268,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF or Word file (.docx, .doc), arXiv id (1706.03762) or arXiv URL
+    /// Local PDF, Word (.docx, .doc) or EPUB (.epub) file, arXiv id (1706.03762) or arXiv URL
     input: String,
     /// Fidelity mode (HTML); for Markdown, friendly adapts the tables to pipe tables and medium keeps their layout
     #[arg(short, long, value_enum, default_value = "friendly")]
@@ -521,7 +521,8 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
 /// pictures of `--content` when it is given.
 ///
 /// # Errors
-/// When the input is not a Word document, or the file cannot be written.
+/// When the input is not a Word document or an EPUB book, or the file
+/// cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");

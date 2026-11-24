@@ -152,7 +152,11 @@ fn document(doc: &Document, body: &str) -> String {
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
     if doc.pages.is_empty() {
-        out = out.replacen("Converted from a PDF", "Converted from a Word document", 1);
+        let source = match crate::render::source_label(doc) {
+            "EPUB" => "an EPUB book",
+            _ => "a Word document",
+        };
+        out = out.replacen("Converted from a PDF", &format!("Converted from {source}"), 1);
     }
     if !vietnamese.is_empty() {
         out.push_str(&format!(

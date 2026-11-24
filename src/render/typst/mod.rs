@@ -172,10 +172,10 @@ pub fn render_typst(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &TypstOpti
 
 /// The whole `.typ` file: the settings, the template and `body`.
 fn document(doc: &Document, layout: TypstLayout, body: &str) -> String {
-    let source = if doc.pages.is_empty() {
-        "a Word document"
-    } else {
-        "a PDF"
+    let source = match super::source_label(doc) {
+        "EPUB" => "an EPUB book",
+        "Word" => "a Word document",
+        _ => "a PDF",
     };
     let (name, size, paper) = match layout {
         TypstLayout::Article => ("article", ARTICLE_FONT_SIZE, ARTICLE_PAPER),

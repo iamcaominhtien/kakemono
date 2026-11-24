@@ -209,7 +209,7 @@ impl Document {
         }
         if !self.paper.format().has_pages() && modes.iter().any(|mode| *mode != Mode::Friendly) {
             return Err(value_error(
-                "a Word document has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
+                "a Word document or an EPUB book has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
             ));
         }
         Ok(py.detach(|| {
@@ -431,7 +431,7 @@ impl Document {
     fn to_pdf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         if self.paper.format().has_pages() {
             return Err(value_error(
-                "the input is already a PDF: only a Word document is laid out as a PDF",
+                "the input is already a PDF: only a Word document or an EPUB book is laid out as a PDF",
             ));
         }
         let data = py.detach(|| {

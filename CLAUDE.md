@@ -2,7 +2,8 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF) to HTML, in 4 modes, to a
+writes them as a PDF; and EPUB books, `.epub`, read by `src/epub/` into the form of `src/word/`)
+to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
 LaTeX (`.tex`, `src/render/latex/`), to Typst (`.typ`, `src/render/typst/`, an article or a
 printed book), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
@@ -35,10 +36,11 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
+./target/release/kakemono convert <file.epub> -o out/x.md                    # an EPUB book as input (any output)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word   # when output changes ON PURPOSE
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
@@ -146,6 +148,15 @@ committing.
   `tests/data/word-corpus.tsv` (downloaded, not committed). A change that raises the totals
   should raise the minimums in `.github/workflows/ci.yml` too; one that lowers them is a
   regression. `scripts/compare-layout.py REF.pdf OURS.pdf --diff` shows the lines that differ.
+
+## EPUB input (`src/epub`)
+
+- The book's XHTML is read into `word::ir` with Word style names, so `word/build.rs` decides what
+  each paragraph is, as for Word: a rule about block kinds goes there, a rule about markup in
+  `src/epub/html.rs`.
+- The test sample is `tests/data/epub/sample.epub` (pandoc, from `tests/data/word/sample.md`): it
+  must read like `sample.docx` (`epub_sample_reads_like_the_docx`); a change to the reading shows
+  in `tests/data/snapshots/epub-sample.txt`.
 
 ## Public API and packages
 

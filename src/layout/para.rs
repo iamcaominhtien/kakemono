@@ -61,6 +61,49 @@ type PieceKey = (FaceId, bool, bool, f32, bool, Option<usize>);
 /// The face choice for a character: [`PieceKey`] without small capitals.
 type FaceChoice = (FaceId, bool, bool, f32, Option<usize>);
 
+/// Font slot of a run for East Asian characters (`w:eastAsia`).
+const SLOT_EAST_ASIA: usize = 0;
+/// Font slot for complex scripts and right-to-left text (`w:cs`).
+const SLOT_COMPLEX: usize = 1;
+/// Font slot for ASCII characters (`w:ascii`).
+const SLOT_ASCII: usize = 2;
+/// Font slot for the other characters (`w:hAnsi`).
+const SLOT_HANSI: usize = 3;
+/// Number of font slots of a run.
+const SLOTS: usize = 4;
+
+/// A font slot of a run, resolved: what its face choice is for every
+/// character, before the character's own coverage.
+#[derive(Debug, Clone, Copy)]
+struct SlotFace {
+    /// The face of its family.
+    face: FaceId,
+    /// Bold is faked on that face.
+    fake_bold: bool,
+    /// Italics are faked on that face.
+    fake_italic: bool,
+    /// Font size, in points.
+    size: f32,
+    /// Its family is not installed (only a stand-in is).
+    missing: bool,
+    /// Built-in metrics of its family, if any.
+    metric: Option<&'static super::metrics::MetricFace>,
+}
+
+/// The font slot that `ch` takes its font from in a run of format `fmt`,
+/// as Word chooses it.
+fn font_slot(ch: char, fmt: &RunFmt) -> usize {
+    if is_east_asian(ch) {
+        SLOT_EAST_ASIA
+    } else if fmt.cs || fmt.rtl || is_complex(ch) {
+        SLOT_COMPLEX
+    } else if ch.is_ascii() {
+        SLOT_ASCII
+    } else {
+        SLOT_HANSI
+    }
+}
+
 /// Narrowest and widest a stand-in face's glyphs are drawn to fit the
 /// widths of the font they stand for.
 const MIN_STAND_IN_SCALE: f32 = 0.75;
@@ -251,44 +294,61 @@ struct Placed {
 impl Ctx<'_> {
     /// The face and size used for `ch` in a run of format `fmt`.
     fn face_for(&mut self, ch: char, fmt: &RunFmt) -> FaceChoice {
-        let (face, fake_bold, fake_italic, size, family) = self.face_and_family(ch, fmt);
+        let slot = self.slot_face(font_slot(ch, fmt), fmt);
+        self.face_in_slot(ch, fmt, &slot)
+    }
+
+    /// The face and size for `ch` in a run of format `fmt` whose font for
+    /// `ch` (its slot, [`font_slot`]) is `slot`: the slot's face when it
+    /// has the character, a fallback face otherwise, and the built-in
+    /// metrics that measure it.
+    fn face_in_slot(&mut self, ch: char, fmt: &RunFmt, slot: &SlotFace) -> FaceChoice {
+        let (face, fake_bold, fake_italic) = if ch.is_whitespace() || ch.is_control() || self.covered(slot.face, ch) {
+            (slot.face, slot.fake_bold, slot.fake_italic)
+        } else {
+            self.book
+                .fallbacks()
+                .into_iter()
+                .find(|&fallback| self.covered(fallback, ch))
+                .map_or((slot.face, slot.fake_bold, slot.fake_italic), |fallback| {
+                    (fallback, fmt.bold, fmt.italic)
+                })
+        };
         // A missing font with known metrics: measured with them. A face
         // known by its vertical metrics alone applies to a stand-in too
         // (Caladea has Cambria's widths, not its line height).
-        let missing = !self.book.has_family(&family);
-        let metric = super::metrics::lookup(&family, fmt.bold, fmt.italic)
-            .filter(|metric| metric.vertical_only() || missing && (ch.is_whitespace() || metric.advance(ch).is_some()));
+        let metric = slot.metric.filter(|metric| {
+            metric.vertical_only() || slot.missing && (ch.is_whitespace() || metric.advance(ch).is_some())
+        });
         (
             face,
             fake_bold,
             fake_italic,
-            size,
+            slot.size,
             metric.map(|metric| metric as *const _ as usize),
         )
     }
 
-    /// The face and size for `ch`, with the family the run asks for.
-    fn face_and_family(&mut self, ch: char, fmt: &RunFmt) -> (FaceId, bool, bool, f32, String) {
-        let (family, size) = if is_east_asian(ch) {
-            (&fmt.font_east_asia, fmt.size)
-        } else if fmt.cs || fmt.rtl || is_complex(ch) {
-            (&fmt.font_cs, fmt.size_cs)
-        } else if ch.is_ascii() {
-            (&fmt.font, fmt.size)
-        } else {
-            (&fmt.font_hansi, fmt.size)
+    /// What does not depend on the character in the font slot `slot` of
+    /// format `fmt`: its face, size, whether its family is missing and
+    /// its built-in metrics. Resolving them per character was a quarter
+    /// of the layout's time.
+    fn slot_face(&mut self, slot: usize, fmt: &RunFmt) -> SlotFace {
+        let (family, size) = match slot {
+            SLOT_EAST_ASIA => (&fmt.font_east_asia, fmt.size),
+            SLOT_COMPLEX => (&fmt.font_cs, fmt.size_cs),
+            SLOT_ASCII => (&fmt.font, fmt.size),
+            _ => (&fmt.font_hansi, fmt.size),
         };
-        let family = family.clone();
-        let (face, fake_bold, fake_italic) = self.book.face(&family, fmt.bold, fmt.italic);
-        if ch.is_whitespace() || ch.is_control() || self.covered(face, ch) {
-            return (face, fake_bold, fake_italic, size, family);
+        let (face, fake_bold, fake_italic) = self.book.face(family, fmt.bold, fmt.italic);
+        SlotFace {
+            face,
+            fake_bold,
+            fake_italic,
+            size,
+            missing: !self.book.has_family(family),
+            metric: super::metrics::lookup(family, fmt.bold, fmt.italic),
         }
-        for fallback in self.book.fallbacks() {
-            if self.covered(fallback, ch) {
-                return (fallback, fmt.bold, fmt.italic, size, family);
-            }
-        }
-        (face, fake_bold, fake_italic, size, family)
     }
 
     /// Whether face `face` covers `ch`, cached.
@@ -307,9 +367,16 @@ impl Ctx<'_> {
         let mut pieces = Vec::new();
         let mut start = 0;
         let mut current: Option<PieceKey> = None;
+        // The font slots of `fmt`, resolved when first used.
+        let mut slots: [Option<SlotFace>; SLOTS] = [None; SLOTS];
         for (at, ch) in text.char_indices() {
             let small = fmt.small_caps && !fmt.caps && ch.is_lowercase();
-            let (face, fake_bold, fake_italic, size, metric) = self.face_for(ch, fmt);
+            let index = font_slot(ch, fmt);
+            let slot = match slots[index] {
+                Some(slot) => slot,
+                None => *slots[index].insert(self.slot_face(index, fmt)),
+            };
+            let (face, fake_bold, fake_italic, size, metric) = self.face_in_slot(ch, fmt, &slot);
             let key = (face, fake_bold, fake_italic, size, small, metric);
             match current {
                 Some(old) if old == key => {}

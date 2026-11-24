@@ -45,6 +45,34 @@ itself; Word 6/95 files, RTF files and password-protected files are not. Comment
 changes (read as accepted), macros and form fields are not shown. See
 [docs/WORD-INPUT.md](WORD-INPUT.md) for the design.
 
+## EPUB books as input
+
+An `.epub` file is an input like a PDF or a Word document (`kakemono convert book.epub -o
+book.md`). The content documents of the book (XHTML), in the order of its spine, are read
+directly, without layout analysis, into the same intermediate form as a Word document, so the same
+rules give each paragraph its kind:
+
+- `<h1>`–`<h6>` are headings (raised together so that the highest is of level 1, since many books
+  keep `<h1>` for the title or start their chapters at `<h2>`); the title and authors come from the
+  title page (`class="title"`, `class="author"`) or else from the book's metadata (`dc:title`,
+  `dc:creator`); `<pre>` is code; `<figcaption>` and a table's `<caption>` are captions; ordered
+  and bullet lists keep their markers (`start`, `type`, `value`) and nesting;
+- MathML formulas keep their structure (MathML, LaTeX and Office Math in the outputs, in running
+  text too);
+- tables become rebuilt tables (`colspan`, `rowspan` and header rows kept); pictures (`<img>`, an
+  `<svg>` showing one, or a drawing in SVG) become figures at the size the book gives them;
+- a note called by a link marked `epub:type="noteref"` (or `role="doc-noteref"`) follows the
+  paragraph that calls it, without its link back; links between the documents of the book keep
+  working, and citations and references to figures and tables become links, as for a PDF;
+- bold, italics, monospace, scripts and small capitals come from the elements (`<em>`, `<b>`,
+  `<code>`, `<sup>`, ...) and from simple rules of the book's style sheets (`.italic { font-style:
+  italic }`); elements with `display: none`, page break markers and the navigation document are
+  left out.
+
+A book has no pages: all four HTML modes give the `friendly` article, and `-o book.pdf` lays the
+book out in pages through a Word document, as for Word input. Books protected by DRM (encrypted
+content documents) cannot be read.
+
 ## Word documents
 
 `kakemono convert paper.pdf -o paper.docx` (or `--format docx`) writes a Word document instead of
@@ -411,14 +439,14 @@ kakemono convert paper.pdf -o paper.json
 kakemono convert paper.pdf --content paper.edited.json -m hard-95
 ```
 
-The input is a PDF file, a Word document (`.docx`, `.doc`), an arXiv ID (`1706.03762`,
+The input is a PDF file, a Word document (`.docx`, `.doc`), an EPUB book (`.epub`), an arXiv ID (`1706.03762`,
 `arXiv:1706.03762v7`, `hep-th/9901001`) or an arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
 | Option | Meaning |
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`); for Markdown, `friendly` or `medium` (how tables are written) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|typst\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, Typst, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `-f, --format <html\|docx\|md\|tex\|typst\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, Typst, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word and EPUB input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` |
 | `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but `hard` mode for PDF input; Word page-layout outputs do not use edited text |
 | `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX and Typst; Word keeps them embedded too; never for EPUB) |
@@ -616,6 +644,12 @@ cargo test --release
   read and written to every format (snapshot in `tests/data/snapshots/word-sample.txt`); the LIGO
   paper goes through a round trip PDF → Word → kakemono. To make the samples again:
   `cd tests/data/word && pandoc sample.md -o sample.docx && soffice --headless --convert-to doc sample.docx`.
+- **EPUB input** (`tests/epub.rs`): `tests/data/epub/sample.epub`, written by pandoc from the same
+  `tests/data/word/sample.md`, is read like the Word sample and written to every format (snapshot
+  in `tests/data/snapshots/epub-sample.txt`); small books built in the test cover style sheets,
+  lists, merged cells, notes and pictures, and the LIGO paper goes through a round trip PDF → EPUB
+  → kakemono. To make the sample again:
+  `cd tests/data/word && pandoc sample.md --mathml -o ../epub/sample.epub`.
 - **Word layout fidelity** (CI job "Word layout fidelity"): `scripts/fetch-word-corpus.sh`
   downloads the Word documents of `tests/data/word-corpus.tsv` with the PDF Word made of each
   (public documents: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories; not committed);

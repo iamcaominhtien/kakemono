@@ -4,6 +4,7 @@
 defined form of data and returns the next. The analysis side (PDF → `Document`) and the output side
 (`Document` → HTML, Word, Markdown, LaTeX, Typst, EPUB, JSON or chunks) meet at exactly one place: the `Document` model in `model`.
 A Word document (`.docx`, `.doc`) skips the analysis: `word/` reads it straight into a `Document`.
+So does an EPUB book: `epub/` reads its XHTML into the intermediate form of `word/`, which builds the `Document`.
 An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figure's `replace_image` by `render/json/replace.rs`) before any output is written.
 
 ```
@@ -29,6 +30,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
     ▲
     │  word/          DOCX/DOC bytes → the same Document: docx.rs (OOXML) or doc/ (Word 97–2003)
     │                 → ir.rs (paragraphs, runs, tables, notes) → build.rs (styles → block kinds)
+    │  epub/          EPUB bytes → the package and spine → html.rs (XHTML → word's ir.rs) → build.rs
     │
     │  word/fmt/      DOCX/DOC bytes → FDoc, every formatting property resolved
     │   └► layout/    FDoc laid out in pages as Word does → a PDF (`-f pdf`); for the hard and
@@ -59,6 +61,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
 | `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
+| `epub/` | EPUB books as input, read without layout analysis: `mod.rs` (the package: `META-INF/container.xml`, the package document's metadata and spine, paths inside the archive, read with `word/zip`), `html` (XHTML → the `word/ir` form, with Word style names: `<h2>` → "heading 2", `<pre>` → "Source Code", `<figcaption>` → "Caption"; lists, tables with merged cells, pictures, notes called by `noteref` links, bookmarks for every `id`), `css` (simple rules of the style sheets that give runs their style), `mathml` (MathML → `MathNode`), `entities` (HTML's named character references for the XML parser). `word/build` then makes the `Document` |
 | `word/fmt/` | A Word document with all its formatting, for the layout engine (`FDoc`, `model`): `docx` and `doc` read sections, headers and footers, resolved paragraph, run, table and cell properties (`props`, `styles`; `sprm` for `.doc`), lists, notes, fields, pictures, shapes and embedded fonts; `drawing` the floating shapes and text boxes of a `.doc` (OfficeArt), `frames` frames placed like text boxes, `contrast` automatic text colour |
 | `word/metafile/` | EMF and WMF pictures replayed on a small model of a Windows device context (`dc`) and written as SVG |
 | `word/mtef.rs` | MathType and Equation Editor formulas (MTEF 3 and 5, the `Equation Native` stream of an OLE object) → `MathNode` |
@@ -88,6 +91,7 @@ Dependencies run in one direction only:
 ```
 main → paper → analysis → backend → common
               → word    → analysis (the linking of `semantics`)
+              → epub    → word (`ir`, `build`, `zip`, pictures)
               → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping)
               → render  → model   → common
 ```

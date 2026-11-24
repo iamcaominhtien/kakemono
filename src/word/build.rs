@@ -1151,7 +1151,7 @@ fn join_lines(spans: Vec<Span>) -> Vec<Span> {
 }
 
 /// A number in lowercase Roman numerals (the marks of endnotes).
-fn roman_lower(number: usize) -> String {
+pub(crate) fn roman_lower(number: usize) -> String {
     const NUMERALS: &[(usize, &str)] = &[
         (1000, "m"),
         (900, "cm"),
@@ -1179,7 +1179,7 @@ fn roman_lower(number: usize) -> String {
 }
 
 /// The size in pixels of a PNG or JPEG picture.
-fn pixel_size(data: &[u8]) -> Option<(f32, f32)> {
+pub(crate) fn pixel_size(data: &[u8]) -> Option<(f32, f32)> {
     let reader = image::ImageReader::new(std::io::Cursor::new(data))
         .with_guessed_format()
         .ok()?;

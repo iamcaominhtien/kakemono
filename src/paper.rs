@@ -1,5 +1,5 @@
-//! High-level entry points: PDF or Word bytes in, structured document and
-//! HTML (or Word, Markdown, LaTeX or EPUB) out.
+//! High-level entry points: PDF, Word or EPUB bytes in, structured
+//! document and HTML (or Word, Markdown, LaTeX or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
@@ -16,8 +16,10 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-/// The format of the file a [`Paper`] was loaded from.
+/// The format of the file a [`Paper`] was loaded from. More formats may
+/// be added: a `match` on it needs a `_` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InputFormat {
     /// A PDF.
     Pdf,
@@ -25,16 +27,19 @@ pub enum InputFormat {
     Docx,
     /// A Word 97–2003 document (`.doc`).
     Doc,
+    /// An EPUB book (`.epub`).
+    Epub,
 }
 
 impl InputFormat {
-    /// The usual file extension (`pdf`, `docx`, `doc`), also the name of the
+    /// The usual file extension (`pdf`, `docx`, `doc`, `epub`), also the name of the
     /// format in the JSON output.
     pub fn name(self) -> &'static str {
         match self {
             InputFormat::Pdf => "pdf",
             InputFormat::Docx => "docx",
             InputFormat::Doc => "doc",
+            InputFormat::Epub => "epub",
         }
     }
 
@@ -52,9 +57,12 @@ enum Source {
     /// A Word document, read into its structure when loaded, with its file
     /// (read again with its formatting for the layout).
     Word(Box<Document>, InputFormat, Vec<u8>),
+    /// An EPUB book, read into its structure when loaded.
+    Epub(Box<Document>),
 }
 
-/// A loaded PDF or Word document, ready to be analysed and rendered.
+/// A loaded PDF, Word document or EPUB book, ready to be analysed and
+/// rendered.
 ///
 /// Typical use: [`Paper::from_bytes`], [`Paper::analyze`], then
 /// [`Paper::to_html`] once per output mode (the analysis does not depend on
@@ -84,14 +92,22 @@ struct Laid {
 }
 
 impl Paper {
-    /// Loads a PDF or a Word document (`.docx`, `.doc`) from its bytes; the
-    /// format is recognised from the bytes.
+    /// Loads a PDF, a Word document (`.docx`, `.doc`) or an EPUB book
+    /// (`.epub`) from its bytes; the format is recognised from the bytes.
     ///
     /// # Errors
-    /// When the data is not a readable PDF or Word document, or the PDF has
-    /// no pages.
+    /// When the data is not a readable PDF, Word document or EPUB book, or
+    /// the PDF has no pages.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         let sha256 = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
+        if crate::epub::is_epub(&data) {
+            return Ok(Self {
+                file: Source::Epub(Box::new(crate::epub::read(&data, None)?)),
+                source: None,
+                sha256,
+                laid: std::sync::OnceLock::new(),
+            });
+        }
         let file = match word::detect(&data) {
             Some(format) => {
                 let doc = word::read(&data, format, None)?;
@@ -116,6 +132,7 @@ impl Paper {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
             Source::Word(_, format, _) => *format,
+            Source::Epub(_) => InputFormat::Epub,
         }
     }
 
@@ -123,14 +140,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) => None,
+            Source::Word(..) | Source::Epub(_) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) => None,
+            Source::Pdf(_) | Source::Epub(_) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -178,13 +195,18 @@ impl Paper {
     }
 
     /// The document laid out in pages as Word lays it out, as a PDF: only
-    /// for a Word document (a PDF already has its pages).
+    /// for a Word document or an EPUB book (a PDF already has its pages).
+    /// A book is written as a Word document first, which is laid out.
     ///
     /// # Errors
     /// When the paper is a PDF, or the layout cannot be written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
+            Source::Epub(_) => {
+                let docx = self.to_docx(&self.analyze(), &DocxOptions::default());
+                Paper::from_bytes(docx)?.to_pdf()
+            }
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,
@@ -216,7 +238,7 @@ impl Paper {
         self
     }
 
-    /// Number of pages; 0 for a Word document, which has none.
+    /// Number of pages; 0 for a Word document or a book, which have none.
     pub fn page_count(&self) -> usize {
         self.pdf().map_or(0, PdfFile::page_count)
     }
@@ -230,12 +252,12 @@ impl Paper {
     ///
     /// Pages are read, and their lines built, on `opts.jobs` threads; the
     /// result does not depend on the number of threads.
-    /// A Word document needs no analysis: its structure, read when it was
-    /// loaded, is returned (`opts` does not apply to it).
+    /// A Word document or a book needs no analysis: its structure, read
+    /// when it was loaded, is returned (`opts` does not apply to it).
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) => {
+            Source::Word(doc, _, _) | Source::Epub(doc) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 return Analysis {
