@@ -67,7 +67,11 @@ rules give each paragraph its kind:
 - bold, italics, monospace, scripts and small capitals come from the elements (`<em>`, `<b>`,
   `<code>`, `<sup>`, ...) and from simple rules of the book's style sheets (`.italic { font-style:
   italic }`); elements with `display: none`, page break markers and the navigation document are
-  left out.
+  left out;
+- line breaks (`<br>`: the lines of a poem, of an address) stay line breaks in every output, as
+  the manual line breaks of a Word document do: `<br>` in HTML, EPUB and Markdown, `<w:br/>` in
+  Word, `\newline` in LaTeX (a space inside a table, whose cells hold one line), `#linebreak()`
+  in Typst.
 
 A book has no pages: all four HTML modes give the `friendly` article, and `-o book.pdf` lays the
 book out in pages through a Word document, as for Word input. Books protected by DRM (encrypted
@@ -173,7 +177,9 @@ In both:
 - formulas whose structure is clear become Typst math (with their number at the right), the others
   pictures; formulas inside the text become `$…$`;
 - added notes (`<note>` in the editable JSON) become footnotes; the footnotes of the PDF stay
-  where they were, small, with their mark;
+  where they were, small, with their mark (as do the notes of an EPUB book, after the paragraph
+  that calls them);
+- line breaks (the lines of a poem) are kept;
 - figures are pictures, always written to `<name>_assets/` next to the file (`--image-dir` to
   choose it): Typst cannot embed them in its source, so `--images inline` is refused; a picture is
   as wide as in the PDF, at most as wide as the text, and stays on one page with its caption;

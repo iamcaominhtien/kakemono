@@ -6,7 +6,7 @@
 use super::math::{string, typst};
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::inline_math::{Piece, has_math, split};
-use crate::render::runs::{RunMarkup, label_name, runs};
+use crate::render::runs::{RunMarkup, label_name, runs, trim_breaks};
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
@@ -22,6 +22,11 @@ const LABEL_PREFIX: &str = "k-";
 /// text, that [`end_calls`] replaces at the end. A call followed by `.` or
 /// `(` would go on (a field, a method or arguments): a `;` ends it there.
 pub(crate) const CALL_END: char = '\u{e000}';
+
+/// A line break of the text (a `<br>` of an EPUB book, a manual line
+/// break of a Word document: the lines of a poem, of an address), which
+/// Typst keeps.
+const LINE_BREAK: &str = "#linebreak()\u{e000}";
 
 /// Characters of running text that Typst markup gives a meaning to,
 /// escaped wherever they are.
@@ -47,7 +52,7 @@ impl Text<'_> {
     /// content block.
     pub(crate) fn spans(&self, spans: &[Span]) -> String {
         if !self.math || !has_math(spans) {
-            return protect_start(self.runs(spans).trim());
+            return protect_start(trim_breaks(&self.runs(spans), LINE_BREAK));
         }
         let mut out = String::new();
         for piece in split(spans) {
@@ -61,7 +66,7 @@ impl Text<'_> {
                 }
             }
         }
-        protect_start(out.trim())
+        protect_start(trim_breaks(&out, LINE_BREAK))
     }
 
     /// Text spans as Typst markup (not trimmed), an added note as a
@@ -79,6 +84,10 @@ impl RunMarkup for Text<'_> {
     fn note(&self, call: &Span) -> String {
         let note = self.spans(call.note.as_deref().unwrap_or_default());
         format!("#footnote[{note}]{CALL_END}")
+    }
+
+    fn line_break(&self) -> Option<&'static str> {
+        Some(LINE_BREAK)
     }
 
     /// `body` as a link to `href`: to an anchor of the document that is
@@ -108,14 +117,15 @@ pub(crate) fn label(anchor: &str) -> String {
 }
 
 /// The text of one run with its style, as nested calls (`#emph[…]`). The
-/// spaces at its ends stay outside the calls, where a line can break.
+/// spaces and line breaks at its ends stay outside the calls.
 fn styled(text: &str, style: u8) -> String {
-    let inner = text.trim_matches(' ');
+    let edge = [' ', '\n'];
+    let inner = text.trim_matches(edge);
     if inner.is_empty() {
         return escape(text);
     }
-    let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
-    let trail = &text[text.trim_end_matches(' ').len()..];
+    let lead = escape(&text[..text.len() - text.trim_start_matches(edge).len()]);
+    let trail = escape(&text[text.trim_end_matches(edge).len()..]);
     let mut body = if style & MONO != 0 {
         format!("#raw({}){CALL_END}", string(&inner.nfc().collect::<String>()))
     } else {
@@ -131,14 +141,16 @@ fn styled(text: &str, style: u8) -> String {
 
 /// Escapes running text for Typst markup: the characters of [`ESCAPED`],
 /// the `-` and `/` that would start a dash, a minus sign, a soft hyphen or
-/// a comment, line breaks as spaces; control characters are dropped.
+/// a comment; line breaks as `#linebreak()`, tabs as spaces; control
+/// characters are dropped.
 pub(crate) fn escape(text: &str) -> String {
     let chars: Vec<char> = text.nfc().collect();
     let mut out = String::with_capacity(text.len());
     for (i, &ch) in chars.iter().enumerate() {
         let next = chars.get(i + 1).copied();
         match ch {
-            '\n' | '\r' | '\t' => out.push(' '),
+            '\n' => out.push_str(LINE_BREAK),
+            '\r' | '\t' => out.push(' '),
             ch if ch.is_control() || ch == CALL_END => {}
             ch if ESCAPED.contains(ch) => {
                 out.push('\\');
@@ -200,7 +212,20 @@ mod tests {
         );
         assert_eq!(escape("--flag -1 well-known a-"), "\\--flag \\-1 well-known a\\-");
         assert_eq!(escape("https://a.org /* x"), "https:\\//a.org \\/\\* x");
-        assert_eq!(escape("ﬁnd\nme"), "ﬁnd me");
+        assert_eq!(escape("ﬁnd\tme"), "ﬁnd me");
+    }
+
+    #[test]
+    fn line_breaks_are_kept_inside_the_text() {
+        let text = Text {
+            anchors: &HashSet::new(),
+            math: false,
+        };
+        let verse = [span("\nThus I descended\nDown to the second,\n", 0), span("\n", ITALIC)];
+        assert_eq!(
+            end_calls(&text.spans(&verse)),
+            "Thus I descended#linebreak()Down to the second,"
+        );
     }
 
     #[test]

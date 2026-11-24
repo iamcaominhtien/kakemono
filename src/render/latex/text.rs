@@ -6,10 +6,13 @@
 use super::math::{latex, math_char};
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::inline_math::{Piece, has_math, split};
-use crate::render::runs::{RunMarkup, label_name, runs};
+use crate::render::runs::{RunMarkup, label_name, runs, trim_breaks};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
+
+/// A line break of the text (the lines of a poem, of an address).
+const LINE_BREAK: &str = "\\newline{}";
 
 /// Link schemes written as `\href`; other targets stay text.
 const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
@@ -107,7 +110,7 @@ impl Text<'_> {
     /// them as `$…$` when [`Text::math`].
     pub(crate) fn spans(&self, spans: &[Span]) -> String {
         if !self.math || !has_math(spans) {
-            return self.runs(spans).trim().to_string();
+            return trim_breaks(&self.runs(spans), LINE_BREAK).to_string();
         }
         let mut out = String::new();
         for piece in split(spans) {
@@ -121,7 +124,7 @@ impl Text<'_> {
                 }
             }
         }
-        out.trim().to_string()
+        trim_breaks(&out, LINE_BREAK).to_string()
     }
 
     /// Text spans as LaTeX (not trimmed), an added note as a
@@ -134,6 +137,12 @@ impl Text<'_> {
 impl RunMarkup for Text<'_> {
     fn styled(&self, text: &str, style: u8) -> String {
         styled(text, style)
+    }
+
+    /// `\newline` in running text; a space in a table, whose `l`, `c` and
+    /// `r` cells hold one line.
+    fn line_break(&self) -> Option<&'static str> {
+        self.table_notes.borrow().is_none().then_some(LINE_BREAK)
     }
 
     fn note(&self, call: &Span) -> String {

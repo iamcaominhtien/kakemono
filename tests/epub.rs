@@ -6,7 +6,7 @@
 use kakemono::model::{Block, BlockKind, Document, FloatKind};
 use kakemono::{
     Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    Paper,
+    Paper, TypstOptions,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -270,6 +270,52 @@ fn every_output_can_be_written_from_epub() {
     assert!(!friendly.contains("from Word"));
     let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
     assert!(latex.contains("Converted from an EPUB book"));
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(typst.contains("Converted from an EPUB book"));
+    assert!(typst.contains("def step(x, grad, eta):"));
+}
+
+/// The lines of a poem (`<br/>` in the book) stay lines in every output,
+/// in italics too, and no output starts or ends a paragraph with a break.
+#[test]
+fn verse_keeps_its_line_breaks() {
+    let poem = r#"<section><h2>Canto</h2>
+        <p>
+          <br/><span>Midway upon the journey of our life</span>
+          <br/><span>I found myself within a forest dark,</span>
+          <br/><i>For the straightforward pathway</i><br/><i>had been lost.</i><br/>
+        </p></section>"#;
+    let paper = Paper::from_bytes(book(&[("canto", poem)], "", &[])).unwrap();
+    let analysis = paper.analyze();
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(html.contains("our life<br>"), "html");
+    assert!(
+        html.contains("<em>For the straightforward pathway</em><br><em>had been lost.</em>"),
+        "html"
+    );
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(md.contains("our life<br>"), "{md}");
+    assert!(
+        md.contains("*For the straightforward pathway*<br>*had been lost*."),
+        "{md}"
+    );
+    assert!(!md.contains("<br>\n"), "no break at the end of a paragraph: {md}");
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(latex.contains("our life\\newline{}"), "{latex}");
+    assert!(
+        latex.contains("\\textit{For the straightforward pathway}\\newline{}\\textit{had been lost.}"),
+        "{latex}"
+    );
+    assert!(
+        !latex.contains("\n\\newline"),
+        "no break at the start of a paragraph: {latex}"
+    );
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(typst.contains("our life#linebreak()"), "{typst}");
+    assert!(
+        typst.contains("#emph[For the straightforward pathway]#linebreak()#emph[had been lost.]"),
+        "{typst}"
+    );
 }
 
 #[test]

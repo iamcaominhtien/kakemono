@@ -76,7 +76,7 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
         // otherwise show inside its shaded box.
         let text = span.text.as_str();
         let body = if span.style & MONO == 0 {
-            format!("{open}{}{close}", esc(text))
+            format!("{open}{}{close}", esc(text).replace('\n', "<br>"))
         } else {
             let inner = text.trim_matches(' ');
             let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
