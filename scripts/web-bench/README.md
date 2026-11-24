@@ -28,6 +28,7 @@ cargo build --release
 python3 scripts/web-bench/fetch.py                                   # once; pages already there are kept
 /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py      # scores: out/web-bench/results.json
 /root/.venvs/web-bench/bin/python scripts/web-bench/report.py        # review PDFs: out/web-bench/review/*.pdf
+/root/.venvs/web-bench/bin/python scripts/web-bench/package.py       # every page as HTML and PDF, one zip per category
 ```
 
 Each page of a review PDF shows one tested page: its scores, the page as its site
