@@ -187,6 +187,8 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
 const CLUTTER_IDS: [&str; 1] = ["secondary"];
+/// Words of a class that mark the summary of an article, under its title.
+const LEAD_WORDS: [&str; 6] = ["sapo", "lead", "standfirst", "summary", "dek", "excerpt"];
 /// Words of a class or `id` that mark the content of a page.
 const CONTENT_WORDS: [&str; 7] = ["article", "body", "content", "entry", "main", "post", "story"];
 /// Classes that hide an element from sight (left for screen readers).
@@ -945,7 +947,11 @@ fn has_article_text(dom: &Dom, node: Id) -> bool {
         if dom.is_any(id, &HEADINGS[1..]) {
             return !dom.clean_text(id).ends_with(':');
         }
-        dom.is(id, "p") && dom.clean_text(id).chars().count() >= LONG_PARAGRAPH_CHARS
+        // A paragraph, or the summary of a news article (in a `<div>`).
+        let lead = dom
+            .classes(id)
+            .any(|class| words(class).any(|word| LEAD_WORDS.contains(&word.as_str())));
+        (dom.is(id, "p") || lead) && dom.clean_text(id).chars().count() >= LONG_PARAGRAPH_CHARS
     })
 }
 
