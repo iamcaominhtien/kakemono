@@ -47,6 +47,10 @@ These three outputs now attach each footnote to its call (`render/notes.rs`, `fo
 - The PDF papers: 69 of their 94 footnotes (the rest are author notes or affiliations).
 - The Word corpus: 1,666 footnotes in 148 documents.
 
+#### Fixed: SonarCloud security rating of `main`
+
+The quality gate of `main` is red since #32: SonarCloud reports a command argument injection (`pythonsecurity:S8705`) in `scripts/ci_changes.py`, whose `BASE` and `HEAD` went from the command line to `git`, which would take an argument starting with `-` for an option. Each is now a commit hash or a branch or tag name, resolved with `git rev-parse --verify --end-of-options`, and only the full hash it prints is used; anything else exits with code 2. The workflows pass the SHAs of the pull request, so CI is unchanged.
+
 ## [0.17.1](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.17.1) - 2026-11-24
 
 ### Performance
