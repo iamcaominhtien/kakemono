@@ -173,7 +173,7 @@ pub(crate) struct Marker {
 
 /// Excel's default column width: 8.43 characters of Calibri 11, 64
 /// pixels.
-const DEFAULT_COL_PT: f32 = 48.0;
+pub(crate) const DEFAULT_COL_PT: f32 = 48.0;
 /// Excel's default row height, in points.
 const DEFAULT_ROW_PT: f32 = 15.0;
 
@@ -279,6 +279,46 @@ pub(crate) struct Merge {
     pub(crate) bottom: u32,
     /// The last column.
     pub(crate) right: u32,
+}
+
+impl Grid {
+    /// Whether the cell at `at` shows no text (it may be kept for its
+    /// centring).
+    pub(crate) fn is_blank(&self, at: (u32, u32)) -> bool {
+        self.cells.get(&at).is_none_or(|cell| cell.spans.is_empty())
+    }
+
+    /// The width of the columns that the text of the cell at `at` is
+    /// centred across, past its own (`centerContinuous`): of `after`, the
+    /// columns that follow it in order, the blank cells right after it
+    /// that are centred so too, outside any merge, as Excel centres such
+    /// a text. `width` gives a column's width. Zero for another cell.
+    pub(crate) fn selection_width<'c>(
+        &self,
+        at: (u32, u32),
+        after: impl IntoIterator<Item = &'c u32>,
+        width: impl Fn(u32) -> f32,
+    ) -> f32 {
+        if !self.cells.get(&at).is_some_and(|cell| cell.center_continuous) || self.merged(at) {
+            return 0.0;
+        }
+        after
+            .into_iter()
+            .take_while(|&&col| {
+                self.is_blank((at.0, col))
+                    && self.cells.get(&(at.0, col)).is_some_and(|cell| cell.center_continuous)
+                    && !self.merged((at.0, col))
+            })
+            .map(|&col| width(col))
+            .sum()
+    }
+
+    /// Whether the cell at `at` is in a merged range.
+    pub(crate) fn merged(&self, (row, col): (u32, u32)) -> bool {
+        self.merges
+            .iter()
+            .any(|merge| (merge.top..=merge.bottom).contains(&row) && (merge.left..=merge.right).contains(&col))
+    }
 }
 
 impl Merge {

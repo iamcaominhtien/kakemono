@@ -326,10 +326,12 @@ impl Printer<'_, '_, '_> {
                 order.extend(row_groups.iter().map(|rows| (rows, cols)));
             }
         }
+        // A page with nothing to print is left out, as Excel does.
         order
             .into_iter()
-            .take(max)
             .map(|(rows, cols)| self.page(&area, &layout, rows, cols))
+            .filter(|page| !page.items.is_empty())
+            .take(max)
             .collect()
     }
 
@@ -640,8 +642,15 @@ impl Printer<'_, '_, '_> {
                     grid_lines(&mut lines, rect, scale);
                 }
                 self.borders(&mut lines, look, rect, scale);
+                // A text centred across the selection is set in its box.
+                let position = columns.cols.iter().position(|col| *col == at.1).unwrap_or(0);
+                let mut text_rect = rect;
+                text_rect[2] += self
+                    .grid
+                    .selection_width(*at, &columns.cols[position + 1..], |col| area.width(col))
+                    * scale;
                 let clip = self.clip(area, columns, band, *at, *span, rect, scale, look);
-                texts.extend(self.cell_text(*at, look, rect, clip, scale));
+                texts.extend(self.cell_text(*at, look, text_rect, clip, scale));
             }
         }
         items.append(&mut lines);
@@ -749,12 +758,7 @@ impl Printer<'_, '_, '_> {
         let cell = self.grid.cells.get(&at);
         let runs_over = span.is_none() && !look.wrap && cell.is_some_and(|cell| cell.kind == CellKind::Text);
         if runs_over {
-            let free = |col: u32| {
-                !self.grid.cells.contains_key(&(at.0, col))
-                    && !self.grid.merges.iter().any(|merge| {
-                        (merge.top..=merge.bottom).contains(&at.0) && (merge.left..=merge.right).contains(&col)
-                    })
-            };
+            let free = |col: u32| self.grid.is_blank((at.0, col)) && !self.grid.merged((at.0, col));
             let position = columns.cols.iter().position(|&col| col == at.1).unwrap_or(0);
             let align = alignment(look.h_align, cell.map(|cell| cell.kind));
             if matches!(align, "left" | "center") {

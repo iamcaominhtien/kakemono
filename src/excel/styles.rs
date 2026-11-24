@@ -249,7 +249,55 @@ impl Styles {
     pub(crate) fn look(&self, index: usize) -> &Look {
         self.looks.get(index).unwrap_or(&DEFAULT_LOOK)
     }
+
+    /// The width in pixels of a digit of the workbook's default font (that
+    /// of its first cell format): the unit of its column widths. Excel
+    /// measures it on screen: an East Asian font's digits are half its size
+    /// in whole pixels, rounded up (8 at 11 points, the 72 pixels of
+    /// Japanese Excel's columns of 8.38 characters); any other font is
+    /// taken as Calibri 11, 7.
+    pub(crate) fn digit_px(&self) -> f32 {
+        const CALIBRI_DIGIT_PX: f32 = 7.0;
+        const PT_PER_PX: f32 = 0.75;
+        let font = &self.look(0).font;
+        let Some(name) = font.name.as_deref().map(str::trim) else {
+            return CALIBRI_DIGIT_PX;
+        };
+        let lower = name.to_lowercase();
+        if name.is_ascii() && !EAST_ASIAN_FONTS.contains(&lower.as_str()) {
+            return CALIBRI_DIGIT_PX;
+        }
+        let size_px = (font.size_pt.unwrap_or(DEFAULT_FONT_PT) / PT_PER_PX).round();
+        (size_px / 2.0).ceil()
+    }
 }
+
+/// The size of Excel's default font, in points.
+const DEFAULT_FONT_PT: f32 = 11.0;
+
+/// East Asian fonts with a Latin name, lowercase.
+const EAST_ASIAN_FONTS: &[&str] = &[
+    "ms mincho",
+    "ms pmincho",
+    "ms gothic",
+    "ms pgothic",
+    "ms ui gothic",
+    "meiryo",
+    "meiryo ui",
+    "yu gothic",
+    "yu mincho",
+    "simsun",
+    "nsimsun",
+    "simhei",
+    "mingliu",
+    "pmingliu",
+    "microsoft yahei",
+    "microsoft jhenghei",
+    "malgun gothic",
+    "batang",
+    "gulim",
+    "dotum",
+];
 
 /// The cell formats of the styles part `xml`.
 ///
@@ -513,6 +561,21 @@ mod tests {
         assert!(xf.center_continuous && !xf.bold);
         assert!(!styles.get(4).center_continuous);
         assert_eq!(styles.get(4).num_fmt, builtin(7));
+    }
+
+    #[test]
+    fn an_east_asian_default_font_has_digits_half_its_size() {
+        let digit = |font: &str| {
+            styles(&format!(
+                r#"<fonts count="1"><font>{font}</font></fonts><cellXfs count="1"><xf numFmtId="0" fontId="0"/></cellXfs>"#
+            ))
+            .digit_px()
+        };
+        assert_eq!(digit(r#"<sz val="11"/><name val="ＭＳ Ｐ明朝"/>"#), 8.0);
+        assert_eq!(digit(r#"<sz val="10"/><name val="Meiryo"/>"#), 7.0);
+        assert_eq!(digit(r#"<sz val="12"/><name val="Yu Gothic"/>"#), 8.0);
+        assert_eq!(digit(r#"<sz val="11"/><name val="Calibri"/>"#), 7.0);
+        assert_eq!(Styles::default().digit_px(), 7.0);
     }
 
     #[test]

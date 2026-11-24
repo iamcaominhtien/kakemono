@@ -97,6 +97,16 @@ const ALIASES: &[(&str, &[&str])] = &[
     ("courier", &["liberation mono", "cousine"]),
     ("georgia", &["gelasio"]),
     ("segoe ui", &["selawik"]),
+    // The IPA fonts have the widths of the MS ones (names written with
+    // full-width letters, "ＭＳ Ｐ明朝", are looked up as "ms p明朝").
+    ("ms 明朝", &["ipamincho"]),
+    ("ms mincho", &["ipamincho"]),
+    ("ms p明朝", &["ipapmincho"]),
+    ("ms pmincho", &["ipapmincho"]),
+    ("ms ゴシック", &["ipagothic"]),
+    ("ms gothic", &["ipagothic"]),
+    ("ms pゴシック", &["ipapgothic"]),
+    ("ms pgothic", &["ipapgothic"]),
 ];
 
 /// Fonts that only look like the original (their widths differ): used to
@@ -117,6 +127,21 @@ const LOOKALIKES: &[(&str, &[&str])] = &[
     ("times new roman", &["freeserif"]),
     ("arial", &["freesans"]),
     ("courier new", &["freemono"]),
+    ("明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms 明朝", &["noto serif cjk jp"]),
+    ("ms mincho", &["noto serif cjk jp"]),
+    ("ms p明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms pmincho", &["ipaexmincho", "noto serif cjk jp"]),
+    ("游明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("yu mincho", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms ゴシック", &["noto sans cjk jp"]),
+    ("ms gothic", &["noto sans cjk jp"]),
+    ("ms pゴシック", &["ipaexgothic", "noto sans cjk jp"]),
+    ("ms pgothic", &["ipaexgothic", "noto sans cjk jp"]),
+    ("游ゴシック", &["ipaexgothic", "noto sans cjk jp"]),
+    ("yu gothic", &["ipaexgothic", "noto sans cjk jp"]),
+    ("メイリオ", &["ipaexgothic", "noto sans cjk jp"]),
+    ("meiryo", &["ipaexgothic", "noto sans cjk jp"]),
 ];
 
 /// Families tried, in order, for characters the chosen font lacks.
@@ -213,8 +238,9 @@ impl FontBook {
             return found.unwrap_or_else(|| self.last_resort(bold, italic));
         }
         let mut names = vec![key.0.clone()];
+        let plain = table_name(&key.0);
         for table in [ALIASES, LOOKALIKES] {
-            if let Some((_, aliases)) = table.iter().find(|(name, _)| *name == key.0) {
+            for (_, aliases) in table.iter().filter(|(name, _)| *name == plain) {
                 names.extend(aliases.iter().map(|alias| (*alias).to_string()));
             }
         }
@@ -248,10 +274,11 @@ impl FontBook {
     /// Whether `family` (or a font with its metrics) is available.
     pub fn has_family(&self, family: &str) -> bool {
         let name = family.to_lowercase();
+        let plain = table_name(&name);
         self.by_family.contains_key(&name)
             || ALIASES
                 .iter()
-                .find(|(alias, _)| *alias == name)
+                .find(|(alias, _)| *alias == plain)
                 .is_some_and(|(_, aliases)| aliases.iter().any(|alias| self.by_family.contains_key(*alias)))
     }
 
@@ -338,6 +365,20 @@ impl FontBook {
     }
 }
 
+/// A family name `name` (lowercase) as the tables of fonts name it: its
+/// full-width letters, digits and spaces (ＭＳ　Ｐ明朝) made plain.
+fn table_name(name: &str) -> String {
+    const FULL_WIDTH_OFFSET: u32 = 0xFEE0;
+    name.chars()
+        .map(|ch| match ch {
+            '\u{3000}' => ' ',
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(u32::from(ch) - FULL_WIDTH_OFFSET).unwrap_or(ch),
+            _ => ch,
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
 /// The kind of a font from its name, when the document does not say.
 fn guess_kind(name: &str) -> FontKind {
     const SERIF_WORDS: &[&str] = &[
@@ -348,6 +389,13 @@ fn guess_kind(name: &str) -> FontKind {
         "georgia",
         "book",
         "mincho",
+        "明朝",
+        "明體",
+        "宋体",
+        "mingliu",
+        "simsun",
+        "batang",
+        "myeongjo",
         "cambria",
         "palatino",
         "baskerville",
@@ -462,5 +510,6 @@ mod tests {
         assert_eq!(guess_kind("times new roman"), FontKind::Serif);
         assert_eq!(guess_kind("metanormallf-roman"), FontKind::Sans);
         assert_eq!(guess_kind("century gothic"), FontKind::Sans);
+        assert_eq!(guess_kind("ｍｓ ｐ明朝"), FontKind::Serif);
     }
 }

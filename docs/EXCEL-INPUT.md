@@ -159,7 +159,9 @@ its formatting:
 
 - a tab per visible sheet (without scripts, the sheets follow each other, each under its name);
 - the grid from A1 to the last cell with a value, a format, a merge or a drawn object: the column
-  widths and row heights of the file, hidden rows and columns left out, merged cells spanning their
+  widths (in digits of the workbook's default font, as Excel measures them: 7 pixels for Calibri
+  11, half the font's size in whole pixels, rounded up, for an East Asian font, 8 for MS P Mincho
+  11) and row heights of the file, hidden rows and columns left out, merged cells spanning their
   area, the column letters and row numbers kept in view when scrolling, the gridlines unless the
   sheet hides them;
 - each cell's font (family with fallbacks of its kind, Japanese ones included, size, colour, bold,
@@ -168,7 +170,8 @@ its formatting:
   cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
-  next cell with a value; a merged range takes its right and bottom borders from its right column
+  next cell with a value; a text centred across the selection (`centerContinuous`) is centred over
+  the blank cells after it that are centred so too; a merged range takes its right and bottom borders from its right column
   and bottom row;
 - links: to a web page (http, https, mailto, ftp), and to a place in the workbook
   (`'Sheet'!A1`), which shows that sheet's tab;
@@ -214,13 +217,15 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   pages);
 - on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double), the text in the
   cell's font (its family or a font with its metrics: Calibri as Carlito, Century Gothic as URW
-  Gothic...; Japanese text in a Japanese font), size, colour, bold, italic, underline, strike,
-  aligned as Excel aligns it, wrapped when the cell wraps, running over the empty cells beside it
-  and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
+  Gothic...; MS Mincho and MS Gothic, P or not, as the IPA fonts of the same widths; Japanese text
+  of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
+  aligned as Excel aligns it (centred across the selection too), wrapped when the cell wraps,
+  running over the empty cells beside it and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
   links kept (http, https, mailto, ftp);
 - charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break
   is cut, its parts on their pages;
+- a page with nothing to print is left out, as Excel does;
 - at most `print_max_pages` (2,000) pages.
 
 Not printed: headers and footers, conditional formats, comments, the curves of curved connectors

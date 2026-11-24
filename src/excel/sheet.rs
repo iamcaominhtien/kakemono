@@ -30,9 +30,6 @@ const PT_PER_PIXEL: f32 = 0.75;
 const MAX_EMBEDDED_OBJECTS: usize = 1000;
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
-/// The width of a digit of Excel's default font (Calibri 11), in pixels:
-/// the unit of column widths.
-const DIGIT_PX: f32 = 7.0;
 /// The padding of a column, in pixels, which `baseColWidth` leaves out.
 const COL_PADDING_PX: f32 = 5.0;
 /// Points in a pixel at 96 pixels per inch.
@@ -271,6 +268,7 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         seen_view: false,
         cols_past_limit: HashSet::new(),
     };
+    sheet.grid.sizes.default_col_pt = default_col_pt(ctx.styles.digit_px());
     let mut stack = vec![Place::Root];
     if root.empty {
         stack.clear();
@@ -576,6 +574,7 @@ impl SheetReader<'_, '_> {
 
     /// Reads the default column width and row height of `sheetFormatPr`.
     fn sheet_format(&mut self, tag: &Tag<'_>) {
+        let digit_px = self.ctx.styles.digit_px();
         let sizes = &mut self.grid.sizes;
         sizes.default_row_pt = tag
             .attr("defaultRowHeight")
@@ -584,10 +583,10 @@ impl SheetReader<'_, '_> {
         sizes.default_col_pt = tag
             .attr("defaultColWidth")
             .and_then(|value| points(&value))
-            .map(col_width_pt)
+            .map(|chars| col_width_pt(chars, digit_px))
             .or_else(|| {
                 let base = tag.attr("baseColWidth").and_then(|value| points(&value))?;
-                Some((base * DIGIT_PX + COL_PADDING_PX) * PT_PER_PX)
+                Some((base * digit_px + COL_PADDING_PX) * PT_PER_PX)
             });
     }
 
@@ -595,7 +594,11 @@ impl SheetReader<'_, '_> {
     /// `max`), when it gives one.
     fn size_cols(&mut self, tag: &Tag<'_>) {
         let bound = |name| tag.attr(name).and_then(|value| value.parse::<u32>().ok());
-        let width = tag.attr("width").and_then(|value| points(&value)).map(col_width_pt);
+        let digit_px = self.ctx.styles.digit_px();
+        let width = tag
+            .attr("width")
+            .and_then(|value| points(&value))
+            .map(|chars| col_width_pt(chars, digit_px));
         if let (Some(min), Some(max), Some(width)) = (bound("min"), bound("max"), width)
             && min >= 1
             && max >= min
@@ -809,10 +812,24 @@ fn whole_pixels(points: f32) -> f32 {
     (points / PT_PER_PIXEL).round() * PT_PER_PIXEL
 }
 
+/// The width in points of a column of a sheet that gives none, when its
+/// default font's digits are `digit_px` pixels wide: 8 digits and the
+/// padding, rounded up to 8 pixels as Excel does (64 pixels for Calibri
+/// 11, 72 for an East Asian font of 11 points). `None` for Calibri's, the
+/// default of [`Sizes`](super::grid::Sizes).
+fn default_col_pt(digit_px: f32) -> Option<f32> {
+    const BASE_DIGITS: f32 = 8.0;
+    const STEP_PX: f32 = 8.0;
+    let px = ((BASE_DIGITS * digit_px + COL_PADDING_PX) / STEP_PX).ceil() * STEP_PX;
+    let pt = px * PT_PER_PX;
+    (pt != super::grid::DEFAULT_COL_PT).then_some(pt)
+}
+
 /// The width in points of a column `chars` wide (`col width`, in widths
-/// of a digit of the default font, its padding included).
-fn col_width_pt(chars: f32) -> f32 {
-    (chars * DIGIT_PX).round() * PT_PER_PX
+/// of a digit of the default font, `digit_px` pixels, its padding
+/// included).
+fn col_width_pt(chars: f32, digit_px: f32) -> f32 {
+    (chars * digit_px).round() * PT_PER_PX
 }
 
 /// Whether a boolean attribute is set.
@@ -1409,6 +1426,24 @@ mod tests {
             (objects[0].to.row, objects[0].to.col, objects[0].to.row_off_pt),
             (41, 2, 2.0)
         );
+    }
+
+    #[test]
+    fn a_text_centred_across_the_selection_spans_the_blank_centred_cells_after_it() {
+        let grid = grid(concat!(
+            r#"<sheetData><row r="1"><c r="A1" s="3" t="s"><v>0</v></c><c r="B1" s="3"/><c r="C1" s="3"/>"#,
+            r#"<c r="E1" s="3"/></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" s="3"/></row></sheetData>"#,
+        ));
+        let after = [1, 2, 3, 4];
+        assert_eq!(grid.selection_width((0, 0), &after, |_| 10.0), 20.0);
+        assert_eq!(grid.selection_width((1, 0), &after, |_| 10.0), 0.0);
+        assert!(grid.is_blank((0, 1)) && !grid.is_blank((0, 0)));
+    }
+
+    #[test]
+    fn a_sheet_without_widths_has_excel_s_default_columns() {
+        assert_eq!(default_col_pt(7.0), None);
+        assert_eq!(default_col_pt(8.0), Some(54.0));
     }
 
     #[test]

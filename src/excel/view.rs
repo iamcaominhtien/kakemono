@@ -438,7 +438,12 @@ impl Page<'_> {
     /// may run over the empty cells beside it, in points: to the left and
     /// to the right, by its alignment; `None` when it may not.
     fn overflow(&self, grid: &Grid, area: &Area, at: (u32, u32), position: usize, align: &str) -> Option<(f32, f32)> {
-        let free = |col: u32| !grid.cells.contains_key(&(at.0, col)) && !area.merged.contains(&(at.0, col));
+        // A text centred across the selection is centred over it.
+        let selection = grid.selection_width(at, &area.cols[position + 1..], |col| area.width(col));
+        if selection > 0.0 {
+            return Some((0.0, selection));
+        }
+        let free = |col: u32| grid.is_blank((at.0, col)) && !area.merged.contains(&(at.0, col));
         let reach = |columns: &mut dyn Iterator<Item = &u32>| -> f32 {
             columns
                 .take(self.view.max_overflow_cols as usize)
