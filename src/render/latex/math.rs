@@ -267,6 +267,38 @@ const LETTERLIKE: &[(char, char, &str)] = &[
     ('ℤ', 'Z', "\\mathbb"),
 ];
 
+/// The Greek math alphabets of Unicode: first code point (the capital
+/// Alpha), and the LaTeX command of the alphabet (empty for italic).
+const GREEK_ALPHABETS: &[(u32, &str)] = &[
+    (0x1D6A8, "\\boldsymbol"),
+    (0x1D6E2, ""),
+    (0x1D71C, "\\boldsymbol"),
+    (0x1D756, "\\boldsymbol"),
+    (0x1D790, "\\boldsymbol"),
+];
+/// The letters of a Greek math alphabet, in order: 25 capitals (with
+/// `ϴ`), nabla, 25 small letters, the partial sign and 6 variants.
+const GREEK_LETTERS: &str = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ";
+/// Greek letters that LaTeX has no command for, as the Latin letters
+/// they are drawn as.
+const GREEK_AS_LATIN: &[(char, char)] = &[
+    ('Α', 'A'),
+    ('Β', 'B'),
+    ('Ε', 'E'),
+    ('Ζ', 'Z'),
+    ('Η', 'H'),
+    ('Ι', 'I'),
+    ('Κ', 'K'),
+    ('Μ', 'M'),
+    ('Ν', 'N'),
+    ('Ο', 'O'),
+    ('Ρ', 'P'),
+    ('Τ', 'T'),
+    ('Χ', 'X'),
+    ('ο', 'o'),
+    ('ϴ', 'Θ'),
+    ('ϰ', 'κ'),
+];
 /// Letters in each math alphabet: 26 capitals, then 26 small letters.
 const ALPHABET_LETTERS: u32 = 52;
 /// Digits in each math digit alphabet.
@@ -294,6 +326,17 @@ pub(crate) fn latex(node: &MathNode) -> String {
 /// `\alpha`), or `None` when the character is written as it is. The LaTeX
 /// output writes such characters of running text in math mode.
 pub(crate) fn math_char(ch: char) -> Option<String> {
+    if let Some((letter, command)) = math_greek(ch) {
+        let letter = GREEK_AS_LATIN
+            .iter()
+            .find(|(greek, _)| *greek == letter)
+            .map_or(letter, |(_, latin)| *latin);
+        let inner = math_char(letter).unwrap_or_else(|| letter.to_string());
+        return Some(match command {
+            "" => inner,
+            command => format!("{command}{{{inner}}}"),
+        });
+    }
     if let Some((letter, command)) = math_alphanumeric(ch) {
         return Some(match command {
             "" => letter.to_string(),
@@ -307,13 +350,14 @@ pub(crate) fn math_char(ch: char) -> Option<String> {
 }
 
 /// Appends `piece` to `out`, with a space between a command name and a
-/// letter that follows it (`\alpha x`, not `\alphax`).
+/// letter that follows it (`\alpha x`, not `\alphax`); XeTeX and LuaTeX
+/// read any Unicode letter as part of a command name (`\pi𝝃`).
 fn push(out: &mut String, piece: &str) {
     let ends_with_command = {
         let letters = out.len() - out.trim_end_matches(|ch: char| ch.is_ascii_alphabetic()).len();
         letters > 0 && out[..out.len() - letters].ends_with('\\')
     };
-    if ends_with_command && piece.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+    if ends_with_command && piece.starts_with(char::is_alphabetic) {
         out.push(' ');
     }
     out.push_str(piece);
@@ -542,6 +586,18 @@ fn symbols(text: &str) -> String {
     out
 }
 
+/// The plain Greek letter and the alphabet command of a character of the
+/// Greek math alphabets (`𝝃` → `ξ`, `\boldsymbol`).
+fn math_greek(ch: char) -> Option<(char, &'static str)> {
+    let code = u32::from(ch);
+    let count = GREEK_LETTERS.chars().count() as u32;
+    GREEK_ALPHABETS.iter().find_map(|(start, command)| {
+        let offset = code.checked_sub(*start).filter(|&offset| offset < count)?;
+        let letter = GREEK_LETTERS.chars().nth(offset as usize)?;
+        Some((letter, *command))
+    })
+}
+
 /// The plain letter or digit and the alphabet command of a character of
 /// the math alphabets (`𝐱` → `x`, `\mathbf`), or `None` for any other
 /// character.
@@ -625,6 +681,17 @@ mod tests {
     fn command_is_spaced_from_a_letter() {
         let node = MathNode::Row(vec![op("∑"), ident("x"), ident("sin"), ident("θ")]);
         assert_eq!(latex(&node), "\\sum x\\sin\\theta");
+        // XeTeX reads a Unicode letter as part of a command name.
+        let node = MathNode::Row(vec![op("π"), ident("ж")]);
+        assert_eq!(latex(&node), "\\pi ж");
+    }
+
+    #[test]
+    fn greek_math_alphabets_are_commands() {
+        // As Wikipedia writes them: bold italic xi, italic capital alpha.
+        assert_eq!(math_char('𝝃').as_deref(), Some("\\boldsymbol{\\xi}"));
+        assert_eq!(math_char('𝛢').as_deref(), Some("A"));
+        assert_eq!(math_char('𝛁').as_deref(), Some("\\boldsymbol{\\nabla}"));
     }
 
     #[test]
