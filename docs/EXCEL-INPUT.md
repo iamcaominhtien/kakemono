@@ -187,9 +187,15 @@ its formatting:
   arrow heads and the corners of brackets and braces sized by the shape's shorter side, as Excel
   draws them; fill, outline, text with
   the look of each run, its insets, cut at the bottom edge when the shape says so) and connectors (straight and elbow, with arrow heads) at the place and size
-  of their anchors, groups included.
+  of their anchors, groups included;
+- conditional formats (`src/excel/conditional.rs`), tested on the values read: a cell compared
+  with numbers, texts or another cell (`cellIs`), containing, beginning or ending with a text,
+  empty or not, a duplicate or unique value, each with the font colour and style, fill and
+  borders of its format, the first rule over the others, a rule that stops (`stopIfTrue`) ending
+  them; and data bars, from their colour to white, as long as the value between their bounds.
 
-Not drawn: conditional formats, data bars and icons, sparklines, comments, number colours of a
+Not drawn: conditional formats on a formula of their own (`expression`), colour scales, icon
+sets, top or bottom values, above or below average, sparklines, comments, number colours of a
 format (`[Red]`), text turned by an angle other than ±90°, and the curves of curved connectors
 (drawn straight). A sheet is drawn up to 200 000 cells read and 600 000 positions (rows × columns)
 and 300 columns, the rows past them left out with a note.
@@ -247,7 +253,9 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
 - a page with nothing to print is left out, as Excel does;
 - at most `print_max_pages` (2,000) pages.
 
-Not printed: headers and footers, conditional formats, comments, the curves of curved connectors
+Conditional formats print as the sheet view draws them, data bars in one colour.
+
+Not printed: headers and footers, the conditional formats the sheet view leaves out, comments, the curves of curved connectors
 (drawn straight), text turned by another angle. The text stays text: it can be selected and
 searched.
 

@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::ExcelConfig;
+use super::conditional;
 use super::drawing;
 use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, Merge, MergeIndex, Table};
 use super::numfmt;
@@ -228,6 +229,11 @@ struct SheetReader<'c, 'a> {
     /// The default width of the columns without the padding, in digits
     /// (`baseColWidth`).
     base_col_chars: Option<f32>,
+    /// The rules of the conditional formats (for the sheet view).
+    rules: Vec<conditional::Rule>,
+    /// The numbers of the numeric cells, which the rules test (for the
+    /// sheet view, when the sheet has rules).
+    numbers: HashMap<(u32, u32), f64>,
 }
 
 /// Reads the worksheet `xml`.
@@ -270,6 +276,8 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         cols_past_limit: HashSet::new(),
         default_col_chars: None,
         base_col_chars: None,
+        rules: Vec::new(),
+        numbers: HashMap::new(),
     };
     let mut stack = vec![Place::Root];
     if root.empty {
@@ -288,9 +296,9 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
                         }
                         continue;
                     }
-                    if parent == Place::Root && tag.local() == "oleObjects" {
+                    if parent == Place::Root && matches!(tag.local(), "conditionalFormatting" | "oleObjects") {
                         let piece = subtree(&mut reader, &tag, &prefixes)?;
-                        sheet.grid.objects = piece.as_deref().map(embedded_objects).unwrap_or_default();
+                        sheet.read_piece(tag.local(), piece.as_deref());
                         continue;
                     }
                     sheet.start(&tag, parent, &prefixes)
@@ -629,6 +637,17 @@ impl SheetReader<'_, '_> {
         });
     }
 
+    /// Reads an element of the root read as a tree (`piece`, `None` when
+    /// empty): the rules of a conditional format (for the sheet view) or
+    /// the embedded objects.
+    fn read_piece(&mut self, name: &str, piece: Option<&str>) {
+        if name == "oleObjects" {
+            self.grid.objects = piece.map(embedded_objects).unwrap_or_default();
+        } else if self.ctx.view {
+            self.rules.extend(piece.map(conditional::read).unwrap_or_default());
+        }
+    }
+
     /// Records the hidden columns of `col` (one-based `min` and `max`).
     fn hide_cols(&mut self, tag: &Tag<'_>) {
         if !is_on(tag.attr("hidden").as_deref()) {
@@ -672,6 +691,13 @@ impl SheetReader<'_, '_> {
                 {
                     self.grid.looks.cells.insert(at, u32::try_from(raw.style).unwrap_or(0));
                 }
+                if self.ctx.view
+                    && let Some(at) = raw.at
+                    && matches!(raw.kind.as_deref(), None | Some("n"))
+                    && let Some(number) = raw.value.as_deref().and_then(|value| value.trim().parse::<f64>().ok())
+                {
+                    self.numbers.insert(at, number);
+                }
                 if let Some(at) = raw.at
                     && let Some(cell) = read_cell(raw, self.ctx)
                 {
@@ -692,6 +718,9 @@ impl SheetReader<'_, '_> {
         link(&self.links, &mut self.grid.cells);
         self.grid.declared.tables.clone_from(&self.ctx.tables);
         self.grid.declared.print_title_rows = self.ctx.print_title_rows;
+        if !self.rules.is_empty() {
+            conditional::apply(&mut self.rules, &self.numbers, &mut self.grid);
+        }
         self.grid
     }
 }

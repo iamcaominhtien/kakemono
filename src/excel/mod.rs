@@ -6,6 +6,7 @@
 //! then its content. A workbook has no pages, like a Word document.
 
 mod build;
+mod conditional;
 pub(crate) mod drawing;
 pub(crate) mod grid;
 pub(crate) mod numfmt;
@@ -267,7 +268,7 @@ fn read_sheets_with_styles<'w>(
         Some(xml) => strings::read(&xml)?,
         None => Vec::new(),
     };
-    let styles = zip
+    let mut styles = zip
         .read_text(&related_part(zip, &workbook.part, STYLES_REL))
         .ok()
         .flatten()
@@ -299,6 +300,7 @@ fn read_sheets_with_styles<'w>(
                     view,
                 };
                 let mut grid = sheet::read(&xml, &ctx).unwrap_or_default();
+                conditional_looks(&mut styles, &mut grid);
                 shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
                 shapes.extend(object_pictures(zip, &sheet.part, &grid, pictures));
                 shapes.sort_by_key(|shape| shape.at);
@@ -310,6 +312,17 @@ fn read_sheets_with_styles<'w>(
         sheets.push((sheet.name.as_str(), grid, shapes));
     }
     Ok((sheets, styles))
+}
+
+/// Gives each cell a conditional format formats (`grid`'s
+/// [`conditional`](grid::Looks::conditional)) a cell format of its own in
+/// `styles`: its own with the conditional ones over it.
+fn conditional_looks(styles: &mut styles::Styles, grid: &mut Grid) {
+    for (at, dxfs) in std::mem::take(&mut grid.looks.conditional) {
+        let base = view::look_index(grid, at);
+        let made = styles.with_dxfs(base, &dxfs);
+        grid.looks.cells.insert(at, made);
+    }
 }
 
 /// The relationships of a sheet part: the URLs of its external hyperlinks

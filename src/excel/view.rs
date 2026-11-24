@@ -332,11 +332,14 @@ impl Page<'_> {
         if !class.is_empty() {
             let _ = write!(out, " class=\"{class}\"");
         }
-        if cols > 1 || rows > 1 {
-            let edges = self.merge_edges(grid, at, (cols, rows), look);
-            if !edges.is_empty() {
-                let _ = write!(out, " style=\"{edges}\"");
-            }
+        let mut cell_style = if cols > 1 || rows > 1 {
+            self.merge_edges(grid, at, (cols, rows), look)
+        } else {
+            String::new()
+        };
+        cell_style.push_str(&self.bar_style(grid, at));
+        if !cell_style.is_empty() {
+            let _ = write!(out, " style=\"{cell_style}\"");
         }
         out.push('>');
         if !text.is_empty() {
@@ -347,6 +350,25 @@ impl Page<'_> {
             );
         }
         out.push_str("</td>");
+    }
+
+    /// The CSS of the data bar of the cell at `at`, empty when it has
+    /// none: from its colour to white, as Excel shades it, within a pixel
+    /// or two of the cell's edges.
+    fn bar_style(&self, grid: &Grid, at: (u32, u32)) -> String {
+        let Some((bar, color)) = grid
+            .looks
+            .bars
+            .get(&at)
+            .and_then(|bar| Some((bar, self.rgb(bar.color)?)))
+        else {
+            return String::new();
+        };
+        format!(
+            "background-image:linear-gradient(90deg,{},#fff);background-repeat:no-repeat;background-position:1px 50%;background-size:calc({}% - 2px) calc(100% - 4px);",
+            hex(color),
+            num(bar.length * 100.0)
+        )
     }
 
     /// The CSS of a cell of look `look` aligned `align`: its fill,

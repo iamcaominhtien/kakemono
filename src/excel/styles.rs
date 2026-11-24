@@ -15,10 +15,15 @@ use crate::chart::{Rgb, Theme, with_luminance};
 /// The cell formats of a workbook, by the index a cell's `s` gives.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Styles {
-    /// The cell formats (`cellXfs`), in order.
+    /// The cell formats (`cellXfs`), in order, then those made by
+    /// conditional formats ([`Styles::with_dxfs`]).
     xfs: Vec<Xf>,
     /// The look of each cell format, in the same order.
     looks: Vec<Look>,
+    /// The formats of the conditional formats (`dxfs`), in order.
+    dxfs: Vec<Dxf>,
+    /// The cell formats made of a cell format and conditional formats.
+    made: HashMap<(u32, Vec<u32>), u32>,
     /// The colours of the legacy palette (`indexedColors`), when the file
     /// changes them; Excel's own otherwise.
     pub(crate) palette: Option<Vec<Rgb>>,
@@ -244,6 +249,38 @@ impl Styles {
         self.xfs.get(index).unwrap_or(&DEFAULT_XF)
     }
 
+    /// The index of a cell format made of the cell format `base` with the
+    /// conditional formats `dxfs` over it, the first over all: what each
+    /// sets (font colour and style, fill, borders) replaces the base's.
+    pub(crate) fn with_dxfs(&mut self, base: u32, dxfs: &[u32]) -> u32 {
+        let key = (base, dxfs.to_vec());
+        if let Some(&index) = self.made.get(&key) {
+            return index;
+        }
+        let mut look = self.look(base as usize).clone();
+        for dxf in dxfs.iter().rev().filter_map(|index| self.dxfs.get(*index as usize)) {
+            dxf.over(&mut look);
+        }
+        let xf = self.get(base as usize).clone();
+        let index = u32::try_from(self.looks.len().max(self.xfs.len())).unwrap_or(u32::MAX);
+        // Formats past the file's own are padded, so that both lists keep
+        // the same order.
+        while self.xfs.len() < self.looks.len() {
+            self.xfs.push(DEFAULT_XF.clone());
+        }
+        while self.looks.len() < self.xfs.len() {
+            self.looks.push(DEFAULT_LOOK.clone());
+        }
+        self.xfs.push(Xf {
+            bold: look.font.bold,
+            italic: look.font.italic,
+            ..xf
+        });
+        self.looks.push(look);
+        self.made.insert(key, index);
+        index
+    }
+
     /// The look of the cell format of index `index`; the default one when
     /// there is none.
     pub(crate) fn look(&self, index: usize) -> &Look {
@@ -455,7 +492,14 @@ pub(crate) fn read(xml: &str) -> Result<Styles> {
             }
         })
         .collect();
-    Ok(Styles { xfs, looks, palette })
+    let dxfs = items(child("dxfs"), "dxf").map(dxf).collect();
+    Ok(Styles {
+        xfs,
+        looks,
+        palette,
+        dxfs,
+        made: HashMap::new(),
+    })
 }
 
 /// The look of a cell format with `font`, `fill`, `borders` and the
@@ -511,7 +555,7 @@ fn is_on(value: Option<&str>) -> bool {
 /// The colour of a colour element (`color`, `fgColor`, `bgColor`):
 /// `rgb`, `theme` with its `tint`, or `indexed`; `None` for an automatic
 /// one or none.
-fn color(node: Node<'_, '_>) -> Option<Color> {
+pub(crate) fn color_of(node: Node<'_, '_>) -> Option<Color> {
     if let Some(rgb) = node.attribute("rgb") {
         return argb(rgb).map(Color::Rgb);
     }
@@ -541,6 +585,66 @@ fn child_of<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
     node.children().find(|child| is_sml(*child, name))
 }
 
+/// The format a conditional format gives (`dxf`): only what it sets.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Dxf {
+    /// The font's colour.
+    color: Option<Color>,
+    /// Bold, italic, underline and strike, when set.
+    bold: Option<bool>,
+    italic: Option<bool>,
+    underline: Option<bool>,
+    strike: Option<bool>,
+    /// The fill.
+    fill: Option<Color>,
+    /// The borders: left, right, top, bottom.
+    borders: [Option<Edge>; 4],
+}
+
+impl Dxf {
+    /// Sets what it gives over `look`.
+    fn over(&self, look: &mut Look) {
+        let font = &mut look.font;
+        font.color = self.color.or(font.color);
+        font.bold = self.bold.unwrap_or(font.bold);
+        font.italic = self.italic.unwrap_or(font.italic);
+        font.underline = self.underline.unwrap_or(font.underline);
+        font.strike = self.strike.unwrap_or(font.strike);
+        look.fill = self.fill.or(look.fill);
+        for (side, edge) in look.borders.iter_mut().zip(self.borders) {
+            *side = edge.or(*side);
+        }
+    }
+}
+
+/// A conditional format's format (`dxf`). Its solid fill's colour is the
+/// pattern's background (`bgColor`), as Excel writes it.
+fn dxf(node: Node<'_, '_>) -> Dxf {
+    let font = child_of(node, "font");
+    let flag = |name| {
+        font.and_then(|font| child_of(font, name))
+            .map(|node| !matches!(node.attribute("val"), Some("0" | "false" | "off" | "none")))
+    };
+    let fill = child_of(node, "fill")
+        .and_then(|fill| child_of(fill, "patternFill"))
+        .and_then(|pattern| {
+            if matches!(pattern.attribute("patternType"), Some("none")) {
+                return None;
+            }
+            let background = child_of(pattern, "bgColor").and_then(color_of);
+            background.or_else(|| child_of(pattern, "fgColor").and_then(color_of))
+        });
+    Dxf {
+        color: font.and_then(|font| child_of(font, "color")).and_then(color_of),
+        bold: flag("b"),
+        italic: flag("i"),
+        underline: flag("u"),
+        strike: flag("strike"),
+        fill,
+        borders: child_of(node, "border").map(border).unwrap_or_default(),
+    }
+}
+
 /// A font (`font`).
 fn font(node: Node<'_, '_>) -> Font {
     let on =
@@ -552,7 +656,7 @@ fn font(node: Node<'_, '_>) -> Font {
             .and_then(|size| size.parse::<f32>().ok())
             .filter(|size| size.is_finite())
             .map(|size| size.clamp(FONT_SIZE_RANGE_PT.0, FONT_SIZE_RANGE_PT.1)),
-        color: child_of(node, "color").and_then(color),
+        color: child_of(node, "color").and_then(color_of),
         bold: on("b"),
         italic: on("i"),
         underline: child_of(node, "u").is_some_and(|node| node.attribute("val") != Some("none")),
@@ -569,12 +673,12 @@ fn fill(node: Node<'_, '_>) -> Option<Color> {
         if matches!(kind, "none" | "gray125" | "gray0625") {
             return None;
         }
-        let fg = child_of(pattern, "fgColor").and_then(color);
-        return fg.or_else(|| child_of(pattern, "bgColor").and_then(color));
+        let fg = child_of(pattern, "fgColor").and_then(color_of);
+        return fg.or_else(|| child_of(pattern, "bgColor").and_then(color_of));
     }
     let gradient = child_of(node, "gradientFill")?;
     let stop = child_of(gradient, "stop")?;
-    child_of(stop, "color").and_then(color)
+    child_of(stop, "color").and_then(color_of)
 }
 
 /// The four borders (left, right, top, bottom) of a `border`; `start` and
@@ -605,7 +709,7 @@ fn edge(node: Node<'_, '_>) -> Option<Edge> {
     Some(Edge {
         line,
         width_px,
-        color: child_of(node, "color").and_then(color),
+        color: child_of(node, "color").and_then(color_of),
     })
 }
 

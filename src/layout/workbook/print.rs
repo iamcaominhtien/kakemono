@@ -698,6 +698,7 @@ impl Printer<'_, '_, '_> {
                         color: fill,
                     }));
                 }
+                items.extend(self.data_bar(*at, rect, scale).and_then(keep));
                 let mut edges = Vec::new();
                 if self.grid.print.grid_lines {
                     grid_lines(&mut edges, rect, scale);
@@ -850,6 +851,22 @@ impl Printer<'_, '_, '_> {
         let top = rect[1].max(band_top);
         let bottom = (rect[1] + rect[3]).min(band_bottom);
         [left.max(page_left), top, right.min(page_right), bottom]
+    }
+
+    /// The data bar of the cell at `at` (box `rect` on the page), in the
+    /// middle of its shading from the colour to white, within the cell's
+    /// edges; `None` when it has none.
+    fn data_bar(&self, at: (u32, u32), rect: [f32; 4], scale: f32) -> Option<Item> {
+        let bar = self.grid.looks.bars.get(&at)?;
+        let color = self.rgb(bar.color)?;
+        let inset = DATA_BAR_INSET_PT * scale;
+        Some(Item::Rect {
+            x: rect[0] + inset / 2.0,
+            y: rect[1] + inset,
+            width: ((rect[2] - inset) * bar.length).max(0.0),
+            height: (rect[3] - 2.0 * inset).max(0.0),
+            color: color.map(|channel| channel + (u8::MAX - channel) / 4),
+        })
     }
 
     /// The lines of the borders of a cell of look `look` at `rect`.
@@ -1369,6 +1386,10 @@ fn cut(item: Item, [left, top, right, bottom]: [f32; 4]) -> Option<Item> {
         other => Some(other),
     }
 }
+
+/// How far a data bar keeps from the top and bottom of its cell, in
+/// points (two pixels).
+const DATA_BAR_INSET_PT: f32 = 1.5;
 
 /// How far a line may lie outside the page's part of the sheet and still
 /// be drawn (on its edge), in points: rounding.

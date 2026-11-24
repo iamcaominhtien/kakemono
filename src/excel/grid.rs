@@ -2,6 +2,7 @@
 //! ranges, the hidden rows and columns, and what the file declares about
 //! its tables. Rows and columns are zero-based.
 
+use super::styles::Color;
 use crate::model::Span;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -138,6 +139,20 @@ pub(crate) struct Looks {
     /// the others to their text, so they grow when a font set in their
     /// place needs more lines.
     pub(crate) custom_rows: HashSet<u32>,
+    /// The formats the conditional formats give each cell (indices of the
+    /// styles' `dxfs`), the first rule's first.
+    pub(crate) conditional: BTreeMap<(u32, u32), Vec<u32>>,
+    /// The data bars of the cells that have one.
+    pub(crate) bars: BTreeMap<(u32, u32), DataBar>,
+}
+
+/// The data bar a conditional format draws in a cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DataBar {
+    /// Its length, as a share of the cell's width.
+    pub(crate) length: f32,
+    /// Its colour.
+    pub(crate) color: Color,
 }
 
 /// The widths of the columns and the heights of the rows of a sheet, as
