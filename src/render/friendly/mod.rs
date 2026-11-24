@@ -207,7 +207,7 @@ impl Page<'_> {
 {fonts}{math}{CSS}{notes}</style>
 </head>
 <body class="friendly">
-{topbar}<div class="layout">
+{topbar}<div class="layout{layout_class}">
 {toc}<article class="article" id="article">
 <header class="paper-head">
 {head}</header>
@@ -233,6 +233,8 @@ impl Page<'_> {
             notes = self.notes,
             topbar = self.topbar,
             toc = self.toc,
+            // Without contents, the article takes the column they leave.
+            layout_class = if self.toc.is_empty() { " no-toc" } else { "" },
             head = self.head,
             content = self.content,
         )
