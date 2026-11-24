@@ -417,7 +417,7 @@ pub struct Meta {
     /// Where the PDF came from (file name, arXiv id, ...).
     pub source: Option<String>,
     /// The format of the file, for a document read without pages from a
-    /// format other than Word (`epub`); `None` for a PDF or a Word
+    /// format other than Word (`epub`, `html`); `None` for a PDF or a Word
     /// document. The outputs name it in their colophon.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_format: Option<String>,

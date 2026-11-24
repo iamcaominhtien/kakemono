@@ -13,10 +13,9 @@
 //! links between documents keep working.
 
 use super::css::{Props, Sheet};
-use super::{entities, mathml, parse, resolve};
+use super::{Resources, entities, mathml, parse, resolve};
 use crate::model::{BOLD, ITALIC, MONO, Picture, SUB, SUP, Span};
 use crate::word::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
-use crate::word::zip::ZipArchive;
 use crate::word::{normalize_picture, pixel_size};
 use anyhow::{Context, Result};
 use roxmltree::{Document as Xml, Node};
@@ -137,8 +136,9 @@ struct Page<'a> {
 
 /// Reads the content documents of a book.
 struct Reader<'a> {
-    /// The archive.
-    zip: &'a ZipArchive<'a>,
+    /// Where the style sheets and pictures are read from (the archive of
+    /// a book, or the files of a web page).
+    files: &'a dyn Resources,
     /// The pictures read so far.
     pictures: Vec<Picture>,
     /// Index of the picture of each path; `None` when it cannot be shown.
@@ -161,37 +161,36 @@ struct Reader<'a> {
     note_backlink: bool,
 }
 
-/// Reads the content documents `spine` of a book (`title` and `creators`
-/// from its metadata) into the form of a Word document.
+/// Reads the content documents `docs` (path, XHTML text), in reading
+/// order, of a book (`title` and `creators` from its metadata) into the
+/// form of a Word document; their style sheets and pictures are read from
+/// `files`. A web page is read as a book of one document.
 ///
 /// # Errors
-/// When a content document is missing or is not well-formed XML.
-pub(crate) fn read_book(
-    zip: &ZipArchive<'_>,
-    spine: &[String],
+/// When a content document is not well-formed XML.
+pub(crate) fn read_documents(
+    files: &dyn Resources,
+    docs: &[(&str, String)],
     title: Option<&str>,
     creators: &[String],
 ) -> Result<WordDoc> {
-    let mut texts = Vec::new();
-    for path in spine {
-        let text = zip
-            .read_text(path)?
-            .with_context(|| format!("the EPUB has no content document {path}"))?;
+    let mut texts = Vec::with_capacity(docs.len());
+    for (path, text) in docs {
         // A document with HTML's named references parses once they are
         // numbers (parsed twice only then: most documents have none).
-        let text = if entities::has_html_names(&text) && parse(&text).is_err() {
-            entities::to_numeric(&text)
+        let text = if entities::has_html_names(text) && parse(text).is_err() {
+            entities::to_numeric(text)
         } else {
-            text
+            text.clone()
         };
-        texts.push((path.as_str(), text));
+        texts.push((*path, text));
     }
     let docs = texts
         .iter()
         .map(|(path, text)| parse(text).with_context(|| format!("reading {path}")))
         .collect::<Result<Vec<Xml<'_>>>>()?;
     let mut reader = Reader {
-        zip,
+        files,
         pictures: Vec::new(),
         picture_index: HashMap::new(),
         sheets: HashMap::new(),
@@ -369,11 +368,13 @@ impl<'a> Reader<'a> {
                 && let Some(href) = node.attribute("href")
             {
                 let (css_path, _) = resolve(path, href);
-                let zip = self.zip;
-                let text = self
-                    .sheets
-                    .entry(css_path)
-                    .or_insert_with_key(|key| zip.read_text(key).ok().flatten().unwrap_or_default());
+                let files = self.files;
+                let text = self.sheets.entry(css_path).or_insert_with_key(|key| {
+                    files
+                        .read(key)
+                        .map(|data| String::from_utf8_lossy(&data).into_owned())
+                        .unwrap_or_default()
+                });
                 sheet.add(text);
             }
         }
@@ -824,16 +825,10 @@ impl<'a> Reader<'a> {
         if let Some(index) = self.picture_index.get(&path) {
             return *index;
         }
-        let index = self
-            .zip
-            .read(&path)
-            .ok()
-            .flatten()
-            .and_then(normalize_picture)
-            .map(|picture| {
-                self.pictures.push(picture);
-                self.pictures.len() - 1
-            });
+        let index = self.files.read(&path).and_then(normalize_picture).map(|picture| {
+            self.pictures.push(picture);
+            self.pictures.len() - 1
+        });
         self.picture_index.insert(path, index);
         index
     }

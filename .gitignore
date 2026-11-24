@@ -32,3 +32,6 @@ benchmark-results/
 
 # Word documents and the PDFs Word made of them (scripts/fetch-word-corpus.sh)
 /tests/data/word-corpus/
+
+# Web pages (scripts/fetch-test-pages.sh)
+/tests/data/web/

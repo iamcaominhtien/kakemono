@@ -5,6 +5,7 @@ defined form of data and returns the next. The analysis side (PDF → `Document`
 (`Document` → HTML, Word, Markdown, LaTeX, Typst, EPUB, JSON or chunks) meet at exactly one place: the `Document` model in `model`.
 A Word document (`.docx`, `.doc`) skips the analysis: `word/` reads it straight into a `Document`.
 So does an EPUB book: `epub/` reads its XHTML into the intermediate form of `word/`, which builds the `Document`.
+So does a web page: `html/` parses it as a browser does, keeps its article and writes it as XHTML for the reader of `epub/`.
 An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figure's `replace_image` by `render/json/replace.rs`) before any output is written.
 
 ```
@@ -31,6 +32,8 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
     │  word/          DOCX/DOC bytes → the same Document: docx.rs (OOXML) or doc/ (Word 97–2003)
     │                 → ir.rs (paragraphs, runs, tables, notes) → build.rs (styles → block kinds)
     │  epub/          EPUB bytes → the package and spine → html.rs (XHTML → word's ir.rs) → build.rs
+    │  html/          a web page (file, bytes or address) → html5ever → the article (clutter removed,
+    │                 notes marked) → XHTML → epub's html.rs → build.rs
     │
     │  word/fmt/      DOCX/DOC bytes → FDoc, every formatting property resolved
     │   └► layout/    FDoc laid out in pages as Word does → a PDF (`-f pdf`); for the hard and
@@ -57,11 +60,12 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | --- | --- |
 | `lib.rs` | Public API (the semver promise of the crate on crates.io): `Paper`, `convert`, `Analysis`, the Options types, `config`, `model`, `source`. The other modules are `#[doc(hidden)]` internals, public only for the CLI, examples and tests |
 | `main.rs` | CLI: only reads the arguments, then calls the API |
-| `paper.rs` | `Paper`: loads the PDF (and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), Typst (`to_typst`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
+| `paper.rs` | `Paper`: loads the PDF, Word document, book or web page (`from_bytes`, `from_path`, `from_url`; and its SHA-256), runs the analysis, outputs HTML (`to_html`), Word (`to_docx`, `to_docx_with_images`), Markdown (`to_markdown`), LaTeX (`to_latex`), Typst (`to_typst`), EPUB (`to_epub`), editable JSON (`to_json`) or chunks (`to_chunks`), and applies an edited JSON file (`apply_content`) |
 | `config.rs` | `AnalyzeOptions` and `LayoutConfig` (every threshold of the algorithm) |
-| `source/` | PDF sources: `arxiv` (ID recognition, download, cache) |
+| `source/` | Where documents come from: `arxiv` (ID recognition, download, cache), `web` (a document at an `http(s)` address, and the pictures of a page, fetched several at a time, with limits on size, number and time) |
 | `word/` | Word documents as input, read without layout analysis: `zip` (a minimal ZIP reader), `docx` (the parts of a `.docx`: document, styles, numbering, notes, relationships, pictures, fields), `doc/` (the binary `.doc` in its compound file, with `cfb`: `fib` the File Information Block and the piece table, `props` sprms, property pages, style sheet, fonts, lists, bookmarks, `picture` pictures in the `Data` stream), `styles` (style inheritance and list markers, shared by both), `omml` (Office Math → `MathNode`), `pictures` (pictures made PNG or JPEG), `ir` (what both readers fill in), `build` (`ir` → `Document`: block kinds from styles, captions given to floats, notes after their paragraph, links) |
 | `epub/` | EPUB books as input, read without layout analysis: `mod.rs` (the package: `META-INF/container.xml`, the package document's metadata and spine, paths inside the archive, read with `word/zip`), `html` (XHTML → the `word/ir` form, with Word style names: `<h2>` → "heading 2", `<pre>` → "Source Code", `<figcaption>` → "Caption"; lists, tables with merged cells, pictures, notes called by `noteref` links, bookmarks for every `id`), `css` (simple rules of the style sheets that give runs their style), `mathml` (MathML → `MathNode`), `entities` (HTML's named character references for the XML parser). `word/build` then makes the `Document` |
+| `html/` | Web pages as input (`.html`, `.htm`, `.xhtml`, or an address): `decode` (the encoding: byte order mark, HTTP `charset`, `<meta>`, else UTF-8 or Windows-1252), `dom` (html5ever's tree copied into a vector of nodes, edited, then written as well-formed XHTML with the SVG and MathML namespaces), `clean` (the article: elements, roles, hidden elements and classes or `id`s of clutter removed, the element that holds the text found as Readability does, the title (`<h1>`, else the metadata), authors from `<meta>`, lazy pictures and `srcset`s resolved, icons removed, links made absolute, `<br><br>` made a paragraph break), `notes` (superscript links to a list item become notes; LaTeXML's notes, authors and abstract; MediaWiki's links back). The XHTML is read by `epub/html` as a book of one document, its pictures from `file:` URLs, `data:` URLs or fetched (`source/web`) |
 | `word/fmt/` | A Word document with all its formatting, for the layout engine (`FDoc`, `model`): `docx` and `doc` read sections, headers and footers, resolved paragraph, run, table and cell properties (`props`, `styles`; `sprm` for `.doc`), lists, notes, fields, pictures, shapes and embedded fonts; `drawing` the floating shapes and text boxes of a `.doc` (OfficeArt), `frames` frames placed like text boxes, `contrast` automatic text colour |
 | `word/metafile/` | EMF and WMF pictures replayed on a small model of a Windows device context (`dc`) and written as SVG |
 | `word/mtef.rs` | MathType and Equation Editor formulas (MTEF 3 and 5, the `Equation Native` stream of an OLE object) → `MathNode` |
@@ -92,6 +96,7 @@ Dependencies run in one direction only:
 main → paper → analysis → backend → common
               → word    → analysis (the linking of `semantics`)
               → epub    → word (`ir`, `build`, `zip`, pictures)
+              → html    → epub (`html`), source (`web`)
               → layout  → word (`fmt`), backend (reading PDF lines), render (HTML escaping)
               → render  → model   → common
 ```

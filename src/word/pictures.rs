@@ -1,5 +1,6 @@
 //! The picture files of a Word document, made ready for every output:
-//! PNG and JPEG as they are, other bitmaps, SVG drawings and Windows
+//! PNG and JPEG as they are, other bitmaps (GIF, BMP, and WebP, the
+//! format of many pictures of the Web), SVG drawings and Windows
 //! metafiles (EMF, WMF, through SVG) turned into PNG.
 
 use crate::model::Picture;
@@ -15,6 +16,11 @@ const JPEG_MAGIC: &[u8] = &[0xFF, 0xD8, 0xFF];
 const GIF_MAGIC: &[u8] = b"GIF8";
 /// Signature of a BMP file.
 const BMP_MAGIC: &[u8] = b"BM";
+/// Signature of a RIFF file, and the form of a WebP picture in it (at
+/// byte 8).
+const RIFF_MAGIC: &[u8] = b"RIFF";
+/// The form of a WebP picture in a RIFF file.
+const WEBP_FORM: &[u8] = b"WEBP";
 /// How far into a file the start of an SVG document is looked for.
 const SVG_SNIFF_BYTES: usize = 512;
 
@@ -27,7 +33,8 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
     if data.starts_with(JPEG_MAGIC) {
         return Some(Picture { data, jpeg: true });
     }
-    if data.starts_with(GIF_MAGIC) || data.starts_with(BMP_MAGIC) {
+    let webp = data.starts_with(RIFF_MAGIC) && data.get(8..12) == Some(WEBP_FORM);
+    if data.starts_with(GIF_MAGIC) || data.starts_with(BMP_MAGIC) || webp {
         return to_png(&data);
     }
     if super::metafile::is_metafile(&data) {

@@ -116,17 +116,22 @@ struct Document {
 
 #[pymethods]
 impl Document {
-    /// Reads and analyses `data` (the bytes of a PDF or Word document) and
+    /// Reads and analyses `data` (the bytes of a PDF, a Word document, an
+    /// EPUB book or a web page), the file at `path` (a web page with its
+    /// pictures next to it) or the document at the address `url` (a web
+    /// page with its pictures, fetched), and
     /// applies the edited JSON `content` to the analysis; a relative
     /// `replace_image` of `content` is read from `content_dir`. The warnings
     /// of applying it (blocks that kept their text) are given as
     /// `UserWarning`s.
     #[new]
-    #[pyo3(signature = (data, *, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None))]
+    #[pyo3(signature = (data=None, *, path=None, url=None, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
-        data: Vec<u8>,
+        data: Option<Vec<u8>>,
+        path: Option<String>,
+        url: Option<String>,
         source: Option<String>,
         tables: bool,
         jobs: usize,
@@ -137,7 +142,13 @@ impl Document {
         let png = parse_png_compression(png_compression)?;
         let edited = content.is_some();
         let (paper, analysis, warnings) = py.detach(move || {
-            let mut paper = Paper::from_bytes(data).map_err(value_error)?.with_png_compression(png);
+            let paper = match (data, path, url) {
+                (Some(data), None, None) => Paper::from_bytes(data),
+                (None, Some(path), None) => Paper::from_path(path),
+                (None, None, Some(url)) => Paper::from_url(&url),
+                _ => return Err(value_error("give one of data, path and url")),
+            };
+            let mut paper = paper.map_err(value_error)?.with_png_compression(png);
             if let Some(source) = source {
                 paper = paper.with_source(source);
             }
@@ -167,7 +178,7 @@ impl Document {
         })
     }
 
-    /// The input format: `"pdf"`, `"docx"` or `"doc"`.
+    /// The input format: `"pdf"`, `"docx"`, `"doc"`, `"epub"` or `"html"`.
     #[getter]
     fn format(&self) -> &'static str {
         self.paper.format().name()
