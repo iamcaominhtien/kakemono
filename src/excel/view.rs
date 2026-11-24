@@ -96,7 +96,7 @@ table.cells{border-collapse:collapse;table-layout:fixed;background:#fff}\
 .cells.lines td{box-shadow:inset -1px -1px 0 #e1e1e1}\
 .cells th{background:#f3f3f3;color:#555;font-weight:400;font-size:11px;font-family:Calibri,Carlito,Arial,sans-serif;border:1px solid #d0d0d0;padding:0;text-align:center;overflow:hidden;white-space:nowrap}\
 .cells thead th{position:sticky;top:0;z-index:2}\
-.cells tbody th{position:sticky;left:0;z-index:1}\
+.cells tbody th{position:sticky;left:0;z-index:1;line-height:0}\
 .cells thead th:first-child{left:0;z-index:3}\
 .cells td>div{overflow:hidden}\
 .cells .w{white-space:pre-wrap;overflow-wrap:break-word;padding:0 1px}\
@@ -578,21 +578,23 @@ impl Page<'_> {
             });
         }
         let mut outline = String::new();
-        if let Some((path, filled)) = preset_path(geometry) {
+        if let Some((path, filled)) = outline_path(geometry, width, height) {
             let fill = if filled { shape.fill.map(hex) } else { None };
             let mirror = match (shape.flip_h, shape.flip_v) {
                 (false, false) => String::new(),
                 (flip_h, flip_v) => format!(
                     " transform=\"translate({} {}) scale({} {})\"",
-                    if flip_h { 100 } else { 0 },
-                    if flip_v { 100 } else { 0 },
+                    if flip_h { num(width) } else { "0".into() },
+                    if flip_v { num(height) } else { "0".into() },
                     if flip_h { -1 } else { 1 },
                     if flip_v { -1 } else { 1 }
                 ),
             };
             let _ = write!(
                 outline,
-                "<svg class=\"outline\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\"><path d=\"{path}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\" vector-effect=\"non-scaling-stroke\"{mirror}/></svg>",
+                "<svg class=\"outline\" viewBox=\"0 0 {} {}\" preserveAspectRatio=\"none\"><path d=\"{path}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\" vector-effect=\"non-scaling-stroke\"{mirror}/></svg>",
+                num(width.max(MIN_BOX_PT)),
+                num(height.max(MIN_BOX_PT)),
                 fill.as_deref().unwrap_or("none"),
                 stroke.as_deref().unwrap_or("none"),
                 num(stroke_pt / PT_PER_PX),
@@ -1042,6 +1044,183 @@ pub(crate) fn line_points(geometry: &str, width: f32, height: f32) -> Option<Vec
     })
 }
 
+/// The path of a preset outline that is not a box in a box `width` by
+/// `height` points, and whether it is filled (brackets are not); `None`
+/// for a box, drawn with CSS.
+pub(crate) fn outline_path(geometry: &str, width: f32, height: f32) -> Option<(String, bool)> {
+    let (width, height) = (width.max(MIN_BOX_PT), height.max(MIN_BOX_PT));
+    if let Some(path) = arrow_path(geometry, width, height) {
+        return Some((path, true));
+    }
+    if let Some(path) = bracket_path(geometry, width, height) {
+        return Some((path, false));
+    }
+    preset_path(geometry).map(|(path, filled)| (scale_path(path, width / 100.0, height / 100.0), filled))
+}
+
+/// The smallest side of a shape's box, in points: a shape without width
+/// or height is drawn as a line.
+const MIN_BOX_PT: f32 = 0.01;
+
+/// The path of an arrow in a box `width` by `height` points, as Excel
+/// draws it with its default adjustments: the head as long as half the
+/// box's shorter side, the shaft half the box wide.
+fn arrow_path(geometry: &str, width: f32, height: f32) -> Option<String> {
+    let head = width.min(height) / 2.0;
+    let (wide, high) = (width, height);
+    Some(match geometry {
+        "rightArrow" => polygon(&[
+            [0.0, high / 4.0],
+            [wide - head, high / 4.0],
+            [wide - head, 0.0],
+            [wide, high / 2.0],
+            [wide - head, high],
+            [wide - head, high * 0.75],
+            [0.0, high * 0.75],
+        ]),
+        "leftArrow" => polygon(&[
+            [wide, high / 4.0],
+            [head, high / 4.0],
+            [head, 0.0],
+            [0.0, high / 2.0],
+            [head, high],
+            [head, high * 0.75],
+            [wide, high * 0.75],
+        ]),
+        "downArrow" => polygon(&[
+            [wide / 4.0, 0.0],
+            [wide * 0.75, 0.0],
+            [wide * 0.75, high - head],
+            [wide, high - head],
+            [wide / 2.0, high],
+            [0.0, high - head],
+            [wide / 4.0, high - head],
+        ]),
+        "upArrow" => polygon(&[
+            [wide / 4.0, high],
+            [wide * 0.75, high],
+            [wide * 0.75, head],
+            [wide, head],
+            [wide / 2.0, 0.0],
+            [0.0, head],
+            [wide / 4.0, head],
+        ]),
+        "bentUpArrow" => {
+            // Along the bottom, then up to a head at the top right; the
+            // shaft and the head's length a quarter of the shorter side.
+            let quarter = width.min(height) / 4.0;
+            let (tip, shaft) = (wide - quarter, quarter / 2.0);
+            polygon(&[
+                [0.0, high - quarter],
+                [tip - shaft, high - quarter],
+                [tip - shaft, quarter],
+                [wide - 2.0 * quarter, quarter],
+                [tip, 0.0],
+                [wide, quarter],
+                [tip + shaft, quarter],
+                [tip + shaft, high],
+                [0.0, high],
+            ])
+        }
+        "bentArrow" => bent_arrow_path(width, height),
+        _ => return None,
+    })
+}
+
+/// A closed path through `points`.
+fn polygon(points: &[[f32; 2]]) -> String {
+    let mut path = String::new();
+    for (index, [left, top]) in points.iter().enumerate() {
+        let _ = write!(
+            path,
+            "{}{},{}",
+            if index == 0 { 'M' } else { 'L' },
+            num(*left),
+            num(*top)
+        );
+    }
+    path.push('Z');
+    path
+}
+
+/// The path of a bent arrow in a box `width` by `height` points: up from
+/// the bottom left, round the corner, then right to its head, as Excel
+/// draws it with its default adjustments.
+fn bent_arrow_path(width: f32, height: f32) -> String {
+    let quarter = width.min(height) / 4.0;
+    let (shaft, top) = (quarter, quarter / 2.0);
+    let bend = (width.min(height) * 0.4375).min(width - quarter).min(height - top);
+    let inner = (bend - shaft).max(0.0);
+    format!(
+        "M0,{high}L0,{down}A{bend},{bend} 0 0 1 {bend},{top}L{neck},{top}L{neck},0L{wide},{quarter}L{neck},{base}L{neck},{under}L{turn},{under}A{inner},{inner} 0 0 0 {shaft},{low}L{shaft},{high}Z",
+        down = num(top + bend),
+        neck = num(width - quarter),
+        quarter = num(quarter),
+        base = num(2.0 * quarter),
+        under = num(top + shaft),
+        turn = num(shaft + inner),
+        low = num(top + shaft + inner),
+        high = num(height),
+        wide = num(width),
+        bend = num(bend),
+        top = num(top),
+        inner = num(inner),
+        shaft = num(shaft),
+    )
+}
+
+/// The path of a bracket or brace in a box `width` by `height` points, as
+/// Excel draws it with its default adjustments: corners as round as a
+/// sixth of the box's shorter side (a twelfth for a single bracket or a
+/// brace).
+fn bracket_path(geometry: &str, width: f32, height: f32) -> Option<String> {
+    let side = width.min(height);
+    let (right, bottom) = (num(width), num(height));
+    Some(match geometry {
+        "bracketPair" => {
+            let round = side * 0.16667;
+            format!(
+                "M{round},{bottom}A{round},{round} 0 0 1 0,{low}L0,{round}A{round},{round} 0 0 1 {round},0M{inside},0A{round},{round} 0 0 1 {right},{round}L{right},{low}A{round},{round} 0 0 1 {inside},{bottom}",
+                low = num(height - round),
+                inside = num(width - round),
+                round = num(round),
+            )
+        }
+        "leftBracket" | "rightBracket" => {
+            // A left one is a right one mirrored: its sides and turns swap.
+            let round = side * 0.08333;
+            let (near, far, turn) = if geometry == "rightBracket" {
+                ("0", right.as_str(), 1)
+            } else {
+                (right.as_str(), "0", 0)
+            };
+            format!(
+                "M{near},0A{right},{high} 0 0 {turn} {far},{high}L{far},{low}A{right},{high} 0 0 {turn} {near},{bottom}",
+                high = num(round),
+                low = num(height - round),
+            )
+        }
+        "leftBrace" | "rightBrace" => {
+            let (round, half) = (side * 0.08333, width / 2.0);
+            let (near, far, turn, back) = if geometry == "rightBrace" {
+                ("0", right.as_str(), 1, 0)
+            } else {
+                (right.as_str(), "0", 0, 1)
+            };
+            format!(
+                "M{near},0A{middle},{high} 0 0 {turn} {middle},{high}L{middle},{above}A{middle},{high} 0 0 {back} {far},{centre}A{middle},{high} 0 0 {back} {middle},{below}L{middle},{low}A{middle},{high} 0 0 {turn} {near},{bottom}",
+                middle = num(half),
+                above = num(height / 2.0 - round),
+                centre = num(height / 2.0),
+                below = num(height / 2.0 + round),
+                low = num(height - round),
+                high = num(round),
+            )
+        }
+        _ => return None,
+    })
+}
+
 /// The path of a preset outline that is not a box, in a 100 × 100 box,
 /// and whether it is filled (brackets are not); `None` for a box (a
 /// rectangle, rounded or not, an ellipse), drawn with CSS.
@@ -1051,10 +1230,11 @@ pub(crate) fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
         "flowChartMerge" => "M0,0L100,0L50,100Z",
         "rtTriangle" => "M0,0L0,100L100,100Z",
         "diamond" | "flowChartDecision" => "M50,0L100,50L50,100L0,50Z",
-        "rightArrow" => "M0,25L50,25L50,0L100,50L50,100L50,75L0,75Z",
-        "leftArrow" => "M100,25L50,25L50,0L0,50L50,100L50,75L100,75Z",
-        "upArrow" => "M25,100L25,50L0,50L50,0L100,50L75,50L75,100Z",
-        "downArrow" => "M25,0L75,0L75,50L100,50L50,100L0,50L25,50Z",
+        "leftUpArrow" => "M0,75L25,50L25,62.5L62.5,62.5L62.5,25L50,25L75,0L100,25L87.5,25L87.5,87.5L25,87.5L25,100Z",
+        "uturnArrow" => {
+            "M0,100L0,40Q0,0 40,0L50,0Q90,0 90,40L90,50L100,50L75,75L50,50L65,50L65,40Q65,25 50,25L40,25Q25,25 25,40L25,100Z"
+        }
+        "notchedRightArrow" => "M0,25L50,25L50,0L100,50L50,100L50,75L0,75L12.5,50Z",
         "leftRightArrow" => "M0,50L25,0L25,25L75,25L75,0L100,50L75,100L75,75L25,75L25,100Z",
         "upDownArrow" => "M50,0L100,25L75,25L75,75L100,75L50,100L0,75L25,75L25,25L0,25Z",
         "chevron" => "M0,0L75,0L100,50L75,100L0,100L25,50Z",
@@ -1074,20 +1254,6 @@ pub(crate) fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
         "foldedCorner" => "M0,0L100,0L100,82L82,100L0,100Z M82,100L85,85L100,82",
         _ => {
             return match geometry {
-                "leftBracket" => Some(("M100,0Q0,0 0,10L0,90Q0,100 100,100", false)),
-                "rightBracket" => Some(("M0,0Q100,0 100,10L100,90Q100,100 0,100", false)),
-                "bracketPair" => Some((
-                    "M20,0Q0,0 0,10L0,90Q0,100 20,100M80,0Q100,0 100,10L100,90Q100,100 80,100",
-                    false,
-                )),
-                "leftBrace" => Some((
-                    "M100,0Q50,0 50,10L50,40Q50,50 0,50Q50,50 50,60L50,90Q50,100 100,100",
-                    false,
-                )),
-                "rightBrace" => Some((
-                    "M0,0Q50,0 50,10L50,40Q50,50 100,50Q50,50 50,60L50,90Q50,100 0,100",
-                    false,
-                )),
                 "bracePair" => Some((
                     "M20,0Q10,0 10,10L10,40Q10,50 0,50Q10,50 10,60L10,90Q10,100 20,100M80,0Q90,0 90,10L90,40Q90,50 100,50Q90,50 90,60L90,90Q90,100 80,100",
                     false,
@@ -1235,8 +1401,8 @@ fn outline_body(shape: &TextShape, width: f32, height: f32) -> Option<(String, f
             marker("start", shape.head),
             marker("end", shape.tail),
         )
-    } else if let Some((path, filled)) = preset_path(geometry) {
-        let mut scaled = scale_path(path, width / 100.0, height / 100.0);
+    } else if let Some((path, filled)) = outline_path(geometry, width, height) {
+        let mut scaled = path;
         if shape.flip_h || shape.flip_v {
             scaled = format!(
                 "{scaled}\" transform=\"translate({} {}) scale({} {})",
@@ -1325,6 +1491,39 @@ fn column_name(col: u32) -> String {
     String::from_utf8(name).unwrap_or_default()
 }
 
+/// The Japanese fonts of Windows (their names as `table_name` folds them)
+/// and the families a page shows where they are not installed: the font
+/// by its English name, then a font of its metrics (the IPA fonts), the
+/// Mac's and Noto's. The proportional (P) fonts have their Latin letters
+/// and digits in Arial or Times New Roman, half an em like theirs, as the
+/// printed PDF does.
+const JAPANESE_FAMILIES: &[(&[&str], &str)] = &[
+    (
+        &["ms pゴシック", "ms pgothic", "ms ui gothic"],
+        "'MS PGothic',Arial,'IPAPGothic','Hiragino Sans','Noto Sans CJK JP','Noto Sans JP',sans-serif",
+    ),
+    (
+        &["ms ゴシック", "ms gothic"],
+        "'MS Gothic','IPAGothic','Hiragino Sans','Noto Sans CJK JP','Noto Sans JP',sans-serif",
+    ),
+    (
+        &["ms p明朝", "ms pmincho"],
+        "'MS PMincho','Times New Roman','IPAPMincho','Hiragino Mincho ProN','Noto Serif CJK JP','Noto Serif JP',serif",
+    ),
+    (
+        &["ms 明朝", "ms mincho"],
+        "'MS Mincho','IPAMincho','Hiragino Mincho ProN','Noto Serif CJK JP','Noto Serif JP',serif",
+    ),
+    (
+        &["游ゴシック", "yu gothic", "メイリオ", "meiryo"],
+        "'Yu Gothic','Meiryo','IPAexGothic','Hiragino Sans','Noto Sans CJK JP','Noto Sans JP',sans-serif",
+    ),
+    (
+        &["游明朝", "yu mincho"],
+        "'Yu Mincho','IPAexMincho','Hiragino Mincho ProN','Noto Serif CJK JP','Noto Serif JP',serif",
+    ),
+];
+
 /// The CSS font families of the font `name`, with fallbacks of its kind
 /// (serif for a Mincho or Times font, else sans-serif) and for Japanese.
 pub(crate) fn family(name: Option<&str>) -> String {
@@ -1333,6 +1532,13 @@ pub(crate) fn family(name: Option<&str>) -> String {
         return format!("Calibri,{fallback}");
     };
     let quoted = format!("'{}'", name.replace(['\'', '\\', '"', ';', '<', '>', '{', '}'], ""));
+    let folded = crate::layout::fonts::table_name(name);
+    if let Some((_, stand_ins)) = JAPANESE_FAMILIES
+        .iter()
+        .find(|(names, _)| names.contains(&folded.as_str()))
+    {
+        return format!("{quoted},{stand_ins}");
+    }
     let lower = name.to_lowercase();
     let serif = ["mincho", "明朝", "times", "serif", "georgia", "cambria", "century"]
         .iter()
@@ -1463,10 +1669,28 @@ mod tests {
     fn fonts_get_fallbacks_of_their_kind() {
         assert!(family(Some("ＭＳ 明朝")).ends_with("serif") && family(Some("ＭＳ 明朝")).contains("Serif CJK"));
         assert!(family(Some("Calibri")).ends_with("sans-serif"));
+        // A Japanese font of Windows falls back on a font of its metrics.
+        let gothic = family(Some("ＭＳ Ｐゴシック"));
+        assert!(
+            gothic.starts_with("'ＭＳ Ｐゴシック','MS PGothic',Arial,'IPAPGothic'"),
+            "{gothic}"
+        );
         assert!(family(Some("Century Gothic")).ends_with("sans-serif"));
         assert!(family(None).starts_with("Calibri,"));
         // A name cannot close the style attribute.
         assert!(!family(Some("x\";<b>{}")).contains(['"', '<', ';', '{']));
+    }
+
+    #[test]
+    fn an_arrow_s_head_and_a_bracket_s_corners_keep_to_the_shorter_side() {
+        // A long arrow keeps a head as long as half its height.
+        let (arrow, filled) = outline_path("rightArrow", 200.0, 20.0).unwrap();
+        assert!(filled && arrow.starts_with("M0,5L190,5L190,0L200,10"), "{arrow}");
+        // A wide bracket pair turns its corners within a sixth of its height.
+        let (brackets, filled) = outline_path("bracketPair", 300.0, 30.0).unwrap();
+        assert!(!filled && brackets.starts_with("M5,30A5,5 0 0 1 0,25"), "{brackets}");
+        let (left, _) = outline_path("leftBrace", 10.0, 60.0).unwrap();
+        assert!(left.starts_with("M10,0A5,0.83 0 0 0 5,0.83"), "{left}");
     }
 
     #[test]

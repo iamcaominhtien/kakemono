@@ -168,7 +168,9 @@ its formatting:
   scale there fits it here too, hidden rows and columns left out, merged cells spanning their
   area, the column letters and row numbers kept in view when scrolling, the gridlines unless the
   sheet hides them;
-- each cell's font (family with fallbacks of its kind, Japanese ones included, size, colour, bold,
+- each cell's font (family with fallbacks of its kind, Japanese ones included: the MS fonts of
+  Windows fall back on the IPA fonts of their metrics, the P fonts' Latin letters and digits on
+  Arial or Times New Roman, as in the PDF; size, colour, bold,
   italic, underline, strike), fill (solid and shaded patterns; a gradient's first colour), borders
   (thin, medium, thick, dashed, dotted, double), alignment (numbers right, text left unless the
   cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
@@ -181,7 +183,9 @@ its formatting:
   (`'Sheet'!A1`), which shows that sheet's tab;
 - charts (SVG; dashed and smoothed lines, a legend placed by hand on its side), pictures, pictures
   placed in cells, embedded objects (a Word document, ...) by the picture the file keeps of them,
-  shapes (preset outlines such as arrows, triangles, brackets, cylinders; fill, outline, text with
+  shapes (preset outlines such as arrows, bent arrows, triangles, brackets, braces, cylinders;
+  arrow heads and the corners of brackets and braces sized by the shape's shorter side, as Excel
+  draws them; fill, outline, text with
   the look of each run, its insets, cut at the bottom edge when the shape says so) and connectors (straight and elbow, with arrow heads) at the place and size
   of their anchors, groups included.
 

@@ -389,7 +389,7 @@ impl FontBook {
 
 /// A family name `name` (lowercase) as the tables of fonts name it: its
 /// full-width letters, digits and spaces (ＭＳ　Ｐ明朝) made plain.
-fn table_name(name: &str) -> String {
+pub(crate) fn table_name(name: &str) -> String {
     const FULL_WIDTH_OFFSET: u32 = 0xFEE0;
     name.chars()
         .map(|ch| match ch {
