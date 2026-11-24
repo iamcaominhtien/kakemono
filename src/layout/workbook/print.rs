@@ -629,19 +629,28 @@ impl Printer<'_, '_, '_> {
                     None => own,
                 };
                 let rect = self.to_page(*rect, columns, band, scale);
+                // A merged range cut by a page break shows only its part
+                // on the page.
+                let region = span.map(|_| page_region(columns, band, scale));
+                let keep = |item: Item| match region {
+                    Some(region) => cut(item, region),
+                    None => Some(item),
+                };
                 if let Some(fill) = look.fill.and_then(|color| self.rgb(color)) {
-                    items.push(Item::Rect {
+                    items.extend(keep(Item::Rect {
                         x: rect[0],
                         y: rect[1],
                         width: rect[2],
                         height: rect[3],
                         color: fill,
-                    });
+                    }));
                 }
+                let mut edges = Vec::new();
                 if self.grid.print.grid_lines {
-                    grid_lines(&mut lines, rect, scale);
+                    grid_lines(&mut edges, rect, scale);
                 }
-                self.borders(&mut lines, look, rect, scale);
+                self.borders(&mut edges, look, rect, scale);
+                lines.extend(edges.into_iter().filter_map(keep));
                 // A text centred across the selection is set in its box.
                 let position = columns.cols.iter().position(|col| *col == at.1).unwrap_or(0);
                 let mut text_rect = rect;
@@ -735,8 +744,9 @@ impl Printer<'_, '_, '_> {
 
     /// Where the text of the cell at `at` (box `rect` on the page; `span`
     /// when it is a merge) may show: its box, the band and the page's
-    /// columns; for a text not wrapped, also the empty cells beside it
-    /// that it runs over, by its alignment.
+    /// columns, with the selection a text is centred across; for a text not
+    /// wrapped, also the empty cells beside it that it runs over, by its
+    /// alignment.
     #[allow(clippy::too_many_arguments)]
     fn clip(
         &self,
@@ -756,10 +766,16 @@ impl Printer<'_, '_, '_> {
         let mut left = rect[0];
         let mut right = rect[0] + rect[2];
         let cell = self.grid.cells.get(&at);
-        let runs_over = span.is_none() && !look.wrap && cell.is_some_and(|cell| cell.kind == CellKind::Text);
+        let position = columns.cols.iter().position(|&col| col == at.1).unwrap_or(0);
+        // A text centred across the selection shows over all of it.
+        let selection = self
+            .grid
+            .selection_width(at, &columns.cols[position + 1..], |col| area.width(col));
+        right += selection * scale;
+        let runs_over =
+            span.is_none() && selection == 0.0 && !look.wrap && cell.is_some_and(|cell| cell.kind == CellKind::Text);
         if runs_over {
             let free = |col: u32| self.grid.is_blank((at.0, col)) && !self.grid.merged((at.0, col));
-            let position = columns.cols.iter().position(|&col| col == at.1).unwrap_or(0);
             let align = alignment(look.h_align, cell.map(|cell| cell.kind));
             if matches!(align, "left" | "center") {
                 for &col in columns.cols[position + 1..].iter().take(MAX_OVERFLOW_COLS) {
@@ -1242,6 +1258,69 @@ const ROOM_SLACK_RATIO: f32 = 0.005;
 /// The least of that, in points.
 const MIN_ROOM_SLACK_PT: f32 = 0.5;
 
+/// The box of a page's part of the sheet (`columns` × `band`), as
+/// `[left, top, right, bottom]` on the page.
+fn page_region(columns: &Columns, band: &Band, scale: f32) -> [f32; 4] {
+    [
+        columns.page_left,
+        band.page_top,
+        columns.page_left + (columns.sheet_right - columns.sheet_left) * scale,
+        band.page_top + (band.sheet_bottom - band.sheet_top) * scale,
+    ]
+}
+
+/// `item` (a line or a filled box) cut to `[left, top, right, bottom]`;
+/// `None` when none of it is inside.
+fn cut(item: Item, [left, top, right, bottom]: [f32; 4]) -> Option<Item> {
+    let outside = |low: f32, high: f32, from: f32, to: f32| high < from - CUT_SLACK_PT || low > to + CUT_SLACK_PT;
+    match item {
+        Item::Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            width,
+            color,
+            dash,
+        } => {
+            if outside(x1.min(x2), x1.max(x2), left, right) || outside(y1.min(y2), y1.max(y2), top, bottom) {
+                return None;
+            }
+            Some(Item::Line {
+                x1: x1.clamp(left, right),
+                y1: y1.clamp(top, bottom),
+                x2: x2.clamp(left, right),
+                y2: y2.clamp(top, bottom),
+                width,
+                color,
+                dash,
+            })
+        }
+        Item::Rect {
+            x,
+            y,
+            width,
+            height,
+            color,
+        } => {
+            let (x0, y0) = (x.max(left), y.max(top));
+            let (x1, y1) = ((x + width).min(right), (y + height).min(bottom));
+            (x1 > x0 && y1 > y0).then_some(Item::Rect {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+                color,
+            })
+        }
+        other => Some(other),
+    }
+}
+
+/// How far a line may lie outside the page's part of the sheet and still
+/// be drawn (on its edge), in points: rounding.
+const CUT_SLACK_PT: f32 = 0.01;
+
 /// The thin grey lines around a cell at `rect`, when the gridlines print.
 fn grid_lines(lines: &mut Vec<Item>, [x, y, width, height]: [f32; 4], scale: f32) {
     let line_w = (0.5 * scale).max(0.25);
@@ -1368,6 +1447,46 @@ fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4]) -> Vec<Ite
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_merge_cut_by_a_page_break_is_drawn_only_on_the_page() {
+        let region = [10.0, 0.0, 100.0, 50.0];
+        let line = |x1, x2| Item::Line {
+            x1,
+            y1: 5.0,
+            x2,
+            y2: 5.0,
+            width: 1.0,
+            color: [0; 3],
+            dash: None,
+        };
+        let Some(Item::Line { x1, x2, .. }) = cut(line(0.0, 200.0), region) else {
+            panic!()
+        };
+        assert_eq!((x1, x2), (10.0, 100.0));
+        // A side of the merge on another page is left out.
+        let side = Item::Line {
+            x1: 200.0,
+            y1: 0.0,
+            x2: 200.0,
+            y2: 50.0,
+            width: 1.0,
+            color: [0; 3],
+            dash: None,
+        };
+        assert!(cut(side, region).is_none());
+        let fill = Item::Rect {
+            x: 50.0,
+            y: 0.0,
+            width: 100.0,
+            height: 20.0,
+            color: [0; 3],
+        };
+        let Some(Item::Rect { x, width, .. }) = cut(fill, region) else {
+            panic!()
+        };
+        assert_eq!((x, width), (50.0, 50.0));
+    }
 
     #[test]
     fn rows_are_cut_into_pages_by_room_and_breaks() {

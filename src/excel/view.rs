@@ -299,7 +299,18 @@ impl Page<'_> {
         let text = cell.map(|cell| self.text(cell)).unwrap_or_default();
         let mut inner_style = String::new();
         if !text.is_empty() {
-            if look.wrap || look.h_align == HAlign::Justify {
+            let wraps = look.wrap || look.h_align == HAlign::Justify;
+            // A text centred across the selection is set in its box,
+            // wrapped there when it wraps.
+            let selection = grid.selection_width(at, &area.cols[position + 1..], |col| area.width(col));
+            if selection > 0.0 {
+                class.push_str(if wraps { " ov w" } else { " ov" });
+                if wraps {
+                    inner_style.push_str("white-space:pre-wrap;");
+                }
+                let own = area.width(at.1);
+                let _ = write!(inner_style, "width:{}pt;", num(own + selection - 4.0 * PT_PER_PX));
+            } else if wraps {
                 class.push_str(" w");
             } else if span.is_none()
                 && kind == Some(CellKind::Text)
@@ -438,11 +449,6 @@ impl Page<'_> {
     /// may run over the empty cells beside it, in points: to the left and
     /// to the right, by its alignment; `None` when it may not.
     fn overflow(&self, grid: &Grid, area: &Area, at: (u32, u32), position: usize, align: &str) -> Option<(f32, f32)> {
-        // A text centred across the selection is centred over it.
-        let selection = grid.selection_width(at, &area.cols[position + 1..], |col| area.width(col));
-        if selection > 0.0 {
-            return Some((0.0, selection));
-        }
         let free = |col: u32| grid.is_blank((at.0, col)) && !area.merged.contains(&(at.0, col));
         let reach = |columns: &mut dyn Iterator<Item = &u32>| -> f32 {
             columns

@@ -175,7 +175,7 @@ its formatting:
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
   next cell with a value; a text centred across the selection (`centerContinuous`) is centred over
-  the blank cells after it that are centred so too; a merged range takes its right and bottom borders from its right column
+  the blank cells after it that are centred so too, and wrapped in their width when it wraps; a merged range takes its right and bottom borders from its right column
   and bottom row;
 - links: to a web page (http, https, mailto, ftp), and to a place in the workbook
   (`'Sheet'!A1`), which shows that sheet's tab;
@@ -225,12 +225,14 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   Gothic...; MS Mincho and MS Gothic, P or not, as the IPA fonts, their Latin letters and digits
   in Times New Roman or Arial when they are not installed, since the IPA P fonts' digits are wider
   than half an em; Japanese text of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
-  aligned as Excel aligns it (centred across the selection too), wrapped when the cell wraps,
+  aligned as Excel aligns it (centred across the selection too, wrapped in its width), wrapped when the cell wraps,
   running over the empty cells beside it and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
   links kept (http, https, mailto, ftp);
 - charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break
   is cut, its parts on their pages;
+- a merged range cut by a page break shows its part on each page, its borders and fill cut at
+  the page's edge;
 - a page with nothing to print is left out, as Excel does;
 - at most `print_max_pages` (2,000) pages.
 
