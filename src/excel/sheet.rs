@@ -24,6 +24,8 @@ use super::strings;
 use super::styles::Styles;
 use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
+/// The size of a pixel at 96 per inch, in points.
+const PT_PER_PIXEL: f32 = 0.75;
 /// Most embedded objects read on a sheet.
 const MAX_EMBEDDED_OBJECTS: usize = 1000;
 /// Most letters of a column in a cell reference (`XFD`).
@@ -556,9 +558,12 @@ impl SheetReader<'_, '_> {
         }
         if !self.row_past_limit
             && (self.ctx.view || is_on(tag.attr("customHeight").as_deref()))
-            && let Some(height) = tag.attr("ht").and_then(|value| points(&value))
+            && let Some(height) = tag.attr("ht").and_then(|value| points(&value)).map(whole_pixels)
         {
             self.grid.sizes.rows.insert(index, height);
+        }
+        if self.ctx.view && !self.row_past_limit && is_on(tag.attr("customHeight").as_deref()) {
+            self.grid.looks.custom_rows.insert(index);
         }
         if self.ctx.view
             && !self.row_past_limit
@@ -572,7 +577,10 @@ impl SheetReader<'_, '_> {
     /// Reads the default column width and row height of `sheetFormatPr`.
     fn sheet_format(&mut self, tag: &Tag<'_>) {
         let sizes = &mut self.grid.sizes;
-        sizes.default_row_pt = tag.attr("defaultRowHeight").and_then(|value| points(&value));
+        sizes.default_row_pt = tag
+            .attr("defaultRowHeight")
+            .and_then(|value| points(&value))
+            .map(whole_pixels);
         sizes.default_col_pt = tag
             .attr("defaultColWidth")
             .and_then(|value| points(&value))
@@ -793,6 +801,12 @@ fn points(value: &str) -> Option<f32> {
         .parse::<f32>()
         .ok()
         .filter(|size| size.is_finite() && (0.0..=MAX_SIZE).contains(size))
+}
+
+/// A row height of `points` as Excel draws and prints it: a whole number
+/// of pixels at 96 per inch (`ht="12.95"` is 17 pixels, 12.75 points).
+fn whole_pixels(points: f32) -> f32 {
+    (points / PT_PER_PIXEL).round() * PT_PER_PIXEL
 }
 
 /// The width in points of a column `chars` wide (`col width`, in widths
@@ -1394,6 +1408,16 @@ mod tests {
         assert_eq!(
             (objects[0].to.row, objects[0].to.col, objects[0].to.row_off_pt),
             (41, 2, 2.0)
+        );
+    }
+
+    #[test]
+    fn row_heights_are_whole_pixels() {
+        let sizes = grid(r#"<sheetFormatPr defaultRowHeight="13.2"/><sheetData><row r="1" ht="12.95" customHeight="1"/><row r="2" ht="20" customHeight="1"/></sheetData>"#).sizes;
+        assert_eq!(sizes.default_row_pt, Some(13.5));
+        assert_eq!(
+            (sizes.rows.get(&0).copied(), sizes.rows.get(&1).copied()),
+            (Some(12.75), Some(20.25))
         );
     }
 }

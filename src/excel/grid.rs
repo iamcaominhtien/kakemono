@@ -134,6 +134,10 @@ pub(crate) struct Looks {
     pub(crate) rows: BTreeMap<u32, u32>,
     /// The sheet hides its gridlines (`sheetView showGridLines="0"`).
     pub(crate) no_grid_lines: bool,
+    /// The rows whose height is set by hand (`customHeight`); Excel fits
+    /// the others to their text, so they grow when a font set in their
+    /// place needs more lines.
+    pub(crate) custom_rows: HashSet<u32>,
 }
 
 /// The widths of the columns and the heights of the rows of a sheet, as

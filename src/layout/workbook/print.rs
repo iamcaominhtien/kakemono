@@ -418,7 +418,12 @@ impl Printer<'_, '_, '_> {
             let height = if grid.hidden_rows.contains(&row) {
                 0.0
             } else {
-                grid.sizes.rows.get(&row).copied().unwrap_or(default_row)
+                let height = grid.sizes.rows.get(&row).copied().unwrap_or(default_row);
+                if grid.looks.custom_rows.contains(&row) {
+                    height
+                } else {
+                    self.fitted_height(row, range, &xs, height)
+                }
             };
             ys.push(ys[ys.len() - 1] + height);
         }
@@ -435,6 +440,51 @@ impl Printer<'_, '_, '_> {
             rows,
             cols,
         })
+    }
+
+    /// The height of the row `row`, `height` high in the file, fitted to
+    /// its wrapped text as Excel fits a row whose height is not set by
+    /// hand: taller when a cell of the range `range` (column edges `xs`)
+    /// needs more lines in the font set in its place than the row holds at
+    /// Excel's line height, never shorter. Lines are counted, not
+    /// measured: a font whose lines are taller than Excel's (a Japanese
+    /// stand-in) does not grow a row whose lines are as many. A merged
+    /// cell does not count, as in Excel.
+    fn fitted_height(&mut self, row: u32, range: Merge, xs: &[f32], height: f32) -> f32 {
+        let grid = self.grid;
+        let base_size = self.styles.look(0).font.size_pt.unwrap_or(DEFAULT_SIZE_PT);
+        let base_line = grid.sizes.default_row_pt.unwrap_or(DEFAULT_ROW_PT) / base_size;
+        let mut fitted = height;
+        for (&(_, col), cell) in grid.cells.range((row, range.left)..=(row, range.right)) {
+            let look = self.styles.look(look_index(grid, (row, col)) as usize);
+            if !(look.wrap || look.h_align == HAlign::Justify)
+                || look.stacked
+                || look.rotation.is_some()
+                || grid
+                    .merges
+                    .iter()
+                    .any(|merge| (merge.top..=merge.bottom).contains(&row) && (merge.left..=merge.right).contains(&col))
+            {
+                continue;
+            }
+            let index = (col - range.left) as usize;
+            let width = xs[index + 1] - xs[index];
+            let base = self.run(look, 1.0);
+            let indent = f32::from(look.indent) * INDENT_STEP_PT;
+            let inner_w = (width - 2.0 * CELL_PADDING_PT - indent).max(1.0);
+            let align = alignment(look.h_align, Some(cell.kind));
+            let lines = para::layout(self.ctx, &self.wrapped_para(cell, &base, align), inner_w)
+                .lines
+                .len();
+            let line = base_line * look.font.size_pt.unwrap_or(base_size);
+            // The lines the row held as Excel set it, and those it lacks.
+            #[expect(clippy::cast_precision_loss, reason = "a cell's lines are few")]
+            let lacking = lines as f32 - (height / line).round().max(1.0);
+            if lacking > 0.0 {
+                fitted = fitted.max(height + lacking * line);
+            }
+        }
+        fitted
     }
 
     /// The last column a sheet whose cells end at column `right` prints:
@@ -831,7 +881,22 @@ impl Printer<'_, '_, '_> {
         indent: f32,
         inner_w: f32,
     ) -> (Vec<Item>, f32) {
-        let para = Para {
+        let para = self.wrapped_para(cell, base, align);
+        let laid = para::layout(self.ctx, &para, inner_w);
+        let mut items = Vec::new();
+        let mut line_top = 0.0;
+        let left = pad + if align == "right" { 0.0 } else { indent };
+        for mut line in laid.lines {
+            translate(&mut line.items, left, line_top);
+            items.append(&mut line.items);
+            line_top += line.height;
+        }
+        (items, line_top)
+    }
+
+    /// The text of `cell` as a paragraph set in `base`, aligned `align`.
+    fn wrapped_para(&self, cell: &GridCell, base: &RunFmt, align: &str) -> Para {
+        Para {
             props: ParaProps {
                 align: match align {
                     "center" => Align::Center,
@@ -845,17 +910,7 @@ impl Printer<'_, '_, '_> {
             mark: base.clone(),
             inlines: self.inlines(cell, base),
             ..Default::default()
-        };
-        let laid = para::layout(self.ctx, &para, inner_w);
-        let mut items = Vec::new();
-        let mut line_top = 0.0;
-        let left = pad + if align == "right" { 0.0 } else { indent };
-        for mut line in laid.lines {
-            translate(&mut line.items, left, line_top);
-            items.append(&mut line.items);
-            line_top += line.height;
         }
-        (items, line_top)
     }
 
     /// The inlines of a cell's text for a wrapped paragraph: a line feed

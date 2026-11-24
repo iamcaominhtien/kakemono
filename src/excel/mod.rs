@@ -950,10 +950,11 @@ mod tests {
             crate::model::PictureFormat::Svg
         );
         // From A10 to E13: two columns of 20 characters (140 pixels) and
-        // two of the default width; rows 10 and 12 of 20 points, 11 of 40.
+        // two of the default width; rows 10 and 12 of 20 points, 11 of 40,
+        // each a whole number of pixels as Excel draws them (27 and 53).
         assert_eq!(
             (image.rect.width(), image.rect.height()),
-            (2.0 * 105.0 + 2.0 * 48.0, 80.0)
+            (2.0 * 105.0 + 2.0 * 48.0, 20.25 + 39.75 + 20.25)
         );
         let table = doc.blocks[4].table.as_ref().expect("the data table");
         assert_eq!(table.rows.len(), 3);
