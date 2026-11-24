@@ -187,6 +187,8 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
 const CLUTTER_IDS: [&str; 1] = ["secondary"];
+/// Parts of the address of the page of an author.
+const AUTHOR_PATHS: [&str; 4] = ["/author/", "/authors/", "/tac-gia/", "/tacgia/"];
 /// Words of a class that mark the summary of an article, under its title.
 const LEAD_WORDS: [&str; 6] = ["sapo", "lead", "standfirst", "summary", "dek", "excerpt"];
 /// Words of a class or `id` that mark the content of a page.
@@ -809,6 +811,14 @@ fn remove_teasers(dom: &mut Dom, root: Id, base: &Base<'_>, meta: &Meta) {
             }
             continue;
         }
+        // A box of a link to another article, as a block of its own, and
+        // its picture and summary (Tuổi Trẻ's `RelatedOneNews`).
+        if dom.is_any(node, &["div", "section"]) && weight[node] < TEASER_MAX_CHARS && is_link_box(dom, node) {
+            if other_page(dom, node) {
+                dom.detach(node);
+            }
+            continue;
+        }
         // A paragraph that is a link to another article (`Đọc thêm`).
         let link_paragraph = dom.is(node, "p")
             && weight[node] == 0
@@ -836,6 +846,29 @@ fn remove_teasers(dom: &mut Dom, root: Id, base: &Base<'_>, meta: &Meta) {
         }
         dom.detach(teaser);
     }
+}
+
+/// Whether `node` is a box of one link as a block: its children are links
+/// (one of which has the text of a title), pictures and one paragraph.
+fn is_link_box(dom: &Dom, node: Id) -> bool {
+    let mut titles = 0;
+    let mut paragraphs = 0;
+    for &child in &dom.nodes[node].children {
+        match &dom.nodes[child].kind {
+            Kind::Text(text) if text.trim().is_empty() => {}
+            Kind::Element { .. } if dom.is(child, "a") => {
+                if dom.clean_text(child).chars().count() >= LINK_PARAGRAPH_MIN_CHARS {
+                    titles += 1;
+                }
+            }
+            Kind::Element { .. } if dom.is_any(child, &["p", "div"]) && dom.find(child, "a").is_none() => {
+                paragraphs += 1
+            }
+            Kind::Element { .. } if dom.is_any(child, &["img", "picture", "figure"]) => {}
+            _ => return false,
+        }
+    }
+    titles == 1 && paragraphs <= 1
 }
 
 /// Removes what comes before the title in `root` and is short, with no
@@ -971,6 +1004,34 @@ fn sentence_headings(dom: &mut Dom, root: Id) {
     }
 }
 
+/// Whether the picture `img` is the photo of an author: in a link to the
+/// page of an author (`rel="author"`, `/author/`, `/tac-gia/`).
+fn is_author_photo(dom: &Dom, img: Id) -> bool {
+    dom.ancestor(img, |id| dom.is(id, "a")).is_some_and(|link| {
+        dom.attr(link, "rel")
+            .is_some_and(|rel| rel.split_whitespace().any(|rel| rel.eq_ignore_ascii_case("author")))
+            || dom.attr(link, "href").is_some_and(|href| {
+                let href = href.to_ascii_lowercase();
+                AUTHOR_PATHS.iter().any(|path| href.contains(path))
+            })
+    })
+}
+
+/// Whether the picture `img` at `src` is an advertising banner by the name
+/// of its file: one that starts so (`banner_taiappdetail1.jpg`), or one
+/// that says so in a link (a sponsor's `railway-banner.png`); a photo
+/// named so (`Museumplein-Amsterdam-banner.jpg`) is not.
+fn is_banner(dom: &Dom, img: Id, src: &str) -> bool {
+    let path = src.split(['?', '#']).next().unwrap_or(src);
+    let file = path.rsplit('/').next().unwrap_or(path);
+    if file.starts_with("data:") {
+        return false;
+    }
+    let mut names = words(file);
+    let first = names.next().is_some_and(|word| word.starts_with("banner"));
+    first || (dom.ancestor(img, |id| dom.is(id, "a")).is_some() && names.any(|word| word.starts_with("banner")))
+}
+
 /// Gives each picture in `body` the address of its best version (from a
 /// `srcset`, a `<picture>`'s sources or the attribute of a lazy picture),
 /// made absolute, and a size that fits the page; a picture without an
@@ -994,6 +1055,8 @@ fn pictures(dom: &mut Dom, body: Id, base: &Base<'_>) {
         if width.is_some_and(|width| width < MIN_PICTURE_PX)
             || height.is_some_and(|height| height < MIN_PICTURE_PX)
             || is_icon(dom, img)
+            || is_author_photo(dom, img)
+            || is_banner(dom, img, &src)
         {
             dom.detach(img);
             continue;
@@ -1324,7 +1387,33 @@ fn split_at_double_breaks(dom: &mut Dom, root: Id) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dom, best_in_srcset, is_icon, parse_srcset, without_site_name};
+    use super::{Dom, best_in_srcset, is_author_photo, is_banner, is_icon, parse_srcset, without_site_name};
+
+    #[test]
+    fn banners_and_author_photos() {
+        let dom = Dom::parse(
+            r#"<p><img id=a src="https://x.vn/images/banner_taiapp.jpg">
+<img id=b src="https://x.vn/Museumplein-Amsterdam-banner.jpg">
+<a href="https://sponsor.example"><img id=c src="/img/railway-banner.png"></a>
+<a href="/tac-gia/chi-tue.htm"><img id=d src="/avatar/chi-tue.jpg"></a></p>"#,
+        );
+        let find = |dom: &Dom, id: &str| {
+            dom.find_all(0, "img")
+                .into_iter()
+                .find(|&img| dom.attr(img, "id") == Some(id))
+                .unwrap()
+        };
+        let banner = |dom: &Dom, id: &str| {
+            let img = find(dom, id);
+            let src = dom.attr(img, "src").unwrap().to_string();
+            is_banner(dom, img, &src)
+        };
+        assert!(banner(&dom, "a"));
+        assert!(!banner(&dom, "b"));
+        assert!(banner(&dom, "c"));
+        assert!(is_author_photo(&dom, find(&dom, "d")));
+        assert!(!is_author_photo(&dom, find(&dom, "c")));
+    }
 
     #[test]
     fn icons_are_known_by_their_classes() {

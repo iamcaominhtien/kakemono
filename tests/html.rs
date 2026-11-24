@@ -308,6 +308,8 @@ const NEWS_WIDGETS: &str = r#"<!doctype html><html lang="vi"><head>
 <article class="insert-news"><a href="/cdv-nga-mu.htm">Người dân Nha Trang tưởng nhớ hai người cứu hộ</a>
 <div>Hàng trăm người đã đến viếng.</div></article>
 <p><a href="/khanh-hoa-to-trinh.htm">Khánh Hòa có tờ trình về việc truy tặng huân chương</a></p>
+<div type="RelatedOneNews"><a href="/xom-chai.htm"><img src="/xom-chai.jpg" alt=""></a><a href="/xom-chai.htm">Xóm chài Cửa Bé tiễn biệt người cứu hộ</a>
+<p>Khoảnh khắc anh lao vào sóng dữ để cùng đồng đội đưa hai nạn nhân vào bờ.</p></div>
 <p>Trước nghĩa cử cao đẹp, không quản hiểm nguy để cứu người, lãnh đạo tỉnh đã đề nghị khen thưởng cả hai người.</p>
 <p>Anh ra đi ngay trước ngày kỷ niệm 20 năm ngày cưới, để lại vợ, mẹ già và hai con nhỏ trong căn nhà ven biển.</p>
 <p>Gia đình hai cán bộ cứu hộ đã nhận được sự hỗ trợ của chính quyền địa phương và nhiều nhà hảo tâm trong tỉnh.</p>
@@ -336,6 +338,8 @@ fn news_widgets_and_teasers_are_gone() {
         "ĐỌC NGAY",
         "tưởng nhớ",
         "tờ trình",
+        "Xóm chài",
+        "sóng dữ",
         "Tặng sao",
         "Khám phá thêm",
         "Đăng ký ngay",
