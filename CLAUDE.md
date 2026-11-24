@@ -43,6 +43,8 @@ cargo build --release
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
 scripts/fetch-test-pages.sh                           # download the test web pages (once; tests/web_pages.rs)
+python3 scripts/web-bench/fetch.py && /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py   # web benchmark (~330 pages)
+/root/.venvs/web-bench/bin/python scripts/web-bench/report.py   # its review PDFs (out/web-bench/review/)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
 KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
@@ -170,7 +172,8 @@ committing.
   book can have too in `epub/html.rs`, a rule about web pages only in `src/html/`.
 - A rule that cleans one site easily removes the article of another: after a change, compare the
   output of the sample, of the pages of `tests/data/web-pages.tsv` (`scripts/fetch-test-pages.sh`;
-  `tests/web_pages.rs` holds their bounds) and of a few other sites (news, blogs, documentation).
+  `tests/web_pages.rs` holds their bounds) and the web benchmark (`scripts/web-bench/`: compare
+  its F1 per category before and after).
   The thresholds are documented constants of `clean.rs`, their names ending with their unit.
 - The test sample is `tests/data/html/sample.html` (pandoc, from `tests/data/word/sample.md`): it
   must read like `sample.docx` and `sample.epub` (`html_sample_reads_like_the_docx`); a change to

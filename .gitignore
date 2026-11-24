@@ -35,3 +35,4 @@ benchmark-results/
 
 # Web pages (scripts/fetch-test-pages.sh)
 /tests/data/web/
+/tests/data/web-bench/

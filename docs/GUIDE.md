@@ -653,6 +653,10 @@ with their captions, notes and links come out the same way.
 - **Encoding.** The byte order mark, the `charset` of the HTTP response, then a `<meta>` near the
   start; otherwise UTF-8, or Windows-1252 for bytes that are not UTF-8.
 
+A page saved as a file is read as at its address with `--base-url` (`kakemono convert
+saved.html --base-url https://example.org/a/page.html -o page.md`): its links point there,
+and its pictures are fetched from there.
+
 arXiv addresses (`/abs/`, `/pdf/`, `/html/`) still give the paper's PDF, which the analysis reads
 with its pages; another address of a PDF, a Word document or an EPUB book gives that document. A
 page has no pages: all four HTML modes give the `friendly` article, and `-o page.pdf` lays it out
@@ -721,6 +725,11 @@ cargo test --release
   clutter that must not, and lower bounds on words and notes. To make the sample again:
   `cd tests/data/word && pandoc -s --mathml sample.md -o ../html/sample.html`, then point its
   picture to `../word/curve.png`.
+- **Web benchmark** ([`scripts/web-bench/`](../scripts/web-bench/README.md)): some 330 pages,
+  181 of them with a ground truth (the Scrapinghub article extraction benchmark), scored as
+  that benchmark scores article extraction and against trafilatura and readability, written
+  to every output, and gathered in review PDFs (the page on its site beside kakemono's
+  output) to look through.
 - **Word layout fidelity** (CI job "Word layout fidelity"): `scripts/fetch-word-corpus.sh`
   downloads the Word documents of `tests/data/word-corpus.tsv` with the PDF Word made of each
   (public documents: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories; not committed);
