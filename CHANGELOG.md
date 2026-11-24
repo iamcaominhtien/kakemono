@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.17.1](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.17.1) - 2026-11-24
+
+### Performance
+
+- *(layout)* Draw each line's text of one font as one text object
+
+The PDF that the page layout writes (Word and EPUB input laid out as a PDF, and the `hard` and `hard-95` modes of Word input, which read that PDF) draws the text of a line in one font as one text object, instead of one per word and one per space. The PDF is faster to write and smaller, and looks the same.
+
+Before, every text run was its own text object with its own text matrix, font and colour, and a run in a stand-in face (a metric-compatible font standing in for an Office font) was also wrapped in a transformation for its horizontal scale, even when that scale was 1 to within rounding (1.0000001). Now consecutive runs of one face, size, colour and faked styles on one baseline are drawn as one, each glyph still at its own position, and a scale within 1e-4 of 1 is none.
+
+| Document | Instructions to write the PDF (callgrind) | PDF size |
+| --- | --- | --- |
+| Ulysses (EPUB, 4,485 pages) | 23.8 → 19.1 billion (−20%) | 9.7 → 7.8 MB (−19%) |
+| A government report (Word, 48 pages) | 2.07 → 1.78 billion (−14%) | 516 → 324 KB (−37%) |
+| Another one (Word, 33 pages) | 1.36 → 1.14 billion (−16%) | 380 → 238 KB (−38%) |
+| Moby-Dick (EPUB, 323 pages) | | 4.9 → 3.2 MB (−35%) |
+| The Mahabharata, 150 chapters (EPUB, Devanagari) | 7.46 → 7.37 billion (−1%) | 3.52 → 3.60 MB (+2%) |
+
+A book in Devanagari gains nothing: its words are set in a fallback face and the spaces between them in the run's own font, so no two neighbouring runs share a face.
+
 ## [0.17.0](https://github.com/iamcaominhtien/kakemono/compare/v0.16.1...v0.17.0) - 2026-11-23
 
 ### Added
