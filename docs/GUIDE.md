@@ -62,7 +62,8 @@ rules give each paragraph its kind:
 - tables become rebuilt tables (`colspan`, `rowspan` and header rows kept); pictures (`<img>`, an
   `<svg>` showing one, or a drawing in SVG) become figures at the size the book gives them;
 - a note called by a link marked `epub:type="noteref"` (or `role="doc-noteref"`) follows the
-  paragraph that calls it, without its link back; links between the documents of the book keep
+  paragraph that calls it, without its link back (Word, LaTeX and Typst set it as a footnote of
+  its call); links between the documents of the book keep
   working, and citations and references to figures and tables become links, as for a PDF;
 - bold, italics, monospace, scripts and small capitals come from the elements (`<em>`, `<b>`,
   `<code>`, `<sup>`, ...) and from simple rules of the book's style sheets (`.italic { font-style:
@@ -83,7 +84,8 @@ content documents) cannot be read.
 HTML. It is built from the same analysis as the HTML modes, as one flowing column:
 
 - the title, authors, abstract, headings (`Heading 1`–`4`, so Word's navigation pane and table of
-  contents work), lists, footnotes, code and references get Word styles;
+  contents work), lists, code and references get Word styles;
+- footnotes become Word footnotes (see [Footnotes](#footnotes));
 - rebuilt tables become Word tables, with merged cells and the paper's rules;
 - formulas whose structure is clear become Word equations (Office Math, editable in Word), the
   others pictures; numbered formulas keep their number at the right margin; formulas inside the
@@ -128,6 +130,7 @@ distribution: `amsmath`, `amssymb`, `mathtools`, `graphicx`, `booktabs`, `multir
   to the width of the text when wider;
 - formulas whose structure is clear become LaTeX math (`equation*` with `\tag{n}` for their
   number), the others pictures; formulas inside the text become `$…$`;
+- footnotes become `\footnote`s (see [Footnotes](#footnotes));
 - figures are pictures (`\includegraphics`), always written to `<name>_assets/` next to the file
   (`--image-dir` to choose it): LaTeX cannot embed them, so `--images inline` is refused;
 - figures and tables stay where they were in the text (they are not floats) and keep the label of
@@ -176,9 +179,8 @@ In both:
   cells; text is set in a smaller size and wraps when the table is wider than the text;
 - formulas whose structure is clear become Typst math (with their number at the right), the others
   pictures; formulas inside the text become `$…$`;
-- added notes (`<note>` in the editable JSON) become footnotes; the footnotes of the PDF stay
-  where they were, small, with their mark (as do the notes of an EPUB book, after the paragraph
-  that calls them);
+- footnotes and added notes (`<note>` in the editable JSON) become Typst footnotes (see
+  [Footnotes](#footnotes));
 - line breaks (the lines of a poem) are kept;
 - figures are pictures, always written to `<name>_assets/` next to the file (`--image-dir` to
   choose it): Typst cannot embed them in its source, so `--images inline` is refused; a picture is
@@ -188,6 +190,17 @@ In both:
   as are web addresses.
 
 `--scale` and `--equations` apply. The tests compile the Typst output with Typst 0.15.
+
+## Footnotes
+
+Word, LaTeX and Typst set a footnote at the foot of the page of its call, numbered by the format: a
+footnote of a Word document, a note of an EPUB book (which e-readers show in a popup) and a
+footnote of a PDF page. A note becomes a footnote when its mark is called once, from a paragraph or
+a list item, and the note follows the call (after only other notes, or on the same page of the PDF
+or the next). The others stay where they were, small, with their mark: the endnotes of a Word
+document (at the end), a note called from a heading, a caption, a table or the authors, or from
+more than one place (another note referring to it, say). The HTML modes, Markdown, EPUB and JSON
+keep every note as it was, after its paragraph.
 
 ## EPUB
 

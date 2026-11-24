@@ -129,6 +129,9 @@ pub struct TypstOutput {
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`TypstOutput::files`].
 pub fn render_typst(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &TypstOptions) -> TypstOutput {
+    // The footnotes go to the foot of the page of their calls.
+    let attached = crate::render::notes::footnotes_attached(analysis);
+    let analysis = attached.as_ref().unwrap_or(analysis);
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,

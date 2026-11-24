@@ -25,6 +25,11 @@ fn data(name: &str) -> PathBuf {
 }
 
 /// Loads and analyses a file of `tests/data`.
+/// The text of a block.
+fn plain(block: &Block) -> String {
+    block.spans.iter().map(|span| span.text.as_str()).collect()
+}
+
 fn load(name: &str) -> (Paper, Analysis) {
     let paper = Paper::from_bytes(std::fs::read(data(name)).unwrap()).unwrap();
     let analysis = paper.analyze();
@@ -234,6 +239,33 @@ fn epub_sample_reads_like_the_docx() {
             .collect()
     };
     assert_eq!(summary(SAMPLE_EPUB), summary(SAMPLE_DOCX));
+}
+
+#[test]
+fn notes_are_footnotes_at_the_foot_of_the_page() {
+    // The note of the book (an EPUB noteref) is set at the foot of the
+    // page of its call by the outputs that have pages.
+    let (paper, analysis) = load(SAMPLE_EPUB);
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(
+        typst.contains("old#footnote[It goes back to Cauchy (1847).] and"),
+        "{typst}"
+    );
+    assert!(!typst.contains("#kakemono-note(["));
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(
+        latex.contains("old\\footnote{It goes back to Cauchy (1847).} and"),
+        "{latex}"
+    );
+    // Word gets a footnote too, which reads back as the same note.
+    let docx = Paper::from_bytes(paper.to_docx(&analysis, &DocxOptions::default())).unwrap();
+    let blocks = docx.analyze().doc.blocks;
+    let note = blocks
+        .iter()
+        .position(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .unwrap();
+    assert_eq!(plain(&blocks[note]), "It goes back to Cauchy (1847).");
+    assert!(plain(&blocks[note - 1]).starts_with("The method is old1 and"));
 }
 
 #[test]
@@ -493,6 +525,10 @@ fn epub_outputs_match_their_snapshot() {
         (
             "latex",
             paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+        ),
+        (
+            "typst",
+            paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
         ),
         ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
         (
