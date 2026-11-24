@@ -138,13 +138,14 @@ pub fn read_with(data: &[u8], origin: Origin<'_>, source: Option<String>, fetch:
     if matches!(origin, Origin::File(_)) {
         head.extend(&article.sheets);
     }
-    let xhtml = dom.to_xhtml(&head, article.root, article.lang.as_deref());
     let files = PageFiles {
         fetched: match origin {
             Origin::Url { .. } => fetch(&picture_urls(&dom, article.root)),
             _ => HashMap::new(),
         },
     };
+    remove_small_pictures(&mut dom, article.root, &files);
+    let xhtml = dom.to_xhtml(&head, article.root, article.lang.as_deref());
     let name = match origin {
         Origin::File(path) => path.file_name().and_then(|name| name.to_str()).unwrap_or(PAGE_NAME),
         _ => PAGE_NAME,
@@ -153,6 +154,25 @@ pub fn read_with(data: &[u8], origin: Origin<'_>, source: Option<String>, fetch:
     let mut doc = crate::word::build_document(book, source);
     doc.meta.source_format = Some("html".to_string());
     Ok(doc)
+}
+
+/// Removes the pictures in `root` whose file is smaller than
+/// [`MIN_PICTURE_PX`](clean::MIN_PICTURE_PX) on a side: icons, bullets and
+/// tracking pixels whose size only a style sheet gives.
+fn remove_small_pictures(dom: &mut Dom, root: dom::Id, files: &PageFiles) {
+    for img in dom.find_all(root, "img") {
+        let Some(src) = dom.attr(img, "src") else {
+            continue;
+        };
+        let src = src.split_once('#').map_or(src, |(src, _)| src);
+        let small = files
+            .read(src)
+            .and_then(|data| crate::word::pixel_size(&data))
+            .is_some_and(|(width, height)| width < clean::MIN_PICTURE_PX || height < clean::MIN_PICTURE_PX);
+        if small {
+            dom.detach(img);
+        }
+    }
 }
 
 /// The `file:` URL of the directory of the file `path`.

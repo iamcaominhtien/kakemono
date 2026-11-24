@@ -28,7 +28,7 @@ const LONG_PARAGRAPH_CHARS: usize = 80;
 const CLUTTER_MAX_SHARE_RATIO: f32 = 0.5;
 /// Smallest width or height of a picture worth keeping, in CSS pixels:
 /// below it, an icon, a logo or a tracking pixel.
-const MIN_PICTURE_PX: f32 = 48.0;
+pub(crate) const MIN_PICTURE_PX: f32 = 48.0;
 /// Width of a picture asked for in a `srcset`, in CSS pixels: the
 /// smallest version at least this wide, the widest otherwise.
 const PREFERRED_PICTURE_WIDTH_PX: f32 = 1600.0;
@@ -43,6 +43,17 @@ const PLACEHOLDER_DATA_URL_CHARS: usize = 512;
 const SELF_LINK_MARKS: [&str; 6] = ["", "¶", "#", "§", "🔗", "\u{1f517}"];
 /// Headings.
 const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
+/// Words of a class or `id`, of a picture or of what holds it, that mark
+/// an icon or a logo of the site (`info-icon`, `div-logo`).
+const ICON_WORDS: [&str; 8] = ["icon", "icons", "logo", "logos", "avatar", "emoji", "sprite", "favicon"];
+/// How many elements around a picture are looked at for [`ICON_WORDS`]:
+/// its parent and the parent of that.
+const ICON_ANCESTORS: usize = 2;
+/// CSS pixels of one step of the spacing scale of Tailwind (`h-4` is 16
+/// pixels), the utility classes that give many sites their sizes.
+const TAILWIND_STEP_PX: f32 = 4.0;
+/// CSS pixels of a `rem` or an `em`, as browsers set them by default.
+const REM_PX: f32 = 16.0;
 /// Most authors read from the metadata.
 const MAX_AUTHORS: usize = 30;
 /// Longest name of an author, in characters.
@@ -587,7 +598,10 @@ fn pictures(dom: &mut Dom, body: Id, base: &Base<'_>) {
                 .and_then(|value| value.trim().trim_end_matches("px").parse::<f32>().ok())
         };
         let (width, height) = (size("width"), size("height"));
-        if width.is_some_and(|width| width < MIN_PICTURE_PX) || height.is_some_and(|height| height < MIN_PICTURE_PX) {
+        if width.is_some_and(|width| width < MIN_PICTURE_PX)
+            || height.is_some_and(|height| height < MIN_PICTURE_PX)
+            || is_icon(dom, img)
+        {
             dom.detach(img);
             continue;
         }
@@ -773,10 +787,86 @@ fn remove_icons(dom: &mut Dom, root: Id) {
         });
         let width = number("width").or(view.map(|view| view.0));
         let height = number("height").or(view.map(|view| view.1));
-        if width.is_some_and(|width| width < MIN_PICTURE_PX) || height.is_some_and(|height| height < MIN_PICTURE_PX) {
+        if width.is_some_and(|width| width < MIN_PICTURE_PX)
+            || height.is_some_and(|height| height < MIN_PICTURE_PX)
+            || is_icon(dom, node)
+        {
             dom.detach(node);
         }
     }
+}
+
+/// Whether the picture `node` (`<img>` or `<svg>`) is an icon or a logo of
+/// the site: smaller than [`MIN_PICTURE_PX`] by its utility classes
+/// (`h-4 w-4`: the size a style sheet gives it, whatever the size of its
+/// file or drawing), or named so ([`ICON_WORDS`]) by its class or `id` or
+/// those of what holds it. A picture with a caption is the article's.
+fn is_icon(dom: &Dom, node: Id) -> bool {
+    let (width, height) = class_size_px(dom, node);
+    if width.is_some_and(|width| width < MIN_PICTURE_PX) || height.is_some_and(|height| height < MIN_PICTURE_PX) {
+        return true;
+    }
+    if dom.ancestor(node, |id| dom.is(id, "figure")).is_some() {
+        return false;
+    }
+    let mut at = Some(node);
+    for _ in 0..=ICON_ANCESTORS {
+        let Some(id) = at else {
+            break;
+        };
+        if dom.is_any(id, &["body", "main", "article"]) {
+            break;
+        }
+        let mut names = String::new();
+        names.push_str(dom.attr(id, "class").unwrap_or_default());
+        names.push(' ');
+        names.push_str(dom.attr(id, "id").unwrap_or_default());
+        if words(&names).any(|word| ICON_WORDS.contains(&word.as_str())) {
+            return true;
+        }
+        at = dom.nodes[id].parent;
+    }
+    false
+}
+
+/// The width and height, in CSS pixels, that the utility classes of `node`
+/// give it (`w-5`, `h-[36px]`, `size-4`, `md:h-12`: the largest of each,
+/// so that a picture shown large on some screen is not an icon).
+fn class_size_px(dom: &Dom, node: Id) -> (Option<f32>, Option<f32>) {
+    let mut width: Option<f32> = None;
+    let mut height: Option<f32> = None;
+    for class in dom.classes(node) {
+        // `md:h-12`: the size on some screens.
+        let class = class.rsplit(':').next().unwrap_or(class);
+        let Some((axis, value)) = class.split_once('-') else {
+            continue;
+        };
+        let px = if let Some(inner) = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')) {
+            if let Some(number) = inner.strip_suffix("px") {
+                number.parse::<f32>().ok()
+            } else if let Some(number) = inner.strip_suffix("rem").or_else(|| inner.strip_suffix("em")) {
+                number.parse::<f32>().ok().map(|number| number * REM_PX)
+            } else {
+                None
+            }
+        } else {
+            value.parse::<f32>().ok().map(|steps| steps * TAILWIND_STEP_PX)
+        };
+        let Some(px) = px else {
+            continue;
+        };
+        let grow = |old: Option<f32>| Some(old.map_or(px, |old: f32| old.max(px)));
+        match axis {
+            "w" => width = grow(width),
+            "h" => height = grow(height),
+            "size" => {
+                width = grow(width);
+                height = grow(height);
+            }
+            _ => {}
+        }
+    }
+    (width, height)
 }
 
 /// The links of the headings in `root` to themselves: a mark (`¶`) goes,
@@ -841,7 +931,26 @@ fn split_at_double_breaks(dom: &mut Dom, root: Id) {
 
 #[cfg(test)]
 mod tests {
-    use super::{best_in_srcset, parse_srcset, without_site_name};
+    use super::{Dom, best_in_srcset, is_icon, parse_srcset, without_site_name};
+
+    #[test]
+    fn icons_are_known_by_their_classes() {
+        let dom = Dom::parse(
+            r#"<body><a class="view-comments"><svg class="h-4 w-4" viewBox="0 0 80 80"></svg></a>
+            <svg class="h-[36px] md:h-[65px]" viewBox="0 0 436 144"></svg>
+            <div class="div-logo"><a><img src="logo.png"></a></div>
+            <img class="info-icon" src="sun.png">
+            <figure><div class="logo"><img src="brand.png"></div><figcaption>The brand.</figcaption></figure>
+            <img class="w-full" src="photo.jpg"></body>"#,
+        );
+        let icons: Vec<bool> = dom
+            .descendants(0)
+            .into_iter()
+            .filter(|&id| dom.is(id, "img") || dom.name(id) == Some("svg"))
+            .map(|id| is_icon(&dom, id))
+            .collect();
+        assert_eq!(icons, [true, false, true, true, false, false]);
+    }
 
     #[test]
     fn srcsets_and_titles() {
