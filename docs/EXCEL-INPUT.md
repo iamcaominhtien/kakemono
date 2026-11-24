@@ -159,8 +159,9 @@ its formatting:
 
 - a tab per visible sheet (without scripts, the sheets follow each other, each under its name);
 - the grid from A1 to the last cell with a value, a format, a merge or a drawn object: the column
-  widths (in digits of the workbook's default font, as Excel measures them: 7 pixels for Calibri
-  11, half the font's size in whole pixels, rounded up, for an East Asian font, 8 for MS P Mincho
+  widths (in digits of the workbook's default font, as Excel measures them: a Western font's
+  digit rounded to whole pixels, 7 for Calibri 11 or Arial 10, 8 for Calibri or Corbel 12, half
+  the font's size in whole pixels, rounded up, for an East Asian font, 8 for MS P Mincho
   11) and row heights of the file, on the screen the workbook was saved on: with an East Asian
   default font, the widths written as whole numbers of pixels of a larger screen (9 for an 11-point
   Mincho at 120 dots per inch, 125 %) are that screen's, whose pixels are smaller, and its rows

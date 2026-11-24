@@ -339,19 +339,37 @@ impl Styles {
     /// of its first cell format): the unit of its column widths. Excel
     /// measures it on screen: an East Asian font's digits are half its size
     /// in whole pixels, rounded up (8 at 11 points, the 72 pixels of
-    /// Japanese Excel's columns of 8.38 characters); any other font is
-    /// taken as Calibri 11, 7.
+    /// Japanese Excel's columns of 8.38 characters); any other font's
+    /// digit, by its family's width (Calibri's when unknown), rounded: 7 for
+    /// Calibri 11 or Arial 10, 8 for Calibri 12.
     pub(crate) fn digit_px(&self) -> f32 {
-        const CALIBRI_DIGIT_PX: f32 = 7.0;
         const PT_PER_PX: f32 = 0.75;
         let font = &self.look(0).font;
+        let size_pt = font.size_pt.unwrap_or(DEFAULT_FONT_PT);
         if !self.east_asian_default() {
-            return CALIBRI_DIGIT_PX;
+            let family = font.name.as_deref().unwrap_or_default().trim().to_lowercase();
+            let digit_em = WESTERN_DIGIT_EMS
+                .iter()
+                .find(|(names, _)| names.contains(&family.as_str()))
+                .map_or(CALIBRI_DIGIT_EM, |(_, em)| *em);
+            return (size_pt / PT_PER_PX * digit_em).round().max(1.0);
         }
-        let size_px = (font.size_pt.unwrap_or(DEFAULT_FONT_PT) / PT_PER_PX).round();
+        let size_px = (size_pt / PT_PER_PX).round();
         (size_px / 2.0).ceil()
     }
 }
+
+/// The width of a digit of Calibri (and Carlito), in ems.
+const CALIBRI_DIGIT_EM: f32 = 0.5068;
+/// The width of a digit of other Western families (lower case), in ems.
+const WESTERN_DIGIT_EMS: &[(&[&str], f32)] = &[
+    (&["arial", "helvetica", "liberation sans", "arimo"], 0.556),
+    (&["times new roman", "times", "liberation serif", "tinos"], 0.5),
+    (&["courier new", "courier", "liberation mono", "cousine"], 0.6),
+    (&["verdana"], 0.636),
+    (&["tahoma"], 0.546),
+    (&["segoe ui"], 0.559),
+];
 
 /// The screen a workbook was saved on, as its column widths tell: Excel
 /// writes them in digits of the default font measured in whole pixels on
@@ -769,6 +787,11 @@ mod tests {
         assert_eq!(digit(r#"<sz val="12"/><name val="Yu Gothic"/>"#), 8.0);
         assert_eq!(digit(r#"<sz val="11"/><name val="Calibri"/>"#), 7.0);
         assert_eq!(Styles::default().digit_px(), 7.0);
+        // A Western font's digit grows with its size and family.
+        assert_eq!(digit(r#"<sz val="12"/><name val="Calibri"/>"#), 8.0);
+        assert_eq!(digit(r#"<sz val="12"/><name val="Corbel"/>"#), 8.0);
+        assert_eq!(digit(r#"<sz val="10"/><name val="Arial"/>"#), 7.0);
+        assert_eq!(digit(r#"<sz val="11"/><name val="Arial"/>"#), 8.0);
     }
 
     #[test]
