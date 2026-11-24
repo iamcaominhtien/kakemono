@@ -45,6 +45,20 @@ pub(crate) struct Grid {
     pub(crate) looks: Looks,
     /// How the sheet is printed.
     pub(crate) print: PrintSetup,
+    /// The embedded objects (a Word document, ...) shown by a picture.
+    pub(crate) objects: Vec<EmbeddedObject>,
+}
+
+/// An object embedded in a sheet (`oleObject`), which the sheet shows by
+/// a picture of it (`objectPr`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct EmbeddedObject {
+    /// The relationship (in the sheet part) of the picture.
+    pub(crate) rel: String,
+    /// The top left corner of its anchor.
+    pub(crate) from: Marker,
+    /// The bottom right corner of its anchor.
+    pub(crate) to: Marker,
 }
 
 /// How a sheet is printed (`pageSetup`, `pageMargins`, `printOptions`,

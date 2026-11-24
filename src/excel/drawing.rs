@@ -62,6 +62,27 @@ pub(crate) struct TextShape {
     pub(crate) flip_v: bool,
     /// It is turned clockwise by this many degrees (`rot`).
     pub(crate) rotation_deg: f32,
+    /// Its text run by run, `\n` between lines and paragraphs: what each
+    /// run sets of its own look.
+    pub(crate) runs: Vec<ShapeRun>,
+}
+
+/// A run of the text of a shape, and the look it sets (`a:rPr`); `None`
+/// where it sets none.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ShapeRun {
+    /// Its text; `\n` alone for a line or paragraph break.
+    pub(crate) text: String,
+    /// It is bold.
+    pub(crate) bold: Option<bool>,
+    /// It is italic.
+    pub(crate) italic: Option<bool>,
+    /// It is underlined.
+    pub(crate) underline: Option<bool>,
+    /// Its size in points.
+    pub(crate) size_pt: Option<f32>,
+    /// Its colour.
+    pub(crate) color: Option<Rgb>,
 }
 
 /// The unit of DrawingML angles (`rot`): 60 000ths of a degree.
@@ -360,7 +381,7 @@ fn from(anchor: Node<'_, '_>) -> Option<(u32, u32)> {
 }
 
 /// The marker `name` (`from`, `to`) of an anchor, with its offsets.
-fn marker(anchor: Node<'_, '_>, name: &str) -> Option<Marker> {
+pub(crate) fn marker(anchor: Node<'_, '_>, name: &str) -> Option<Marker> {
     let marker = named(anchor, name).next()?;
     let number = |name: &str| named(marker, name).next()?.text()?.trim().parse::<i64>().ok();
     let index = |name: &str| u32::try_from(number(name)?).ok();
@@ -472,10 +493,16 @@ fn text_shape(shape: Node<'_, '_>, theme: &Theme) -> Option<TextShape> {
     if text.is_empty() && fill.is_none() && line.is_none() {
         return None;
     }
+    let runs = if text.is_empty() {
+        Vec::new()
+    } else {
+        body.map(|body| shape_runs(body, theme)).unwrap_or_default()
+    };
     let mut read = TextShape {
         text,
         fill,
         line,
+        runs,
         ..TextShape::default()
     };
     if let Some(body) = body {
@@ -583,6 +610,61 @@ fn outline(shape: &mut TextShape, props: Node<'_, '_>) {
         .map(|rot| (rot / ANGLE_UNIT).rem_euclid(360.0))
         .filter(|rot| rot.is_finite())
         .unwrap_or(0.0);
+}
+
+/// The runs of the text body `body`: each run's text and the look it
+/// sets, with a break between its lines and paragraphs.
+fn shape_runs(body: Node<'_, '_>, theme: &Theme) -> Vec<ShapeRun> {
+    let mut runs = Vec::new();
+    for (index, para) in named(body, "p").enumerate() {
+        if index > 0 {
+            runs.push(ShapeRun {
+                text: "\n".to_string(),
+                ..ShapeRun::default()
+            });
+        }
+        for node in para.children().filter(Node::is_element) {
+            match node.tag_name().name() {
+                "r" | "fld" => {
+                    let text: String = named(node, "t").filter_map(|part| part.text()).collect();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let mut run = named(node, "rPr")
+                        .next()
+                        .map(|props| run_look(props, theme))
+                        .unwrap_or_default();
+                    run.text = text;
+                    runs.push(run);
+                }
+                "br" => runs.push(ShapeRun {
+                    text: "\n".to_string(),
+                    ..ShapeRun::default()
+                }),
+                _ => {}
+            }
+        }
+    }
+    runs
+}
+
+/// The look the run properties `props` (`a:rPr`) set.
+fn run_look(props: Node<'_, '_>, theme: &Theme) -> ShapeRun {
+    let flag = |name: &str| props.attribute(name).map(|value| matches!(value, "1" | "true"));
+    ShapeRun {
+        text: String::new(),
+        bold: flag("b"),
+        italic: flag("i"),
+        underline: props.attribute("u").map(|value| value != "none"),
+        size_pt: props
+            .attribute("sz")
+            .and_then(|size| size.trim().parse::<f32>().ok())
+            .map(|size| size / FONT_SIZE_UNIT)
+            .filter(|size| size.is_finite() && *size > 0.0),
+        color: named(props, "solidFill")
+            .next()
+            .and_then(|fill| drawing_color(fill, theme, [0; 3])),
+    }
 }
 
 /// The text of an `a:p`: runs and fields joined, a `a:br` is a `\n`.
@@ -873,5 +955,37 @@ mod tests {
     #[test]
     fn damaged_xml_is_an_error() {
         assert!(texts("<xdr:wsDr").is_err());
+    }
+
+    #[test]
+    fn shape_runs_keep_their_own_look() {
+        let xml = format!(
+            "{HEAD}{}</xdr:wsDr>",
+            two_cell(
+                0,
+                0,
+                r#"<xdr:sp><xdr:txBody><a:p><a:r><a:rPr sz="1000" b="0"/><a:t>Fuels</a:t></a:r></a:p><a:p><a:r><a:rPr sz="800" b="1"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:rPr><a:t>Coal</a:t></a:r><a:br/><a:r><a:t>Gas</a:t></a:r></a:p></xdr:txBody></xdr:sp>"#
+            )
+        );
+        let shapes = items(&xml).unwrap();
+        let Drawn::Text(shape) = &shapes[0].drawn else {
+            panic!("not a text shape");
+        };
+        let runs: Vec<_> = shape
+            .runs
+            .iter()
+            .map(|run| (run.text.as_str(), run.bold, run.size_pt, run.color))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("Fuels", Some(false), Some(10.0), None),
+                ("\n", None, None, None),
+                ("Coal", Some(true), Some(8.0), Some([255, 0, 0])),
+                ("\n", None, None, None),
+                ("Gas", None, None, None),
+            ]
+        );
+        assert_eq!(shape.text, "Fuels\nCoal\nGas");
     }
 }

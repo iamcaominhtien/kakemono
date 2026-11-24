@@ -16,13 +16,16 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::ExcelConfig;
-use super::grid::{CellKind, Grid, GridCell, Merge, MergeIndex, Table};
+use super::drawing;
+use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, Merge, MergeIndex, Table};
 use super::numfmt;
 use super::pull::{Event, Reader, Tag};
 use super::strings;
 use super::styles::Styles;
 use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
+/// Most embedded objects read on a sheet.
+const MAX_EMBEDDED_OBJECTS: usize = 1000;
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
 /// The width of a digit of Excel's default font (Calibri 11), in pixels:
@@ -218,7 +221,8 @@ struct SheetReader<'c, 'a> {
     value: String,
     /// The merged ranges, in the order of the file.
     merges: Vec<Merge>,
-    /// The external hyperlinks: range and URL.
+    /// The hyperlinks: range and URL (for the sheet view, also the
+    /// internal ones: `#` and their place).
     links: Vec<(Merge, String)>,
     /// A sheet view has been read (only the first counts).
     seen_view: bool,
@@ -282,6 +286,11 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
                         }
                         continue;
                     }
+                    if parent == Place::Root && tag.local() == "oleObjects" {
+                        let piece = subtree(&mut reader, &tag, &prefixes)?;
+                        sheet.grid.objects = piece.as_deref().map(embedded_objects).unwrap_or_default();
+                        continue;
+                    }
                     sheet.start(&tag, parent, &prefixes)
                 } else {
                     Place::Other
@@ -311,12 +320,29 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
 /// has just given: the element is read on its own as a tree, as a shared
 /// string is. The reader is left after its end tag.
 fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>) -> Result<Vec<Span>> {
-    if tag.empty {
+    let Some(piece) = subtree(reader, tag, prefixes)? else {
         return Ok(Vec::new());
+    };
+    let doc = parse(&piece)?;
+    Ok(doc
+        .root_element()
+        .children()
+        .find(|node| is_sml(*node, "is"))
+        .map(strings::string_item)
+        .unwrap_or_default())
+}
+
+/// The element whose start tag `tag` the reader has just given, as a
+/// document of its own: wrapped in an element declaring the prefixes of
+/// the sheet's root; `None` for an empty element. The reader is left after
+/// its end tag.
+fn subtree(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>) -> Result<Option<String>> {
+    if tag.empty {
+        return Ok(None);
     }
     let mut depth = 1usize;
     let end = loop {
-        match reader.next_event()?.context("damaged XML: an unclosed inline string")? {
+        match reader.next_event()?.context("damaged XML: an unclosed element")? {
             Event::Start(inner) if !inner.empty => depth += 1,
             Event::End(end) => {
                 depth -= 1;
@@ -327,14 +353,37 @@ fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>
             _ => {}
         }
     };
-    let piece = format!("<x{}>{}</x>", prefixes.declarations, reader.slice(tag.start, end));
-    let doc = parse(&piece)?;
-    Ok(doc
-        .root_element()
-        .children()
-        .find(|node| is_sml(*node, "is"))
-        .map(strings::string_item)
-        .unwrap_or_default())
+    Ok(Some(format!(
+        "<x{}>{}</x>",
+        prefixes.declarations,
+        reader.slice(tag.start, end)
+    )))
+}
+
+/// The embedded objects (`oleObjects`) of the document `piece` that give
+/// a picture and an anchor (`objectPr`, Excel 2010 on): the relationship of
+/// the picture and the corners of the anchor. A damaged piece gives none,
+/// and so do objects past [`MAX_EMBEDDED_OBJECTS`].
+fn embedded_objects(piece: &str) -> Vec<EmbeddedObject> {
+    let Ok(doc) = parse(piece) else {
+        return Vec::new();
+    };
+    doc.descendants()
+        .filter(|node| is_sml(*node, "objectPr"))
+        .filter_map(|props| {
+            let rel = props
+                .attribute((REL_NS, "id"))
+                .or_else(|| props.attribute((REL_STRICT_NS, "id")))?;
+            let anchor = props.children().find(|node| is_sml(*node, "anchor"))?;
+            let (from, to) = (drawing::marker(anchor, "from")?, drawing::marker(anchor, "to")?);
+            Some(EmbeddedObject {
+                rel: rel.to_string(),
+                from,
+                to,
+            })
+        })
+        .take(MAX_EMBEDDED_OBJECTS)
+        .collect()
 }
 
 impl SheetReader<'_, '_> {
@@ -398,10 +447,17 @@ impl SheetReader<'_, '_> {
             (Place::Hyperlinks, "hyperlink") => {
                 // An internal link (`location`, a place in the workbook)
                 // has no relationship.
-                let url = prefixes.rel_id(tag).and_then(|id| self.ctx.links.get(&id));
+                let url = prefixes.rel_id(tag).and_then(|id| self.ctx.links.get(&id)).cloned();
+                // The sheet view keeps internal links, as `#` and the place.
+                let url = url.or_else(|| {
+                    self.ctx
+                        .view
+                        .then(|| tag.attr("location").map(|place| format!("#{place}")))
+                        .flatten()
+                });
                 let area = tag.attr("ref").and_then(|area| range(&area));
                 if let (Some(url), Some(area)) = (url, area) {
-                    self.links.push((area, url.clone()));
+                    self.links.push((area, url));
                 }
                 Place::Other
             }
@@ -1321,5 +1377,23 @@ mod tests {
         assert!(read("<worksheet", &ctx).is_err());
         let dtd = r#"<!DOCTYPE worksheet [<!ENTITY e "x">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>"#;
         assert!(read(dtd, &ctx).is_err());
+    }
+
+    #[test]
+    fn embedded_objects_give_their_picture_and_anchor() {
+        let objects = grid(
+            r#"<sheetData/><oleObjects><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"><mc:Choice Requires="x14"><oleObject progId="Word.Document.8" shapeId="1" r:id="rId1"><objectPr r:id="rId2"><anchor moveWithCells="1"><from><xdr:col>0</xdr:col><xdr:colOff>12700</xdr:colOff><xdr:row>33</xdr:row><xdr:rowOff>0</xdr:rowOff></from><to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>41</xdr:row><xdr:rowOff>25400</xdr:rowOff></to></anchor></objectPr></oleObject></mc:Choice><mc:Fallback><oleObject progId="Word.Document.8" shapeId="1" r:id="rId1"/></mc:Fallback></mc:AlternateContent></oleObjects>"#,
+        )
+        .objects;
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].rel, "rId2");
+        assert_eq!(
+            (objects[0].from.row, objects[0].from.col, objects[0].from.col_off_pt),
+            (33, 0, 1.0)
+        );
+        assert_eq!(
+            (objects[0].to.row, objects[0].to.col, objects[0].to.row_off_pt),
+            (41, 2, 2.0)
+        );
     }
 }

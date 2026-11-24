@@ -8,7 +8,7 @@
 
 use super::drawing::{Drawn, Frame, Shape, TextShape};
 use super::grid::{CellKind, Grid, GridCell, Marker, Merge, Sizes};
-use super::styles::{Color, HAlign, Line, Look, Styles, VAlign};
+use super::styles::{Color, Edge, HAlign, Line, Look, Styles, VAlign};
 use super::{DrawnSheet, ExcelConfig, read_book};
 use crate::chart::{Rgb, Theme};
 use crate::model::Picture;
@@ -58,6 +58,8 @@ const DEFAULT_ROW_PT: f32 = 15.0;
 /// The width of one step of a cell's indent, in points (three spaces of
 /// the default font).
 const INDENT_STEP_PT: f32 = 7.5;
+/// The sides of a cell, in the order of [`Look::borders`].
+const BORDER_SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
 /// Points in a pixel at 96 pixels per inch.
 const PT_PER_PX: f32 = 0.75;
 /// Size of a picture shown in its cell when its cell has no size, in
@@ -117,7 +119,8 @@ function show(id){var found=false;sheets.forEach(function(s){var on=s.id===id;s.
 if(!found&&sheets.length){sheets[0].hidden=false;id=sheets[0].id}\
 tabs.forEach(function(t){t.setAttribute('aria-selected',t.getAttribute('href')==='#'+id?'true':'false')})}\
 tabs.forEach(function(t){t.addEventListener('click',function(e){e.preventDefault();var id=t.getAttribute('href').slice(1);\
-show(id);history.replaceState(null,'','#'+id)})});show(location.hash.slice(1))})();";
+show(id);history.replaceState(null,'','#'+id)})});\
+addEventListener('hashchange',function(){show(location.hash.slice(1));scrollTo(0,0)});show(location.hash.slice(1))})();";
 
 /// The sheet view of the workbook `data`, read with `config` and drawn
 /// within the limits of `view`; titled with the workbook's title, else
@@ -141,6 +144,12 @@ pub(crate) fn to_html(data: &[u8], config: &ExcelConfig, view: &ViewConfig, name
         view,
         ids: std::cell::Cell::new(0),
         classes: std::cell::RefCell::new(Classes::default()),
+        sheet_ids: book
+            .sheets
+            .iter()
+            .enumerate()
+            .map(|(index, sheet)| (sheet.name.to_lowercase(), index + 1))
+            .collect(),
     };
     let title = book.title.as_deref().filter(|title| !title.trim().is_empty()).or(name);
     Ok(page.html(title, &book.sheets))
@@ -161,6 +170,9 @@ struct Page<'a> {
     /// The classes of the cell looks, shared by all the sheets: a class
     /// name means the same look on every sheet of the page.
     classes: std::cell::RefCell<Classes>,
+    /// The number of each sheet's section (`sheet-N`), by its name in
+    /// lower case.
+    sheet_ids: HashMap<String, usize>,
 }
 
 impl Page<'_> {
@@ -309,6 +321,12 @@ impl Page<'_> {
         if !class.is_empty() {
             let _ = write!(out, " class=\"{class}\"");
         }
+        if cols > 1 || rows > 1 {
+            let edges = self.merge_edges(grid, at, (cols, rows), look);
+            if !edges.is_empty() {
+                let _ = write!(out, " style=\"{edges}\"");
+            }
+        }
         out.push('>');
         if !text.is_empty() {
             let _ = write!(
@@ -327,16 +345,10 @@ impl Page<'_> {
         if let Some(fill) = look.fill.and_then(|color| self.rgb(color)) {
             let _ = write!(style, "background:{};box-shadow:none;", hex(fill));
         }
-        for (side, edge) in ["left", "right", "top", "bottom"].iter().zip(look.borders) {
-            let Some(edge) = edge else { continue };
-            let line = match edge.line {
-                Line::Solid => "solid",
-                Line::Dashed => "dashed",
-                Line::Dotted => "dotted",
-                Line::Double => "double",
-            };
-            let color = edge.color.and_then(|color| self.rgb(color)).unwrap_or([0; 3]);
-            let _ = write!(style, "border-{side}:{}px {line} {};", num(edge.width_px), hex(color));
+        for (side, edge) in BORDER_SIDES.iter().zip(look.borders) {
+            if let Some(edge) = edge {
+                style.push_str(&self.edge_css(side, edge));
+            }
         }
         let font = &look.font;
         let base = &self.styles.look(0).font;
@@ -379,6 +391,45 @@ impl Page<'_> {
             let padding = f32::from(look.indent) * INDENT_STEP_PT;
             let side = if align == "right" { "right" } else { "left" };
             let _ = write!(style, "padding-{side}:{}pt;", num(padding));
+        }
+        style
+    }
+
+    /// The CSS of the border `edge` on the `side` of a cell.
+    fn edge_css(&self, side: &str, edge: Edge) -> String {
+        let line = match edge.line {
+            Line::Solid => "solid",
+            Line::Dashed => "dashed",
+            Line::Dotted => "dotted",
+            Line::Double => "double",
+        };
+        let color = edge.color.and_then(|color| self.rgb(color)).unwrap_or([0; 3]);
+        format!("border-{side}:{}px {line} {};", num(edge.width_px), hex(color))
+    }
+
+    /// The CSS of the right and bottom borders of a merged range of `cols`
+    /// by `rows` cells from `at`, when they differ from its first cell's
+    /// look `look`: as Excel draws them, those of its right column and of
+    /// its bottom row.
+    fn merge_edges(&self, grid: &Grid, at: (u32, u32), (cols, rows): (u32, u32), look: &Look) -> String {
+        let mut style = String::new();
+        let right = self
+            .styles
+            .look(look_index(grid, (at.0, at.1 + cols.saturating_sub(1))) as usize)
+            .borders[1];
+        let bottom = self
+            .styles
+            .look(look_index(grid, (at.0 + rows.saturating_sub(1), at.1)) as usize)
+            .borders[3];
+        for (side, edge, own) in [("right", right, look.borders[1]), ("bottom", bottom, look.borders[3])] {
+            if edge != own {
+                match edge {
+                    Some(edge) => style.push_str(&self.edge_css(side, edge)),
+                    None => {
+                        let _ = write!(style, "border-{side}:none;");
+                    }
+                }
+            }
         }
         style
     }
@@ -432,10 +483,28 @@ impl Page<'_> {
                         esc(href)
                     );
                 }
+                Some(href) if href.starts_with('#') => match self.sheet_id(&href[1..]) {
+                    Some(id) => {
+                        let _ = write!(out, "<a href=\"#sheet-{id}\">{body}</a>");
+                    }
+                    None => out.push_str(&body),
+                },
                 _ => out.push_str(&body),
             }
         }
         out
+    }
+
+    /// The number of the section of the sheet an internal link's place
+    /// (`'Sheet name'!A1`, `Sheet!A1`) names; `None` for another place (a
+    /// defined name) or a sheet not shown.
+    fn sheet_id(&self, place: &str) -> Option<usize> {
+        let (sheet, _) = place.rsplit_once('!')?;
+        let sheet = match sheet.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')) {
+            Some(quoted) => quoted.replace("''", "'"),
+            None => sheet.to_string(),
+        };
+        self.sheet_ids.get(&sheet.to_lowercase()).copied()
     }
 
     /// Writes a chart, picture or shape where it is drawn on the sheet.
@@ -542,7 +611,7 @@ impl Page<'_> {
         let text = if shape.text.is_empty() {
             String::new()
         } else {
-            format!("<span>{}</span>", esc(&shape.text))
+            format!("<span>{}</span>", runs_html(shape))
         };
         format!("<div class=\"shape\" style=\"{style}\">{outline}{text}</div>")
     }
@@ -855,6 +924,43 @@ pub(crate) fn col_width(sizes: &Sizes, col: u32) -> f32 {
     };
     let next = Marker { col: col + 1, ..origin };
     sizes.span_pt(origin, next, &HashSet::new(), &HashSet::new()).0
+}
+
+/// The HTML of the text of `shape`, run by run: a run that sets its own
+/// look is a `span` with it.
+fn runs_html(shape: &TextShape) -> String {
+    if shape.runs.is_empty() {
+        return esc(&shape.text);
+    }
+    let mut html = String::new();
+    for run in &shape.runs {
+        let mut css = String::new();
+        if let Some(bold) = run.bold {
+            css.push_str(if bold { "font-weight:700;" } else { "font-weight:400;" });
+        }
+        if let Some(italic) = run.italic {
+            css.push_str(if italic {
+                "font-style:italic;"
+            } else {
+                "font-style:normal;"
+            });
+        }
+        if run.underline == Some(true) {
+            css.push_str("text-decoration:underline;");
+        }
+        if let Some(size) = run.size_pt {
+            let _ = write!(css, "font-size:{}pt;", num(size));
+        }
+        if let Some(color) = run.color {
+            let _ = write!(css, "color:{};", hex(color));
+        }
+        if css.is_empty() || run.text == "\n" {
+            html.push_str(&esc(&run.text));
+        } else {
+            let _ = write!(html, "<span style=\"{css}\">{}</span>", esc(&run.text));
+        }
+    }
+    html
 }
 
 /// Adds to `style` the CSS of the text of `shape`: its colour, size,
@@ -1239,7 +1345,9 @@ mod tests {
     /// over B1, A2:B2 merged on a yellow fill with a border, a hidden
     /// column C, a cell D1 linked to a script, no gridlines, and a picture
     /// anchored at E2 (two by one inches); and a second sheet, "Notes",
-    /// whose A1 has the look of the merge and B1 one of its own.
+    /// whose A1 has the look of the merge and B1 one of its own, linked to
+    /// the first sheet, and whose A2:A3 merge takes its bottom border from
+    /// A3.
     fn workbook() -> Vec<u8> {
         let sheet = format!(
             r#"<worksheet {NS}><sheetViews><sheetView showGridLines="0"/></sheetViews><cols><col min="3" max="3" width="9" hidden="1"/></cols><sheetData><row r="1"><c r="A1" s="1" t="inlineStr"><is><t>A long title</t></is></c><c r="D1" t="inlineStr"><is><t>Click</t></is></c></row><row r="2" ht="30" customHeight="1"><c r="A2" s="2" t="inlineStr"><is><t>Merged</t></is></c><c r="B2" s="2"/></row></sheetData><mergeCells count="1"><mergeCell ref="A2:B2"/></mergeCells><hyperlinks><hyperlink ref="D1" r:id="rId2"/></hyperlinks><drawing r:id="rId1"/></worksheet>"#
@@ -1256,7 +1364,7 @@ mod tests {
             ("_rels/.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#).into_bytes()),
             ("xl/workbook.xml".into(), format!(r#"<workbook {NS}><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" r:id="rId3"/></sheets></workbook>"#).into_bytes()),
             ("xl/_rels/workbook.xml.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{REL}/styles" Target="styles.xml"/><Relationship Id="rId3" Type="{REL}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>"#).into_bytes()),
-            ("xl/worksheets/sheet2.xml".into(), format!(r#"<worksheet {NS}><sheetData><row r="1"><c r="A1" s="2" t="inlineStr"><is><t>Note</t></is></c><c r="B1" s="3" t="inlineStr"><is><t>Small</t></is></c></row></sheetData></worksheet>"#).into_bytes()),
+            ("xl/worksheets/sheet2.xml".into(), format!(r#"<worksheet {NS}><sheetData><row r="1"><c r="A1" s="2" t="inlineStr"><is><t>Note</t></is></c><c r="B1" s="3" t="inlineStr"><is><t>Small</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>Tall</t></is></c></row><row r="3"><c r="A3" s="2"/></row></sheetData><mergeCells count="1"><mergeCell ref="A2:A3"/></mergeCells><hyperlinks><hyperlink ref="B1" location="'Data'!A1"/></hyperlinks></worksheet>"#).into_bytes()),
             ("xl/styles.xml".into(), styles.into_bytes()),
             ("xl/worksheets/sheet1.xml".into(), sheet.into_bytes()),
             ("xl/worksheets/_rels/sheet1.xml.rels".into(), format!(r#"<Relationships {RELS_NS}><Relationship Id="rId1" Type="{REL}/drawing" Target="../drawings/drawing1.xml"/><Relationship Id="rId2" Type="{REL}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/></Relationships>"#).into_bytes()),
@@ -1304,6 +1412,13 @@ mod tests {
         // class is defined twice.
         let notes = &html[html.find(r#"id="sheet-2""#).unwrap()..];
         assert!(notes.contains(r#"<td class="k2">"#) && notes.contains(r#"<td class="k3">"#));
+        // An internal link shows its sheet; a merge's bottom border is its
+        // bottom row's.
+        assert!(notes.contains(r##"<a href="#sheet-1">Small</a>"##));
+        assert!(
+            notes.contains(r#"<td rowspan="2" style="border-bottom:1px solid #203864;">"#),
+            "{notes}"
+        );
         for name in ["k0", "k1", "k2", "k3"] {
             assert!(
                 html.matches(&format!(".cells td.{name}{{")).count() <= 1,

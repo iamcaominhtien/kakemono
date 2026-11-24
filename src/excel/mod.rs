@@ -45,6 +45,10 @@ const TABLE_REL: &str = "table";
 const DRAWING_REL: &str = "drawing";
 /// Relationship type of the theme part of the workbook.
 const THEME_REL: &str = "theme";
+/// Relationship type of a picture.
+const IMAGE_REL: &str = "image";
+/// The alternative text of the picture of an embedded object.
+const EMBEDDED_OBJECT_ALT: &str = "Embedded object";
 /// Header rows of an Excel Table without `headerRowCount`.
 const DEFAULT_HEADER_ROW_COUNT: u32 = 1;
 
@@ -296,6 +300,8 @@ fn read_sheets_with_styles<'w>(
                 };
                 let mut grid = sheet::read(&xml, &ctx).unwrap_or_default();
                 shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
+                shapes.extend(object_pictures(zip, &sheet.part, &grid, pictures));
+                shapes.sort_by_key(|shape| shape.at);
                 shapes.extend(cell_pictures(zip, &mut grid, &in_cells, pictures));
                 grid
             }
@@ -373,6 +379,44 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pi
     }
     shapes.sort_by_key(|shape| shape.at);
     shapes
+}
+
+/// The pictures that show the embedded objects of the sheet `grid` (part
+/// `part`), each over its anchor. An object whose picture is missing,
+/// damaged or in a format that cannot be shown is left out.
+fn object_pictures(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pictures) -> Vec<Shape> {
+    if grid.objects.is_empty() {
+        return Vec::new();
+    }
+    let files: HashMap<String, String> = read_rels(zip, part)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, kind, rel)| kind == IMAGE_REL && !rel.external)
+        .map(|(id, _, rel)| (id, rel.target))
+        .collect();
+    grid.objects
+        .iter()
+        .filter_map(|object| {
+            let index = pictures.read(zip, files.get(&object.rel)?)?;
+            let size = grid
+                .sizes
+                .span_pt(object.from, object.to, &grid.hidden_rows, &grid.hidden_cols);
+            Some(Shape {
+                at: (object.from.row, object.from.col),
+                frame: drawing::Frame {
+                    from: Some(object.from),
+                    to: Some(object.to),
+                    ..drawing::Frame::default()
+                },
+                drawn: Drawn::Picture(drawing::PictureRef {
+                    rel: object.rel.clone(),
+                    alt: EMBEDDED_OBJECT_ALT.to_string(),
+                    size_pt: Some(size),
+                    index: Some(index),
+                }),
+            })
+        })
+        .collect()
 }
 
 /// The pictures placed in the cells of `grid`, by the cells' value

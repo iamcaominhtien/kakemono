@@ -15,7 +15,7 @@ use super::super::pdf;
 use super::super::shape::Shaper;
 use super::WorkbookPdfConfig;
 use crate::chart::{Rgb, Theme};
-use crate::excel::drawing::{Drawn, Shape, TextShape};
+use crate::excel::drawing::{Drawn, Shape, ShapeRun, TextShape};
 use crate::excel::grid::{CellKind, Grid, GridCell, Marker, Merge};
 use crate::excel::styles::{Color, HAlign, Line, Look, Styles, VAlign};
 use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg};
@@ -527,7 +527,29 @@ impl Printer<'_, '_, '_> {
         for band in bands {
             let cells = self.band_cells(area, columns, band);
             for (at, rect, span) in &cells {
-                let look = self.styles.look(look_index(self.grid, *at) as usize);
+                let own = self.styles.look(look_index(self.grid, *at) as usize);
+                let edged;
+                let look = match span {
+                    // A merged range's right and bottom borders are those
+                    // of its right column and bottom row, as Excel draws.
+                    Some(merge) => {
+                        edged = Look {
+                            borders: [
+                                own.borders[0],
+                                self.styles
+                                    .look(look_index(self.grid, (merge.top, merge.right)) as usize)
+                                    .borders[1],
+                                own.borders[2],
+                                self.styles
+                                    .look(look_index(self.grid, (merge.bottom, merge.left)) as usize)
+                                    .borders[3],
+                            ],
+                            ..own.clone()
+                        };
+                        &edged
+                    }
+                    None => own,
+                };
                 let rect = self.to_page(*rect, columns, band, scale);
                 if let Some(fill) = look.fill.and_then(|color| self.rgb(color)) {
                     items.push(Item::Rect {
@@ -982,21 +1004,7 @@ impl Printer<'_, '_, '_> {
         fmt.color = shape.color.filter(|rgb| *rgb != [0; 3]);
         let (pad_x, pad_y) = (SHAPE_PADDING_PT.0 * scale, SHAPE_PADDING_PT.1 * scale);
         let [x, y, width, height] = rect;
-        let mut inlines = Vec::new();
-        for (index, line) in shape.text.split('\n').enumerate() {
-            if index > 0 {
-                inlines.push(Inline::Break {
-                    kind: BreakKind::Line,
-                    fmt: fmt.clone(),
-                });
-            }
-            if !line.is_empty() {
-                inlines.push(Inline::Text {
-                    text: line.to_string(),
-                    fmt: fmt.clone(),
-                });
-            }
-        }
+        let inlines = shape_inlines(shape, &fmt, scale);
         let para = Para {
             props: ParaProps {
                 align: match shape.align.as_deref() {
@@ -1033,6 +1041,52 @@ impl Printer<'_, '_, '_> {
     fn rgb(&self, color: Color) -> Option<Rgb> {
         color.rgb(self.theme, self.styles.palette.as_deref())
     }
+}
+
+/// The inlines of the text of `shape`, run by run, each run in `fmt`
+/// with the look it sets of its own (sizes times `scale`).
+fn shape_inlines(shape: &TextShape, fmt: &RunFmt, scale: f32) -> Vec<Inline> {
+    let plain;
+    let runs = if shape.runs.is_empty() {
+        plain = [ShapeRun {
+            text: shape.text.clone(),
+            ..ShapeRun::default()
+        }];
+        &plain[..]
+    } else {
+        &shape.runs[..]
+    };
+    let mut inlines = Vec::new();
+    for run in runs {
+        let mut own = fmt.clone();
+        own.bold = run.bold.unwrap_or(own.bold);
+        own.italic = run.italic.unwrap_or(own.italic);
+        if run.underline == Some(true) {
+            own.underline = Some(Underline::Single);
+        }
+        if let Some(size) = run.size_pt {
+            own.size = size * scale;
+            own.size_cs = own.size;
+        }
+        if let Some(color) = run.color {
+            own.color = Some(color).filter(|rgb| *rgb != [0; 3]);
+        }
+        for (index, line) in run.text.split('\n').enumerate() {
+            if index > 0 {
+                inlines.push(Inline::Break {
+                    kind: BreakKind::Line,
+                    fmt: own.clone(),
+                });
+            }
+            if !line.is_empty() {
+                inlines.push(Inline::Text {
+                    text: line.to_string(),
+                    fmt: own.clone(),
+                });
+            }
+        }
+    }
+    inlines
 }
 
 /// Excel's default row height, in points.

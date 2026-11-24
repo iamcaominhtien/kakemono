@@ -168,10 +168,15 @@ its formatting:
   cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
-  next cell with a value;
-- charts (SVG), pictures, pictures placed in cells, shapes (preset outlines such as arrows,
-  triangles, brackets, cylinders; fill, outline, text) and connectors (straight and elbow, with
-  arrow heads) at the place and size of their anchors, groups included.
+  next cell with a value; a merged range takes its right and bottom borders from its right column
+  and bottom row;
+- links: to a web page (http, https, mailto, ftp), and to a place in the workbook
+  (`'Sheet'!A1`), which shows that sheet's tab;
+- charts (SVG; dashed and smoothed lines, a legend placed by hand on its side), pictures, pictures
+  placed in cells, embedded objects (a Word document, ...) by the picture the file keeps of them,
+  shapes (preset outlines such as arrows, triangles, brackets, cylinders; fill, outline, text with
+  the look of each run) and connectors (straight and elbow, with arrow heads) at the place and size
+  of their anchors, groups included.
 
 Not drawn: conditional formats, data bars and icons, sparklines, comments, number colours of a
 format (`[Red]`), text turned by an angle other than ±90°, and the curves of curved connectors
@@ -206,8 +211,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   aligned as Excel aligns it, wrapped when the cell wraps, running over the empty cells beside it
   and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
   links kept (http, https, mailto, ftp);
-- charts (vector), pictures, pictures in cells, shapes (preset outlines as vector, their text as
-  text) and connectors with their arrow heads, where they are anchored; one across a page break
+- charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
+  outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break
   is cut, its parts on their pages;
 - at most `print_max_pages` (2,000) pages.
 
