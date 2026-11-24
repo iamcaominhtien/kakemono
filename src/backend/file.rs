@@ -32,7 +32,7 @@ impl PdfFile {
         // A PDF has its header in its first kilobyte.
         let head = &data[..data.len().min(1024)];
         if !head.windows(5).any(|window| window == b"%PDF-") {
-            return Err(anyhow!("not a PDF or Word document"));
+            return Err(anyhow!("not a PDF, Word document or EPUB book"));
         }
         let pdf = Pdf::new(data).map_err(|err| anyhow!("cannot read PDF: {err:?}"))?;
         if pdf.pages().is_empty() {

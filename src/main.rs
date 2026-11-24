@@ -15,7 +15,7 @@ use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
-    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter,
+    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -164,6 +164,9 @@ enum FormatArg {
     /// LaTeX (.tex) for pdfLaTeX, XeLaTeX or LuaLaTeX: tables, LaTeX formulas, pictures in an image folder
     #[value(name = "tex", alias = "latex")]
     Latex,
+    /// Typst (.typ): an article, or a printed book (chapters on right-hand pages, running heads, footnotes); compile it with `typst compile`
+    #[value(name = "typst", alias = "typ")]
+    Typst,
     /// An EPUB 3 book (.epub) for e-readers: reflowing text, MathML formulas, tables, contents
     Epub,
     /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
@@ -181,6 +184,17 @@ enum ImagesArg {
     Inline,
     /// Write images to a folder next to the output file (Word documents keep them embedded too; always for LaTeX)
     Files,
+}
+
+/// Values of `--layout`; the doc comments are the help texts.
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum LayoutArg {
+    /// A book when the document has chapters and nothing of a paper (abstract, references), an article otherwise
+    Auto,
+    /// One column on A4 pages
+    Article,
+    /// A printed book on A5 pages: a title page, chapters on right-hand pages, mirrored margins, running heads
+    Book,
 }
 
 /// Values of `--fonts`; the doc comments are the help texts.
@@ -262,13 +276,13 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub, .json or .jsonl; html otherwise); --mode applies to html and md only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex, .typ, .epub, .json or .jsonl; html otherwise); --mode applies to html and md only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx, .md, .tex, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md, .tex, .typ, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX and JSON; EPUB books always hold theirs]
+    /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX, Typst and JSON; EPUB books always hold theirs]
     #[arg(long, value_enum)]
     images: Option<ImagesArg>,
     /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
@@ -286,10 +300,13 @@ struct ConvertArgs {
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
+    /// Layout of the Typst output (it can also be changed at the top of the .typ file)
+    #[arg(long, value_enum, default_value = "auto")]
+    layout: LayoutArg,
     /// Fonts of friendly mode, and of the formulas of medium and friendly modes
     #[arg(long, value_enum, default_value = "embed")]
     fonts: FontsArg,
-    /// How medium and friendly modes (and Word, Markdown, LaTeX and EPUB documents) show displayed formulas
+    /// How medium and friendly modes (and Word, Markdown, LaTeX, Typst and EPUB documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
     /// Also write the structured document as JSON, with every field of the analysis (to edit the text and apply it back, use --format json)
@@ -483,6 +500,12 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
         bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
     }
+    if format == FormatArg::Typst && args.images == Some(ImagesArg::Inline) {
+        bail!("Typst cannot embed pictures in its source: --images inline cannot be used with --format typst");
+    }
+    if format != FormatArg::Typst && args.layout != LayoutArg::Auto {
+        bail!("--layout chooses the layout of the Typst output: it needs --format typst (or a .typ output)");
+    }
     if format == FormatArg::Epub && (args.images == Some(ImagesArg::Files) || args.image_dir.is_some()) {
         bail!("an EPUB book holds its pictures: --images files and --image-dir cannot be used with --format epub");
     }
@@ -570,6 +593,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Docx => write_docx(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "docx"))?,
         FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
         FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
+        FormatArg::Typst => write_typst(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "typ"))?,
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
         FormatArg::Chunks => write_chunks(&paper, &analysis, &args, &paths.single_file(&stem, "chunks.jsonl"))?,
@@ -588,7 +612,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
 /// file, Markdown when it names a `.md` file, LaTeX when it names a `.tex`
-/// file, EPUB when it names an `.epub` file, JSON when it names a `.json`
+/// file, Typst when it names a `.typ` file, EPUB when it names an `.epub` file, JSON when it names a `.json`
 /// file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
@@ -603,6 +627,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "docx" => FormatArg::Docx,
             "md" | "markdown" => FormatArg::Markdown,
             "tex" | "latex" => FormatArg::Latex,
+            "typ" => FormatArg::Typst,
             "epub" => FormatArg::Epub,
             "json" => FormatArg::Json,
             "jsonl" => FormatArg::Chunks,
@@ -755,6 +780,37 @@ fn write_latex(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usi
         "latex",
         file.display(),
         out.latex.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Writes `analysis` as Typst to `file`, with the image files next to it,
+/// and reports the result on stderr.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_typst(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = TypstOptions {
+        asset_dir: image_dir(args, file, None),
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+        layout: match args.layout {
+            LayoutArg::Auto => None,
+            LayoutArg::Article => Some(TypstLayout::Article),
+            LayoutArg::Book => Some(TypstLayout::Book),
+        },
+    };
+    let started = Instant::now();
+    let out = paper.to_typst(analysis, &opts);
+    write_file(file, out.typst.as_bytes())?;
+    let report = write_images(file, &out.files)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
+        "typst",
+        file.display(),
+        out.typst.len() as f64 / BYTES_PER_MB,
         started.elapsed().as_secs_f32()
     );
     Ok(())

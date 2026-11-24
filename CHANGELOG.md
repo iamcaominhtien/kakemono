@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.18.0](https://github.com/iamcaominhtien/kakemono/compare/v0.17.1...v0.18.0) - 2026-11-24
+
+### Added
+
+- *(typst)* Add Typst output with a printed-book layout ([#34](https://github.com/iamcaominhtien/kakemono/pull/34))
+
+Closes #19.
+
+#### What
+
+A new output format, `-f typst` (or `-o x.typ`): a Typst document that compiles with `typst compile`, with no TeX installation. Typst breaks each paragraph as a whole (no wide gaps in justified lines) and keeps every footnote on the page of its call, which is what a translated book needs.
+
+- **The file** starts with its settings (layout, page size, fonts, language, cover), then the template (the `kakemono-…` functions that lay the document out), then the text. A reader changes the page size or the fonts there, so the CLI gains only `--layout`.
+- **Two layouts**, chosen from the document (`--layout auto`, the default) or forced with `--layout book|article`:
+  - `book`, for a document with chapters and no abstract, references or arXiv id: A5, a title page, chapters that open on a right-hand page and number their notes from 1, mirrored margins, running heads (book title on the left, chapter on the right, none on chapter openings or blank pages), opening words in small capitals (not in Vietnamese);
+  - `article`: A4, the title block at the top, page numbers at the foot.
+- **Content**:
+  - headings, lists with the document's markers, and tables as `table`s with spanning cells and booktabs-like rules;
+  - formulas as Typst math, built from the same `MathNode` structure as LaTeX and MathML;
+  - footnotes and added notes (`<note>`) as `#footnote` (see below);
+  - links, and pictures as files;
+  - a table of contents becomes Typst's `outline`, with the new page numbers.
+- **Language**: `lang` is found from the text (Vietnamese), for hyphenation and quotes. The default font, Libertinus Serif, ships with Typst and has the Vietnamese letters.
+- **Library**: `Paper::to_typst`, `TypstOptions`, `TypstLayout`. **Python**: `to_typst`.
+- **EPUB books** (now an input, #35) go to Typst too: a novel gets the book layout, with its title page and chapters.
+- Compiling to PDF inside kakemono (the optional point 3 of the issue) is left out: the `typst` crate would add a large dependency to the published crate, and the `typst` CLI is a single binary.
+
+#### Fixed: line breaks in every output
+
+A `<br>` of an EPUB book, or a manual line break of a Word document, is a `\n` in the text, and every output wrote it as a space, so the lines of a poem ran together (*The Divine Comedy* came out as prose). Each line of a run is now styled on its own, and the lines are joined by the format's line break: `<br>` in HTML, EPUB and Markdown, `\newline{}` in LaTeX (a space inside a table), `#linebreak()` in Typst. Word already wrote `<w:br/>`. The PDF papers have line breaks only in code, which is written apart, so their outputs are unchanged.
+
+#### Footnotes at the foot of the page (Word, LaTeX, Typst)
+
+A footnote reached the outputs as a block after its paragraph, linked from a raised mark: Word, LaTeX and Typst wrote it as a small paragraph there, not as a footnote. The EPUB books do the same: their notes, which e-readers show in a popup, are moved after the paragraph that calls them by the EPUB reader.
+
+These three outputs now attach each footnote to its call (`render/notes.rs`, `footnotes_attached`), so that it becomes a Word footnote, a `\footnote` or a `#footnote`, at the foot of the page of its call. A note is attached when its mark is called once, from a paragraph or a list item, and the note follows the call (after only other notes, or on the same page of the PDF or the next). Endnotes of Word, notes called from a heading, a caption, a table or the authors, and notes called from more than one place stay as they were. The document model, the JSON and the other outputs do not change.
+
+- *The Divine Comedy*: 2,089 of its 2,103 notes become footnotes (the other 14 are also referred to by other notes); *War and Peace*: all 137.
+- The PDF papers: 69 of their 94 footnotes (the rest are author notes or affiliations).
+- The Word corpus: 1,666 footnotes in 148 documents.
+
+#### Fixed: SonarCloud security rating of `main`
+
+The quality gate of `main` is red since #32: SonarCloud reports a command argument injection (`pythonsecurity:S8705`) in `scripts/ci_changes.py`, whose `BASE` and `HEAD` went from the command line to `git`, which would take an argument starting with `-` for an option. Each is now a commit hash or a branch or tag name, resolved with `git rev-parse --verify --end-of-options`, and only the full hash it prints is used; anything else exits with code 2. The workflows pass the SHAs of the pull request, so CI is unchanged.
+
 ## [0.17.1](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.17.1) - 2026-11-24
 
 ### Performance

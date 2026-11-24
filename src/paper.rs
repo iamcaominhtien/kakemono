@@ -7,9 +7,9 @@ use crate::config::AnalyzeOptions;
 use crate::model::{Document, Meta};
 use crate::render::{
     Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions,
-    JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, SourceInfo, apply_content, render,
-    render_chunks, render_docx, render_docx_with_images, render_epub, render_json, render_latex, render_markdown,
-    render_to,
+    JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, SourceInfo, TypstOptions,
+    TypstOutput, apply_content, render, render_chunks, render_docx, render_docx_with_images, render_epub, render_json,
+    render_latex, render_markdown, render_to, render_typst,
 };
 use crate::word::{self, WordFormat};
 use anyhow::Result;
@@ -373,6 +373,13 @@ impl Paper {
     /// drawn from its PDF.
     pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
         render_latex(analysis, self.pdf(), opts)
+    }
+
+    /// Writes an analysis as a Typst document (`.typ`) with its picture
+    /// files, in the layout of an article or of a printed book. `analysis`
+    /// must come from this paper, since the pictures are drawn from its PDF.
+    pub fn to_typst(&self, analysis: &Analysis, opts: &TypstOptions) -> TypstOutput {
+        render_typst(analysis, self.pdf(), opts)
     }
 
     /// Writes an analysis as an EPUB book (`.epub`) and returns the bytes of

@@ -94,6 +94,19 @@ def test_to_markdown_mode_chooses_how_tables_are_written():
         kakemono.to_markdown(LIGO, mode="hard")
 
 
+def test_to_typst_writes_source_and_pictures(tmp_path):
+    out = tmp_path / "typ" / "ligo.typ"
+    text = kakemono.to_typst(LIGO, out, scale=1.0)
+    assert out.read_text(encoding="utf-8") == text
+    assert text.startswith("// Converted from a PDF by kakemono.")
+    assert '#let doc-layout = "article"' in text
+    assert '"ligo_assets/001-fig.png"' in text
+    assert (tmp_path / "typ" / "ligo_assets" / "001-fig.png").is_file()
+    assert '#let doc-layout = "book"' in kakemono.to_typst(LIGO, layout="book", scale=1.0)
+    with pytest.raises(ValueError):
+        kakemono.to_typst(LIGO, layout="poster")
+
+
 def test_to_latex_writes_source_and_pictures(tmp_path):
     out = tmp_path / "tex" / "ligo.tex"
     text = kakemono.to_latex(LIGO, out, scale=1.0)

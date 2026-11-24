@@ -6,11 +6,13 @@
 use super::math::{latex, math_char};
 use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::inline_math::{Piece, has_math, split};
-use crate::render::markdown::inline::merge;
-use crate::render::notes::{Segment, segments};
+use crate::render::runs::{RunMarkup, label_name, runs, trim_breaks};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
+
+/// A line break of the text (the lines of a poem, of an address).
+const LINE_BREAK: &str = "\\newline{}";
 
 /// Link schemes written as `\href`; other targets stay text.
 const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
@@ -108,7 +110,7 @@ impl Text<'_> {
     /// them as `$…$` when [`Text::math`].
     pub(crate) fn spans(&self, spans: &[Span]) -> String {
         if !self.math || !has_math(spans) {
-            return self.runs(spans).trim().to_string();
+            return trim_breaks(&self.runs(spans), LINE_BREAK).to_string();
         }
         let mut out = String::new();
         for piece in split(spans) {
@@ -122,53 +124,36 @@ impl Text<'_> {
                 }
             }
         }
-        out.trim().to_string()
+        trim_breaks(&out, LINE_BREAK).to_string()
     }
 
     /// Text spans as LaTeX (not trimmed), an added note as a
     /// `\footnote` (LaTeX numbers them).
     fn runs(&self, spans: &[Span]) -> String {
-        let mut out = String::new();
-        for segment in segments(spans) {
-            match segment {
-                Segment::Text(spans) => out.push_str(&self.text_runs(spans)),
-                Segment::Note(call) => {
-                    let note = self.spans(call.note.as_deref().unwrap_or_default());
-                    match self.table_notes.borrow_mut().as_mut() {
-                        Some(notes) => {
-                            notes.push(note);
-                            out.push_str("\\footnotemark{}");
-                        }
-                        None => out.push_str(&format!("\\footnote{{{note}}}")),
-                    }
-                }
-            }
-        }
-        out
+        runs(self, spans)
+    }
+}
+
+impl RunMarkup for Text<'_> {
+    fn styled(&self, text: &str, style: u8) -> String {
+        styled(text, style)
     }
 
-    /// Text spans without notes as LaTeX (not trimmed). Neighbouring spans
-    /// of the same style and link are joined first, so that a word is not
-    /// cut by commands.
-    fn text_runs(&self, spans: &[Span]) -> String {
-        let mut out = String::new();
-        for (text, style, href) in merge(spans) {
-            let body = styled(&text, style);
-            if body.trim().is_empty() {
-                out.push_str(&body);
-                continue;
+    /// `\newline` in running text; a space in a table, whose `l`, `c` and
+    /// `r` cells hold one line.
+    fn line_break(&self) -> Option<&'static str> {
+        self.table_notes.borrow().is_none().then_some(LINE_BREAK)
+    }
+
+    fn note(&self, call: &Span) -> String {
+        let note = self.spans(call.note.as_deref().unwrap_or_default());
+        match self.table_notes.borrow_mut().as_mut() {
+            Some(notes) => {
+                notes.push(note);
+                "\\footnotemark{}".to_string()
             }
-            match href.as_deref() {
-                Some(href) => {
-                    // The spaces around the text stay outside the link.
-                    let lead = &body[..body.len() - body.trim_start().len()];
-                    let trail = &body[body.trim_end().len()..];
-                    out.push_str(&format!("{lead}{}{trail}", self.link(href, body.trim())));
-                }
-                None => out.push_str(&body),
-            }
+            None => format!("\\footnote{{{note}}}"),
         }
-        out
     }
 
     /// `body` as a link to `href`: `\hyperref` to an anchor of the document
@@ -194,17 +179,7 @@ impl Text<'_> {
 /// The `\label` of the anchor `anchor`: the anchor with the characters that
 /// labels cannot hold replaced.
 pub(crate) fn label(anchor: &str) -> String {
-    let name: String = anchor
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '.' | ':' | '/') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("{LABEL_PREFIX}{name}")
+    label_name(LABEL_PREFIX, anchor, &['-', '.', ':', '/'])
 }
 
 /// The text of one run with its style, as nested text commands. The

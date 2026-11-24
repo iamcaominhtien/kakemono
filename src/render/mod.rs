@@ -1,6 +1,7 @@
 //! HTML output in four fidelity modes (see [`Mode`]), Word output
 //! ([`render_docx`]), Markdown output ([`render_markdown`]), LaTeX output
-//! ([`render_latex`]), EPUB output ([`render_epub`]) and JSON output
+//! ([`render_latex`]), Typst output ([`render_typst`]), EPUB output
+//! ([`render_epub`]) and JSON output
 //! (`render_json`), which can also be edited and applied back
 //! (`apply_content`), and chunks for retrieval ([`render_chunks`]).
 
@@ -11,6 +12,7 @@ mod docx;
 mod epub;
 pub(crate) mod escape;
 mod flow;
+mod formula;
 mod friendly;
 mod hard;
 mod hard95;
@@ -22,7 +24,10 @@ pub(crate) mod mathml;
 mod medium;
 mod notes;
 mod options;
+mod runs;
+mod sequence;
 mod table;
+mod typst;
 pub(crate) mod zip;
 
 #[cfg(test)]
@@ -47,6 +52,7 @@ pub(crate) use mathml::math_css;
 pub use mathml::math_html;
 pub use options::{Equations, HtmlOptions, HtmlOutput, Mode, PageImage};
 pub(crate) use table::*;
+pub use typst::{TypstLayout, TypstOptions, TypstOutput, render_typst};
 
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;

@@ -15,9 +15,10 @@ mod text;
 mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
+use super::sequence::{AuthorMarkup, Step, author_lines, linked_anchor, push_line, steps, title_spans, write_authors};
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
-    equation_math, float_class, heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, doc_title, equation_math,
+    float_class, heading_tag, is_scene_break,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
@@ -45,9 +46,6 @@ const REFERENCE_INDENT: &str = "1.5em";
 /// Share of the characters of a paragraph that are monospaced from which
 /// it is set ragged right.
 const RAGGED_MONO_RATIO: f32 = 0.5;
-/// Longest line (in characters) of an author group set as a card beside
-/// the others; a group with a longer line is a paragraph of its own.
-const AUTHOR_CARD_MAX_CHARS: usize = 60;
 /// Space between the author cards that stand side by side.
 const AUTHOR_GAP: &str = "2em";
 /// Spaces that a tab stands for in a code listing (`verbatim` writes a tab
@@ -100,6 +98,9 @@ pub struct LatexOutput {
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`LatexOutput::files`].
 pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOptions) -> LatexOutput {
+    // The footnotes go to the foot of the page of their calls.
+    let attached = crate::render::notes::footnotes_attached(analysis);
+    let analysis = attached.as_ref().unwrap_or(analysis);
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,
@@ -275,62 +276,47 @@ struct Writer<'a, 'r> {
 }
 
 impl Writer<'_, '_> {
-    /// Writes every block of `doc`. Runs of code paragraphs become one
-    /// listing, the title blocks one title, and the heading of the abstract
-    /// is left to the `abstract` environment.
+    /// Writes every block of `doc`, in the steps of [`steps`]. The heading
+    /// of the abstract is left to the `abstract` environment.
     fn write(&mut self, doc: &Document) {
         let blocks: Vec<&Block> = doc.blocks.iter().collect();
-        let mut idx = 0;
-        let mut after_front = false;
-        while idx < blocks.len() {
-            let block = blocks[idx];
-            if !after_front && !matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note) {
-                self.arxiv_link(doc);
-                after_front = true;
-            }
-            if let Some(end) = code_run(&blocks, idx) {
-                self.set_group(Group::None);
-                self.anchor(block);
-                self.verbatim(&code::listing_lines(&blocks[idx..end]));
-                idx = end;
-                continue;
-            }
-            self.set_group(Group::of(block, self.group));
-            match &block.kind {
-                BlockKind::Title => {
-                    idx = self.title(doc, &blocks, idx);
-                    continue;
+        for step in steps(&blocks, doc.meta.arxiv_id.is_some()) {
+            match step {
+                Step::Source => self.arxiv_link(doc),
+                Step::Code(run) => {
+                    self.set_group(Group::None);
+                    self.anchor(run[0]);
+                    self.verbatim(&code::listing_lines(run));
                 }
-                BlockKind::Authors => {
-                    idx = self.authors(&blocks, idx);
-                    continue;
+                Step::Title(run) => {
+                    self.set_group(Group::of(run[0], self.group));
+                    self.title(doc, run);
                 }
-                BlockKind::Heading { .. }
-                    if is_abstract_text(&block.spans)
-                        && blocks
-                            .get(idx + 1)
-                            .is_some_and(|next| matches!(next.kind, BlockKind::Paragraph { in_abstract: true })) =>
-                {
+                Step::Authors(run) => {
+                    self.set_group(Group::of(run[0], self.group));
+                    write_authors(self, run);
+                }
+                Step::AbstractHeading(block) => {
+                    self.set_group(Group::of(block, self.group));
                     self.anchor(block);
-                    idx += 1;
-                    continue;
                 }
-                // An equation whose number was read as a paragraph of its
-                // own takes it back.
-                BlockKind::Equation { image, number: None } => {
-                    if let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next)) {
+                Step::NumberedEquation(block, number) => {
+                    self.set_group(Group::of(block, self.group));
+                    if let BlockKind::Equation { image, .. } = &block.kind {
                         self.equation(block, image.as_ref(), Some(&number));
-                        idx += 2;
-                        continue;
                     }
                 }
-                _ => {}
+                Step::Contents(run) => {
+                    for block in run {
+                        self.set_group(Group::of(block, self.group));
+                        self.block(block);
+                    }
+                }
+                Step::Block(block) => {
+                    self.set_group(Group::of(block, self.group));
+                    self.block(block);
+                }
             }
-            self.block(block);
-            idx += 1;
-        }
-        if !after_front {
-            self.arxiv_link(doc);
         }
         self.set_group(Group::None);
     }
@@ -362,9 +348,7 @@ impl Writer<'_, '_> {
         }
         match &block.kind {
             BlockKind::Title => self.title_text(&self.text.spans(&block.spans)),
-            BlockKind::Authors => {
-                self.authors(std::slice::from_ref(&block), 0);
-            }
+            BlockKind::Authors => write_authors(self, std::slice::from_ref(&block)),
             BlockKind::Note => self.text_paragraph(&block.spans),
             BlockKind::Heading { level } => self.heading(block, *level),
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
@@ -422,10 +406,7 @@ impl Writer<'_, '_> {
     /// The `\label` that marks the place of a block that some text links
     /// to, or nothing.
     fn anchor_label(&self, block: &Block) -> String {
-        block
-            .anchor
-            .as_deref()
-            .filter(|anchor| self.text.anchors.contains(*anchor))
+        linked_anchor(block, self.text.anchors)
             .map(|anchor| format!("\\phantomsection\\label{{{}}}", label(anchor)))
             .unwrap_or_default()
     }
@@ -434,10 +415,7 @@ impl Writer<'_, '_> {
     /// of its own.
     fn anchor(&mut self, block: &Block) {
         let label = self.anchor_label(block);
-        if !label.is_empty() {
-            self.out.push_str(&label);
-            self.out.push('\n');
-        }
+        push_line(&mut self.out, &label);
     }
 
     /// Writes a link to the arXiv page of the paper, after the front matter.
@@ -448,29 +426,17 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// Writes the title blocks that start at `blocks[start]` as one title
-    /// and returns the index of the block after them.
-    fn title(&mut self, doc: &Document, blocks: &[&Block], start: usize) -> usize {
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Title))
-                .count();
-        let mut spans: Vec<Span> = Vec::new();
-        for block in &blocks[start..end] {
+    /// Writes a run of title blocks as one title.
+    fn title(&mut self, doc: &Document, run: &[&Block]) {
+        for block in run {
             self.anchor(block);
-            if !spans.is_empty() {
-                spans.push(Span::plain(" "));
-            }
-            spans.extend(block.spans.iter().cloned());
         }
-        let text = self.text.spans(&spans);
+        let text = self.text.spans(&title_spans(run));
         if text.is_empty() {
             self.title_text(&escape(&doc_title(doc)));
         } else {
             self.title_text(&text);
         }
-        end
     }
 
     /// Writes the title of the document, centred.
@@ -478,69 +444,6 @@ impl Writer<'_, '_> {
         self.paragraph(&format!(
             "\\begin{{center}}\n{{\\LARGE\\bfseries {text}\\par}}\n\\end{{center}}"
         ));
-    }
-
-    /// Writes the author groups that start at `blocks[start]`, centred, and
-    /// returns the index of the block after them. Each group (the name in
-    /// bold, then the affiliation lines) is a card, and the cards stand
-    /// side by side as far as the width allows; a group with a line too
-    /// long for a card (a list of many authors) is a centred paragraph.
-    fn authors(&mut self, blocks: &[&Block], start: usize) -> usize {
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Authors))
-                .count();
-        let mut cards: Vec<String> = Vec::new();
-        for block in &blocks[start..end] {
-            self.anchor(block);
-            let lines = self.author_lines(block);
-            if lines.is_empty() {
-                continue;
-            }
-            if author_rows(block)
-                .iter()
-                .all(|row| plain(row).chars().count() <= AUTHOR_CARD_MAX_CHARS)
-            {
-                cards.push(format!(
-                    "\\begin{{tabular}}[t]{{@{{}}c@{{}}}}\n{}\n\\end{{tabular}}",
-                    lines.join("\\\\\n")
-                ));
-            } else {
-                self.author_cards(&mut cards);
-                self.paragraph(&format!("\\begin{{center}}\n{}\n\\end{{center}}", lines.join("\\\\\n")));
-            }
-        }
-        self.author_cards(&mut cards);
-        end
-    }
-
-    /// Writes the author cards collected so far, side by side, and empties
-    /// `cards`.
-    fn author_cards(&mut self, cards: &mut Vec<String>) {
-        if !cards.is_empty() {
-            let row = cards.join(&format!("\n\\hspace{{{AUTHOR_GAP}}}\n"));
-            self.paragraph(&format!("\\begin{{center}}\n{row}\n\\end{{center}}"));
-            cards.clear();
-        }
-    }
-
-    /// The lines of an author group: the name in bold, then the
-    /// affiliation lines.
-    fn author_lines(&self, block: &Block) -> Vec<String> {
-        author_rows(block)
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let text = self.text.spans(row);
-                if i == 0 && !text.is_empty() && !text.starts_with("\\textbf{") {
-                    format!("\\textbf{{{text}}}")
-                } else {
-                    protect_start(&text)
-                }
-            })
-            .filter(|text| !text.is_empty())
-            .collect()
     }
 
     /// Writes a heading as a starred section (the number, if any, is part
@@ -824,6 +727,40 @@ impl Writer<'_, '_> {
     }
 }
 
+/// The author groups, centred: each card a `tabular` (the name in bold,
+/// then the affiliation lines), the cards side by side.
+impl AuthorMarkup for Writer<'_, '_> {
+    fn anchor(&mut self, block: &Block) {
+        Writer::anchor(self, block);
+    }
+
+    fn lines(&self, block: &Block) -> Vec<String> {
+        author_lines(
+            block,
+            |row| self.text.spans(row),
+            "\\textbf{",
+            |name| format!("\\textbf{{{name}}}"),
+            |line| protect_start(&line),
+        )
+    }
+
+    fn card(&self, lines: &[String]) -> String {
+        format!(
+            "\\begin{{tabular}}[t]{{@{{}}c@{{}}}}\n{}\n\\end{{tabular}}",
+            lines.join("\\\\\n")
+        )
+    }
+
+    fn cards(&mut self, cards: &[String]) {
+        let row = cards.join(&format!("\n\\hspace{{{AUTHOR_GAP}}}\n"));
+        self.paragraph(&format!("\\begin{{center}}\n{row}\n\\end{{center}}"));
+    }
+
+    fn byline(&mut self, lines: &[String]) {
+        self.paragraph(&format!("\\begin{{center}}\n{}\n\\end{{center}}", lines.join("\\\\\n")));
+    }
+}
+
 /// The share of the characters of `spans` (spaces apart) that are
 /// monospaced.
 fn mono_ratio(spans: &[Span]) -> f32 {
@@ -839,15 +776,6 @@ fn mono_ratio(spans: &[Span]) -> f32 {
         return 0.0;
     }
     count(true) as f32 / total as f32
-}
-
-/// The rows of an author group: its lines, or its text as one line.
-fn author_rows(block: &Block) -> &[Vec<Span>] {
-    if block.rows.is_empty() {
-        std::slice::from_ref(&block.spans)
-    } else {
-        &block.rows[..]
-    }
 }
 
 /// The alignment letter (`l`, `c`, `r`) of column `col` of `table`.

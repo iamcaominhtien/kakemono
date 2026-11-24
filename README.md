@@ -15,7 +15,7 @@
 
 </div>
 
-kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files and EPUB books, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, EPUB, editable JSON and JSONL chunks for retrieval. Word and EPUB input can also be laid out as PDF. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
+kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files and EPUB books, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, Typst (an article or a printed book), EPUB, editable JSON and JSONL chunks for retrieval. Word and EPUB input can also be laid out as PDF. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
 
 ## Install
 
@@ -35,6 +35,7 @@ kakemono convert 1706.03762 -o paper.md      # arXiv ID → Markdown
 kakemono convert report.docx -o report.pdf   # Word → PDF
 kakemono convert book.epub -o book.md        # EPUB → Markdown
 kakemono convert paper.pdf -o paper.epub
+kakemono convert book.pdf -o book.typ        # Typst; then `typst compile book.typ`
 kakemono convert paper.pdf -o paper.jsonl    # chunks for retrieval
 ```
 
@@ -56,7 +57,7 @@ kakemono convert paper.pdf -o paper.md --image-dir images
 kakemono convert paper.pdf -o paper.jsonl --chunk-tokens 512
 ```
 
-Markdown, LaTeX and JSON write image files alongside the output by default. See `kakemono convert --help` for image handling, table and equation options, tokenizers and other settings. `kakemono inspect paper.pdf` prints the detected structure; `kakemono fetch <arxiv-id> -o paper.pdf` downloads a paper.
+Markdown, LaTeX, Typst and JSON write image files alongside the output by default. The Typst output is laid out as a printed book (title page, chapters on right-hand pages, running heads, footnotes on the page of their call) when the document has chapters, as an article otherwise (`--layout` to choose); its settings, such as the page size and the fonts, are at the top of the `.typ` file. See the [guide](docs/GUIDE.md#typst). See `kakemono convert --help` for image handling, table and equation options, tokenizers and other settings. `kakemono inspect paper.pdf` prints the detected structure; `kakemono fetch <arxiv-id> -o paper.pdf` downloads a paper.
 
 ## Edit extracted content
 

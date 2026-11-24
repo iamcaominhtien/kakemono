@@ -6,7 +6,7 @@
 use kakemono::model::{Block, BlockKind, Document, FloatKind};
 use kakemono::{
     Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    Paper,
+    Paper, TypstOptions,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -25,6 +25,11 @@ fn data(name: &str) -> PathBuf {
 }
 
 /// Loads and analyses a file of `tests/data`.
+/// The text of a block.
+fn plain(block: &Block) -> String {
+    block.spans.iter().map(|span| span.text.as_str()).collect()
+}
+
 fn load(name: &str) -> (Paper, Analysis) {
     let paper = Paper::from_bytes(std::fs::read(data(name)).unwrap()).unwrap();
     let analysis = paper.analyze();
@@ -237,6 +242,33 @@ fn epub_sample_reads_like_the_docx() {
 }
 
 #[test]
+fn notes_are_footnotes_at_the_foot_of_the_page() {
+    // The note of the book (an EPUB noteref) is set at the foot of the
+    // page of its call by the outputs that have pages.
+    let (paper, analysis) = load(SAMPLE_EPUB);
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(
+        typst.contains("old#footnote[It goes back to Cauchy (1847).] and"),
+        "{typst}"
+    );
+    assert!(!typst.contains("#kakemono-note(["));
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(
+        latex.contains("old\\footnote{It goes back to Cauchy (1847).} and"),
+        "{latex}"
+    );
+    // Word gets a footnote too, which reads back as the same note.
+    let docx = Paper::from_bytes(paper.to_docx(&analysis, &DocxOptions::default())).unwrap();
+    let blocks = docx.analyze().doc.blocks;
+    let note = blocks
+        .iter()
+        .position(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .unwrap();
+    assert_eq!(plain(&blocks[note]), "It goes back to Cauchy (1847).");
+    assert!(plain(&blocks[note - 1]).starts_with("The method is old1 and"));
+}
+
+#[test]
 fn every_output_can_be_written_from_epub() {
     let (paper, analysis) = load(SAMPLE_EPUB);
     for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
@@ -270,6 +302,52 @@ fn every_output_can_be_written_from_epub() {
     assert!(!friendly.contains("from Word"));
     let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
     assert!(latex.contains("Converted from an EPUB book"));
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(typst.contains("Converted from an EPUB book"));
+    assert!(typst.contains("def step(x, grad, eta):"));
+}
+
+/// The lines of a poem (`<br/>` in the book) stay lines in every output,
+/// in italics too, and no output starts or ends a paragraph with a break.
+#[test]
+fn verse_keeps_its_line_breaks() {
+    let poem = r#"<section><h2>Canto</h2>
+        <p>
+          <br/><span>Midway upon the journey of our life</span>
+          <br/><span>I found myself within a forest dark,</span>
+          <br/><i>For the straightforward pathway</i><br/><i>had been lost.</i><br/>
+        </p></section>"#;
+    let paper = Paper::from_bytes(book(&[("canto", poem)], "", &[])).unwrap();
+    let analysis = paper.analyze();
+    let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(html.contains("our life<br>"), "html");
+    assert!(
+        html.contains("<em>For the straightforward pathway</em><br><em>had been lost.</em>"),
+        "html"
+    );
+    let md = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(md.contains("our life<br>"), "{md}");
+    assert!(
+        md.contains("*For the straightforward pathway*<br>*had been lost*."),
+        "{md}"
+    );
+    assert!(!md.contains("<br>\n"), "no break at the end of a paragraph: {md}");
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(latex.contains("our life\\newline{}"), "{latex}");
+    assert!(
+        latex.contains("\\textit{For the straightforward pathway}\\newline{}\\textit{had been lost.}"),
+        "{latex}"
+    );
+    assert!(
+        !latex.contains("\n\\newline"),
+        "no break at the start of a paragraph: {latex}"
+    );
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(typst.contains("our life#linebreak()"), "{typst}");
+    assert!(
+        typst.contains("#emph[For the straightforward pathway]#linebreak()#emph[had been lost.]"),
+        "{typst}"
+    );
 }
 
 #[test]
@@ -447,6 +525,10 @@ fn epub_outputs_match_their_snapshot() {
         (
             "latex",
             paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+        ),
+        (
+            "typst",
+            paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
         ),
         ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
         (

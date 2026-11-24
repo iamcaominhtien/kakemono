@@ -9,7 +9,7 @@
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
-    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter,
+    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
 use pyo3::exceptions::{PyUserWarning, PyValueError};
 use pyo3::prelude::*;
@@ -343,6 +343,42 @@ impl Document {
             self.paper.to_latex(&self.analysis, &opts)
         });
         Ok((out.latex, py_files(py, out.files)))
+    }
+
+    /// The source of a Typst document and its picture files (in
+    /// `image_dir`). `layout` is `"auto"`, `"article"` or `"book"`.
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), layout="auto"))]
+    fn to_typst<'py>(
+        &self,
+        py: Python<'py>,
+        equations: &str,
+        scale: f32,
+        image_dir: String,
+        layout: &str,
+    ) -> PyResult<(String, PyFiles<'py>)> {
+        let equations = parse_equations(equations)?;
+        check_scale(scale)?;
+        let layout = match layout {
+            "auto" => None,
+            "article" => Some(TypstLayout::Article),
+            "book" => Some(TypstLayout::Book),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "layout must be \"auto\", \"article\" or \"book\", not {other:?}"
+                )));
+            }
+        };
+        let out = py.detach(|| {
+            let opts = TypstOptions {
+                asset_dir: image_dir,
+                scale,
+                jobs: self.jobs,
+                equations,
+                layout,
+            };
+            self.paper.to_typst(&self.analysis, &opts)
+        });
+        Ok((out.typst, py_files(py, out.files)))
     }
 
     /// The bytes of an EPUB book. `modified` is its date

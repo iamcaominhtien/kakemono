@@ -94,3 +94,15 @@ def test_the_python_requirements_are_code():
 def test_invalid_toml_is_code():
     files = {"Cargo.toml": (CARGO, CARGO + "[broken")}
     assert code(files) == ["Cargo.toml"]
+
+
+def test_commits_are_checked_before_git_reads_them():
+    head = ci_changes.commit("HEAD")
+    assert ci_changes.COMMIT.fullmatch(head)
+    assert ci_changes.commit(head) == head
+    for rev in ["--output=/tmp/x", "-p", "HEAD..main", "a b", "", "HEAD;ls"]:
+        try:
+            ci_changes.commit(rev)
+        except ValueError:
+            continue
+        raise AssertionError(rev)

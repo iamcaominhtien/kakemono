@@ -123,6 +123,9 @@ pub fn render_docx_with_images(
 
 /// Writes the `.docx` package and returns its bytes with the pictures in it.
 fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> (Vec<u8>, Media) {
+    // The footnotes go to the foot of the page of their calls.
+    let attached = crate::render::notes::footnotes_attached(analysis);
+    let analysis = attached.as_ref().unwrap_or(analysis);
     let doc = &analysis.doc;
     let mut body = body::Body::new(doc, opts);
     body.write(doc);

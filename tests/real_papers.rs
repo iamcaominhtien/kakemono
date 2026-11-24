@@ -26,7 +26,7 @@
 use kakemono::model::{BlockKind, FloatKind, MathNode, Span};
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
-    MarkdownOptions, Mode, PageImage, Paper,
+    MarkdownOptions, Mode, PageImage, Paper, TypstOptions,
 };
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -447,6 +447,34 @@ fn check_latex(latex: &str, files: &[(String, Vec<u8>)], math: usize) {
     assert!(open.is_empty(), "latex: environments left open: {open:?}");
 }
 
+/// Checks the Typst document: no picture placeholder left, every picture
+/// referenced, every rebuilt formula written as Typst math, and the
+/// layout of a paper (an article).
+fn check_typst(typst: &str, files: &[(String, Vec<u8>)], math: usize) {
+    assert!(!typst.contains('\u{1}'), "typst: picture placeholder left");
+    assert!(!typst.contains('\u{e000}'), "typst: call mark left");
+    assert!(
+        typst.contains("#let doc-layout = \"article\""),
+        "typst: a paper is an article"
+    );
+    assert!(typst.contains("\n#show: kakemono\n"), "typst: the template is applied");
+    for (name, data) in files {
+        assert!(name.starts_with("images/"), "typst: {name} is not in images/");
+        assert!(
+            typst.contains(&format!("\"{name}\"")),
+            "typst: {name} is not referenced"
+        );
+        assert!(!data.is_empty(), "typst: {name} is empty");
+    }
+    let displays: Vec<&str> = typst
+        .lines()
+        .filter(|line| line.starts_with("#kakemono-equation("))
+        .collect();
+    let rebuilt = displays.iter().filter(|line| line.contains(", $ ")).count();
+    assert_eq!(rebuilt, math, "typst: every rebuilt formula is written as Typst math");
+    assert!(!typst.contains("\n\n\n"), "typst: no runs of blank lines");
+}
+
 /// Compares the outputs of a paper with its stored snapshot, or stores them
 /// when `KAKEMONO_UPDATE_SNAPSHOTS=1`.
 /// Checks the content JSON: it parses, has the format name, a block for
@@ -698,6 +726,10 @@ fn measure(paper: &Paper, analysis: &kakemono::Analysis) -> (Metrics, Snapshot) 
     let tex = paper.to_latex(analysis, &LatexOptions::default());
     check_latex(&tex.latex, &tex.files, math);
     fingerprints.push(("latex", fingerprint(&tex.latex, &tex.files)));
+    // The Typst document, with its pictures.
+    let typ = paper.to_typst(analysis, &TypstOptions::default());
+    check_typst(&typ.typst, &typ.files, math);
+    fingerprints.push(("typst", fingerprint(&typ.typst, &typ.files)));
     // The EPUB book.
     // Formulas wider than a phone screen are pictures in the book.
     let epub_opts = EpubOptions::default();

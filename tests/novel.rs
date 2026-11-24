@@ -115,8 +115,8 @@ fn blocks_of(pages: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The (kind, text) of every block of the novel.
-fn blocks() -> Vec<(String, String)> {
+/// The pages of the novel: a title page, a prologue and six chapters.
+fn pages() -> Vec<String> {
     // A lone "12" in bold, centred inside the third chapter: not a chapter,
     // since no chapter 11 or 13 is around it.
     let decoy = centred("F2", 16, 480, "12");
@@ -131,7 +131,7 @@ fn blocks() -> Vec<(String, String)> {
     for (i, line) in TEXT.iter().enumerate() {
         prologue.push_str(&text("F1", 11, 72, 610 - 14 * i as u32, line));
     }
-    let pages = [
+    vec![
         title,
         prologue,
         chapter("1 ROGER", ""),
@@ -140,8 +140,36 @@ fn blocks() -> Vec<(String, String)> {
         chapter("4", ""),
         chapter("5", ""),
         chapter("6 BEXHILL", ""),
-    ];
-    blocks_of(&pages)
+    ]
+}
+
+/// The (kind, text) of every block of the novel.
+fn blocks() -> Vec<(String, String)> {
+    blocks_of(&pages())
+}
+
+/// A novel is written in Typst as a book: chapters as headings of the
+/// outermost level, their opening words marked, the title on a title page.
+#[test]
+fn novel_is_a_typst_book() {
+    let paper = Paper::from_bytes(build_pdf(&pages())).expect("valid pdf");
+    let analysis = paper.analyze();
+    let typst = paper.to_typst(&analysis, &kakemono::TypstOptions::default()).typst;
+    assert!(typst.contains("#let doc-layout = \"book\""), "{typst}");
+    assert!(typst.contains("#let doc-title = \"THE NUMBERED CHAPTERS\""), "{typst}");
+    assert!(typst.contains("\n#kakemono-title[THE NUMBERED CHAPTERS]\n"), "{typst}");
+    assert!(typst.contains("\n= 3 ANDOVER"), "{typst}");
+    assert!(typst.contains("\n#kakemono-opening[The letter] came"), "{typst}");
+    let forced = kakemono::TypstOptions {
+        layout: Some(kakemono::TypstLayout::Article),
+        ..Default::default()
+    };
+    assert!(
+        paper
+            .to_typst(&analysis, &forced)
+            .typst
+            .contains("#let doc-layout = \"article\"")
+    );
 }
 
 #[test]

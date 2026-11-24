@@ -45,6 +45,9 @@ class Document:
     def to_latex(
         self, *, equations: str = "mathml", scale: float = 3.0, image_dir: str = "images"
     ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
+    def to_typst(
+        self, *, equations: str = "mathml", scale: float = 3.0, image_dir: str = "images", layout: str = "auto"
+    ) -> Tuple[str, List[Tuple[str, bytes]]]: ...
     def to_epub(
         self,
         *,

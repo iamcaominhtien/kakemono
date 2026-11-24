@@ -10,7 +10,8 @@
 
 use super::escape::{esc, text_html};
 use crate::analysis::pipeline::Analysis;
-use crate::model::{Block, BlockKind, Span};
+use crate::model::{Block, BlockKind, SUP, Span};
+use std::collections::HashMap;
 
 /// Prefix of the anchor of a note.
 const NOTE_ANCHOR: &str = "an-";
@@ -89,6 +90,128 @@ pub(crate) fn number_blocks(blocks: &mut [Block], scope: &str) {
                 span.href = Some(format!("#{NOTE_ANCHOR}{scope}{number}"));
             }
         }
+    }
+}
+
+/// A copy of `analysis` whose footnotes are added notes of their calls
+/// ([`Span::note`]), for the outputs that set a note at the foot of the
+/// page of its call (LaTeX, Typst, Word), or `None` when no footnote can
+/// be attached.
+///
+/// A footnote block (of a Word document, the note of an EPUB book, the
+/// note at the foot of a PDF page) is attached to its call when it has a
+/// mark and exactly one call: a raised link to it in the text of a
+/// paragraph or a list item, which the note follows (after only other
+/// notes, or on the same page or the next). The call becomes the note and
+/// the block goes. Other footnotes stay blocks where they are: an endnote,
+/// a note called from a heading, a caption or a table, or from more than
+/// one place.
+pub(crate) fn footnotes_attached(analysis: &Analysis) -> Option<Analysis> {
+    let blocks = &analysis.doc.blocks;
+    let paged = !analysis.doc.pages.is_empty();
+    let notes: HashMap<&str, usize> = blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, block)| match (&block.kind, block.anchor.as_deref()) {
+            (BlockKind::Footnote { marker }, Some(anchor)) if !marker.is_empty() && !has_notes(block) => {
+                Some((anchor, idx))
+            }
+            _ => None,
+        })
+        .collect();
+    if notes.is_empty() {
+        return None;
+    }
+    // Every link to a note, wherever it is: (block, span) of each.
+    let mut links: HashMap<&str, Vec<(usize, Option<usize>)>> = HashMap::new();
+    for (idx, block) in blocks.iter().enumerate() {
+        let text = std::ptr::from_ref(block.spans.as_slice());
+        for spans in span_lists(block) {
+            let in_text = std::ptr::eq(spans, text);
+            for (span_idx, span) in spans.iter().enumerate() {
+                if let Some(anchor) = span.href.as_deref().and_then(|href| href.strip_prefix('#'))
+                    && notes.contains_key(anchor)
+                {
+                    links
+                        .entry(anchor)
+                        .or_default()
+                        .push((idx, in_text.then_some(span_idx)));
+                }
+            }
+        }
+    }
+    let follows = |call: usize, note: usize| {
+        note > call
+            && (blocks[call + 1..note]
+                .iter()
+                .all(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+                || paged && blocks[note].page <= blocks[call].page + 1)
+    };
+    let attached: Vec<(usize, usize, usize)> = links
+        .iter()
+        .filter_map(|(anchor, links)| {
+            let [(call, Some(span))] = links.as_slice() else {
+                return None;
+            };
+            let note = notes[anchor];
+            let callable = matches!(
+                blocks[*call].kind,
+                BlockKind::Paragraph { .. } | BlockKind::ListItem { .. } | BlockKind::ListContinuation
+            );
+            (callable && blocks[*call].spans[*span].style & SUP != 0 && follows(*call, note))
+                .then_some((*call, *span, note))
+        })
+        .collect();
+    if attached.is_empty() {
+        return None;
+    }
+    let mut doc = analysis.doc.clone();
+    let mut gone = vec![false; doc.blocks.len()];
+    // From the last call of a block, so that the spans added after a call
+    // do not move the calls before it.
+    let mut attached = attached;
+    attached.sort_unstable_by_key(|&(call, span, _)| std::cmp::Reverse((call, span)));
+    for (call, span, note) in attached {
+        let body = std::mem::take(&mut doc.blocks[note].spans);
+        attach(&mut doc.blocks[call].spans, span, body);
+        gone[note] = true;
+    }
+    let mut idx = 0;
+    doc.blocks.retain(|_| {
+        idx += 1;
+        !gone[idx - 1]
+    });
+    Some(Analysis {
+        doc,
+        loose: analysis.loose.clone(),
+        rotated: analysis.rotated.clone(),
+    })
+}
+
+/// Makes the call `spans[call]` of a footnote the note `body`: the mark
+/// goes, as do the spaces before it (the note sticks to the word it
+/// follows), and a space after it stays.
+fn attach(spans: &mut Vec<Span>, call: usize, body: Vec<Span>) {
+    let spaced = spans[call].text.ends_with(char::is_whitespace);
+    let span = &mut spans[call];
+    span.text.clear();
+    span.href = None;
+    span.style &= !SUP;
+    span.note = Some(body);
+    if spaced {
+        match spans
+            .get_mut(call + 1)
+            .filter(|next| next.note.is_none() && next.math.is_none())
+        {
+            Some(next) if !next.text.starts_with(char::is_whitespace) => next.text.insert(0, ' '),
+            Some(_) => {}
+            None => spans.insert(call + 1, Span::plain(" ")),
+        }
+    }
+    if let Some(before) = call.checked_sub(1).map(|idx| &mut spans[idx])
+        && before.note.is_none()
+    {
+        before.text.truncate(before.text.trim_end().len());
     }
 }
 
@@ -247,6 +370,81 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn call(marker: &str) -> Span {
+        Span {
+            href: Some(format!("#fn-{}", marker.trim())),
+            ..Span::styled(marker, SUP)
+        }
+    }
+
+    fn footnote(marker: &str, text: &str) -> Block {
+        let mut block = Block::new(0, BlockKind::Footnote { marker: marker.into() });
+        block.spans = vec![Span::plain(text)];
+        block.anchor = Some(format!("fn-{marker}"));
+        block
+    }
+
+    fn analysis(blocks: Vec<Block>) -> Analysis {
+        Analysis {
+            doc: crate::model::Document {
+                meta: Default::default(),
+                pages: Vec::new(),
+                body_size: 10.0,
+                leading: 12.0,
+                body_font: String::new(),
+                math_font: String::new(),
+                blocks,
+                pictures: Vec::new(),
+            },
+            loose: Vec::new(),
+            rotated: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn footnotes_attach_to_their_single_call() {
+        let mut heading = Block::new(0, BlockKind::Heading { level: 1 });
+        heading.spans = vec![Span::plain("Title"), call("3")];
+        let blocks = vec![
+            paragraph(vec![
+                Span::plain("a "),
+                call("1"),
+                Span::plain(" b"),
+                call("2 "),
+                Span::plain("c"),
+            ]),
+            footnote("1", "one"),
+            footnote("2", "two"),
+            heading,
+            footnote("3", "three"),
+            paragraph(vec![Span::plain("d"), call("4"), Span::plain(", e"), call("4")]),
+            footnote("4", "four"),
+            paragraph(vec![Span::plain("f"), call("5")]),
+            paragraph(vec![Span::plain("g")]),
+            footnote("5", "an endnote"),
+        ];
+        let attached = footnotes_attached(&analysis(blocks)).unwrap().doc.blocks;
+        let texts: Vec<String> = attached[0]
+            .spans
+            .iter()
+            .map(|span| match &span.note {
+                Some(note) => format!("[{}]", note[0].text),
+                None => span.text.clone(),
+            })
+            .collect();
+        assert_eq!(texts.concat(), "a[one] b[two] c");
+        // Called from a heading, twice, or far from its call: still a block.
+        let kept: Vec<&str> = attached
+            .iter()
+            .filter_map(|block| match &block.kind {
+                BlockKind::Footnote { marker } => Some(marker.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept, ["3", "4", "5"]);
+        assert!(footnotes_attached(&analysis(vec![paragraph(vec![Span::plain("x")])])).is_none());
     }
 
     #[test]

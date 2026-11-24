@@ -14,12 +14,17 @@ still documentation only when:
 
     python3 scripts/ci_changes.py BASE HEAD    # prints code=true or code=false
 
+BASE and HEAD are commits (the workflows pass the SHAs of the pull request) or
+names of branches or tags; anything else, such as an argument that git would
+take for an option, is refused.
+
 The line is also appended to `$GITHUB_OUTPUT` when it is set. Anything that
 cannot be read (a file that is not valid TOML) counts as code: it runs
 everything.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -97,6 +102,27 @@ SAME = {
 }
 
 
+# A commit given on the command line: a hash, or a branch or tag name, which
+# cannot start with `-` (git would take it for an option).
+REVISION = re.compile(r"\w[\w./-]*", re.ASCII)
+# A full commit hash (SHA-1 or SHA-256), as `git rev-parse` prints it.
+COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def commit(rev: str) -> str:
+    """The full hash of the commit `rev`, a hash or a branch or tag name.
+    Raises `ValueError` for anything else."""
+    if not REVISION.fullmatch(rev) or ".." in rev:
+        raise ValueError(f"not a commit: {rev!r}")
+    try:
+        sha = git("rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}").strip()
+    except subprocess.CalledProcessError:
+        sha = ""
+    if not COMMIT.fullmatch(sha):
+        raise ValueError(f"not a commit: {rev!r}")
+    return sha
+
+
 def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
@@ -131,7 +157,11 @@ def code_changes(changed: list[str], read) -> list[str]:
 
 
 def main() -> int:
-    base, head = sys.argv[1], sys.argv[2]
+    try:
+        base, head = commit(sys.argv[1]), commit(sys.argv[2])
+    except ValueError as error:
+        print(f"ci_changes.py: {error}", file=sys.stderr)
+        return 2
     changed = git("diff", "--name-only", f"{base}...{head}").split()
     merge_base = git("merge-base", base, head).strip()
     code = code_changes(changed, lambda p: (toml_at(merge_base, p), toml_at(head, p)))

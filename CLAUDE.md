@@ -5,7 +5,8 @@ and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`
 writes them as a PDF; and EPUB books, `.epub`, read by `src/epub/` into the form of `src/word/`)
 to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
-LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
+LaTeX (`.tex`, `src/render/latex/`), to Typst (`.typ`, `src/render/typst/`, an article or a
+printed book), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
 retrieval (`.jsonl`, `src/render/chunks/`) or to editable JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
 edited (for example translated) text:
 
@@ -28,6 +29,7 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.docx                    # Word document (or -f docx)
 ./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md; -m medium keeps HTML tables)
 ./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
+./target/release/kakemono convert <file.pdf> -o out/x.typ                     # Typst + x_assets/ (or -f typst; --layout book|article)
 ./target/release/kakemono convert <file.pdf> -o out/x.epub                    # EPUB 3 book (or -f epub)
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
 ./target/release/kakemono convert <file.pdf> -o out/x.jsonl                   # chunks for RAG (or -f chunks; --tokenizer tokenizer.json)
@@ -51,6 +53,35 @@ python3 scripts/word-crash-test.py DIR...                            # every out
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
 `playwright install`.
+
+## Tools
+
+Besides Rust and Node, the tests and scripts need:
+
+- Typst: `typst` (0.15), to compile the Typst output (`tests/cli.rs` runs it when it is installed).
+- TeX: `pdflatex`, `xelatex`, `lualatex`, with `vntex` (T5, Vietnamese), `fontspec`,
+  `multirow`, `booktabs`, `mathtools`, `lmodern`.
+- The CI fonts for `word-fidelity.py`: Liberation, Carlito, Caladea, DejaVu, FreeFont.
+- Python: `maturin`, `pytest`, `pytest-cov` (pinned in `python/requirements-dev.txt`, installed
+  in a venv), and `fonttools`, `pypdf` for `scripts/`; `pipx` for `pipx run pytest scripts/tests`.
+- `eval/qasper/`: torch (CPU), sentence-transformers, transformers, docling, `unstructured[pdf]`,
+  anthropic, numpy. Install torch and torchvision together from the same index, or docling's
+  torchvision does not match torch and transformers fails to import.
+
+A missing tool is installed, not a reason to skip a step (for example compiling the LaTeX
+output):
+
+```bash
+sudo apt-get install --no-install-recommends texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex texlive-lang-other lmodern fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fonts-freefont-ttf pipx   # Debian/Ubuntu
+brew install --cask mactex-no-gui && brew install pipx typst   # macOS
+cargo install --locked typst-cli   # Typst, anywhere
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # eval, in its own venv, then the rest
+```
+
+In the cloud environment `kakemono` the setup script installs all of these, fetches the test
+papers and builds the release binary. Its venvs are `/root/.venvs/kakemono-py` (the Python
+package: `maturin develop` there) and `/root/.venvs/kakemono-eval` (`eval/qasper/`). In
+another environment (for example `Default`) none of this is installed: check, then install.
 
 ## Automatic hooks (`.claude/settings.json`)
 
@@ -89,6 +120,11 @@ committing.
 - The LaTeX output must compile: after a change to `src/render/latex/`, compile a few papers with
   `pdflatex` (and `xelatex` or `lualatex`) when TeX is installed; `tests/cli.rs` compiles the LIGO
   paper when `pdflatex` is on the `PATH`.
+- The Typst output must compile too: after a change to `src/render/typst/`, compile the 8 papers,
+  a book (both layouts) and some of the Word corpus with `typst compile`; `tests/cli.rs` compiles
+  the LIGO paper (and a Vietnamese edit with a note) when `typst` is on the `PATH`. Its settings
+  (`#let doc-layout`, `paper`, `fonts`, ...) and the names of the template's functions
+  (`kakemono-…`) are what users edit: keep them stable.
   - Changing the renderer's CSS, JS or assets also changes the snapshots, because they are
     embedded with `include_str!`.
   - Update the snapshots only when the output change is intended, and commit them with the code.
