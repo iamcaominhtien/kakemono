@@ -103,7 +103,7 @@ table.cells{border-collapse:collapse;table-layout:fixed;background:#fff}\
 .cells .ov{overflow:visible}\
 .cells .ov>div{overflow:hidden;white-space:pre}\
 .cells a{color:inherit}\
-.shape{position:absolute;display:flex;flex-direction:column;white-space:pre-wrap;line-height:1.2;padding:3px 5px;font-size:11pt}\
+.shape{position:absolute;display:flex;flex-direction:column;white-space:pre-wrap;line-height:1.2;padding:3.6pt 7.2pt;font-size:11pt}\
 .shape>span{position:relative}\
 .outline{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible}\
 .line{position:absolute;overflow:visible}\
@@ -608,6 +608,19 @@ impl Page<'_> {
             }
         }
         text_style(&mut style, shape);
+        if let Some([left, top, right, bottom]) = shape.insets_pt {
+            let _ = write!(
+                style,
+                "padding:{}pt {}pt {}pt {}pt;",
+                num(top),
+                num(right),
+                num(bottom),
+                num(left)
+            );
+        }
+        if shape.clip {
+            style.push_str("overflow:hidden;");
+        }
         let text = if shape.text.is_empty() {
             String::new()
         } else {

@@ -15,7 +15,7 @@ use super::super::pdf;
 use super::super::shape::Shaper;
 use super::WorkbookPdfConfig;
 use crate::chart::{Rgb, Theme};
-use crate::excel::drawing::{Drawn, Shape, ShapeRun, TextShape};
+use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
 use crate::excel::grid::{CellKind, Grid, GridCell, Marker, Merge};
 use crate::excel::styles::{Color, HAlign, Line, Look, Styles, VAlign};
 use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg};
@@ -44,9 +44,6 @@ const CELL_PADDING_PT: f32 = 1.5;
 const CELL_PADDING_TOP_PT: f32 = 1.0;
 /// The width of one step of a cell's indent, in points.
 const INDENT_STEP_PT: f32 = 7.5;
-/// The space between a shape's edge and its text, in points (0.1 inch
-/// left and right, 0.05 inch above and below, as Office's text boxes).
-const SHAPE_PADDING_PT: (f32, f32) = (7.2, 3.6);
 /// The colour of printed gridlines.
 const GRID_LINE_COLOR: Rgb = [0xBF, 0xBF, 0xBF];
 /// The most empty columns a text runs over, as the sheet view.
@@ -1086,7 +1083,8 @@ impl Printer<'_, '_, '_> {
         }
         fmt.bold = shape.bold;
         fmt.color = shape.color.filter(|rgb| *rgb != [0; 3]);
-        let (pad_x, pad_y) = (SHAPE_PADDING_PT.0 * scale, SHAPE_PADDING_PT.1 * scale);
+        let [left, top_inset, right, bottom_inset] =
+            shape.insets_pt.unwrap_or(DEFAULT_INSETS_PT).map(|inset| inset * scale);
         let [x, y, width, height] = rect;
         let inlines = shape_inlines(shape, &fmt, scale);
         let para = Para {
@@ -1104,7 +1102,7 @@ impl Printer<'_, '_, '_> {
             inlines,
             ..Default::default()
         };
-        let laid = para::layout(self.ctx, &para, (width - 2.0 * pad_x).max(1.0));
+        let laid = para::layout(self.ctx, &para, (width - left - right).max(1.0));
         let mut items = Vec::new();
         let mut line_top = 0.0;
         for mut line in laid.lines {
@@ -1114,11 +1112,19 @@ impl Printer<'_, '_, '_> {
         }
         let top = match shape.anchor.as_deref() {
             Some("ctr") => (height - line_top) / 2.0,
-            Some("b") => height - pad_y - line_top,
-            _ => pad_y,
+            Some("b") => height - bottom_inset - line_top,
+            _ => top_inset,
         };
-        translate(&mut items, x + pad_x, y + top);
-        clip_items(items, [region[0], region[1], region[2], region[3]])
+        translate(&mut items, x + left, y + top);
+        // A shape that cuts its text keeps the lines whose baseline is
+        // within its edges.
+        let [clip_top, clip_bottom] = if shape.clip {
+            items.retain(|item| !matches!(item, Item::Text(run) if run.y > y + height));
+            [region[1].max(y), region[3].min(y + height)]
+        } else {
+            [region[1], region[3]]
+        };
+        clip_items(items, [region[0], clip_top, region[2], clip_bottom])
     }
 
     /// A colour of the styles as RGB.

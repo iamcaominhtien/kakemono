@@ -45,6 +45,13 @@ pub(crate) struct TextShape {
     pub(crate) align: Option<String>,
     /// Where its text sits: `t`, `ctr`, `b` (`a:bodyPr anchor`).
     pub(crate) anchor: Option<String>,
+    /// The space between its edges and its text, in points: left, top,
+    /// right, bottom (`a:bodyPr lIns`, `tIns`, `rIns`, `bIns`); `None` for
+    /// the defaults (0.1 inch left and right, 0.05 inch above and below).
+    pub(crate) insets_pt: Option<[f32; 4]>,
+    /// Text past its bottom edge is cut (`a:bodyPr vertOverflow="clip"`
+    /// or `"ellipsis"`), rather than shown outside.
+    pub(crate) clip: bool,
     /// Its preset outline (`a:prstGeom prst`: `rect`, `ellipse`,
     /// `downArrow`, `straightConnector1`, ...); `None` for a drawn one.
     pub(crate) geometry: Option<String>,
@@ -84,6 +91,10 @@ pub(crate) struct ShapeRun {
     /// Its colour.
     pub(crate) color: Option<Rgb>,
 }
+
+/// The space between a shape's edges and its text by default, in points:
+/// left, top, right, bottom (0.1 inch, 0.05 inch).
+pub(crate) const DEFAULT_INSETS_PT: [f32; 4] = [7.2, 3.6, 7.2, 3.6];
 
 /// The unit of DrawingML angles (`rot`): 60 000ths of a degree.
 const ANGLE_UNIT: f32 = 60_000.0;
@@ -566,10 +577,32 @@ fn text_look(shape: &mut TextShape, body: Node<'_, '_>, style: Option<Node<'_, '
     shape.align = named(body, "p")
         .find_map(|para| named(para, "pPr").next()?.attribute("algn"))
         .map(str::to_string);
-    shape.anchor = named(body, "bodyPr")
-        .next()
+    let body_props = named(body, "bodyPr").next();
+    shape.anchor = body_props
         .and_then(|props| props.attribute("anchor"))
         .map(str::to_string);
+    if let Some(props) = body_props {
+        let inset = |name: &str, default: f32| {
+            props
+                .attribute(name)
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .map(|emu| emu / EMU_PER_PT)
+                .filter(|points| points.is_finite() && *points >= 0.0)
+                .unwrap_or(default)
+        };
+        let given = ["lIns", "tIns", "rIns", "bIns"]
+            .iter()
+            .any(|name| props.attribute(*name).is_some());
+        shape.insets_pt = given.then(|| {
+            [
+                inset("lIns", DEFAULT_INSETS_PT[0]),
+                inset("tIns", DEFAULT_INSETS_PT[1]),
+                inset("rIns", DEFAULT_INSETS_PT[2]),
+                inset("bIns", DEFAULT_INSETS_PT[3]),
+            ]
+        });
+        shape.clip = matches!(props.attribute("vertOverflow"), Some("clip" | "ellipsis"));
+    }
 }
 
 /// Reads into `shape` its outline from its properties `props`: its
@@ -987,5 +1020,31 @@ mod tests {
             ]
         );
         assert_eq!(shape.text, "Fuels\nCoal\nGas");
+    }
+
+    #[test]
+    fn a_text_box_keeps_its_insets_and_overflow() {
+        let shape = |body: &str| {
+            let xml = format!(
+                "{HEAD}{}</xdr:wsDr>",
+                two_cell(
+                    0,
+                    0,
+                    &format!(
+                        r#"<xdr:sp><xdr:txBody>{body}<a:p><a:r><a:t>Text</a:t></a:r></a:p></xdr:txBody></xdr:sp>"#
+                    )
+                )
+            );
+            match items(&xml).unwrap().remove(0).drawn {
+                Drawn::Text(shape) => shape,
+                _ => panic!("not a text shape"),
+            }
+        };
+        let cut = shape(r#"<a:bodyPr vertOverflow="clip" lIns="27432" tIns="0"/>"#);
+        assert!(cut.clip);
+        assert_eq!(cut.insets_pt, Some([2.16, 0.0, 7.2, 3.6]));
+        let plain = shape("<a:bodyPr/>");
+        assert!(!plain.clip);
+        assert_eq!(plain.insets_pt, None);
     }
 }

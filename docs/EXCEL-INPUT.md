@@ -175,7 +175,7 @@ its formatting:
 - charts (SVG; dashed and smoothed lines, a legend placed by hand on its side), pictures, pictures
   placed in cells, embedded objects (a Word document, ...) by the picture the file keeps of them,
   shapes (preset outlines such as arrows, triangles, brackets, cylinders; fill, outline, text with
-  the look of each run) and connectors (straight and elbow, with arrow heads) at the place and size
+  the look of each run, its insets, cut at the bottom edge when the shape says so) and connectors (straight and elbow, with arrow heads) at the place and size
   of their anchors, groups included.
 
 Not drawn: conditional formats, data bars and icons, sparklines, comments, number colours of a
