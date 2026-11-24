@@ -104,6 +104,9 @@ const ALIASES: &[(&str, &[&str])] = &[
 /// nothing better is known.
 const LOOKALIKES: &[(&str, &[&str])] = &[
     ("calibri light", &["carlito"]),
+    // Century Gothic was drawn on the metrics of ITC Avant Garde Gothic,
+    // which these two follow.
+    ("century gothic", &["urw gothic", "tex gyre adventor"]),
     ("verdana", &["dejavu sans"]),
     ("tahoma", &["dejavu sans"]),
     ("segoe ui", &["open sans", "noto sans", "dejavu sans"]),
@@ -354,7 +357,8 @@ fn guess_kind(name: &str) -> FontKind {
         "century",
     ];
     const MONO_WORDS: &[&str] = &["mono", "courier", "consolas", "code", "typewriter"];
-    if name.contains("sans") {
+    // A gothic is a sans serif (Century Gothic, MS Gothic, ゴシック).
+    if name.contains("sans") || name.contains("gothic") || name.contains("ゴシック") {
         FontKind::Sans
     } else if MONO_WORDS.iter().any(|word| name.contains(word)) {
         FontKind::Mono

@@ -10,6 +10,7 @@
 //! The workbook of charts and pictures, `charts.xlsx`, is written by
 //! `python3 -I tests/data/excel/make-chart-xlsx.py`.
 
+use kakemono::config::{WorkbookPdfConfig, WorkbookPdfStyle};
 use kakemono::model::{Block, BlockKind, FloatKind, Table};
 use kakemono::{
     Analysis, ChunkOptions, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions,
@@ -86,13 +87,21 @@ fn assert_cells_in(analysis: &Analysis, text: &str) {
     }
 }
 
+/// The layout of a workbook as a document.
+fn as_document() -> WorkbookPdfConfig {
+    WorkbookPdfConfig {
+        style: WorkbookPdfStyle::Document,
+        ..WorkbookPdfConfig::default()
+    }
+}
+
 /// A workbook is laid out as a document: each sheet after its heading,
 /// every cell of its tables in the PDF, on A4 when the workbook names no
 /// paper.
 #[test]
 fn a_workbook_is_laid_out_as_pdf() {
     let (paper, analysis) = load(SAMPLE_XLSX);
-    let pdf = paper.to_pdf().unwrap();
+    let pdf = paper.to_pdf_with(&as_document()).unwrap();
     assert!(pdf.starts_with(b"%PDF"));
     let (pages, _) = kakemono::backend::PdfFile::open(pdf.clone()).unwrap().extract(1);
     assert!((pages[0].width - 595.28).abs() < 0.1 && (pages[0].height - 841.89).abs() < 0.1);
@@ -112,7 +121,7 @@ fn a_workbook_is_laid_out_as_pdf() {
 #[test]
 fn a_workbook_of_charts_is_laid_out_as_pdf() {
     let (paper, analysis) = load(CHARTS_XLSX);
-    let pdf = paper.to_pdf().unwrap();
+    let pdf = paper.to_pdf_with(&as_document()).unwrap();
     let raw = String::from_utf8_lossy(&pdf).into_owned();
     let pngs = analysis
         .doc
@@ -439,4 +448,46 @@ fn an_edited_cell_of_the_json_shows_in_markdown() {
     let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
     assert!(markdown.contains("| 1 388,81 € |"), "{markdown}");
     assert!(!markdown.contains("1,388.81"));
+}
+
+/// By default a workbook is printed as Excel prints it: every cell's text
+/// is in the PDF, but not the sheet names (Excel prints none), on the
+/// paper its sheets name (A4 for the sample's, as LibreOffice wrote it);
+/// the charts are drawn as vector, the pictures as bitmaps.
+#[test]
+fn a_workbook_is_printed_as_excel_prints_it() {
+    let (paper, analysis) = load(SAMPLE_XLSX);
+    let pdf = paper.to_pdf().unwrap();
+    let (pages, _) = kakemono::backend::PdfFile::open(pdf.clone()).unwrap().extract(1);
+    assert!((pages[0].width - 595.28).abs() < 0.1 && (pages[0].height - 841.89).abs() < 0.1);
+    let (text, _) = pdf_text(pdf);
+    assert!(text.contains("2024-06-08") && text.contains("Alice Martin"), "{text}");
+    assert!(!text.contains("Two tables"));
+    // Every value of the tables is printed (a print area may leave cells
+    // out; the sample has none).
+    for block in &analysis.doc.blocks {
+        for row in block.table.iter().flat_map(|table| table.rows.iter()) {
+            for cell in row {
+                let value: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
+                let value = value.split_whitespace().next().unwrap_or_default();
+                assert!(value.is_empty() || text.contains(value), "{value} missing");
+            }
+        }
+    }
+
+    let (paper, analysis) = load(CHARTS_XLSX);
+    let pdf = paper.to_pdf().unwrap();
+    let raw = String::from_utf8_lossy(&pdf).into_owned();
+    let pngs = analysis
+        .doc
+        .pictures
+        .iter()
+        .filter(|picture| picture.format.extension() == "png")
+        .count();
+    assert!(
+        raw.matches("/Subtype/Image").count() <= pngs,
+        "a chart drawn as a bitmap"
+    );
+    let (text, _) = pdf_text(pdf);
+    assert!(text.contains("North") && text.contains("Q1"), "{text}");
 }

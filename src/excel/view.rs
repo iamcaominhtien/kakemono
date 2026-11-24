@@ -9,13 +9,11 @@
 use super::drawing::{Drawn, Frame, Shape, TextShape};
 use super::grid::{CellKind, Grid, GridCell, Marker, Merge, Sizes};
 use super::styles::{Color, HAlign, Line, Look, Styles, VAlign};
-use super::workbook::Workbook;
-use super::{ExcelConfig, Pictures, read_sheets_with_styles};
+use super::{DrawnSheet, ExcelConfig, read_book};
 use crate::chart::{Rgb, Theme};
 use crate::model::Picture;
 use crate::model::style::{BOLD, ITALIC, SUB, SUP};
 use crate::render::escape::esc;
-use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use base64::Engine as _;
 use std::collections::{HashMap, HashSet};
@@ -69,6 +67,8 @@ const CELL_PICTURE_PT: (f32, f32) = (48.0, 15.0);
 const DEFAULT_LINE_PT: f32 = 0.75;
 /// The thinnest line drawn, in points.
 const MIN_LINE_PT: f32 = 0.5;
+/// The radius of the corners of a rounded rectangle, in points.
+const ROUND_CORNER_PT: f32 = 6.0;
 /// The size of an arrow head, in widths of its line.
 const ARROW_SIZE: u32 = 4;
 /// URL schemes a cell's link may have; others (`javascript:`, local
@@ -126,9 +126,6 @@ show(id);history.replaceState(null,'','#'+id)})});show(location.hash.slice(1))})
 /// # Errors
 /// When the file is damaged or is not a workbook.
 pub(crate) fn to_html(data: &[u8], config: &ExcelConfig, view: &ViewConfig, name: Option<&str>) -> Result<String> {
-    let zip = ZipArchive::new(data)?;
-    let workbook = Workbook::read(&zip)?;
-    let mut pictures = Pictures::new(&zip);
     let config = ExcelConfig {
         max_cells: config.max_cells.min(view.max_cells),
         max_cols: config
@@ -136,21 +133,17 @@ pub(crate) fn to_html(data: &[u8], config: &ExcelConfig, view: &ViewConfig, name
             .min(usize::try_from(view.max_cols).unwrap_or(usize::MAX)),
         ..*config
     };
-    let (sheets, styles) = read_sheets_with_styles(&zip, &workbook, &config, &mut pictures, true)?;
+    let book = read_book(data, &config)?;
     let page = Page {
-        styles: &styles,
-        theme: &pictures.theme,
-        pictures: &pictures.files,
+        styles: &book.styles,
+        theme: &book.theme,
+        pictures: &book.pictures,
         view,
         ids: std::cell::Cell::new(0),
         classes: std::cell::RefCell::new(Classes::default()),
     };
-    let title = workbook
-        .title
-        .as_deref()
-        .filter(|title| !title.trim().is_empty())
-        .or(name);
-    Ok(page.html(title, &sheets))
+    let title = book.title.as_deref().filter(|title| !title.trim().is_empty()).or(name);
+    Ok(page.html(title, &book.sheets))
 }
 
 /// What every sheet of the page is drawn with.
@@ -172,9 +165,9 @@ struct Page<'a> {
 
 impl Page<'_> {
     /// The page of the sheets `sheets` (name, grid, drawn objects).
-    fn html(&self, title: Option<&str>, sheets: &[(&str, Grid, Vec<Shape>)]) -> String {
+    fn html(&self, title: Option<&str>, sheets: &[DrawnSheet]) -> String {
         let title = title.filter(|title| !title.trim().is_empty()).unwrap_or(match sheets {
-            [(name, ..)] => name,
+            [sheet] => &sheet.name,
             _ => "Workbook",
         });
         let mut out = String::new();
@@ -184,11 +177,11 @@ impl Page<'_> {
             esc(title),
             esc(title)
         );
-        for (index, (name, ..)) in sheets.iter().enumerate() {
+        for (index, DrawnSheet { name, .. }) in sheets.iter().enumerate() {
             let _ = write!(out, "<a href=\"#sheet-{}\">{}</a>", index + 1, esc(name));
         }
         out.push_str("</nav></header><main>");
-        for (index, (name, grid, shapes)) in sheets.iter().enumerate() {
+        for (index, DrawnSheet { name, grid, shapes, .. }) in sheets.iter().enumerate() {
             let _ = write!(
                 out,
                 "<section class=\"sheet\" id=\"sheet-{}\"><h2>{}</h2>",
@@ -447,18 +440,11 @@ impl Page<'_> {
 
     /// Writes a chart, picture or shape where it is drawn on the sheet.
     fn shape(&self, out: &mut String, grid: &Grid, area: &Area, shape: &Shape) {
-        let Some([x, y, width, height]) = area.frame_box(grid, &shape.frame) else {
+        if area.frame_box(grid, &shape.frame).is_none() {
             return;
-        };
-        let [x, y, width, height] = match &shape.drawn {
-            // A shape turned by about a quarter has the box of its turned
-            // footprint as its anchor, as Excel writes it: its own box has
-            // the width and height swapped, about the same centre.
-            Drawn::Text(text) if shape.frame.part.is_none() && quarter_turned(text.rotation_deg) => {
-                let (center_x, center_y) = (x + width / 2.0, y + height / 2.0);
-                [center_x - height / 2.0, center_y - width / 2.0, height, width]
-            }
-            _ => [x, y, width, height],
+        }
+        let Some([x, y, width, height]) = object_box(grid, shape) else {
+            return;
         };
         if width < 0.0 || height < 0.0 || (width == 0.0 && height == 0.0) {
             return;
@@ -649,7 +635,7 @@ impl Classes {
 /// The alignment of a cell of horizontal alignment `align` holding a
 /// value of `kind`: numbers and dates right, logical and error values
 /// centred, text left, unless the cell says otherwise.
-fn alignment(align: HAlign, kind: Option<CellKind>) -> &'static str {
+pub(crate) fn alignment(align: HAlign, kind: Option<CellKind>) -> &'static str {
     match (align, kind) {
         (HAlign::General, Some(CellKind::Number | CellKind::Date)) => "right",
         (HAlign::General, Some(CellKind::Bool | CellKind::Error)) => "center",
@@ -761,41 +747,10 @@ impl<'g> Area<'g> {
     }
 
     /// The box (left, top, width, height, in points from the top left of
-    /// the first cell) of a frame.
+    /// the first cell) of a frame, when it starts in the part of the sheet
+    /// drawn.
     fn frame_box(&self, grid: &Grid, frame: &Frame) -> Option<[f32; 4]> {
-        let origin = Marker {
-            row: 0,
-            row_off_pt: 0.0,
-            col: 0,
-            col_off_pt: 0.0,
-        };
-        let offset = |marker: Marker| grid.sizes.span_pt(origin, marker, &grid.hidden_rows, &grid.hidden_cols);
-        let (x, y, width, height) = match (frame.from, frame.to, frame.pos_pt) {
-            (Some(from), Some(to), _) => {
-                let (x, y) = offset(from);
-                let (width, height) = grid.sizes.span_pt(from, to, &grid.hidden_rows, &grid.hidden_cols);
-                (x, y, width, height)
-            }
-            (Some(from), None, _) => {
-                let (x, y) = offset(from);
-                let (width, height) = frame.ext_pt?;
-                (x, y, width, height)
-            }
-            (None, _, Some((x, y))) => {
-                let (width, height) = frame.ext_pt?;
-                (x, y, width, height)
-            }
-            (None, _, None) => return None,
-        };
-        let [x, y, width, height] = match frame.part {
-            Some([left, top, part_width, part_height]) => [
-                x + left * width,
-                y + top * height,
-                part_width * width,
-                part_height * height,
-            ],
-            None => [x, y, width, height],
-        };
+        let [x, y, width, height] = frame_box(grid, frame)?;
         // Only the part of the sheet drawn shows objects.
         let total_width: f32 = self.cols.iter().map(|&col| self.width(col)).sum();
         let total_height: f32 = self.rows.iter().map(|&row| self.height(row)).sum();
@@ -875,7 +830,7 @@ impl Merges {
 
 /// The cell format of the position `at`: its own, else its row's, else
 /// its column's.
-fn look_index(grid: &Grid, at: (u32, u32)) -> u32 {
+pub(crate) fn look_index(grid: &Grid, at: (u32, u32)) -> u32 {
     if let Some(&style) = grid.looks.cells.get(&at) {
         return style;
     }
@@ -891,7 +846,7 @@ fn look_index(grid: &Grid, at: (u32, u32)) -> u32 {
 }
 
 /// The width of the column `col` of a sheet of sizes `sizes`, in points.
-fn col_width(sizes: &Sizes, col: u32) -> f32 {
+pub(crate) fn col_width(sizes: &Sizes, col: u32) -> f32 {
     let origin = Marker {
         row: 0,
         row_off_pt: 0.0,
@@ -929,7 +884,7 @@ fn text_style(style: &mut String, shape: &TextShape) {
 
 /// Whether a shape turned by `degrees` (clockwise) is turned by about a
 /// quarter or three quarters: 45 to 135 or 225 to 315 degrees.
-fn quarter_turned(degrees: f32) -> bool {
+pub(crate) fn quarter_turned(degrees: f32) -> bool {
     (45.0..135.0).contains(&degrees) || (225.0..315.0).contains(&degrees)
 }
 
@@ -937,7 +892,7 @@ fn quarter_turned(degrees: f32) -> bool {
 /// `width` by `height` points, from its start to its end (before it is
 /// mirrored); `None` for a geometry that is not a line. Elbow connectors
 /// bend at the middle, as they do by default.
-fn line_points(geometry: &str, width: f32, height: f32) -> Option<Vec<[f32; 2]>> {
+pub(crate) fn line_points(geometry: &str, width: f32, height: f32) -> Option<Vec<[f32; 2]>> {
     let (mid_x, mid_y) = (width / 2.0, height / 2.0);
     Some(match geometry {
         "line" | "straightConnector1" | "curvedConnector2" | "curvedConnector3" | "curvedConnector4"
@@ -960,7 +915,7 @@ fn line_points(geometry: &str, width: f32, height: f32) -> Option<Vec<[f32; 2]>>
 /// The path of a preset outline that is not a box, in a 100 × 100 box,
 /// and whether it is filled (brackets are not); `None` for a box (a
 /// rectangle, rounded or not, an ellipse), drawn with CSS.
-fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
+pub(crate) fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
     let polygon = match geometry {
         "triangle" | "flowChartExtract" => "M50,0L100,100L0,100Z",
         "flowChartMerge" => "M0,0L100,0L50,100Z",
@@ -1014,6 +969,219 @@ fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
     Some((polygon, true))
 }
 
+/// The box (left, top, width, height, in points from the top left of
+/// the first cell, hidden rows and columns taking no room) of a frame on
+/// the sheet `grid`; `None` for a frame without a corner or a size.
+pub(crate) fn frame_box(grid: &Grid, frame: &Frame) -> Option<[f32; 4]> {
+    let origin = Marker {
+        row: 0,
+        row_off_pt: 0.0,
+        col: 0,
+        col_off_pt: 0.0,
+    };
+    let offset = |marker: Marker| grid.sizes.span_pt(origin, marker, &grid.hidden_rows, &grid.hidden_cols);
+    let (x, y, width, height) = match (frame.from, frame.to, frame.pos_pt) {
+        (Some(from), Some(to), _) => {
+            let (x, y) = offset(from);
+            let (width, height) = grid.sizes.span_pt(from, to, &grid.hidden_rows, &grid.hidden_cols);
+            (x, y, width, height)
+        }
+        (Some(from), None, _) => {
+            let (x, y) = offset(from);
+            let (width, height) = frame.ext_pt?;
+            (x, y, width, height)
+        }
+        (None, _, Some((x, y))) => {
+            let (width, height) = frame.ext_pt?;
+            (x, y, width, height)
+        }
+        (None, _, None) => return None,
+    };
+    let [x, y, width, height] = match frame.part {
+        Some([left, top, part_width, part_height]) => [
+            x + left * width,
+            y + top * height,
+            part_width * width,
+            part_height * height,
+        ],
+        None => [x, y, width, height],
+    };
+    [x, y, width, height]
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some([x, y, width, height])
+}
+
+/// The box of the drawn object `shape` of the sheet `grid`, as
+/// [`frame_box`] gives it, but for a shape turned by about a quarter: its
+/// anchor is the box of its turned footprint, as Excel writes it, so its
+/// own box has the width and height swapped, about the same centre.
+pub(crate) fn object_box(grid: &Grid, shape: &Shape) -> Option<[f32; 4]> {
+    let [x, y, width, height] = frame_box(grid, &shape.frame)?;
+    Some(match &shape.drawn {
+        Drawn::Text(text) if shape.frame.part.is_none() && quarter_turned(text.rotation_deg) => {
+            let (center_x, center_y) = (x + width / 2.0, y + height / 2.0);
+            [center_x - height / 2.0, center_y - width / 2.0, height, width]
+        }
+        _ => [x, y, width, height],
+    })
+}
+
+/// The outline of a shape (its fill and line, or its line with its arrow
+/// heads) as an SVG file to draw in a box `width` by `height` points, and
+/// where that picture goes relative to the box: left, top, width, height
+/// (larger than the box, for a turned shape and for its line's width);
+/// `None` for a shape with neither fill nor line.
+pub(crate) fn shape_svg(shape: &TextShape, width: f32, height: f32) -> Option<(String, [f32; 4])> {
+    let (body, stroke_pt) = outline_body(shape, width, height)?;
+    // The picture holds the turned shape and its line, arrow heads
+    // included.
+    let turn = shape.rotation_deg.to_radians();
+    let (sin, cos) = (turn.sin().abs(), turn.cos().abs());
+    let pad = stroke_pt * ARROW_SIZE as f32;
+    let outer = [
+        width * cos + height * sin + 2.0 * pad,
+        width * sin + height * cos + 2.0 * pad,
+    ];
+    let left = (outer[0] - width) / 2.0;
+    let top = (outer[1] - height) / 2.0;
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><g transform=\"rotate({} {} {}) translate({} {})\">{body}</g></svg>",
+        num(shape.rotation_deg),
+        num(outer[0] / 2.0),
+        num(outer[1] / 2.0),
+        num(left),
+        num(top),
+        w = num(outer[0]),
+        h = num(outer[1]),
+    );
+    Some((svg, [-left, -top, outer[0], outer[1]]))
+}
+
+/// The SVG elements of a shape's outline in a box `width` by `height`
+/// points, and the width of its line; `None` for a shape with neither fill
+/// nor line.
+fn outline_body(shape: &TextShape, width: f32, height: f32) -> Option<(String, f32)> {
+    let geometry = shape.geometry.as_deref().unwrap_or("rect");
+    let stroke_pt = shape.line_width_pt.unwrap_or(DEFAULT_LINE_PT).max(MIN_LINE_PT);
+    let stroke = shape.line.map(hex);
+    let points = line_points(geometry, width, height);
+    if stroke.is_none() && (shape.fill.is_none() || points.is_some()) {
+        return None;
+    }
+    let paint = |fill: Option<Rgb>| {
+        format!(
+            " fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{}",
+            fill.map_or_else(|| "none".to_string(), hex),
+            stroke.as_deref().unwrap_or("none"),
+            num(stroke_pt),
+            if shape.dashed { " stroke-dasharray=\"4 3\"" } else { "" }
+        )
+    };
+    let mirror = |[x, y]: [f32; 2]| {
+        [
+            if shape.flip_h { width - x } else { x },
+            if shape.flip_v { height - y } else { y },
+        ]
+    };
+    let body = if let Some(points) = points {
+        let path: Vec<String> = points
+            .into_iter()
+            .map(mirror)
+            .map(|[x, y]| format!("{},{}", num(x), num(y)))
+            .collect();
+        let stroke = stroke.as_deref().unwrap_or("none");
+        let marker = |name: &str, used: bool| {
+            if used {
+                format!(" marker-{name}=\"url(#a)\"")
+            } else {
+                String::new()
+            }
+        };
+        format!(
+            "<defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"{ARROW_SIZE}\" markerHeight=\"{ARROW_SIZE}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\"{}{}{}/>",
+            path.join(" "),
+            paint(None),
+            marker("start", shape.head),
+            marker("end", shape.tail),
+        )
+    } else if let Some((path, filled)) = preset_path(geometry) {
+        let mut scaled = scale_path(path, width / 100.0, height / 100.0);
+        if shape.flip_h || shape.flip_v {
+            scaled = format!(
+                "{scaled}\" transform=\"translate({} {}) scale({} {})",
+                if shape.flip_h { num(width) } else { "0".into() },
+                if shape.flip_v { num(height) } else { "0".into() },
+                if shape.flip_h { -1 } else { 1 },
+                if shape.flip_v { -1 } else { 1 }
+            );
+        }
+        format!(
+            "<path d=\"{scaled}\"{}/>",
+            paint(if filled { shape.fill } else { None })
+        )
+    } else {
+        let radius = match geometry {
+            "ellipse" | "flowChartConnector" => format!(" rx=\"{}\" ry=\"{}\"", num(width / 2.0), num(height / 2.0)),
+            "roundRect" | "round2SameRect" | "snipRoundRect" | "flowChartAlternateProcess" => {
+                format!(" rx=\"{}\"", num(ROUND_CORNER_PT.min(width / 2.0).min(height / 2.0)))
+            }
+            "flowChartTerminator" => format!(" rx=\"{}\"", num(width.min(height) / 2.0)),
+            _ => String::new(),
+        };
+        format!(
+            "<rect width=\"{}\" height=\"{}\"{radius}{}/>",
+            num(width),
+            num(height),
+            paint(shape.fill)
+        )
+    };
+    Some((body, stroke_pt))
+}
+
+/// The path `path` of a 100 × 100 box scaled by `scale_x` and `scale_y`:
+/// its coordinates, and the radii of its arcs (whose angle and flags stay).
+fn scale_path(path: &str, scale_x: f32, scale_y: f32) -> String {
+    let mut out = String::new();
+    let mut command = ' ';
+    let mut index = 0;
+    let mut number = String::new();
+    let flush = |number: &mut String, out: &mut String, command: char, index: &mut usize| {
+        if number.is_empty() {
+            return;
+        }
+        let value: f32 = number.parse().unwrap_or(0.0);
+        // In an arc (rx ry angle large sweep x y), the angle and the
+        // flags are not lengths.
+        let position = if command == 'A' { *index % 7 } else { *index % 2 };
+        let scaled = match (command, position) {
+            ('A', 2..=4) => value,
+            ('A', 0 | 5) | (_, 0) => value * scale_x,
+            _ => value * scale_y,
+        };
+        if !out.ends_with(|ch: char| ch.is_ascii_alphabetic()) {
+            out.push(' ');
+        }
+        out.push_str(&num(scaled));
+        *index += 1;
+        number.clear();
+    };
+    for ch in path.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' => {
+                flush(&mut number, &mut out, command, &mut index);
+                command = ch.to_ascii_uppercase();
+                index = 0;
+                out.push(ch);
+            }
+            '0'..='9' | '.' | '-' => number.push(ch),
+            _ => flush(&mut number, &mut out, command, &mut index),
+        }
+    }
+    flush(&mut number, &mut out, command, &mut index);
+    out
+}
+
 /// The column letters of the 0-based column `col` (`A`, `Z`, `AA`).
 fn column_name(col: u32) -> String {
     let mut name = Vec::new();
@@ -1029,7 +1197,7 @@ fn column_name(col: u32) -> String {
 
 /// The CSS font families of the font `name`, with fallbacks of its kind
 /// (serif for a Mincho or Times font, else sans-serif) and for Japanese.
-fn family(name: Option<&str>) -> String {
+pub(crate) fn family(name: Option<&str>) -> String {
     let fallback = "Carlito,'Segoe UI',Arial,'Noto Sans CJK JP','Noto Sans JP',sans-serif";
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
         return format!("Calibri,{fallback}");
@@ -1160,6 +1328,35 @@ mod tests {
         assert!(family(None).starts_with("Calibri,"));
         // A name cannot close the style attribute.
         assert!(!family(Some("x\";<b>{}")).contains(['"', '<', ';', '{']));
+    }
+
+    #[test]
+    fn preset_paths_are_scaled_to_their_box() {
+        assert_eq!(scale_path("M50,0L100,100Z", 2.0, 0.5), "M100 0L200 50Z");
+        assert_eq!(
+            scale_path("M0,12A50,12 0 0 1 100,12", 2.0, 0.5),
+            "M0 6A100 6 0 0 1 200 6"
+        );
+    }
+
+    #[test]
+    fn a_turned_shape_s_picture_holds_its_footprint() {
+        let shape = TextShape {
+            fill: Some([255, 0, 0]),
+            rotation_deg: 90.0,
+            ..TextShape::default()
+        };
+        let (svg, [left, top, width, height]) = shape_svg(&shape, 40.0, 10.0).unwrap();
+        assert!(
+            svg.contains("rotate(90 ")
+                && svg.contains(r##"<rect width="40" height="10" fill="#ff0000" stroke="none""##)
+        );
+        // The turned box, 10 wide and 40 tall, with room for a line of the
+        // default width (3 points around), about the box's centre.
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(width, 16.0) && near(height, 46.0), "{width} {height}");
+        assert!(near(left, 12.0) && near(top, -18.0), "{left} {top}");
+        assert!(shape_svg(&TextShape::default(), 10.0, 10.0).is_none());
     }
 
     #[test]

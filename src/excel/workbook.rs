@@ -9,6 +9,9 @@ use anyhow::{Context, Result};
 use roxmltree::Node;
 use std::collections::HashMap;
 
+use super::grid::Merge;
+use super::sheet::range;
+
 /// Namespace of SpreadsheetML.
 pub(crate) const SML_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 /// Namespace of SpreadsheetML in a Strict Office Open XML file.
@@ -23,6 +26,8 @@ const SHARED_STRINGS_REL: &str = "sharedStrings";
 const DEFAULT_SHARED_STRINGS_PART: &str = "xl/sharedStrings.xml";
 /// The defined name of the rows (and columns) printed on every page.
 const PRINT_TITLES_NAME: &str = "_xlnm.Print_Titles";
+/// The defined name of a sheet's print area.
+const PRINT_AREA_NAME: &str = "_xlnm.Print_Area";
 
 /// Whether `node` is the SpreadsheetML element `name` (transitional or
 /// strict namespace).
@@ -52,6 +57,9 @@ pub(crate) struct Workbook {
     /// by index of the sheet in [`Workbook::sheets`]: the first and last
     /// row, zero-based, inclusive.
     pub(crate) print_titles: HashMap<usize, (u32, u32)>,
+    /// The print area of each sheet that has one (`_xlnm.Print_Area`),
+    /// by index in [`Workbook::sheets`]: the box of its ranges.
+    pub(crate) print_areas: HashMap<usize, Merge>,
 }
 
 /// One sheet of a workbook.
@@ -107,15 +115,21 @@ impl Workbook {
                     .unwrap_or_default(),
             })
             .collect();
-        let print_titles = sml_child(root, "definedNames")
-            .into_iter()
-            .flat_map(|names| names.children().filter(|node| is_sml(*node, "definedName")))
-            .filter(|name| name.attribute("name") == Some(PRINT_TITLES_NAME))
-            .filter_map(|name| {
-                let sheet = name.attribute("localSheetId")?.parse::<usize>().ok()?;
-                let rows = title_rows(name.text()?)?;
-                (sheet < sheets.len()).then_some((sheet, rows))
-            })
+        let defined = |wanted: &'static str| {
+            sml_child(root, "definedNames")
+                .into_iter()
+                .flat_map(|names| names.children().filter(|node| is_sml(*node, "definedName")))
+                .filter(move |name| name.attribute("name") == Some(wanted))
+                .filter_map(|name| {
+                    let sheet = name.attribute("localSheetId")?.parse::<usize>().ok()?;
+                    (sheet < sheets.len()).then_some((sheet, name.text()?))
+                })
+        };
+        let print_titles = defined(PRINT_TITLES_NAME)
+            .filter_map(|(sheet, text)| Some((sheet, title_rows(text)?)))
+            .collect();
+        let print_areas = defined(PRINT_AREA_NAME)
+            .filter_map(|(sheet, text)| Some((sheet, print_area(text)?)))
             .collect();
         Ok(Self {
             part,
@@ -123,6 +137,7 @@ impl Workbook {
             date1904,
             title: document_title(zip)?,
             print_titles,
+            print_areas,
         })
     }
 
@@ -155,9 +170,36 @@ fn title_rows(reference: &str) -> Option<(u32, u32)> {
     })
 }
 
+/// The box of the ranges of a print area (`'Sheet 1'!$A$1:$H$40`, or
+/// several separated by commas); `None` when none is a range of cells.
+fn print_area(reference: &str) -> Option<Merge> {
+    reference
+        .split(',')
+        .filter_map(|area| range(area.rsplit_once('!').map_or(area, |(_, range)| range)))
+        .reduce(|one, other| Merge {
+            top: one.top.min(other.top),
+            left: one.left.min(other.left),
+            bottom: one.bottom.max(other.bottom),
+            right: one.right.max(other.right),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn print_areas_are_the_box_of_their_ranges() {
+        let area = |top, left, bottom, right| Merge {
+            top,
+            left,
+            bottom,
+            right,
+        };
+        assert_eq!(print_area("'My sheet'!$B$2:$M$29"), Some(area(1, 1, 28, 12)));
+        assert_eq!(print_area("S!$A$1:$C$3,S!$E$10:$F$12"), Some(area(0, 0, 11, 5)));
+        assert_eq!(print_area("S!#REF!"), None);
+    }
 
     #[test]
     fn print_titles_name_their_rows() {

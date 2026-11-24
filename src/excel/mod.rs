@@ -6,16 +6,16 @@
 //! then its content. A workbook has no pages, like a Word document.
 
 mod build;
-mod drawing;
-mod grid;
+pub(crate) mod drawing;
+pub(crate) mod grid;
 pub(crate) mod numfmt;
 mod pull;
 mod regions;
 mod richdata;
 mod sheet;
 mod strings;
-mod styles;
-mod view;
+pub(crate) mod styles;
+pub(crate) mod view;
 mod workbook;
 
 use crate::analysis::semantics::text::{slug, unique_anchor};
@@ -125,6 +125,63 @@ pub fn detect(data: &[u8]) -> bool {
         && ZipArchive::new(data)
             .ok()
             .is_some_and(|zip| workbook::workbook_part(&zip).is_some())
+}
+
+/// A workbook read to be drawn as Excel shows and prints it: its visible
+/// sheets with the look of every cell and their drawn objects.
+pub(crate) struct SheetBook {
+    /// The title of its document properties.
+    pub(crate) title: Option<String>,
+    /// The visible sheets, in order.
+    pub(crate) sheets: Vec<DrawnSheet>,
+    /// The cell formats.
+    pub(crate) styles: styles::Styles,
+    /// The colours of its theme.
+    pub(crate) theme: Theme,
+    /// The pictures (charts drawn too) its shapes refer to.
+    pub(crate) pictures: Vec<Picture>,
+}
+
+/// A visible sheet of a [`SheetBook`].
+pub(crate) struct DrawnSheet {
+    /// Its name.
+    pub(crate) name: String,
+    /// Its cells, with their looks, sizes and print settings.
+    pub(crate) grid: Grid,
+    /// Its charts, pictures and shapes, by anchor.
+    pub(crate) shapes: Vec<Shape>,
+    /// Its print area (`_xlnm.Print_Area`), when it has one.
+    pub(crate) print_area: Option<grid::Merge>,
+}
+
+/// The workbook `data` read to be drawn ([`SheetBook`]), with the
+/// thresholds `config`.
+///
+/// # Errors
+/// When the file is damaged or is not a workbook.
+pub(crate) fn read_book(data: &[u8], config: &ExcelConfig) -> Result<SheetBook> {
+    let zip = ZipArchive::new(data)?;
+    let workbook = Workbook::read(&zip)?;
+    let mut pictures = Pictures::new(&zip);
+    let (sheets, styles) = read_sheets_with_styles(&zip, &workbook, config, &mut pictures, true)?;
+    // Sheet names are unique in a workbook.
+    let index_of = |name: &str| workbook.sheets.iter().position(|sheet| sheet.name == name);
+    let sheets = sheets
+        .into_iter()
+        .map(|(name, grid, shapes)| DrawnSheet {
+            name: name.to_string(),
+            print_area: index_of(name).and_then(|index| workbook.print_areas.get(&index).copied()),
+            grid,
+            shapes,
+        })
+        .collect();
+    Ok(SheetBook {
+        title: workbook.title.clone(),
+        sheets,
+        styles,
+        theme: pictures.theme,
+        pictures: pictures.files,
+    })
 }
 
 /// The sheets of the workbook `data` as one HTML page that shows them as

@@ -43,6 +43,66 @@ pub(crate) struct Grid {
     pub(crate) paper_pt: Option<(f32, f32)>,
     /// How the sheet looks, read only for the sheet view.
     pub(crate) looks: Looks,
+    /// How the sheet is printed.
+    pub(crate) print: PrintSetup,
+}
+
+/// How a sheet is printed (`pageSetup`, `pageMargins`, `printOptions`,
+/// `pageSetUpPr`, `rowBreaks`, `colBreaks`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PrintSetup {
+    /// The paper is turned: landscape (`orientation`).
+    pub(crate) landscape: bool,
+    /// The scale, in percent (`scale`).
+    pub(crate) scale_percent: f32,
+    /// The sheet is fitted to pages (`pageSetUpPr fitToPage`).
+    pub(crate) fit_to_page: bool,
+    /// The most pages wide it is fitted to; 0 for no limit.
+    pub(crate) fit_width: u32,
+    /// The most pages tall it is fitted to; 0 for no limit.
+    pub(crate) fit_height: u32,
+    /// The margins in points: left, right, top, bottom.
+    pub(crate) margins_pt: [f32; 4],
+    /// Centred across the page.
+    pub(crate) h_centered: bool,
+    /// Centred down the page.
+    pub(crate) v_centered: bool,
+    /// The gridlines are printed.
+    pub(crate) grid_lines: bool,
+    /// Pages go across first, then down (`pageOrder="overThenDown"`).
+    pub(crate) over_then_down: bool,
+    /// The rows that start a page (manual breaks), 0-based.
+    pub(crate) row_breaks: Vec<u32>,
+    /// The columns that start a page (manual breaks), 0-based.
+    pub(crate) col_breaks: Vec<u32>,
+}
+
+/// Points in an inch: the unit of `pageMargins`.
+const PT_PER_INCH: f32 = 72.0;
+
+impl Default for PrintSetup {
+    /// Excel's defaults: portrait at 100 %, its "normal" margins.
+    fn default() -> Self {
+        Self {
+            landscape: false,
+            scale_percent: 100.0,
+            fit_to_page: false,
+            fit_width: 1,
+            fit_height: 1,
+            margins_pt: [
+                0.7 * PT_PER_INCH,
+                0.7 * PT_PER_INCH,
+                0.75 * PT_PER_INCH,
+                0.75 * PT_PER_INCH,
+            ],
+            h_centered: false,
+            v_centered: false,
+            grid_lines: false,
+            over_then_down: false,
+            row_breaks: Vec::new(),
+            col_breaks: Vec::new(),
+        }
+    }
 }
 
 /// The cell formats of a sheet's cells, rows and columns, and whether it

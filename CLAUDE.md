@@ -134,7 +134,10 @@ committing.
   `tests/data/snapshots/excel-sample.txt`.
 - A workbook has no pages (`Document::pages` is empty): the HTML modes other than friendly show the
   sheet view (`src/excel/view.rs`): a second reading of the file with the look of every cell
-  (`styles.rs` looks, `Grid::looks`, drawing frames), drawn as Excel shows the sheets. Its PDF (`Paper::to_pdf`) is laid out by `src/layout/workbook/`, which turns the
+  (`styles.rs` looks, `Grid::looks`, drawing frames), drawn as Excel shows the sheets. Its PDF (`Paper::to_pdf`) is by default printed as Excel prints it
+  (`src/layout/workbook/print.rs`, from the same reading: print areas, page setup, breaks, the look
+  of every cell, drawn objects); with `WorkbookPdfStyle::Document` (`--pdf-style document`) it is
+  laid out by `src/layout/workbook/`, which turns the
   `Document` into the Word layout engine's `FDoc` (tables fitted to the page: smaller, landscape, or
   column groups; header rows repeated); its thresholds are `WorkbookPdfConfig`. A change to the
   shared layout code (`flow.rs`, `para.rs`) must keep `scripts/word-fidelity.py` where it was. Dates are always written ISO, and

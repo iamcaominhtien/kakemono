@@ -3,7 +3,7 @@
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
-use crate::config::{AnalyzeOptions, ExcelConfig, WorkbookPdfConfig};
+use crate::config::{AnalyzeOptions, ExcelConfig, WorkbookPdfConfig, WorkbookPdfStyle};
 use crate::excel;
 use crate::model::{Document, Meta};
 use crate::render::{
@@ -240,11 +240,11 @@ impl Paper {
     }
 
     /// The document laid out in pages, as a PDF: a Word document as Word
-    /// lays it out; a workbook as a document (each sheet after its heading,
-    /// its tables broken across pages with their header rows repeated) on
-    /// the paper its print settings name, else A4, as
-    /// [`WorkbookPdfConfig::default`] lays it out. A PDF already has its
-    /// pages.
+    /// lays it out; a workbook printed as Excel prints it (each sheet's
+    /// print area cut into pages by its print settings, with the look of
+    /// every cell), as [`WorkbookPdfConfig::default`] does; with
+    /// [`WorkbookPdfStyle::Document`], laid out as a document instead. A
+    /// PDF already has its pages.
     ///
     /// # Errors
     /// When the paper is a PDF, or the layout cannot be written.
@@ -261,7 +261,11 @@ impl Paper {
     pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
-            Source::Sheet(doc, paper, ..) => crate::layout::workbook::to_pdf(doc, *paper, config),
+            Source::Sheet(doc, paper, data, excel_config) => match config.style {
+                WorkbookPdfStyle::Document => crate::layout::workbook::to_pdf(doc, *paper, config),
+                // As the sheet view reads it, without its limits.
+                _ => crate::layout::workbook::print::to_pdf(&excel::read_book(data, excel_config)?, config),
+            },
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,

@@ -9,6 +9,7 @@
 //! columns that each repeat the first ([`table`]); figures at their size,
 //! made smaller to fit the page; numbered pages.
 
+pub(crate) mod print;
 mod table;
 
 use super::fonts::FontBook;
@@ -138,6 +139,30 @@ pub struct WorkbookPdfConfig {
     /// Space between paragraphs, and between a paragraph and a table or a
     /// figure, in em of the body's font size.
     pub paragraph_space_em: f32,
+    /// How the workbook is laid out: printed as Excel prints its sheets
+    /// (the default), or as a document.
+    pub style: WorkbookPdfStyle,
+    /// The most pages of a workbook printed as Excel prints it
+    /// ([`WorkbookPdfStyle::Print`]): the pages after are left out. A page
+    /// takes some 2 to 3 KB a cell it shows until the PDF is written.
+    pub print_max_pages: usize,
+}
+
+/// How a workbook is laid out in pages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WorkbookPdfStyle {
+    /// Each sheet as Excel prints it: its print area (or the cells it
+    /// uses) cut into pages by its print settings, with the look of every
+    /// cell and its charts, pictures and shapes where they are anchored.
+    #[default]
+    Print,
+    /// The workbook as a document: each sheet after its heading, its
+    /// tables with rules and their header rows repeated on each page, and
+    /// its charts as figures with their data. The fields of
+    /// [`WorkbookPdfConfig`] other than `style` and `print_max_pages` are
+    /// this layout's.
+    Document,
 }
 
 impl Default for WorkbookPdfConfig {
@@ -167,6 +192,8 @@ impl Default for WorkbookPdfConfig {
             figure_max_height_ratio: 0.8,
             paragraph_space_em: 0.5,
             max_cells: 500_000,
+            style: WorkbookPdfStyle::Print,
+            print_max_pages: 2_000,
         }
     }
 }

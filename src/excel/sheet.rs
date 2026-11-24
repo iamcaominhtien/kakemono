@@ -32,6 +32,16 @@ const DIGIT_PX: f32 = 7.0;
 const COL_PADDING_PX: f32 = 5.0;
 /// Points in a pixel at 96 pixels per inch.
 const PT_PER_PX: f32 = 0.75;
+/// Points in an inch: the unit of `pageMargins`.
+const PT_PER_INCH: f32 = 72.0;
+/// The widest margin kept, in inches.
+const MAX_MARGIN_INCHES: f32 = 20.0;
+/// The scales Excel allows, in percent.
+const MIN_SCALE_PERCENT: u32 = 10;
+/// See [`MIN_SCALE_PERCENT`].
+const MAX_SCALE_PERCENT: u32 = 400;
+/// The most manual page breaks kept (Excel allows 1 026).
+const MAX_BREAKS: usize = 2_048;
 /// The largest column width (255 characters) or row height (409 points)
 /// Excel allows, with some room.
 const MAX_SIZE: f32 = 1_000.0;
@@ -157,6 +167,12 @@ enum Place {
     SheetView,
     /// `hyperlinks`.
     Hyperlinks,
+    /// `sheetPr`.
+    SheetPr,
+    /// `rowBreaks`.
+    RowBreaks,
+    /// `colBreaks`.
+    ColBreaks,
     /// Any other element.
     Other,
 }
@@ -325,6 +341,9 @@ impl SheetReader<'_, '_> {
     /// Acts on the start tag `tag`, a SpreadsheetML element in `parent`:
     /// where it is.
     fn start(&mut self, tag: &Tag<'_>, parent: Place, prefixes: &Prefixes<'_>) -> Place {
+        if let Some(place) = self.start_print(tag, parent) {
+            return place;
+        }
         match (parent, tag.local()) {
             (Place::Root, "sheetData") => Place::SheetData,
             (Place::Root, "cols") => Place::Cols,
@@ -333,13 +352,6 @@ impl SheetReader<'_, '_> {
             (Place::Root, "hyperlinks") => Place::Hyperlinks,
             (Place::Root, "sheetFormatPr") => {
                 self.sheet_format(tag);
-                Place::Other
-            }
-            (Place::Root, "pageSetup") => {
-                self.grid.paper_pt = tag
-                    .attr("paperSize")
-                    .and_then(|code| code.parse::<u32>().ok())
-                    .and_then(paper_pt);
                 Place::Other
             }
             (Place::Root, "autoFilter") => {
@@ -394,6 +406,79 @@ impl SheetReader<'_, '_> {
                 Place::Other
             }
             _ => Place::Other,
+        }
+    }
+
+    /// Acts on the start tag `tag` in `parent` when it is one of the print
+    /// settings: where it is; `None` for another element.
+    fn start_print(&mut self, tag: &Tag<'_>, parent: Place) -> Option<Place> {
+        Some(match (parent, tag.local()) {
+            (Place::Root, "pageSetup") => {
+                self.grid.paper_pt = tag
+                    .attr("paperSize")
+                    .and_then(|code| code.parse::<u32>().ok())
+                    .and_then(paper_pt);
+                self.page_setup(tag);
+                Place::Other
+            }
+            (Place::Root, "pageMargins") => {
+                let print = &mut self.grid.print;
+                for (index, name) in ["left", "right", "top", "bottom"].iter().enumerate() {
+                    if let Some(inches) = tag
+                        .attr(name)
+                        .and_then(|value| value.trim().parse::<f32>().ok())
+                        .filter(|inches| inches.is_finite() && (0.0..=MAX_MARGIN_INCHES).contains(inches))
+                    {
+                        print.margins_pt[index] = inches * PT_PER_INCH;
+                    }
+                }
+                Place::Other
+            }
+            (Place::Root, "printOptions") => {
+                let print = &mut self.grid.print;
+                print.h_centered = is_on(tag.attr("horizontalCentered").as_deref());
+                print.v_centered = is_on(tag.attr("verticalCentered").as_deref());
+                print.grid_lines = is_on(tag.attr("gridLines").as_deref());
+                Place::Other
+            }
+            (Place::Root, "sheetPr") => Place::SheetPr,
+            (Place::SheetPr, "pageSetUpPr") => {
+                self.grid.print.fit_to_page = is_on(tag.attr("fitToPage").as_deref());
+                Place::Other
+            }
+            (Place::Root, "rowBreaks") => Place::RowBreaks,
+            (Place::Root, "colBreaks") => Place::ColBreaks,
+            (Place::RowBreaks | Place::ColBreaks, "brk") => {
+                if let Some(id) = tag.attr("id").and_then(|value| value.parse::<u32>().ok())
+                    && self.grid.print.row_breaks.len() + self.grid.print.col_breaks.len() < MAX_BREAKS
+                {
+                    if parent == Place::RowBreaks {
+                        self.grid.print.row_breaks.push(id);
+                    } else {
+                        self.grid.print.col_breaks.push(id);
+                    }
+                }
+                Place::Other
+            }
+            _ => return None,
+        })
+    }
+
+    /// Reads the orientation, scale, fitting and page order of
+    /// `pageSetup`.
+    fn page_setup(&mut self, tag: &Tag<'_>) {
+        let print = &mut self.grid.print;
+        print.landscape = tag.attr("orientation").as_deref() == Some("landscape");
+        print.over_then_down = tag.attr("pageOrder").as_deref() == Some("overThenDown");
+        let number = |name: &str| tag.attr(name).and_then(|value| value.trim().parse::<u32>().ok());
+        if let Some(scale) = number("scale") {
+            print.scale_percent = scale.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT) as f32;
+        }
+        if let Some(pages) = number("fitToWidth") {
+            print.fit_width = pages;
+        }
+        if let Some(pages) = number("fitToHeight") {
+            print.fit_height = pages;
         }
     }
 

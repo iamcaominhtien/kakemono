@@ -13,7 +13,7 @@ pub use crate::analysis::page::PageConfig;
 pub use crate::analysis::semantics::SemanticsConfig;
 pub use crate::analysis::tables::TablesConfig;
 pub use crate::excel::ExcelConfig;
-pub use crate::layout::workbook::WorkbookPdfConfig;
+pub use crate::layout::workbook::{WorkbookPdfConfig, WorkbookPdfStyle};
 
 /// Options of the analysis.
 #[derive(Debug, Clone, Copy, PartialEq)]

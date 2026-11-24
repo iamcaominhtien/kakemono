@@ -42,7 +42,7 @@ kakemono convert 1706.03762 --content attention.vi.json -m hard-95   # the pages
 kakemono convert 1706.03762 -o attention.jsonl  # chunks for retrieval (RAG), one per line
 kakemono convert report.docx -o report.md       # a Word document (.docx or .doc) as input
 kakemono convert report.docx -o report.pdf      # a Word document as a PDF, laid out as Word lays it out
-kakemono convert sales.xlsx -o sales.pdf        # a workbook as a PDF document: sheet after sheet, long tables across pages
+kakemono convert sales.xlsx -o sales.pdf        # a workbook printed as Excel prints it (--pdf-style document: as a document)
 kakemono convert sales.xlsx -o sales.md         # an Excel workbook (.xlsx) as input: one table per region of each sheet
 ```
 
@@ -159,7 +159,11 @@ kakemono convert sales.xlsx --header-rows 2 -o sales.md  # two header rows in ev
 the grid of its cells with their widths, heights, merges, fonts, fills, borders and alignment, the
 column letters and row numbers, and its charts, pictures, shapes and connectors drawn where they
 are anchored. `friendly` is the workbook as a document, the form every other output takes.
-`-o sales.pdf` lays it out as a document, without TeX: each sheet after its heading,
+`-o sales.pdf` prints it as Excel prints it, without TeX: each sheet's print area (or the cells it
+uses) cut into pages by its print settings (paper, orientation, margins, scale or fit to pages,
+manual breaks, rows repeated at the top), with the look of every cell and its charts, pictures and
+shapes where they are anchored, the text kept as text. `--pdf-style document` lays it out as a
+document instead: each sheet after its heading,
 tables with rules and their cells wrapped in their columns, a long table broken between rows with
 its header rows repeated on each page, a wide one set smaller, then on landscape pages, then in
 groups of columns (no column is ever cut off), charts drawn as vector, CJK text in CJK fonts; on A4

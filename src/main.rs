@@ -11,7 +11,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
-use kakemono::config::ExcelConfig;
+use kakemono::config::{ExcelConfig, WorkbookPdfConfig, WorkbookPdfStyle};
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::arxiv;
 use kakemono::{
@@ -232,6 +232,28 @@ enum PngCompressionArg {
     High,
 }
 
+/// Values of `--pdf-style`.
+#[derive(Clone, Copy, ValueEnum)]
+#[allow(
+    clippy::missing_docs_in_private_items,
+    reason = "a doc comment on a variant becomes its help text and would change --help"
+)]
+enum PdfStyleArg {
+    // Each sheet as Excel prints it (its print area, settings and look).
+    Print,
+    // The workbook as a document: headings, tables, charts with their data.
+    Document,
+}
+
+impl From<PdfStyleArg> for WorkbookPdfStyle {
+    fn from(arg: PdfStyleArg) -> Self {
+        match arg {
+            PdfStyleArg::Print => WorkbookPdfStyle::Print,
+            PdfStyleArg::Document => WorkbookPdfStyle::Document,
+        }
+    }
+}
+
 impl From<PngCompressionArg> for PngCompression {
     fn from(arg: PngCompressionArg) -> Self {
         match arg {
@@ -278,6 +300,9 @@ struct ConvertArgs {
     /// How hard PNG pictures are compressed: fast draws them several times faster, for larger files
     #[arg(long, value_enum, default_value = "balanced")]
     png_compression: PngCompressionArg,
+    /// How a workbook is laid out as a PDF: print each sheet as Excel prints it, or lay the workbook out as a document; only for .xlsx with -f pdf
+    #[arg(long, value_enum, default_value = "print")]
+    pdf_style: PdfStyleArg,
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
@@ -490,7 +515,10 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
-    let data = paper.to_pdf()?;
+    let data = paper.to_pdf_with(&WorkbookPdfConfig {
+        style: args.pdf_style.into(),
+        ..WorkbookPdfConfig::default()
+    })?;
     write_file(&file, &data)?;
     eprintln!(
         "{:<8} -> {} ({:.1} MB, {:.2}s)",

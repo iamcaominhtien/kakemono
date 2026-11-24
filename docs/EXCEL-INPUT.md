@@ -180,7 +180,44 @@ and 300 columns, the rows past them left out with a note.
 
 ## The PDF
 
-`kakemono convert book.xlsx -o book.pdf` (`Paper::to_pdf`) lays the document out in pages with the
+`kakemono convert book.xlsx -o book.pdf` (`Paper::to_pdf`) has two styles, both drawn with the Word
+layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`, the default, and
+`--pdf-style document` (`WorkbookPdfConfig::style`).
+
+### Printed as Excel prints it (`--pdf-style print`)
+
+`src/layout/workbook/print.rs` prints each visible sheet from the same reading as the sheet view
+(`excel::read_book`):
+
+- what prints: the sheet's print area (`_xlnm.Print_Area`), else from A1 to the last cell with a
+  value, a fill or a border, a merge or a drawn object; hidden rows and columns left out; sheet
+  names are not printed (Excel prints none);
+- the pages: the paper of `pageSetup paperSize` (Letter when the sheet names none, as Excel's
+  default), turned for `orientation="landscape"`, within `pageMargins`; at `scale`, or fitted to
+  `fitToWidth` × `fitToHeight` pages (`pageSetUpPr fitToPage`, never larger than 100 %, at least
+  10 %); cut between columns, then rows, where a page is full and at the manual breaks
+  (`rowBreaks`, `colBreaks`; those of a side fitted to a number of pages are left out, as Excel
+  does, those of a side not fitted kept, as LibreOffice does); the rows repeated at the top
+  (`_xlnm.Print_Titles`) on every later page; pages down then over, or over then down
+  (`pageOrder`); centred when `printOptions` says so; gridlines only when it asks for them;
+- on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double), the text in the
+  cell's font (its family or a font with its metrics: Calibri as Carlito, Century Gothic as URW
+  Gothic...; Japanese text in a Japanese font), size, colour, bold, italic, underline, strike,
+  aligned as Excel aligns it, wrapped when the cell wraps, running over the empty cells beside it
+  and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
+  links kept (http, https, mailto, ftp);
+- charts (vector), pictures, pictures in cells, shapes (preset outlines as vector, their text as
+  text) and connectors with their arrow heads, where they are anchored; one across a page break
+  is cut, its parts on their pages;
+- at most `print_max_pages` (2,000) pages.
+
+Not printed: headers and footers, conditional formats, comments, the curves of curved connectors
+(drawn straight), text turned by another angle. The text stays text: it can be selected and
+searched.
+
+### As a document (`--pdf-style document`)
+
+`src/layout/workbook/` lays the document out in pages with the
 Word layout engine (`src/layout/`: line breaking, fonts, tables, pages, krilla), not with TeX:
 `src/layout/workbook/` turns the blocks into the engine's formatted document (`FDoc`), as the Word
 reader does for a `.docx`. The look is that of the LaTeX output compiled with LuaLaTeX:
@@ -218,15 +255,16 @@ asks for another. Every threshold is a field of `WorkbookPdfConfig` (`config.rs`
 depends on the fonts installed, so it has no snapshot: `tests/excel.rs` checks that every cell and
 the last row of each table are in its text.
 
-Not done: `--content` does not apply to the PDF; the sheet's own column widths, fonts, colours,
-borders, number alignment of a cell, and print areas are not used (the look is the LaTeX output's).
+Not done: `--content` does not apply to either PDF; in the document style, the sheet's own column
+widths, fonts, colours, borders, number alignment of a cell, and print areas are not used (the look
+is the LaTeX output's).
 
 ## In the other interfaces
 
 - Rust: `Paper::from_bytes_with(data, &ExcelConfig { header_rows: Some(1), ..Default::default() })`;
   `Paper::from_bytes` reads a workbook with the default `ExcelConfig`. `InputFormat::Xlsx` is
-  `"xlsx"` by `name()` and has no pages; `Paper::to_pdf` (or `to_pdf_with` and a
-  `WorkbookPdfConfig`) lays it out as a PDF.
+  `"xlsx"` by `name()` and has no pages; `Paper::to_pdf` prints it as Excel does, `to_pdf_with` and a
+  `WorkbookPdfConfig` with `style: WorkbookPdfStyle::Document` lays it out as a document.
 - Python: `header_rows=` on `convert`, `convert_all`, `to_docx`, `to_markdown`, `to_json`,
   `to_latex`, `to_epub`, `to_chunks` and `analyze`.
 
