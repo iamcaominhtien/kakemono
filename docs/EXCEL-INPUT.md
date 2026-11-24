@@ -168,8 +168,7 @@ its formatting:
   cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
-  next cell with a value; wrapped text in a row whose height is not set by hand grows the row; a
-  merged range takes its right and bottom borders from its right column
+  next cell with a value; a merged range takes its right and bottom borders from its right column
   and bottom row;
 - links: to a web page (http, https, mailto, ftp), and to a place in the workbook
   (`'Sheet'!A1`), which shows that sheet's tab;
@@ -210,8 +209,9 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   pixels, 12.75 points; a workbook saved on a screen of another resolution prints a little longer
   or shorter than Excel printed it there); a row whose height is not set by hand (no
   `customHeight`), which Excel fits to its text, grows by the lines its wrapped text lacks in the
-  font set in its place, so that no line is cut (it never shrinks: LibreOffice, which fits such
-  rows both ways, can print fewer pages);
+  font set in its place, so that no line is cut, and the drawn objects below it move down with
+  their cells (it never shrinks: LibreOffice, which fits such rows both ways, can print fewer
+  pages);
 - on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double), the text in the
   cell's font (its family or a font with its metrics: Calibri as Carlito, Century Gothic as URW
   Gothic...; Japanese text in a Japanese font), size, colour, bold, italic, underline, strike,

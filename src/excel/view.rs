@@ -329,21 +329,11 @@ impl Page<'_> {
         }
         out.push('>');
         if !text.is_empty() {
-            // Wrapped text in a row Excel fits to its text (no height set
-            // by hand) grows the row, as Excel does when it needs more
-            // lines in the font set in its place.
-            let grows = (look.wrap || look.h_align == HAlign::Justify)
-                && span.is_none()
-                && !grid.looks.custom_rows.contains(&at.0);
-            if grows {
-                let _ = write!(out, "<div style=\"{inner_style}\">{text}</div>");
-            } else {
-                let _ = write!(
-                    out,
-                    "<div style=\"max-height:{}pt;{inner_style}\">{text}</div>",
-                    num(height)
-                );
-            }
+            let _ = write!(
+                out,
+                "<div style=\"max-height:{}pt;{inner_style}\">{text}</div>",
+                num(height)
+            );
         }
         out.push_str("</td>");
     }

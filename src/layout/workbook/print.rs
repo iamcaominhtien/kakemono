@@ -118,6 +118,7 @@ pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig) -> Result<Vec
             cjk: &cjk,
             images: &mut images,
             ctx: &mut ctx,
+            placing: None,
         };
         pages.extend(printer.pages(left));
     }
@@ -149,6 +150,10 @@ struct Printer<'a, 'c, 'f> {
     images: &'a mut Vec<FImage>,
     /// The fonts and shaper.
     ctx: &'c mut Ctx<'f>,
+    /// The sizes of the sheet with its rows fitted to their text, where
+    /// its drawn objects are placed (they move with their cells); `None`
+    /// when no row was fitted.
+    placing: Option<Grid>,
 }
 
 /// The part of a sheet that prints: its rows and columns, with where each
@@ -412,21 +417,7 @@ impl Printer<'_, '_, '_> {
             };
             xs.push(xs[xs.len() - 1] + width);
         }
-        let default_row = grid.sizes.default_row_pt.unwrap_or(DEFAULT_ROW_PT);
-        let mut ys = vec![start.1];
-        for row in range.top..=range.bottom {
-            let height = if grid.hidden_rows.contains(&row) {
-                0.0
-            } else {
-                let height = grid.sizes.rows.get(&row).copied().unwrap_or(default_row);
-                if grid.looks.custom_rows.contains(&row) {
-                    height
-                } else {
-                    self.fitted_height(row, range, &xs, height)
-                }
-            };
-            ys.push(ys[ys.len() - 1] + height);
-        }
+        let ys = self.row_edges(range, &xs, start.1);
         let rows: Vec<u32> = (range.top..=range.bottom)
             .filter(|row| !grid.hidden_rows.contains(row))
             .collect();
@@ -440,6 +431,44 @@ impl Printer<'_, '_, '_> {
             rows,
             cols,
         })
+    }
+
+    /// The top edge of each row of `range` (column edges `xs`) from
+    /// `top`, and the bottom of the last: rows fitted to their text where
+    /// Excel fits them, the drawn objects then placed on those heights.
+    fn row_edges(&mut self, range: Merge, xs: &[f32], top: f32) -> Vec<f32> {
+        let grid = self.grid;
+        let default_row = grid.sizes.default_row_pt.unwrap_or(DEFAULT_ROW_PT);
+        let mut ys = vec![top];
+        let mut fitted_rows = Vec::new();
+        for row in range.top..=range.bottom {
+            let height = if grid.hidden_rows.contains(&row) {
+                0.0
+            } else {
+                let height = grid.sizes.rows.get(&row).copied().unwrap_or(default_row);
+                if grid.looks.custom_rows.contains(&row) {
+                    height
+                } else {
+                    let fitted = self.fitted_height(row, range, xs, height);
+                    if fitted > height {
+                        fitted_rows.push((row, fitted));
+                    }
+                    fitted
+                }
+            };
+            ys.push(ys[ys.len() - 1] + height);
+        }
+        if !fitted_rows.is_empty() {
+            let mut sizes = grid.sizes.clone();
+            sizes.rows.extend(fitted_rows);
+            self.placing = Some(Grid {
+                sizes,
+                hidden_rows: grid.hidden_rows.clone(),
+                hidden_cols: grid.hidden_cols.clone(),
+                ..Grid::default()
+            });
+        }
+        ys
     }
 
     /// The height of the row `row`, `height` high in the file, fitted to
@@ -1001,7 +1030,7 @@ impl Printer<'_, '_, '_> {
         scale: f32,
         region: [f32; 4],
     ) {
-        let Some(sheet_box) = object_box(self.grid, shape) else {
+        let Some(sheet_box) = object_box(self.placing.as_ref().unwrap_or(self.grid), shape) else {
             return;
         };
         let [x, y, width, height] = self.to_page(sheet_box, columns, band, scale);
