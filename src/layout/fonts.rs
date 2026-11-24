@@ -357,6 +357,9 @@ fn guess_kind(name: &str) -> FontKind {
         "century",
     ];
     const MONO_WORDS: &[&str] = &["mono", "courier", "consolas", "code", "typewriter"];
+    // "-Roman" after a family names its upright style, not a serif
+    // (Helvetica-Roman, MetaNormalLF-Roman).
+    let name = name.strip_suffix("-roman").unwrap_or(name);
     // A gothic is a sans serif (Century Gothic, MS Gothic, ゴシック).
     if name.contains("sans") || name.contains("gothic") || name.contains("ゴシック") {
         FontKind::Sans
@@ -448,4 +451,16 @@ fn font_dirs() -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FontKind, guess_kind};
+
+    #[test]
+    fn a_roman_style_is_not_a_serif() {
+        assert_eq!(guess_kind("times new roman"), FontKind::Serif);
+        assert_eq!(guess_kind("metanormallf-roman"), FontKind::Sans);
+        assert_eq!(guess_kind("century gothic"), FontKind::Sans);
+    }
 }
