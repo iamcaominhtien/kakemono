@@ -18,6 +18,11 @@ const MAX_DOCUMENT_BYTES: u64 = 300 * 1024 * 1024;
 const MAX_PICTURE_BYTES: u64 = 25 * 1024 * 1024;
 /// Most pictures fetched for one page.
 pub const MAX_PICTURES: usize = 300;
+/// Tries at a picture (or a page) that fails for a reason that may pass: a
+/// connection lost, a server error, too many requests at once.
+const ATTEMPTS: u32 = 3;
+/// Wait before the second try; it doubles at each try.
+const RETRY_WAIT: Duration = Duration::from_millis(500);
 /// Pictures fetched at the same time.
 const PICTURE_WORKERS: usize = 8;
 /// What is asked for a page: HTML first, any document otherwise.
@@ -87,7 +92,33 @@ pub fn fetch(url: &str) -> Result<Fetched> {
     if !is_url(url) {
         bail!("'{url}' is not an http(s) address");
     }
-    get(&agent(PAGE_TIMEOUT), url.trim(), PAGE_ACCEPT, MAX_DOCUMENT_BYTES)
+    get_retrying(&agent(PAGE_TIMEOUT), url.trim(), PAGE_ACCEPT, MAX_DOCUMENT_BYTES)
+}
+
+/// [`get`], tried again (up to [`ATTEMPTS`] times) when it fails for a
+/// reason that may pass: no answer, a lost connection, a server error
+/// (5xx) or too many requests (429). A page that is missing (404) or
+/// refused (403) is not asked again.
+fn get_retrying(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) -> Result<Fetched> {
+    let mut wait = RETRY_WAIT;
+    let mut attempt = 1;
+    loop {
+        let result = get(agent, url, accept, max_bytes);
+        let passing = match &result {
+            Ok(_) => false,
+            Err(error) => match error.downcast_ref::<ureq::Error>() {
+                Some(ureq::Error::Status(code, _)) => *code == 429 || *code >= 500,
+                Some(ureq::Error::Transport(_)) => true,
+                None => error.chain().any(|cause| cause.is::<std::io::Error>()),
+            },
+        };
+        if !passing || attempt >= ATTEMPTS {
+            return result;
+        }
+        std::thread::sleep(wait);
+        wait *= 2;
+        attempt += 1;
+    }
 }
 
 /// One request.
@@ -127,7 +158,7 @@ pub fn fetch_pictures(urls: &[String]) -> HashMap<String, Vec<u8>> {
                 // The lock is held only to take the next address.
                 let next = || queue.lock().ok().and_then(|mut queue| queue.next());
                 while let Some(url) = next() {
-                    if let Ok(fetched) = get(&agent, url, PICTURE_ACCEPT, MAX_PICTURE_BYTES)
+                    if let Ok(fetched) = get_retrying(&agent, url, PICTURE_ACCEPT, MAX_PICTURE_BYTES)
                         && let Ok(mut found) = found.lock()
                     {
                         found.insert(url.clone(), fetched.data);
