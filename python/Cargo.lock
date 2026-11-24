@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "kakemono"
-version = "0.15.3"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1162,6 +1162,7 @@ dependencies = [
  "resvg",
  "roxmltree",
  "rustybuzz",
+ "self_cell",
  "serde",
  "serde_json",
  "sha2",
@@ -1960,6 +1961,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
 
 [[package]]
 name = "serde"

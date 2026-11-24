@@ -211,6 +211,23 @@ def test_word_document_is_an_input(tmp_path):
         kakemono.convert(WORD_SAMPLE, mode="hard")
 
 
+EPUB_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "epub" / "sample.epub"
+
+
+def test_epub_book_is_an_input(tmp_path):
+    doc = kakemono.Document(EPUB_SAMPLE)
+    assert doc.format == "epub"
+    assert doc.page_count == 0
+    html = doc.convert()
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from EPUB by kakemono" in html
+    text = kakemono.to_markdown(EPUB_SAMPLE, tmp_path / "sample.md")
+    assert "$$" in text
+    assert "def step(x, grad, eta):" in text
+    with pytest.raises(ValueError, match="no pages"):
+        kakemono.convert(EPUB_SAMPLE, mode="hard")
+
+
 def _png_size(data):
     """The (width, height) of a PNG, read from its header."""
     assert data[:8] == b"\x89PNG\r\n\x1a\n"

@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.17.0](https://github.com/iamcaominhtien/kakemono/compare/v0.16.1...v0.17.0) - 2026-11-23
+
+### Added
+
+- [**breaking**] Read EPUB books as input
+
+An EPUB book (`.epub`) is now an input like a PDF or a Word document, for every output: HTML, Word, Markdown, LaTeX, EPUB, editable JSON, chunks for retrieval, and PDF (the book is laid out in pages through a Word document, as for Word input).
+
+```bash
+kakemono convert book.epub -o book.md
+```
+
+The content documents of the book (XHTML), in the order of its spine, are read without layout analysis into the same intermediate form as a Word document, so the same rules give each paragraph its kind:
+
+- headings (raised together so that the highest is of level 1, since many books keep `<h1>` for the title); the title and authors from the title page, or else from the book's metadata (`dc:title`, `dc:creator`); `<pre>` as code; `<figcaption>` and a table's `<caption>` as captions; ordered and bullet lists with their markers (`start`, `type`, `value`) and nesting;
+- MathML formulas keep their structure (MathML, LaTeX and Office Math in the outputs, in running text too);
+- tables with `colspan`, `rowspan` and header rows; pictures (`<img>`, an `<svg>` that shows one, or an SVG drawing) at the size the book gives them; SVG pages of the spine (comics, picture books) as figures;
+- a note called by an `epub:type="noteref"` (or `role="doc-noteref"`) link follows the paragraph that calls it, without its link back; links between the documents of the book keep working;
+- bold, italics, monospace, scripts and small capitals from the elements and from simple style sheet rules (`.italic { font-style: italic }`); `display: none`, page break markers and the navigation document are left out; HTML named entities (`&nbsp;`) are understood.
+
+A book has no pages: all four HTML modes give the `friendly` article. Books protected by DRM cannot be read (the error says so). The outputs name the source in their colophon ("Converted from EPUB by kakemono").
+
+The Python package reads EPUB books too (`kakemono.Document("book.epub")`).
+
+Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB 3 samples; 294 MB), a book is written as Markdown in 0.03 s (median; 0.11 s at the 95th percentile) with 28 MB of memory, about 1,300 books a minute in one process and 5,300 on 4 cores.
+
+##### Performance
+
+- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) is faster, with the same PDF:
+  - each font is read once, instead of once per new piece of text (rustybuzz parses the font's substitution and positioning tables each time it reads it);
+  - a shaping plan is made once per font, script and direction, instead of once per piece of text;
+  - the font of a run is resolved once per piece of text, instead of once per character.
+
+  A book in Devanagari (the Mahabharata sample, 3,767 pages) is laid out in about 16 s instead of 35 s; measured in instructions, the layout of its first 150 chapters takes 35% fewer after the font fix. Word documents are 4–30% faster.
+
+##### Fixed
+
+- Code listings of Word documents came out empty in every output (HTML, Word, Markdown, LaTeX, EPUB): a listing was rebuilt only from the lines of PDF pages, which a Word document does not have.
+
+##### Breaking changes
+
+- `InputFormat` has a new variant, `Epub`, and is now `#[non_exhaustive]`: a `match` on it needs a `_` arm.
+- `Meta` has a new public field, `source_format` (`Some("epub")` for a book). It is left out of the `--json` output when empty, so the output for PDF and Word input is unchanged.
+
 ## [0.16.1](https://github.com/iamcaominhtien/kakemono/compare/v0.16.0...v0.16.1) - 2026-11-23
 
 ### Documentation
