@@ -242,6 +242,51 @@ fn the_article_is_found_among_the_clutter() {
     assert!(image.rect.width() <= 6.5 * 72.0 + 1.0, "{}", image.rect.width());
 }
 
+/// A Vietnamese news page as Dân trí lays it out: its summary in an `<h2>`,
+/// the name of the site as its `author`, and after the article, teasers
+/// for other articles and tags whose headings are links, in its column.
+const NEWS_VI: &str = r#"<!doctype html><html lang="vi"><head>
+<title>Cháy nhà 4 tầng trên phố cổ | Báo Dân trí</title>
+<meta name="author" content="Dân trí"><meta property="og:site_name" content="Báo điện tử Dân trí">
+</head><body><main><div class="col">
+<section><ul><li><a href="/thoi-su.htm">Thời sự</a></li></ul><time>Thứ ba, 24/11/2026 - 16:59</time></section>
+<section><article id="articleContent"><h1>Cháy nhà 4 tầng trên phố cổ</h1>
+<div><a rel="author" href="/tac-gia/tran-thanh.htm">Trần Thanh</a></div>
+<h2 data-slot="sapo">(Dân trí) - Theo cảnh sát, diện tích đám cháy khoảng 20m2, ngôi nhà bị cháy cao 4 tầng nằm ở phố Hàng Thiếc.</h2>
+<div data-slot="content"><p>Khoảng 14h24 ngày 24/11, tại căn nhà cao 4 tầng nằm ở số 62 phố Hàng Thiếc, phường Hoàn Kiếm, xảy ra hỏa hoạn.</p>
+<p>Sau khi nhận tin báo, cảnh sát điều nhiều xe chữa cháy tới hiện trường. Tới khoảng 15h, đám cháy được khống chế hoàn toàn.</p>
+<p>Theo cảnh sát, ngôi nhà bị cháy một phần ở tầng 2 và tầng 3. Rất may vụ hỏa hoạn không gây thiệt hại về người.</p></div>
+</article></section>
+<section><article><h3><a href="/thoi-su/nu-chu-quan.htm">Nữ chủ quán bún tử vong trong đám cháy</a></h3>
+<a href="/thoi-su/nu-chu-quan.htm">Đám cháy bùng phát tại quán bún bò lúc rạng sáng.</a></article></section>
+<section><ul><li><h3>Tags:</h3></li><li><h4><a href="/tim-kiem/chay-nha.htm">cháy nhà</a></h4></li></ul></section>
+</div></main></body></html>"#;
+
+#[test]
+fn news_summary_is_a_paragraph_and_teasers_are_gone() {
+    let doc = page_at(NEWS_VI, "https://dantri.com.vn/thoi-su/chay-nha.htm", &[]);
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title));
+    // The summary is a paragraph, not a heading.
+    let summary = block(&doc, "(Dân trí) - Theo cảnh sát");
+    assert!(
+        matches!(summary.kind, BlockKind::Paragraph { .. }),
+        "{:?}",
+        summary.kind
+    );
+    // The name of the site is not an author.
+    let authors: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Authors))
+        .map(Block::text)
+        .collect();
+    assert!(!authors.iter().any(|author| author.contains("Dân trí")), "{authors:?}");
+    assert!(has_text(&doc, "Rất may vụ hỏa hoạn"));
+    for clutter in ["Thời sự", "16:59", "Nữ chủ quán bún", "Tags:", "cháy nhà"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
 #[test]
 fn links_become_absolute_or_internal() {
     let html = r##"<html><body><article><h1>Links</h1>

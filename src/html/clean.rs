@@ -22,6 +22,9 @@ const DESCEND_SHARE_RATIO: f32 = 0.7;
 const LOST_SHARE_MAX_RATIO: f32 = 0.01;
 /// Characters of a paragraph that is text of the article, not a label.
 const LONG_PARAGRAPH_CHARS: usize = 80;
+/// Characters of a heading that ends as a sentence ends and is a
+/// paragraph set large (a summary), not a heading.
+const SENTENCE_HEADING_CHARS: usize = 100;
 /// Share of the text of the page an element may hold and still be removed
 /// for its class or `id` alone: one that holds more is the article, named
 /// oddly.
@@ -247,6 +250,7 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     remove_clutter(dom, body);
     let root = find_root(dom, body);
     heading_self_links(dom, root);
+    sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
     let title = title(dom, body, root, &meta);
     absolute_links(dom, root, base);
@@ -312,8 +316,21 @@ impl Meta {
                 .map(|name| name.trim().to_string())
                 .collect();
         }
+        // The name of the site is not an author (Dân trí's `author`).
+        let site = first(&["og:site_name", "application-name"])
+            .into_iter()
+            .chain(dom.find(scope, "title").map(|title| dom.clean_text(title)))
+            .map(|name| name.to_lowercase())
+            .collect::<Vec<_>>();
         authors.retain(|name| {
-            !name.is_empty() && name.chars().count() <= MAX_AUTHOR_CHARS && !name.contains("://") && !name.contains('@')
+            let lower = name.to_lowercase();
+            !name.is_empty()
+                && name.chars().count() <= MAX_AUTHOR_CHARS
+                && !name.contains("://")
+                && !name.contains('@')
+                && !site
+                    .iter()
+                    .any(|site| site == &lower || site.ends_with(&format!(" {lower}")))
         });
         authors.dedup();
         authors.truncate(MAX_AUTHORS);
@@ -570,12 +587,37 @@ fn find_root(dom: &Dom, body: Id) -> Id {
     at
 }
 
-/// Whether `node` holds a heading (below the title) or a long paragraph.
+/// Whether `node` holds a heading (below the title) or a long paragraph,
+/// not all of whose text is in links: the title of a teaser for another
+/// article (a list of related articles, of tags) is not text of this one,
+/// nor is a heading that is a label (`Tags:`).
 fn has_article_text(dom: &Dom, node: Id) -> bool {
+    let weight = text_weights(dom, node);
     dom.descendants(node).into_iter().any(|id| {
-        dom.is_any(id, &["h2", "h3", "h4", "h5", "h6"])
-            || (dom.is(id, "p") && dom.clean_text(id).chars().count() >= LONG_PARAGRAPH_CHARS)
+        if weight[id] == 0 {
+            return false;
+        }
+        if dom.is_any(id, &HEADINGS[1..]) {
+            return !dom.clean_text(id).ends_with(':');
+        }
+        dom.is(id, "p") && dom.clean_text(id).chars().count() >= LONG_PARAGRAPH_CHARS
     })
+}
+
+/// Makes paragraphs of the headings in `root` (below the title) that are a
+/// long sentence: the summary of a news article (Dân trí's `<h2
+/// data-slot="sapo">`) set in a heading for its size.
+fn sentence_headings(dom: &mut Dom, root: Id) {
+    for heading in dom.descendants(root) {
+        if !dom.is_any(heading, &HEADINGS[1..]) {
+            continue;
+        }
+        let text = dom.clean_text(heading);
+        let sentence = text.ends_with(['.', '!', '?', '…']) && text.chars().count() >= SENTENCE_HEADING_CHARS;
+        if sentence {
+            dom.rename(heading, "p");
+        }
+    }
 }
 
 /// Gives each picture in `body` the address of its best version (from a
