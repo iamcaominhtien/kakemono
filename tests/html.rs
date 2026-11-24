@@ -323,7 +323,12 @@ fn news_widgets_and_teasers_are_gone() {
     assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:#?}", texts(&doc));
     assert!(has_text(&doc, "Hai cán bộ cứu hộ đã hy sinh"));
     assert!(has_text(&doc, "Gia đình hai cán bộ"));
-    assert_eq!(texts(&doc).iter().filter(|text| text.contains("XUÂN HOÁT")).count(), 1, "{:#?}", texts(&doc));
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.contains("XUÂN HOÁT")).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
     for clutter in [
         "15:52",
         "thanhnien.vn",
@@ -337,7 +342,11 @@ fn news_widgets_and_teasers_are_gone() {
     ] {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
-    assert!(!texts(&doc).iter().any(|text| text.trim() == "0 0 0"), "{:#?}", texts(&doc));
+    assert!(
+        !texts(&doc).iter().any(|text| text.trim() == "0 0 0"),
+        "{:#?}",
+        texts(&doc)
+    );
 }
 
 #[test]
