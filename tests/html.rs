@@ -287,6 +287,70 @@ fn news_summary_is_a_paragraph_and_teasers_are_gone() {
     }
 }
 
+/// A news page as Tuổi Trẻ, Thanh Niên and Vietnamnet lay it out: a date
+/// before the title, the author twice, the site's domain as its `author`,
+/// teasers in the body (a nested `<article>`, a box whose heading is a
+/// link, a paragraph that is a link), and after the body counts of
+/// reactions, tags and a newsletter box.
+const NEWS_WIDGETS: &str = r#"<!doctype html><html lang="vi"><head>
+<title>Truy tặng huân chương cho hai người cứu hộ - Báo Thanh Niên</title>
+<meta name="author" content="thanhnien.vn"><link rel="canonical" href="https://thanhnien.vn/truy-tang.htm">
+</head><body><main><div class="detail">
+<div class="detail-top"><time>24/11/2026 15:52 GMT+7</time></div>
+<h1>Truy tặng huân chương cho hai người cứu hộ</h1>
+<div class="info"><a href="/tac-gia/xuan-hoat.htm">XUÂN HOÁT</a> <a href="/tac-gia/xuan-hoat.htm">XUÂN HOÁT</a></div>
+<p class="sapo">Hai cán bộ cứu hộ đã hy sinh khi cứu người đuối nước ở biển Nha Trang, được truy tặng huân chương.</p>
+<div class="detail-content">
+<p>Ngày 24-11, Chủ tịch nước đã có quyết định truy tặng Huân chương Dũng cảm cho hai cán bộ của đội cứu nạn, cứu hộ.</p>
+<div class="box"><ul><li><a href="/loi-tu-biet.htm"><img src="/thumb.jpg" alt=""></a>
+<h4><a href="/loi-tu-biet.htm">Lời từ biệt lặng lẽ của người cứu hộ</a><a href="/loi-tu-biet.htm">ĐỌC NGAY</a></h4></li></ul></div>
+<p>Hai cá nhân đó là ông An và ông Sáng, cán bộ đội cứu nạn, cứu hộ thuộc ban quản lý bãi biển Nha Trang.</p>
+<article class="insert-news"><a href="/cdv-nga-mu.htm">Người dân Nha Trang tưởng nhớ hai người cứu hộ</a>
+<div>Hàng trăm người đã đến viếng.</div></article>
+<p><a href="/khanh-hoa-to-trinh.htm">Khánh Hòa có tờ trình về việc truy tặng huân chương</a></p>
+<p>Trước nghĩa cử cao đẹp, không quản hiểm nguy để cứu người, lãnh đạo tỉnh đã đề nghị khen thưởng cả hai người.</p>
+<p>Anh ra đi ngay trước ngày kỷ niệm 20 năm ngày cưới, để lại vợ, mẹ già và hai con nhỏ trong căn nhà ven biển.</p>
+<p>Gia đình hai cán bộ cứu hộ đã nhận được sự hỗ trợ của chính quyền địa phương và nhiều nhà hảo tâm trong tỉnh.</p>
+</div>
+<div class="reactions"><div><span>0</span> <span>0</span> <span>0</span></div><span>Tặng sao cho bài viết hay</span></div>
+<div class="detail-tab"><h4>Khám phá thêm chủ đề</h4><a href="/cuu-nan.html">Cứu nạn</a></div>
+<div class="newsletter"><h3>Đăng ký ngay để nhận gói tin tức mới</h3><p>Chúng tôi sẽ gởi đến bạn những tin nổi bật nhất.</p></div>
+</div></main></body></html>"#;
+
+#[test]
+fn news_widgets_and_teasers_are_gone() {
+    let doc = page(NEWS_WIDGETS);
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Hai cán bộ cứu hộ đã hy sinh"));
+    assert!(has_text(&doc, "Gia đình hai cán bộ"));
+    assert_eq!(texts(&doc).iter().filter(|text| text.contains("XUÂN HOÁT")).count(), 1, "{:#?}", texts(&doc));
+    for clutter in [
+        "15:52",
+        "thanhnien.vn",
+        "Lời từ biệt",
+        "ĐỌC NGAY",
+        "tưởng nhớ",
+        "tờ trình",
+        "Tặng sao",
+        "Khám phá thêm",
+        "Đăng ký ngay",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    assert!(!texts(&doc).iter().any(|text| text.trim() == "0 0 0"), "{:#?}", texts(&doc));
+}
+
+#[test]
+fn a_page_without_article_reads_its_description() {
+    let html = r#"<!doctype html><html><head><title>Khoảnh khắc quán lẩu phát nổ</title>
+<meta name="description" content="Camera nhà dân ghi lại khoảnh khắc quán lẩu đang sửa chữa phát nổ khiến mảnh vỡ văng khắp đoạn đường hơn 20 m.">
+</head><body><h1>Khoảnh khắc quán lẩu phát nổ</h1><div class="player"><div>Phím tắt</div>
+<ul><li>Tới video tiếp theo</li><li>Tắt âm thanh</li></ul></div></body></html>"#;
+    let doc = page(html);
+    assert!(has_text(&doc, "Camera nhà dân ghi lại"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Phím tắt"), "{:#?}", texts(&doc));
+}
+
 #[test]
 fn links_become_absolute_or_internal() {
     let html = r##"<html><body><article><h1>Links</h1>

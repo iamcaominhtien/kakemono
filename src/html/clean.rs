@@ -8,6 +8,12 @@
 //! more simply: after the clutter is removed, the element that holds the
 //! text is the one where the text stops being in one child. Text in links
 //! does not count, so that a menu or a list of links weighs nothing.
+//!
+//! Around and in it, what news sites put there goes too: the breadcrumb
+//! and date before the title, the widgets after the body (tags, reactions,
+//! a newsletter box, other articles), the teasers for other articles in
+//! the body, a repeated author, counts. A page with no article (a video
+//! page that a script fills) is read as its description.
 
 use super::dom::{Dom, Id, Kind, Space};
 use url::Url;
@@ -22,6 +28,34 @@ const DESCEND_SHARE_RATIO: f32 = 0.7;
 const LOST_SHARE_MAX_RATIO: f32 = 0.01;
 /// Characters of a paragraph that is text of the article, not a label.
 const LONG_PARAGRAPH_CHARS: usize = 80;
+/// Most characters of text not in links in a teaser for another article
+/// (a nested `<article>`: its title, a line of summary).
+const TEASER_MAX_CHARS: usize = 300;
+/// Most characters of text not in links around a heading that is a link,
+/// for its container to be a teaser too (`Xem thêm về:`, `Tags:`).
+const TEASER_LABEL_CHARS: usize = 40;
+/// Fewest characters of a paragraph that is only a link to another
+/// article for it to be a teaser (not a word such as `Next`).
+const LINK_PARAGRAPH_MIN_CHARS: usize = 30;
+/// Fewest characters of text not in links in an article for its teasers
+/// to be removed: in less, the page is a list of articles (a home page).
+const TEASERS_MIN_ARTICLE_CHARS: usize = 500;
+/// Most share of the text of the element that holds the article that a
+/// part after the body may hold and still be a widget (tags, reactions, a
+/// newsletter box), when the body holds most of it.
+const TRAILING_MAX_SHARE_RATIO: f32 = 0.15;
+/// Share of the text of a part after the body in links for it to be a
+/// list of other articles, even with their summaries.
+const WIDGET_LINK_SHARE_RATIO: f32 = 0.5;
+/// Most characters of a part before the title (a breadcrumb, a date) that
+/// is removed.
+const BEFORE_TITLE_MAX_CHARS: usize = 100;
+/// Most characters of a block that holds only a number (counts of
+/// reactions, `0 0 0`).
+const COUNT_MAX_CHARS: usize = 20;
+/// Most characters of the text of a page with no article (a video page)
+/// for its description to be read instead.
+const NO_ARTICLE_MAX_CHARS: usize = 200;
 /// Characters of a heading that ends as a sentence ends and is a
 /// paragraph set large (a summary), not a heading.
 const SENTENCE_HEADING_CHARS: usize = 100;
@@ -91,7 +125,7 @@ const CLUTTER_ROLES: [&str; 14] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 37] = [
+const CLUTTER_WORDS: [&str; 38] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -127,6 +161,8 @@ const CLUTTER_WORDS: [&str; 37] = [
     "sponsored",
     "subscribe",
     "taboola",
+    // A list of tags (`article-tags`; one tag is too common a word).
+    "tags",
     "toc",
     "toolbar",
     "catlinks",
@@ -248,7 +284,15 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     }
     pictures(dom, body, base);
     remove_clutter(dom, body);
-    let root = find_root(dom, body);
+    let (root, trailing) = find_root(dom, body);
+    for node in trailing {
+        dom.detach(node);
+    }
+    let root = without_article(dom, root, &meta);
+    remove_teasers(dom, root, base, &meta);
+    before_title(dom, root);
+    repeated_links(dom, root);
+    remove_counts(dom, root);
     heading_self_links(dom, root);
     sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
@@ -273,6 +317,11 @@ struct Meta {
     meta_title: Option<String>,
     /// The authors.
     authors: Vec<String>,
+    /// The description of the page (`og:description`, `description`).
+    description: Option<String>,
+    /// Its address, as it says (`og:url`, `<link rel="canonical">`): where a
+    /// saved page came from.
+    url: Option<String>,
 }
 
 impl Meta {
@@ -316,36 +365,74 @@ impl Meta {
                 .map(|name| name.trim().to_string())
                 .collect();
         }
-        // The name of the site is not an author (Dân trí's `author`).
-        let site = first(&["og:site_name", "application-name"])
-            .into_iter()
-            .chain(dom.find(scope, "title").map(|title| dom.clean_text(title)))
-            .map(|name| name.to_lowercase())
-            .collect::<Vec<_>>();
+        let site = site_names(dom, scope, &first);
         authors.retain(|name| {
             let lower = name.to_lowercase();
             !name.is_empty()
                 && name.chars().count() <= MAX_AUTHOR_CHARS
                 && !name.contains("://")
                 && !name.contains('@')
+                // A domain (`thanhnien.vn`), not a name.
+                && !(name.contains('.') && !name.contains(char::is_whitespace))
                 && !site
                     .iter()
-                    .any(|site| site == &lower || site.ends_with(&format!(" {lower}")))
+                    .any(|site| site.trim() == lower || format!(" {site} ").contains(&format!(" {lower} ")))
         });
         authors.dedup();
         authors.truncate(MAX_AUTHORS);
+        let description = first(&["og:description", "description", "twitter:description"]);
+        let canonical = dom.find_all(scope, "link").into_iter().find_map(|link| {
+            let rel = dom.attr(link, "rel")?;
+            rel.eq_ignore_ascii_case("canonical")
+                .then(|| dom.attr(link, "href"))
+                .flatten()
+                .map(str::to_string)
+        });
+        let url = first(&["og:url"]).or(canonical);
         Meta {
             page_title,
             meta_title,
             authors,
+            description,
+            url,
         }
     }
 }
 
+/// The names of the site of a page, lower case, which are not authors
+/// (Dân trí's `author`): the name its metadata gives (`first` reads it),
+/// the end of its title after a separator, its domain without its suffix
+/// (`VnExpress` of `vnexpress.net`).
+fn site_names(dom: &Dom, scope: Id, first: &dyn Fn(&[&str]) -> Option<String>) -> Vec<String> {
+    let mut site: Vec<String> = first(&["og:site_name", "application-name"])
+        .into_iter()
+        .chain(
+            dom.find(scope, "title")
+                .and_then(|title| site_name(&dom.clean_text(title)).map(str::to_string)),
+        )
+        .map(|name| name.to_lowercase())
+        .collect();
+    let domain = first(&["og:url"]).or_else(|| first(&["og:site_name"])).and_then(|url| {
+        let host = url
+            .split("://")
+            .last()?
+            .split('/')
+            .next()?
+            .trim_start_matches("www.")
+            .to_lowercase();
+        host.split('.').next().map(|label| format!(" {label}"))
+    });
+    site.extend(domain);
+    site
+}
+
+/// The separators of the title of a page and the name of its site.
+const SITE_SEPARATORS: [&str; 7] = [" | ", " - ", " – ", " — ", " \\ ", " · ", " :: "];
+
 /// `title` without the name of the site after a separator
 /// (`Gravitational wave - Wikipedia`).
 fn without_site_name(title: &str) -> String {
-    for separator in [" | ", " - ", " – ", " — ", " \\ ", " · ", " :: "] {
+    for separator in SITE_SEPARATORS {
         if let Some((page, site)) = title.rsplit_once(separator)
             && site.chars().count() <= MAX_SITE_NAME_CHARS
             && !page.trim().is_empty()
@@ -354,6 +441,14 @@ fn without_site_name(title: &str) -> String {
         }
     }
     title.to_string()
+}
+
+/// The name of the site at the end of `title`, after a separator.
+fn site_name(title: &str) -> Option<&str> {
+    SITE_SEPARATORS.iter().find_map(|separator| {
+        let (page, site) = title.rsplit_once(separator)?;
+        (site.chars().count() <= MAX_SITE_NAME_CHARS && !page.trim().is_empty()).then(|| site.trim())
+    })
 }
 
 /// The title of the article: its first `<h1>`; else the first `<h1>` of
@@ -414,6 +509,8 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     names.push_str(dom.attr(node, "class").unwrap_or_default());
     names.push(' ');
     names.push_str(dom.attr(node, "id").unwrap_or_default());
+    names.push(' ');
+    names.push_str(dom.attr(node, "data-role").unwrap_or_default());
     if dom
         .classes(node)
         .any(|class| HIDDEN_CLASSES.contains(&class.to_ascii_lowercase().as_str()))
@@ -558,10 +655,14 @@ fn is_placeholder(src: &str) -> bool {
     src.is_empty() || (src.starts_with("data:") && src.len() <= PLACEHOLDER_DATA_URL_CHARS)
 }
 
-/// The element that holds the article, in `body` (see the module).
-fn find_root(dom: &Dom, body: Id) -> Id {
+/// The element that holds the article, in `body` (see the module), and
+/// the widgets after its body in it: when the body holds most of its text
+/// and the rest has a heading (a box of tags, a newsletter), the parts
+/// after the body that hold little text, no long paragraph and no picture.
+fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
     let weight = text_weights(dom, body);
     let mut at = body;
+    let mut trailing = Vec::new();
     loop {
         let total = weight[at];
         let children = dom.element_children(at);
@@ -580,11 +681,255 @@ fn find_root(dom: &Dom, body: Id) -> Id {
                 }
         });
         if lost_matters && lost as f32 >= LOST_SHARE_MAX_RATIO * total as f32 {
+            // In links too: a page whose content is a list of links (a page
+            // of a government that leads to others) keeps it.
+            let chars = |node: Id| dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count();
+            let all = chars(at);
+            let children = &dom.nodes[at].children;
+            let after = children.iter().skip_while(|&&child| child != best).skip(1);
+            trailing = after
+                .copied()
+                .filter(|&child| {
+                    (weight[child] as f32) < TRAILING_MAX_SHARE_RATIO * total as f32
+                        && (chars(child) as f32) < TRAILING_MAX_SHARE_RATIO * all as f32
+                        && is_widget(dom, child)
+                })
+                .collect();
             break;
         }
         at = best;
     }
-    at
+    (at, trailing)
+}
+
+/// Whether `node`, after the body of an article, is a widget: no long
+/// paragraph, picture (but icons, and the pictures of links: thumbnails of
+/// other articles, banners), table, numbered list or notes.
+fn is_widget(dom: &Dom, node: Id) -> bool {
+    if !matches!(dom.nodes[node].kind, Kind::Element { .. }) {
+        return false;
+    }
+    // Most of its text in links: a list of other articles, whatever their
+    // summaries say.
+    let all = dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count();
+    let links = dom
+        .find_all(node, "a")
+        .into_iter()
+        .filter(|&a| dom.ancestor(a, |up| dom.is(up, "a")).is_none());
+    let linked: usize = links
+        .map(|a| dom.clean_text(a).chars().filter(|ch| !ch.is_whitespace()).count())
+        .sum();
+    let list_of_links = linked as f32 >= WIDGET_LINK_SHARE_RATIO * all as f32;
+    !dom.descendants(node).into_iter().any(|id| match &dom.nodes[id].kind {
+        Kind::Text(text) => !list_of_links && text.trim().chars().count() >= LONG_PARAGRAPH_CHARS,
+        Kind::Element { .. } => {
+            let picture = dom.is_any(id, &["img", "picture", "figure"])
+                && !is_icon(dom, id)
+                && dom.ancestor(id, |up| dom.is(up, "a")).is_none()
+                && !(dom.is(id, "figure") && dom.find(id, "a").is_some() && dom.find(id, "figcaption").is_none());
+            picture
+                || dom.is_any(id, &["table", "ol", "pre", "h1", "math"])
+                || (!list_of_links && dom.is(id, "p") && dom.clean_text(id).chars().count() >= LONG_PARAGRAPH_CHARS)
+                || dom.attr(id, "role").is_some_and(|role| role.starts_with("doc-"))
+        }
+        _ => false,
+    })
+}
+
+/// The element that holds the article, or, when the page has none (a
+/// video page whose script fills it), a new one with the description of
+/// the page (its metadata) when it has one.
+fn without_article(dom: &mut Dom, root: Id, meta: &Meta) -> Id {
+    let Some(description) = &meta.description else {
+        return root;
+    };
+    let text = dom.clean_text(root);
+    if has_article_text(dom, root) || text.chars().count() > NO_ARTICLE_MAX_CHARS || description.len() <= text.len() {
+        return root;
+    }
+    let article = dom.element("div", &[]);
+    if let Some(h1) = dom.find(root, "h1") {
+        dom.append(article, h1);
+    }
+    let para = dom.element("p", &[]);
+    let words = dom.text_node(description);
+    dom.append(para, words);
+    dom.append(article, para);
+    if dom.nodes[root].parent.is_some() {
+        dom.insert_after(root, article);
+        dom.detach(root);
+    }
+    article
+}
+
+/// Removes the teasers for other articles in the article in `root`: a
+/// nested `<article>` with little text and a link, and a heading that is
+/// only a link to another page of the site (not a heading that names a
+/// product it links to) with the container around it that holds no more
+/// than a label.
+fn remove_teasers(dom: &mut Dom, root: Id, base: &Base<'_>, meta: &Meta) {
+    let weight = text_weights(dom, root);
+    if weight[root] < TEASERS_MIN_ARTICLE_CHARS {
+        return;
+    }
+    let own = meta.url.as_deref().and_then(|url| Url::parse(url).ok());
+    let address = match base {
+        Base::Url(url) => Some(*url),
+        _ => own.as_ref(),
+    };
+    let site = address
+        .and_then(Url::host_str)
+        .map(|host| host.trim_start_matches("www.").to_ascii_lowercase());
+    let other_page = |dom: &Dom, node: Id| {
+        dom.find_all(node, "a").into_iter().any(|a| {
+            dom.attr(a, "href").is_some_and(|href| {
+                let href = href.trim();
+                if href.is_empty() || href.contains('#') {
+                    return false;
+                }
+                match Url::parse(href) {
+                    // A relative address: a page of the same site.
+                    Err(_) => true,
+                    Ok(url) => url.host_str().is_some_and(|host| {
+                        site.as_deref() == Some(host.trim_start_matches("www.").to_ascii_lowercase().as_str())
+                    }),
+                }
+            })
+        })
+    };
+    for node in dom.descendants(root) {
+        if node == root || !dom.attached(node) || dom.find(node, "h1").is_some() {
+            continue;
+        }
+        if dom.is(node, "article") {
+            if weight[node] < TEASER_MAX_CHARS && other_page(dom, node) {
+                dom.detach(node);
+            }
+            continue;
+        }
+        // A paragraph that is a link to another article (`Đọc thêm`).
+        let link_paragraph = dom.is(node, "p")
+            && weight[node] == 0
+            && dom.find_all(node, "a").len() == 1
+            && dom.find(node, "img").is_none()
+            && dom.clean_text(node).chars().count() >= LINK_PARAGRAPH_MIN_CHARS
+            && other_page(dom, node);
+        if link_paragraph {
+            dom.detach(node);
+            continue;
+        }
+        let link_heading = dom.is_any(node, &HEADINGS[1..])
+            && weight[node] == 0
+            && !dom.clean_text(node).is_empty()
+            && other_page(dom, node);
+        if !link_heading {
+            continue;
+        }
+        let mut teaser = node;
+        while let Some(parent) = dom.nodes[teaser].parent {
+            if parent == root || weight[parent] > TEASER_LABEL_CHARS || dom.find(parent, "h1").is_some() {
+                break;
+            }
+            teaser = parent;
+        }
+        dom.detach(teaser);
+    }
+}
+
+/// Removes what comes before the title in `root` and is short, with no
+/// picture: a breadcrumb, a date, a label.
+fn before_title(dom: &mut Dom, root: Id) {
+    let Some(h1) = dom.find(root, "h1") else {
+        return;
+    };
+    let mut at = h1;
+    while at != root {
+        let Some(parent) = dom.nodes[at].parent else {
+            break;
+        };
+        let before: Vec<Id> = dom.nodes[parent]
+            .children
+            .iter()
+            .copied()
+            .take_while(|&child| child != at)
+            .collect();
+        for node in before {
+            let picture = matches!(dom.nodes[node].kind, Kind::Element { .. })
+                && dom
+                    .descendants(node)
+                    .into_iter()
+                    .any(|id| dom.is_any(id, &["img", "picture", "figure", "svg"]));
+            if !picture && dom.clean_text(node).chars().count() <= BEFORE_TITLE_MAX_CHARS {
+                dom.detach(node);
+            }
+        }
+        at = parent;
+    }
+}
+
+/// Removes a link in `root` that repeats the link just before it, with no
+/// text between them (the author of an article, shown twice for wide and
+/// narrow screens).
+fn repeated_links(dom: &mut Dom, root: Id) {
+    let mut last: Option<(String, String)> = None;
+    for node in dom.descendants(root) {
+        if !dom.attached(node) {
+            continue;
+        }
+        match &dom.nodes[node].kind {
+            Kind::Text(text) if !text.trim().is_empty() => {
+                if dom.ancestor(node, |id| dom.is(id, "a")).is_none() {
+                    last = None;
+                }
+            }
+            Kind::Element { .. } if dom.is(node, "a") => {
+                let link = (
+                    dom.attr(node, "href").unwrap_or_default().to_string(),
+                    dom.clean_text(node),
+                );
+                if link.1.is_empty() {
+                    continue;
+                }
+                if last.as_ref() == Some(&link) {
+                    dom.detach(node);
+                } else {
+                    last = Some(link);
+                }
+            }
+            Kind::Element { .. } if dom.is_any(node, &["img", "figure", "table"]) => last = None,
+            _ => {}
+        }
+    }
+}
+
+/// Removes the blocks in `root` that hold only numbers: the counts of
+/// reactions and comments (`0 0 0`).
+fn remove_counts(dom: &mut Dom, root: Id) {
+    for node in dom.descendants(root) {
+        if node == root || !dom.attached(node) || !dom.is_any(node, &["p", "div", "li"]) {
+            continue;
+        }
+        let kept = ["table", "pre", "code", "ol", "h1", "h2", "h3", "h4", "h5", "h6"];
+        if dom.ancestor(node, |id| dom.is_any(id, &kept)).is_some() {
+            continue;
+        }
+        let text = dom.clean_text(node);
+        let count = text.chars().count() <= COUNT_MAX_CHARS
+            && text.chars().any(|ch| ch.is_ascii_digit())
+            && text.chars().all(|ch| ch.is_ascii_digit() || ch.is_whitespace());
+        let parent_too = dom.nodes[node]
+            .parent
+            .is_some_and(|parent| parent != root && dom.clean_text(parent) == text);
+        if count
+            && !parent_too
+            && !dom
+                .descendants(node)
+                .into_iter()
+                .any(|id| dom.is_any(id, &["img", "svg"]))
+        {
+            dom.detach(node);
+        }
+    }
 }
 
 /// Whether `node` holds a heading (below the title) or a long paragraph,
