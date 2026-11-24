@@ -21,19 +21,15 @@ use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, Merge, MergeIndex, T
 use super::numfmt;
 use super::pull::{Event, Reader, Tag};
 use super::strings;
-use super::styles::Styles;
+use super::styles::{Screen, Styles};
 use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
-/// The size of a pixel at 96 per inch, in points.
-const PT_PER_PIXEL: f32 = 0.75;
 /// Most embedded objects read on a sheet.
 const MAX_EMBEDDED_OBJECTS: usize = 1000;
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
 /// The padding of a column, in pixels, which `baseColWidth` leaves out.
 const COL_PADDING_PX: f32 = 5.0;
-/// Points in a pixel at 96 pixels per inch.
-const PT_PER_PX: f32 = 0.75;
 /// Points in an inch: the unit of `pageMargins`.
 const PT_PER_INCH: f32 = 72.0;
 /// The widest margin kept, in inches.
@@ -227,6 +223,11 @@ struct SheetReader<'c, 'a> {
     seen_view: bool,
     /// The columns past the limit with a value, in the rows read.
     cols_past_limit: HashSet<u32>,
+    /// The default width of the columns, in digits (`defaultColWidth`).
+    default_col_chars: Option<f32>,
+    /// The default width of the columns without the padding, in digits
+    /// (`baseColWidth`).
+    base_col_chars: Option<f32>,
 }
 
 /// Reads the worksheet `xml`.
@@ -267,8 +268,9 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         links: Vec::new(),
         seen_view: false,
         cols_past_limit: HashSet::new(),
+        default_col_chars: None,
+        base_col_chars: None,
     };
-    sheet.grid.sizes.default_col_pt = default_col_pt(ctx.styles.digit_px());
     let mut stack = vec![Place::Root];
     if root.empty {
         stack.clear();
@@ -556,7 +558,7 @@ impl SheetReader<'_, '_> {
         }
         if !self.row_past_limit
             && (self.ctx.view || is_on(tag.attr("customHeight").as_deref()))
-            && let Some(height) = tag.attr("ht").and_then(|value| points(&value)).map(whole_pixels)
+            && let Some(height) = tag.attr("ht").and_then(|value| points(&value))
         {
             self.grid.sizes.rows.insert(index, height);
         }
@@ -572,33 +574,21 @@ impl SheetReader<'_, '_> {
         }
     }
 
-    /// Reads the default column width and row height of `sheetFormatPr`.
+    /// Reads the default column width and row height of `sheetFormatPr`
+    /// (as the file gives them: [`SheetReader::done`] sizes them).
     fn sheet_format(&mut self, tag: &Tag<'_>) {
-        let digit_px = self.ctx.styles.digit_px();
-        let sizes = &mut self.grid.sizes;
-        sizes.default_row_pt = tag
-            .attr("defaultRowHeight")
-            .and_then(|value| points(&value))
-            .map(whole_pixels);
-        sizes.default_col_pt = tag
-            .attr("defaultColWidth")
-            .and_then(|value| points(&value))
-            .map(|chars| col_width_pt(chars, digit_px))
-            .or_else(|| {
-                let base = tag.attr("baseColWidth").and_then(|value| points(&value))?;
-                Some((base * digit_px + COL_PADDING_PX) * PT_PER_PX)
-            });
+        let number = |name| tag.attr(name).and_then(|value| points(&value));
+        self.grid.sizes.default_row_pt = number("defaultRowHeight");
+        self.default_col_chars = number("defaultColWidth");
+        self.base_col_chars = number("baseColWidth");
     }
 
     /// Records the width of the columns of `col` (one-based `min` and
     /// `max`), when it gives one.
     fn size_cols(&mut self, tag: &Tag<'_>) {
         let bound = |name| tag.attr(name).and_then(|value| value.parse::<u32>().ok());
-        let digit_px = self.ctx.styles.digit_px();
-        let width = tag
-            .attr("width")
-            .and_then(|value| points(&value))
-            .map(|chars| col_width_pt(chars, digit_px));
+        // In digits, until the sheet is read.
+        let width = tag.attr("width").and_then(|value| points(&value));
         if let (Some(min), Some(max), Some(width)) = (bound("min"), bound("max"), width)
             && min >= 1
             && max >= min
@@ -692,14 +682,44 @@ impl SheetReader<'_, '_> {
         }
     }
 
-    /// The grid, with the merges, hyperlinks and declarations.
+    /// The grid, with the merges, hyperlinks and declarations, and the
+    /// sizes of its rows and columns as the screen it was saved on drew
+    /// them ([`Styles::screen`](super::styles::Styles::screen)).
     fn done(mut self) -> Grid {
+        self.size();
         self.grid.merges = merges(&self.merges, self.limits);
         self.grid.truncated_cols = u32::try_from(self.cols_past_limit.len()).unwrap_or(u32::MAX);
         link(&self.links, &mut self.grid.cells);
         self.grid.declared.tables.clone_from(&self.ctx.tables);
         self.grid.declared.print_title_rows = self.ctx.print_title_rows;
         self.grid
+    }
+}
+
+impl SheetReader<'_, '_> {
+    /// Turns the widths of the columns, in digits, and the heights of the
+    /// rows into points on the screen the workbook was saved on: widths of
+    /// whole pixels, heights too.
+    fn size(&mut self) {
+        let sizes = &mut self.grid.sizes;
+        let widths: Vec<f32> = sizes.cols.iter().map(|(_, _, chars)| *chars).collect();
+        let screen = self.ctx.styles.screen(&widths);
+        let whole = |points: f32| (points / screen.pt_per_px).round() * screen.pt_per_px;
+        for (_, _, width) in &mut sizes.cols {
+            *width = (*width * screen.digit_px).round() * screen.pt_per_px;
+        }
+        for height in sizes.rows.values_mut() {
+            *height = whole(*height);
+        }
+        sizes.default_row_pt = sizes.default_row_pt.map(whole);
+        sizes.default_col_pt = self
+            .default_col_chars
+            .map(|chars| (chars * screen.digit_px).round() * screen.pt_per_px)
+            .or_else(|| {
+                self.base_col_chars
+                    .map(|base| (base * screen.digit_px + COL_PADDING_PX) * screen.pt_per_px)
+            })
+            .or_else(|| default_col_pt(screen));
     }
 }
 
@@ -806,30 +826,17 @@ fn points(value: &str) -> Option<f32> {
         .filter(|size| size.is_finite() && (0.0..=MAX_SIZE).contains(size))
 }
 
-/// A row height of `points` as Excel draws and prints it: a whole number
-/// of pixels at 96 per inch (`ht="12.95"` is 17 pixels, 12.75 points).
-fn whole_pixels(points: f32) -> f32 {
-    (points / PT_PER_PIXEL).round() * PT_PER_PIXEL
-}
-
-/// The width in points of a column of a sheet that gives none, when its
-/// default font's digits are `digit_px` pixels wide: 8 digits and the
-/// padding, rounded up to 8 pixels as Excel does (64 pixels for Calibri
-/// 11, 72 for an East Asian font of 11 points). `None` for Calibri's, the
-/// default of [`Sizes`](super::grid::Sizes).
-fn default_col_pt(digit_px: f32) -> Option<f32> {
+/// The width in points of a column of a sheet that gives none, on
+/// `screen`: 8 digits and the padding, rounded up to 8 pixels as Excel
+/// does (64 pixels for Calibri 11, 72 for an East Asian font of 11 points
+/// at 96 dots per inch). `None` for Calibri's at 96, the default of
+/// [`Sizes`](super::grid::Sizes).
+fn default_col_pt(screen: Screen) -> Option<f32> {
     const BASE_DIGITS: f32 = 8.0;
     const STEP_PX: f32 = 8.0;
-    let px = ((BASE_DIGITS * digit_px + COL_PADDING_PX) / STEP_PX).ceil() * STEP_PX;
-    let pt = px * PT_PER_PX;
+    let px = ((BASE_DIGITS * screen.digit_px + COL_PADDING_PX) / STEP_PX).ceil() * STEP_PX;
+    let pt = px * screen.pt_per_px;
     (pt != super::grid::DEFAULT_COL_PT).then_some(pt)
-}
-
-/// The width in points of a column `chars` wide (`col width`, in widths
-/// of a digit of the default font, `digit_px` pixels, its padding
-/// included).
-fn col_width_pt(chars: f32, digit_px: f32) -> f32 {
-    (chars * digit_px).round() * PT_PER_PX
 }
 
 /// Whether a boolean attribute is set.
@@ -1442,8 +1449,14 @@ mod tests {
 
     #[test]
     fn a_sheet_without_widths_has_excel_s_default_columns() {
-        assert_eq!(default_col_pt(7.0), None);
-        assert_eq!(default_col_pt(8.0), Some(54.0));
+        let screen = |dpi: f32, digit_px| Screen {
+            pt_per_px: 72.0 / dpi,
+            digit_px,
+        };
+        assert_eq!(default_col_pt(screen(96.0, 7.0)), None);
+        assert_eq!(default_col_pt(screen(96.0, 8.0)), Some(54.0));
+        // 80 pixels at 120 dpi: 48 points, the default.
+        assert_eq!(default_col_pt(screen(120.0, 9.0)), None);
     }
 
     #[test]

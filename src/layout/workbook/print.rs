@@ -977,19 +977,22 @@ impl Printer<'_, '_, '_> {
             .clone()
             .or_else(|| base.name.clone())
             .unwrap_or_else(|| DEFAULT_FONT.to_string());
-        // A Japanese font sets the whole text; a Western one leaves its
-        // Japanese letters to a Japanese family.
-        let east_asia = if name.is_ascii() {
+        // A Japanese font sets the whole text (its Latin letters and
+        // digits in a Western font of its kind when it is not installed);
+        // a Western one leaves its Japanese letters to a Japanese family.
+        let latin = self.ctx.book.latin_stand_in(&name);
+        let east_asia = if name.is_ascii() && latin.is_none() {
             self.cjk.to_string()
         } else {
             name.clone()
         };
+        let western = latin.map_or_else(|| name.clone(), ToString::to_string);
         let size = font.size_pt.or(base.size_pt).unwrap_or(DEFAULT_SIZE_PT) * scale;
         RunFmt {
-            font: name.clone(),
-            font_hansi: name.clone(),
+            font: western.clone(),
+            font_hansi: western.clone(),
             font_east_asia: east_asia,
-            font_cs: name,
+            font_cs: western,
             size,
             size_cs: size,
             bold: font.bold,

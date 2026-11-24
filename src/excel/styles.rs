@@ -250,6 +250,47 @@ impl Styles {
         self.looks.get(index).unwrap_or(&DEFAULT_LOOK)
     }
 
+    /// The screen the workbook was saved on, from the widths of its
+    /// columns `widths` (in digits): the first of [`SCREEN_DPIS`] on which
+    /// a digit of the default font is a whole number of pixels that makes
+    /// nearly every width whole pixels; a screen of 96 dots per inch with
+    /// [`Styles::digit_px`] when none does, the widths are too few or the
+    /// font is not East Asian (Excel for the Mac writes widths of other
+    /// screens: a workbook's own drawings tell them wrong).
+    pub(crate) fn screen(&self, widths: &[f32]) -> Screen {
+        let standard = Screen::standard(self.digit_px());
+        let font = &self.look(0).font;
+        let Some(name) = font.name.as_deref().map(str::trim) else {
+            return standard;
+        };
+        let lower = name.to_lowercase();
+        if name.is_ascii() && !EAST_ASIAN_FONTS.contains(&lower.as_str()) {
+            return standard;
+        }
+        let mut distinct: Vec<f32> = widths.iter().copied().filter(|width| *width >= 1.0).collect();
+        distinct.sort_by(f32::total_cmp);
+        distinct.dedup();
+        if distinct.len() < MIN_SCREEN_WIDTHS {
+            return standard;
+        }
+        let size = font.size_pt.unwrap_or(DEFAULT_FONT_PT);
+        for dpi in SCREEN_DPIS {
+            let digit = EAST_ASIAN_DIGIT_EM * size * dpi / PT_PER_INCH;
+            for digit_px in [digit.floor(), digit.ceil()] {
+                let whole = distinct.iter().filter(|width| whole_px(**width, digit_px)).count();
+                #[allow(clippy::cast_precision_loss)]
+                let share = whole as f32 / distinct.len() as f32;
+                if digit_px >= 1.0 && share >= MIN_SCREEN_FIT_RATIO {
+                    return Screen {
+                        pt_per_px: PT_PER_INCH / dpi,
+                        digit_px,
+                    };
+                }
+            }
+        }
+        standard
+    }
+
     /// The width in pixels of a digit of the workbook's default font (that
     /// of its first cell format): the unit of its column widths. Excel
     /// measures it on screen: an East Asian font's digits are half its size
@@ -272,8 +313,53 @@ impl Styles {
     }
 }
 
+/// The screen a workbook was saved on, as its column widths tell: Excel
+/// writes them in digits of the default font measured in whole pixels on
+/// that screen, so that on a screen of 120 dots per inch (125 %), where a
+/// digit of an 11-point Mincho is 9 pixels, every width is a whole number
+/// of 9 pixels; and prints its pixels at that screen's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Screen {
+    /// Points in a pixel: 72 over the dots per inch.
+    pub(crate) pt_per_px: f32,
+    /// The width of a digit of the default font, in pixels.
+    pub(crate) digit_px: f32,
+}
+
+/// The screens tried, in dots per inch (100 % to 200 %).
+const SCREEN_DPIS: [f32; 5] = [96.0, 120.0, 144.0, 168.0, 192.0];
+/// The fewest distinct column widths that tell a screen.
+const MIN_SCREEN_WIDTHS: usize = 3;
+/// The least share of the column widths that must be whole pixels on a
+/// screen for it to be the one.
+const MIN_SCREEN_FIT_RATIO: f32 = 0.9;
+/// Points in an inch.
+const PT_PER_INCH: f32 = 72.0;
+
+impl Screen {
+    /// A screen of 96 dots per inch, where a digit is `digit_px` pixels.
+    fn standard(digit_px: f32) -> Self {
+        Screen {
+            pt_per_px: PT_PER_INCH / SCREEN_DPIS[0],
+            digit_px,
+        }
+    }
+}
+
 /// The size of Excel's default font, in points.
 const DEFAULT_FONT_PT: f32 = 11.0;
+
+/// The width of a digit of an East Asian font, in em.
+const EAST_ASIAN_DIGIT_EM: f32 = 0.5;
+
+/// Whether a column `chars` wide is a whole number of pixels when a digit
+/// is `digit_px` pixels: Excel writes the pixels over the digit, cut to a
+/// 256th.
+fn whole_px(chars: f32, digit_px: f32) -> bool {
+    const SLACK_PX: f32 = 1e-3;
+    let px = chars * digit_px;
+    px.ceil() - px < digit_px / 256.0 + SLACK_PX
+}
 
 /// East Asian fonts with a Latin name, lowercase.
 const EAST_ASIAN_FONTS: &[&str] = &[
@@ -576,6 +662,23 @@ mod tests {
         assert_eq!(digit(r#"<sz val="12"/><name val="Yu Gothic"/>"#), 8.0);
         assert_eq!(digit(r#"<sz val="11"/><name val="Calibri"/>"#), 7.0);
         assert_eq!(Styles::default().digit_px(), 7.0);
+    }
+
+    #[test]
+    fn column_widths_tell_the_screen_the_workbook_was_saved_on() {
+        let styles = styles(concat!(
+            r#"<fonts count="1"><font><sz val="11"/><name val="明朝"/></font></fonts>"#,
+            r#"<cellXfs count="1"><xf numFmtId="0" fontId="0"/></cellXfs>"#,
+        ));
+        // Whole numbers of 9 pixels, cut to a 256th: a screen of 120 dpi.
+        let screen = styles.screen(&[9.6640625, 5.21875, 4.109375, 11.109375]);
+        assert_eq!((screen.pt_per_px, screen.digit_px), (0.6, 9.0));
+        // Whole numbers of 8 pixels: 96 dpi.
+        let screen = styles.screen(&[9.625, 5.25, 4.125, 11.125]);
+        assert_eq!((screen.pt_per_px, screen.digit_px), (0.75, 8.0));
+        // Too few widths, or widths of no screen: 96 dpi.
+        assert_eq!(styles.screen(&[9.6640625]).pt_per_px, 0.75);
+        assert_eq!(styles.screen(&[9.61, 5.23, 4.17]).digit_px, 8.0);
     }
 
     #[test]

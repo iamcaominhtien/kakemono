@@ -161,7 +161,11 @@ its formatting:
 - the grid from A1 to the last cell with a value, a format, a merge or a drawn object: the column
   widths (in digits of the workbook's default font, as Excel measures them: 7 pixels for Calibri
   11, half the font's size in whole pixels, rounded up, for an East Asian font, 8 for MS P Mincho
-  11) and row heights of the file, hidden rows and columns left out, merged cells spanning their
+  11) and row heights of the file, on the screen the workbook was saved on: with an East Asian
+  default font, the widths written as whole numbers of pixels of a larger screen (9 for an 11-point
+  Mincho at 120 dots per inch, 125 %) are that screen's, whose pixels are smaller, and its rows
+  are whole numbers of its pixels; Excel prints them so, and a sheet set to fit a page at a given
+  scale there fits it here too, hidden rows and columns left out, merged cells spanning their
   area, the column letters and row numbers kept in view when scrolling, the gridlines unless the
   sheet hides them;
 - each cell's font (family with fallbacks of its kind, Japanese ones included, size, colour, bold,
@@ -208,7 +212,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   does, those of a side not fitted kept, as LibreOffice does); the rows repeated at the top
   (`_xlnm.Print_Titles`) on every later page; pages down then over, or over then down
   (`pageOrder`); centred when `printOptions` says so; gridlines only when it asks for them;
-- row heights as Excel draws them, a whole number of pixels at 96 per inch (`ht="12.95"` is 17
+- column widths and row heights as on the screen the workbook was saved on (see the sheet view);
+  row heights as Excel draws them, a whole number of pixels at 96 per inch (`ht="12.95"` is 17
   pixels, 12.75 points; a workbook saved on a screen of another resolution prints a little longer
   or shorter than Excel printed it there); a row whose height is not set by hand (no
   `customHeight`), which Excel fits to its text, grows by the lines its wrapped text lacks in the
@@ -217,8 +222,9 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   pages);
 - on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double), the text in the
   cell's font (its family or a font with its metrics: Calibri as Carlito, Century Gothic as URW
-  Gothic...; MS Mincho and MS Gothic, P or not, as the IPA fonts of the same widths; Japanese text
-  of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
+  Gothic...; MS Mincho and MS Gothic, P or not, as the IPA fonts, their Latin letters and digits
+  in Times New Roman or Arial when they are not installed, since the IPA P fonts' digits are wider
+  than half an em; Japanese text of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
   aligned as Excel aligns it (centred across the selection too), wrapped when the cell wraps,
   running over the empty cells beside it and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
   links kept (http, https, mailto, ftp);

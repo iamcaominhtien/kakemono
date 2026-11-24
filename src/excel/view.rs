@@ -99,7 +99,7 @@ table.cells{border-collapse:collapse;table-layout:fixed;background:#fff}\
 .cells tbody th{position:sticky;left:0;z-index:1}\
 .cells thead th:first-child{left:0;z-index:3}\
 .cells td>div{overflow:hidden}\
-.cells .w{white-space:pre-wrap;overflow-wrap:break-word}\
+.cells .w{white-space:pre-wrap;overflow-wrap:break-word;padding:0 1px}\
 .cells .ov{overflow:visible}\
 .cells .ov>div{overflow:hidden;white-space:pre}\
 .cells a{color:inherit}\

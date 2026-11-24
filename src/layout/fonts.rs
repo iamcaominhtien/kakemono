@@ -282,6 +282,28 @@ impl FontBook {
                 .is_some_and(|(_, aliases)| aliases.iter().any(|alias| self.by_family.contains_key(*alias)))
     }
 
+    /// For an East Asian family `family` that is not installed, the
+    /// Western family of its kind (Times New Roman for a Mincho, Arial for
+    /// a Gothic) that sets its Latin letters and digits: the stand-ins of
+    /// the East Asian text (the IPA P fonts) have wider digits than the MS
+    /// P fonts' half an em. `None` for another family.
+    pub fn latin_stand_in(&self, family: &str) -> Option<&'static str> {
+        let lower = family.to_lowercase();
+        let plain = table_name(&lower);
+        let east_asian = !plain.is_ascii()
+            || LOOKALIKES
+                .iter()
+                .any(|(name, aliases)| *name == plain && aliases.iter().any(|alias| alias.contains("cjk")));
+        if !east_asian || self.by_family.contains_key(&lower) {
+            return None;
+        }
+        Some(match guess_kind(&plain) {
+            FontKind::Serif => "Times New Roman",
+            FontKind::Mono => "Courier New",
+            FontKind::Sans | FontKind::Symbol => "Arial",
+        })
+    }
+
     /// The face used when a family is not found.
     fn last_resort(&mut self, bold: bool, italic: bool) -> (FaceId, bool, bool) {
         for name in LAST_RESORT {
