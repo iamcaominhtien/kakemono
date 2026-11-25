@@ -299,7 +299,7 @@ impl Page<'_> {
         let text = cell.map(|cell| self.text(cell)).unwrap_or_default();
         let mut inner_style = String::new();
         if !text.is_empty() {
-            let wraps = look.wrap || look.h_align == HAlign::Justify;
+            let wraps = look.wraps();
             // A text centred across the selection is set in its box,
             // wrapped there when it wraps.
             let selection = grid.selection_width(at, &area.cols[position + 1..], |col| area.width(col));
@@ -412,7 +412,9 @@ impl Page<'_> {
             (false, true) => style.push_str("text-decoration:line-through;"),
             (false, false) => {}
         }
-        if align != "left" {
+        if align == "distributed" {
+            style.push_str("text-align:justify;text-align-last:justify;");
+        } else if align != "left" {
             let _ = write!(style, "text-align:{align};");
         }
         match look.v_align {
@@ -422,8 +424,12 @@ impl Page<'_> {
         }
         if look.indent > 0 {
             let padding = f32::from(look.indent) * INDENT_STEP_PT;
-            let side = if align == "right" { "right" } else { "left" };
-            let _ = write!(style, "padding-{side}:{}pt;", num(padding));
+            if align == "distributed" {
+                let _ = write!(style, "padding:0 calc(2px + {0}pt);", num(padding));
+            } else {
+                let side = if align == "right" { "right" } else { "left" };
+                let _ = write!(style, "padding-{side}:{}pt;", num(padding));
+            }
         }
         style
     }
@@ -693,7 +699,7 @@ impl Page<'_> {
             }
         };
         format!(
-            "<svg class=\"line\" style=\"{style}\" viewBox=\"0 0 {} {}\"><defs><marker id=\"a{id}\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"{ARROW_SIZE}\" markerHeight=\"{ARROW_SIZE}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\"{}{}{}/></svg>",
+            "<svg class=\"line\" style=\"{style}min-width:{MIN_LINE_PT}pt;min-height:{MIN_LINE_PT}pt;\" viewBox=\"0 0 {} {}\"><defs><marker id=\"a{id}\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"{ARROW_SIZE}\" markerHeight=\"{ARROW_SIZE}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\"{}{}{}/></svg>",
             num(width.max(MIN_LINE_PT)),
             num(height.max(MIN_LINE_PT)),
             path.join(" "),
@@ -760,6 +766,7 @@ pub(crate) fn alignment(align: HAlign, kind: Option<CellKind>) -> &'static str {
         (HAlign::Center, _) => "center",
         (HAlign::Right, _) => "right",
         (HAlign::Justify, _) => "justify",
+        (HAlign::Distributed, _) => "distributed",
     }
 }
 

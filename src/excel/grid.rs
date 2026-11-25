@@ -90,6 +90,70 @@ pub(crate) struct PrintSetup {
     pub(crate) row_breaks: Vec<u32>,
     /// The columns that start a page (manual breaks), 0-based.
     pub(crate) col_breaks: Vec<u32>,
+    /// The distance from the paper's top edge to the header, in points.
+    pub(crate) header_pt: f32,
+    /// The distance from the paper's bottom edge to the footer, in points.
+    pub(crate) footer_pt: f32,
+    /// The headers and footers printed on its pages.
+    pub(crate) header_footer: HeaderFooter,
+}
+
+/// The headers and footers of a sheet's pages (`headerFooter`), in Excel's
+/// codes (`&L`, `&C`, `&R` for the sections, `&P` for the page number,
+/// ...); empty when a page has none.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HeaderFooter {
+    /// The header of every page (`oddHeader`), or of odd pages.
+    pub(crate) odd_header: String,
+    /// The footer of every page (`oddFooter`), or of odd pages.
+    pub(crate) odd_footer: String,
+    /// The header of even pages, when they have their own.
+    pub(crate) even_header: String,
+    /// The footer of even pages, when they have their own.
+    pub(crate) even_footer: String,
+    /// The header of the first page, when it has its own.
+    pub(crate) first_header: String,
+    /// The footer of the first page, when it has its own.
+    pub(crate) first_footer: String,
+    /// Even pages have their own (`differentOddEven`).
+    pub(crate) different_odd_even: bool,
+    /// The first page has its own (`differentFirst`).
+    pub(crate) different_first: bool,
+    /// They are scaled with the sheet (`scaleWithDoc`).
+    pub(crate) scale_with_doc: bool,
+    /// Their sides are at the page's margins (`alignWithMargins`).
+    pub(crate) align_with_margins: bool,
+}
+
+impl Default for HeaderFooter {
+    /// None, scaled with the sheet and at its margins, as Excel's.
+    fn default() -> Self {
+        Self {
+            odd_header: String::new(),
+            odd_footer: String::new(),
+            even_header: String::new(),
+            even_footer: String::new(),
+            first_header: String::new(),
+            first_footer: String::new(),
+            different_odd_even: false,
+            different_first: false,
+            scale_with_doc: true,
+            align_with_margins: true,
+        }
+    }
+}
+
+impl HeaderFooter {
+    /// The header and footer of page `number` (from 1).
+    pub(crate) fn of_page(&self, number: usize) -> (&str, &str) {
+        if self.different_first && number == 1 {
+            (&self.first_header, &self.first_footer)
+        } else if self.different_odd_even && number.is_multiple_of(2) {
+            (&self.even_header, &self.even_footer)
+        } else {
+            (&self.odd_header, &self.odd_footer)
+        }
+    }
 }
 
 /// Points in an inch: the unit of `pageMargins`.
@@ -116,6 +180,9 @@ impl Default for PrintSetup {
             over_then_down: false,
             row_breaks: Vec::new(),
             col_breaks: Vec::new(),
+            header_pt: 0.3 * PT_PER_INCH,
+            footer_pt: 0.3 * PT_PER_INCH,
+            header_footer: HeaderFooter::default(),
         }
     }
 }

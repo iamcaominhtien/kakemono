@@ -9,46 +9,61 @@ use roxmltree::Node;
 
 use super::workbook::is_sml;
 
+/// The colour of a run's `color` element, as RGB: by the workbook's theme
+/// and palette. `None` for automatic (black).
+pub(crate) type Paint<'a> = &'a dyn Fn(Node<'_, '_>) -> Option<[u8; 3]>;
+
 /// The shared strings of `xml`, in order: each string as its runs. A plain
 /// string is one unstyled span; a rich string keeps bold, italic,
-/// superscript and subscript. The phonetic reading of East Asian text
+/// superscript and subscript, and the colours `paint` gives. The phonetic reading of East Asian text
 /// (furigana, `rPh`) is left out.
 ///
 /// # Errors
 /// When `xml` is not well-formed.
-pub(crate) fn read(xml: &str) -> Result<Vec<Vec<Span>>> {
+pub(crate) fn read(xml: &str, paint: Paint<'_>) -> Result<Vec<Vec<Span>>> {
     let doc = parse(xml).context("reading the shared strings")?;
     Ok(doc
         .root_element()
         .children()
         .filter(|node| is_sml(*node, "si"))
-        .map(string_item)
+        .map(|item| string_item(item, paint))
         .collect())
 }
 
-/// The runs of one string item (`si`): its `t`, or its `r` runs.
-pub(crate) fn string_item(item: Node<'_, '_>) -> Vec<Span> {
+/// The runs of one string item (`si`): its `t`, or its `r` runs coloured
+/// by `paint`.
+pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Vec<Span> {
     let mut spans = Vec::new();
     for node in item.children() {
         if is_sml(node, "t") {
-            push(&mut spans, text(node), 0);
+            push(&mut spans, text(node), (0, [0; 3]));
         } else if is_sml(node, "r") {
-            let style = node.children().find(|props| is_sml(*props, "rPr")).map_or(0, run_style);
+            let props = node.children().find(|props| is_sml(*props, "rPr"));
+            let style = props.map_or(0, run_style);
+            let color = props
+                .and_then(|props| props.children().find(|color| is_sml(*color, "color")))
+                .and_then(paint)
+                .unwrap_or_default();
             let run_text: String = node.children().filter(|part| is_sml(*part, "t")).map(text).collect();
-            push(&mut spans, run_text, style);
+            push(&mut spans, run_text, (style, color));
         }
     }
     spans
 }
 
-/// Adds a run, joined to the previous one when it has the same style.
-fn push(spans: &mut Vec<Span>, text: String, style: u8) {
+/// Adds a run, joined to the previous one when it has the same style and
+/// colour.
+fn push(spans: &mut Vec<Span>, text: String, (style, color): (u8, [u8; 3])) {
     if text.is_empty() {
         return;
     }
     match spans.last_mut() {
-        Some(last) if last.style == style => last.text.push_str(&text),
-        _ => spans.push(Span::styled(text, style)),
+        Some(last) if last.style == style && last.color == color => last.text.push_str(&text),
+        _ => {
+            let mut span = Span::styled(text, style);
+            span.color = color;
+            spans.push(span);
+        }
     }
 }
 
@@ -128,13 +143,13 @@ mod tests {
     #[test]
     fn furigana_is_left_out() {
         let xml = r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>東京</t><rPh sb="0" eb="2"><t>トウキョウ</t></rPh></si></sst>"#;
-        assert_eq!(plain(&read(xml).unwrap()[0]), "東京");
+        assert_eq!(plain(&read(xml, &|_| None).unwrap()[0]), "東京");
     }
 
     #[test]
     fn rich_runs_keep_bold() {
         let xml = sst("<si><r><rPr><b/></rPr><t>B</t></r><r><t>n</t></r></si>");
-        let strings = read(&xml).unwrap();
+        let strings = read(&xml, &|_| None).unwrap();
         let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.style)).collect();
         assert_eq!(runs, [("B", BOLD), ("n", 0)]);
     }
@@ -145,21 +160,34 @@ mod tests {
             r#"<si><r><rPr><i/></rPr><t>x</t></r><r><rPr><vertAlign val="superscript"/></rPr><t>2</t></r>"#,
             r#"<r><rPr><vertAlign val="subscript"/></rPr><t>i</t></r><r><rPr><b val="0"/></rPr><t>.</t></r></si>"#,
         ));
-        let strings = read(&xml).unwrap();
+        let strings = read(&xml, &|_| None).unwrap();
         let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.style)).collect();
         assert_eq!(runs, [("x", ITALIC), ("2", SUP), ("i", SUB), (".", 0)]);
     }
 
     #[test]
+    fn rich_runs_keep_their_colour() {
+        let xml = sst(r#"<si><r><t>plan </t></r><r><rPr><color indexed="10"/></rPr><t>done</t></r></si>"#);
+        let paint = |node: Node<'_, '_>| crate::excel::styles::color_of(node)?.rgb(&Default::default(), None);
+        let strings = read(&xml, &paint).unwrap();
+        let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.color)).collect();
+        assert_eq!(runs, [("plan ", [0; 3]), ("done", [255, 0, 0])]);
+    }
+
+    #[test]
     fn strings_keep_their_index() {
         let xml = sst(r#"<si><t>a</t></si><si><t/></si><si><t xml:space="preserve"> c </t></si>"#);
-        let strings: Vec<String> = read(&xml).unwrap().iter().map(|spans| plain(spans)).collect();
+        let strings: Vec<String> = read(&xml, &|_| None)
+            .unwrap()
+            .iter()
+            .map(|spans| plain(spans))
+            .collect();
         assert_eq!(strings, ["a", "", " c "]);
     }
 
     #[test]
     fn escaped_characters_are_decoded() {
         let xml = sst("<si><t>a_x000D_b_x005F_x0041_ c_x</t></si>");
-        assert_eq!(plain(&read(&xml).unwrap()[0]), "a\rb_x0041_ c_x");
+        assert_eq!(plain(&read(&xml, &|_| None).unwrap()[0]), "a\rb_x0041_ c_x");
     }
 }

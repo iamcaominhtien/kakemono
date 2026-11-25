@@ -67,6 +67,14 @@ pub(crate) struct Look {
     pub(crate) stacked: bool,
 }
 
+impl Look {
+    /// The text wraps at the cell's width: it is set to wrap, or justified
+    /// or distributed, which wrap too.
+    pub(crate) fn wraps(&self) -> bool {
+        self.wrap || matches!(self.h_align, HAlign::Justify | HAlign::Distributed)
+    }
+}
+
 /// The font of a cell.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Font {
@@ -123,8 +131,11 @@ pub(crate) enum HAlign {
     Center,
     /// Right.
     Right,
-    /// Justified (also `distributed` and `fill`).
+    /// Justified (also `fill`).
     Justify,
+    /// Spread evenly over the cell's width, a line's last letter at its
+    /// right edge (`distributed`, Japanese 均等割付).
+    Distributed,
 }
 
 /// The vertical alignment of a cell.
@@ -528,7 +539,8 @@ fn look(font: Font, fill: Option<Color>, borders: [Option<Edge>; 4], alignment: 
         Some("left") => HAlign::Left,
         Some("center" | "centerContinuous") => HAlign::Center,
         Some("right") => HAlign::Right,
-        Some("justify" | "distributed" | "fill") => HAlign::Justify,
+        Some("justify" | "fill") => HAlign::Justify,
+        Some("distributed") => HAlign::Distributed,
         _ => HAlign::General,
     };
     let v_align = match attr("vertical") {

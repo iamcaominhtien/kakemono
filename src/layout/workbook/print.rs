@@ -14,10 +14,11 @@ use super::super::para::{self, Ctx};
 use super::super::pdf;
 use super::super::shape::Shaper;
 use super::WorkbookPdfConfig;
+use super::header;
 use crate::chart::{Rgb, Theme};
 use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
 use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, Sizes};
-use crate::excel::styles::{Color, HAlign, Line, Look, Styles, VAlign};
+use crate::excel::styles::{Color, Line, Look, Styles, VAlign};
 use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg};
 use crate::excel::{DrawnSheet, SheetBook};
 use crate::model::style::{BOLD, ITALIC};
@@ -27,6 +28,9 @@ use crate::word::fmt::model::{
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+/// The first code point of the wide letters (CJK radicals onwards) that
+/// a distributed text spreads one by one, as words.
+const WIDE_LETTERS_FROM: u32 = 0x2E80;
 /// US Letter, Excel's paper when a sheet names none, in points.
 const LETTER_PT: (f32, f32) = (612.0, 792.0);
 /// Excel's default font when the styles name none.
@@ -76,11 +80,11 @@ const CJK_FAMILIES: &[&str] = &[
 
 /// The PDF of the workbook `book` printed as Excel prints it, at most
 /// `config.print_max_pages` pages; one empty page of Letter paper when no
-/// sheet prints anything.
+/// sheet prints anything. A header's `&F` prints `file`, its file name.
 ///
 /// # Errors
 /// When the PDF cannot be written.
-pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
+pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig, file: Option<&str>) -> Result<Vec<u8>> {
     let mut fonts = FontBook::new(&[], &HashMap::new());
     let cjk = CJK_FAMILIES
         .iter()
@@ -127,6 +131,7 @@ pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig) -> Result<Vec
             cjk: &cjk,
             images: &mut images,
             ctx: &mut ctx,
+            file: file.unwrap_or_default(),
             sizes: sheet.grid.sizes.clone(),
             placing: None,
         };
@@ -161,6 +166,8 @@ struct Printer<'a, 'c, 'f> {
     images: &'a mut Vec<FImage>,
     /// The fonts and shaper.
     ctx: &'c mut Ctx<'f>,
+    /// The name of the workbook, as `&F` prints it.
+    file: &'a str,
     /// The sizes of the sheet as it prints: its columns as wide as the
     /// printer draws them (`printed_columns`).
     sizes: Sizes,
@@ -380,12 +387,116 @@ impl Printer<'_, '_, '_> {
             }
         }
         // A page with nothing to print is left out, as Excel does.
-        order
+        let mut pages: Vec<Page> = order
             .into_iter()
             .map(|(rows, cols)| self.page(&area, &layout, rows, cols))
             .filter(|page| !page.items.is_empty())
             .take(max)
-            .collect()
+            .collect();
+        self.headers_and_footers(&mut pages, &layout);
+        pages
+    }
+
+    /// Draws the headers and footers of the sheet's `pages`, numbered from
+    /// 1.
+    fn headers_and_footers(&mut self, pages: &mut [Page], layout: &Layout) {
+        let (date, time) = header::now();
+        let count = pages.len();
+        for (index, page) in pages.iter_mut().enumerate() {
+            let fields = header::Fields {
+                page: index + 1,
+                pages: count,
+                sheet: &self.sheet.name,
+                file: self.file,
+                date: &date,
+                time: &time,
+            };
+            self.header_footer(&mut page.items, layout.paper, layout.scale, &fields);
+        }
+    }
+
+    /// Draws the header and footer of the page that `fields` describes, on
+    /// `paper`: each section's lines at the left margin, the centre and
+    /// the right margin, the header's top at its distance from the top
+    /// of the paper and the footer's foot at its distance from the foot,
+    /// in the workbook's default font, scaled with the sheet (`scale`)
+    /// unless they are set not to be.
+    fn header_footer(&mut self, items: &mut Vec<Item>, paper: (f32, f32), scale: f32, fields: &header::Fields<'_>) {
+        let print = &self.grid.print;
+        let setup = &print.header_footer;
+        let (head, foot) = setup.of_page(fields.page);
+        let scale = if setup.scale_with_doc { scale } else { 1.0 };
+        let [margin_l, margin_r, ..] = print.margins_pt;
+        let (left, right) = if setup.align_with_margins {
+            (margin_l, paper.0 - margin_r)
+        } else {
+            (print.header_pt, paper.0 - print.header_pt)
+        };
+        let (header_pt, footer_pt) = (print.header_pt, print.footer_pt);
+        for (code, top_down) in [(head.to_string(), true), (foot.to_string(), false)] {
+            if code.is_empty() {
+                continue;
+            }
+            for (index, lines) in header::sections(&code, fields).iter().enumerate() {
+                let mut placed = Vec::new();
+                for line in lines {
+                    placed.push(self.header_line(line, scale));
+                }
+                let total: f32 = placed.iter().map(|(_, _, height)| height).sum();
+                let mut top = if top_down {
+                    header_pt
+                } else {
+                    paper.1 - footer_pt - total
+                };
+                for (mut line_items, width, height) in placed {
+                    let x = match index {
+                        0 => left,
+                        1 => (paper.0 - width) / 2.0,
+                        _ => right - width,
+                    };
+                    translate(&mut line_items, x, top);
+                    items.append(&mut line_items);
+                    top += height;
+                }
+            }
+        }
+    }
+
+    /// The items of a line of a header at `scale`, from its top left, with
+    /// its width and height.
+    fn header_line(&mut self, line: &[header::Piece], scale: f32) -> (Vec<Item>, f32, f32) {
+        let fmts: Vec<RunFmt> = line
+            .iter()
+            .map(|piece| {
+                let mut look = self.styles.look(0).clone();
+                let font = &mut look.font;
+                font.name = piece.fmt.font.clone().or(font.name.take());
+                font.size_pt = piece.fmt.size_pt.or(font.size_pt);
+                font.bold = piece.fmt.bold;
+                font.italic = piece.fmt.italic;
+                font.underline = piece.fmt.underline;
+                font.strike = piece.fmt.strike;
+                let mut fmt = self.run(&look, scale);
+                if piece.fmt.color.is_some() {
+                    fmt.color = piece.fmt.color.filter(|rgb| *rgb != [0; 3]);
+                }
+                fmt
+            })
+            .collect();
+        let (mut ascent, mut descent) = (0.0_f32, 0.0_f32);
+        for fmt in &fmts {
+            let (above, below, _) = self.ctx.line_metrics(fmt);
+            ascent = ascent.max(above);
+            descent = descent.max(below);
+        }
+        let mut items = Vec::new();
+        let mut pen = 0.0;
+        for (piece, fmt) in line.iter().zip(&fmts) {
+            let (mut run, run_w) = para::text_items(self.ctx, &piece.text, fmt, pen, ascent);
+            items.append(&mut run);
+            pen += run_w;
+        }
+        (items, pen, ascent + descent)
     }
 
     /// The page of the rows `rows` and columns `cols` of `area`.
@@ -538,7 +649,7 @@ impl Printer<'_, '_, '_> {
         let mut fitted = height;
         for (&(_, col), cell) in grid.cells.range((row, range.left)..=(row, range.right)) {
             let look = self.styles.look(look_index(grid, (row, col)) as usize);
-            if !(look.wrap || look.h_align == HAlign::Justify)
+            if !(look.wraps())
                 || look.stacked
                 || look.rotation.is_some()
                 || grid
@@ -933,8 +1044,18 @@ impl Printer<'_, '_, '_> {
         let inner_w = (width - 2.0 * pad - indent).max(1.0);
         let (ascent, descent, _) = self.ctx.line_metrics(&base);
         let (mut items, text_h) = if look.stacked || look.rotation.is_some() {
-            self.stacked_text(cell, &base, width, (ascent, descent))
-        } else if look.wrap || look.h_align == HAlign::Justify {
+            let room = if look.stacked && look.wrap {
+                height - 2.0 * pad_top
+            } else {
+                f32::INFINITY
+            };
+            self.stacked_text(cell, &base, (width, room), (ascent, descent))
+        } else if let Some(spread) = (align == "distributed")
+            .then(|| self.distributed_text(cell, &base, pad + indent, inner_w - indent, ascent))
+            .flatten()
+        {
+            (spread, ascent + descent)
+        } else if look.wraps() {
             self.wrapped_text(cell, &base, align, pad, indent, inner_w)
         } else {
             let mut items = Vec::new();
@@ -965,24 +1086,95 @@ impl Printer<'_, '_, '_> {
 
     /// The text of `cell` a letter a line, centred in a cell `width`
     /// wide, set in `base` whose lines have `metrics` (ascent, descent):
-    /// turned text is set so, as stacked text is. Its items from the top
-    /// left of the cell, and its height.
-    fn stacked_text(&mut self, cell: &GridCell, base: &RunFmt, width: f32, metrics: (f32, f32)) -> (Vec<Item>, f32) {
+    /// turned text is set so, as stacked text is. Letters that pass `room`
+    /// (the height of a wrapped cell) go on in a new column to the left,
+    /// as a line break does; spaces at the foot of a column hang. Its
+    /// items from the top left of the cell, and its height.
+    fn stacked_text(
+        &mut self,
+        cell: &GridCell,
+        base: &RunFmt,
+        (width, room): (f32, f32),
+        metrics: (f32, f32),
+    ) -> (Vec<Item>, f32) {
         let (ascent, descent) = metrics;
+        let pitch = ascent + descent;
+        let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
+        let columns = if room.is_finite() {
+            stacked_columns(&text, ((room / pitch).floor() as usize).max(1))
+        } else {
+            vec![text.chars().filter(|ch| !ch.is_whitespace()).collect()]
+        };
         let mut items = Vec::new();
-        let mut line_y = ascent;
-        for ch in cell
-            .spans
-            .iter()
-            .flat_map(|span| span.text.chars())
-            .filter(|ch| !ch.is_whitespace())
-        {
-            let (mut run, run_w) = para::text_items(self.ctx, &ch.to_string(), base, 0.0, line_y);
-            translate(&mut run, (width - run_w) / 2.0, 0.0);
-            items.append(&mut run);
-            line_y += ascent + descent;
+        let mut text_h: f32 = 0.0;
+        let first_x = (width + (columns.len() as f32 - 1.0) * pitch) / 2.0;
+        for (number, column) in columns.iter().enumerate() {
+            let middle = first_x - number as f32 * pitch;
+            let mut line_y = ascent;
+            for ch in column {
+                if !ch.is_whitespace() {
+                    let (mut run, run_w) = para::text_items(self.ctx, &ch.to_string(), base, 0.0, line_y);
+                    translate(&mut run, middle - run_w / 2.0, 0.0);
+                    items.append(&mut run);
+                }
+                line_y += pitch;
+            }
+            text_h = text_h.max(line_y - ascent);
         }
-        (items, line_y - ascent)
+        (items, text_h)
+    }
+
+    /// The text of `cell` spread over `room` points from `left`, as
+    /// Excel distributes a text: its words, its spaces and each of its
+    /// Japanese and Chinese letters apart by even gaps, the first at the left and the
+    /// last at the right; one word centred. `None` when it does not fit
+    /// on a line, to be wrapped instead.
+    fn distributed_text(
+        &mut self,
+        cell: &GridCell,
+        base: &RunFmt,
+        left: f32,
+        room: f32,
+        ascent: f32,
+    ) -> Option<Vec<Item>> {
+        let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
+        // Each wide letter and each space is spread as a word is.
+        let mut units: Vec<String> = Vec::new();
+        let mut latin = String::new();
+        for ch in text.trim().chars() {
+            if ch.is_whitespace() || u32::from(ch) >= WIDE_LETTERS_FROM {
+                units.extend((!latin.is_empty()).then(|| std::mem::take(&mut latin)));
+                units.push(ch.to_string());
+            } else {
+                latin.push(ch);
+            }
+        }
+        units.extend((!latin.is_empty()).then_some(latin));
+        let runs: Vec<(Vec<Item>, f32)> = units
+            .iter()
+            .map(|unit| para::text_items(self.ctx, unit, base, 0.0, ascent))
+            .collect();
+        let used: f32 = runs.iter().map(|(_, run_w)| run_w).sum();
+        if units.is_empty() || used > room {
+            return None;
+        }
+        let gap = if runs.len() > 1 {
+            (room - used) / (runs.len() - 1) as f32
+        } else {
+            0.0
+        };
+        let mut pen = if runs.len() > 1 {
+            left
+        } else {
+            left + (room - used) / 2.0
+        };
+        let mut items = Vec::new();
+        for (mut run, run_w) in runs {
+            translate(&mut run, pen, 0.0);
+            items.append(&mut run);
+            pen += run_w + gap;
+        }
+        Some(items)
     }
 
     /// The text of `cell` wrapped at `inner_w`, aligned `align`, `pad` and
@@ -1330,6 +1522,35 @@ const MIN_ROOM_SLACK_PT: f32 = 0.5;
 
 /// The box of a page's part of the sheet (`columns` × `band`), as
 /// `[left, top, right, bottom]` on the page.
+/// The columns of stacked `text`, at most `per_column` letters each: a
+/// line break starts a new column, spaces that pass the foot of a column
+/// hang, and a column's trailing spaces are dropped.
+fn stacked_columns(text: &str, per_column: usize) -> Vec<Vec<char>> {
+    let mut columns = Vec::new();
+    let mut column: Vec<char> = Vec::new();
+    for ch in text.chars() {
+        if ch == '\n' {
+            columns.push(std::mem::take(&mut column));
+        } else if ch.is_whitespace() {
+            if column.len() < per_column {
+                column.push(ch);
+            }
+        } else {
+            if column.len() >= per_column {
+                columns.push(std::mem::take(&mut column));
+            }
+            column.push(ch);
+        }
+    }
+    columns.push(column);
+    for column in &mut columns {
+        while column.last().is_some_and(|ch| ch.is_whitespace()) {
+            column.pop();
+        }
+    }
+    columns
+}
+
 fn page_region(columns: &Columns, band: &Band, scale: f32) -> [f32; 4] {
     [
         columns.page_left,

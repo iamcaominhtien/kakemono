@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use super::ExcelConfig;
 use super::conditional;
 use super::drawing;
-use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, Merge, MergeIndex, Table};
+use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, HeaderFooter, Merge, MergeIndex, Table};
 use super::numfmt;
 use super::pull::{Event, Reader, Tag};
 use super::strings;
@@ -296,7 +296,9 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
                         }
                         continue;
                     }
-                    if parent == Place::Root && matches!(tag.local(), "conditionalFormatting" | "oleObjects") {
+                    if parent == Place::Root
+                        && matches!(tag.local(), "conditionalFormatting" | "oleObjects" | "headerFooter")
+                    {
                         let piece = subtree(&mut reader, &tag, &prefixes)?;
                         sheet.read_piece(tag.local(), piece.as_deref());
                         continue;
@@ -338,7 +340,7 @@ fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>
         .root_element()
         .children()
         .find(|node| is_sml(*node, "is"))
-        .map(strings::string_item)
+        .map(|item| strings::string_item(item, &|_| None))
         .unwrap_or_default())
 }
 
@@ -394,6 +396,32 @@ fn embedded_objects(piece: &str) -> Vec<EmbeddedObject> {
         })
         .take(MAX_EMBEDDED_OBJECTS)
         .collect()
+}
+
+/// The headers and footers of the document `piece` (`headerFooter`);
+/// `None` when it is damaged.
+fn header_footer(piece: &str) -> Option<HeaderFooter> {
+    let doc = parse(piece).ok()?;
+    let node = doc.descendants().find(|node| is_sml(*node, "headerFooter"))?;
+    let text = |name| {
+        node.children()
+            .find(|child| is_sml(*child, name))
+            .map(strings::text)
+            .unwrap_or_default()
+    };
+    let flag = |name, default| node.attribute(name).map_or(default, |value| is_on(Some(value)));
+    Some(HeaderFooter {
+        odd_header: text("oddHeader"),
+        odd_footer: text("oddFooter"),
+        even_header: text("evenHeader"),
+        even_footer: text("evenFooter"),
+        first_header: text("firstHeader"),
+        first_footer: text("firstFooter"),
+        different_odd_even: flag("differentOddEven", false),
+        different_first: flag("differentFirst", false),
+        scale_with_doc: flag("scaleWithDoc", true),
+        align_with_margins: flag("alignWithMargins", true),
+    })
 }
 
 impl SheetReader<'_, '_> {
@@ -489,14 +517,21 @@ impl SheetReader<'_, '_> {
             }
             (Place::Root, "pageMargins") => {
                 let print = &mut self.grid.print;
-                for (index, name) in ["left", "right", "top", "bottom"].iter().enumerate() {
-                    if let Some(inches) = tag
-                        .attr(name)
+                let inches = |name| {
+                    tag.attr(name)
                         .and_then(|value| value.trim().parse::<f32>().ok())
                         .filter(|inches| inches.is_finite() && (0.0..=MAX_MARGIN_INCHES).contains(inches))
-                    {
+                };
+                for (index, name) in ["left", "right", "top", "bottom"].iter().enumerate() {
+                    if let Some(inches) = inches(name) {
                         print.margins_pt[index] = inches * PT_PER_INCH;
                     }
+                }
+                if let Some(inches) = inches("header") {
+                    print.header_pt = inches * PT_PER_INCH;
+                }
+                if let Some(inches) = inches("footer") {
+                    print.footer_pt = inches * PT_PER_INCH;
                 }
                 Place::Other
             }
@@ -643,6 +678,8 @@ impl SheetReader<'_, '_> {
     fn read_piece(&mut self, name: &str, piece: Option<&str>) {
         if name == "oleObjects" {
             self.grid.objects = piece.map(embedded_objects).unwrap_or_default();
+        } else if name == "headerFooter" {
+            self.grid.print.header_footer = piece.and_then(header_footer).unwrap_or_default();
         } else if self.ctx.view {
             self.rules.extend(piece.map(conditional::read).unwrap_or_default());
         }

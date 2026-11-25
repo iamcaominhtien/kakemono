@@ -451,9 +451,10 @@ fn an_edited_cell_of_the_json_shows_in_markdown() {
 }
 
 /// By default a workbook is printed as Excel prints it: every cell's text
-/// is in the PDF, but not the sheet names (Excel prints none), on the
-/// paper its sheets name (A4 for the sample's, as LibreOffice wrote it);
-/// the charts are drawn as vector, the pictures as bitmaps.
+/// is in the PDF, with the headers and footers of its sheets (the sample's,
+/// as LibreOffice wrote them, give the sheet's name and the page number),
+/// on the paper its sheets name (A4 for the sample's); the charts are
+/// drawn as vector, the pictures as bitmaps.
 #[test]
 fn a_workbook_is_printed_as_excel_prints_it() {
     let (paper, analysis) = load(SAMPLE_XLSX);
@@ -462,7 +463,7 @@ fn a_workbook_is_printed_as_excel_prints_it() {
     assert!((pages[0].width - 595.28).abs() < 0.1 && (pages[0].height - 841.89).abs() < 0.1);
     let (text, _) = pdf_text(pdf);
     assert!(text.contains("2024-06-08") && text.contains("Alice Martin"), "{text}");
-    assert!(!text.contains("Two tables"));
+    assert!(text.contains("Two tables") && text.contains("Page 1"), "{text}");
     // Every value of the tables is printed (a print area may leave cells
     // out; the sample has none).
     for block in &analysis.doc.blocks {

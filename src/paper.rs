@@ -264,7 +264,16 @@ impl Paper {
             Source::Sheet(doc, paper, data, excel_config) => match config.style {
                 WorkbookPdfStyle::Document => crate::layout::workbook::to_pdf(doc, *paper, config),
                 // As the sheet view reads it, without its limits.
-                _ => crate::layout::workbook::print::to_pdf(&excel::read_book(data, excel_config)?, config),
+                _ => {
+                    // A header's `&F` prints the workbook's file name.
+                    let file = self.source.as_deref().map(|source| {
+                        std::path::Path::new(source)
+                            .file_name()
+                            .map_or(source, |name| name.to_str().unwrap_or(source))
+                    });
+                    let book = excel::read_book(data, excel_config)?;
+                    crate::layout::workbook::print::to_pdf(&book, config, file)
+                }
             },
             Source::Word(_, format, data) => {
                 let format = match format {

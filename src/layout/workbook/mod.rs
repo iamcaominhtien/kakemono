@@ -9,6 +9,7 @@
 //! columns that each repeat the first ([`table`]); figures at their size,
 //! made smaller to fit the page; numbered pages.
 
+mod header;
 pub(crate) mod print;
 mod table;
 

@@ -263,17 +263,18 @@ fn read_sheets_with_styles<'w>(
     pictures: &mut Pictures,
     view: bool,
 ) -> Result<(Sheets<'w>, styles::Styles)> {
-    // A workbook without string cells has no shared strings part.
-    let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
-        Some(xml) => strings::read(&xml)?,
-        None => Vec::new(),
-    };
     let mut styles = zip
         .read_text(&related_part(zip, &workbook.part, STYLES_REL))
         .ok()
         .flatten()
         .and_then(|xml| styles::read(&xml).ok())
         .unwrap_or_default();
+    let paint = |node: roxmltree::Node<'_, '_>| styles::color_of(node)?.rgb(&pictures.theme, styles.palette.as_deref());
+    // A workbook without string cells has no shared strings part.
+    let strings = match zip.read_text(&workbook.shared_strings_part(zip))? {
+        Some(xml) => strings::read(&xml, &paint)?,
+        None => Vec::new(),
+    };
     let in_cells = richdata::cell_pictures(zip, &workbook.part);
     let mut sheets = Vec::new();
     for (index, sheet) in workbook.sheets.iter().enumerate() {

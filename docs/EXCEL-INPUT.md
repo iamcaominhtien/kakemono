@@ -117,7 +117,7 @@ The text is the value **as Excel shows it**, not the stored number:
   back to the general format.
 - **A currency symbol** is kept only when a custom format code writes it (`"¥"#,##0`, `[$€-407]`);
   the built-in currency formats (ids 5 to 8) give the number alone.
-- Strings keep bold, italic, subscript and superscript of their rich-text runs. **Furigana**
+- Strings keep bold, italic, subscript, superscript and the colour of their rich-text runs. **Furigana**
   (phonetic runs, in nearly every Japanese workbook) never reaches the text.
 - Booleans are `TRUE` and `FALSE`; errors are written as in the cell (`#N/A`); a formula gives
   the value saved in the file (kakemono does not recompute): empty when the file has none.
@@ -174,7 +174,8 @@ its formatting:
   Arial or Times New Roman, as in the PDF; size, colour, bold,
   italic, underline, strike), fill (solid and shaded patterns; a gradient's first colour), borders
   (thin, medium, thick, dashed, dotted, double), alignment (numbers right, text left unless the
-  cell says otherwise; vertical; indent; wrapped text; text turned or stacked), with theme colours
+  cell says otherwise; distributed, 均等割付, spread over the cell's width; vertical; indent;
+  wrapped text; text turned or stacked, a stacked text that wraps going on in columns to the left), with theme colours
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
   next cell with a value; a text centred across the selection (`centerContinuous`) is centred over
@@ -244,19 +245,28 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   in Times New Roman or Arial when they are not installed, since the IPA P fonts' digits are wider
   than half an em; Japanese text of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
   aligned as Excel aligns it (centred across the selection too, wrapped in its width), wrapped when the cell wraps,
-  running over the empty cells beside it and cut at the next value or the page's edge; text turned 90° or stacked is set a letter a line;
+  running over the empty cells beside it and cut at the next value or the page's edge; a distributed
+  text (均等割付) spread over the cell, its words, spaces and Japanese letters apart by even gaps;
+  lines broken by Word's Japanese rules (no line ends with an opening bracket, none starts with a
+  closing one or 、。); text turned 90° or stacked is set a letter a line, a stacked text that
+  wraps going on in columns to the left;
   links kept (http, https, mailto, ftp);
 - charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break
   is cut, its parts on their pages;
 - a merged range cut by a page break shows its part on each page, its borders and fill cut at
   the page's edge;
+- the headers and footers of the sheet (left, centre and right sections; the page number and
+  count, the sheet's name, the file's name, the date (ISO) and time of printing; font, size, bold,
+  italic, underline, strike and colour codes; their own first and even pages), at their distances
+  from the paper's edges, scaled with the sheet unless they are set not to be; pictures in them are
+  left out;
 - a page with nothing to print is left out, as Excel does;
 - at most `print_max_pages` (2,000) pages.
 
 Conditional formats print as the sheet view draws them, data bars in one colour.
 
-Not printed: headers and footers, the conditional formats the sheet view leaves out, comments, the curves of curved connectors
+Not printed: pictures of headers and footers, the conditional formats the sheet view leaves out, comments, the curves of curved connectors
 (drawn straight), text turned by another angle. The text stays text: it can be selected and
 searched.
 
