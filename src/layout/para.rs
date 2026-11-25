@@ -432,9 +432,21 @@ fn breaks_after(ch: char, next: Option<char>) -> bool {
             next.is_some_and(|next| next.is_alphanumeric() || is_east_asian(next))
         }
         '\u{00AD}' => true,
-        _ => is_east_asian(ch) || next.is_some_and(is_east_asian),
+        _ => {
+            (is_east_asian(ch) || next.is_some_and(is_east_asian))
+                && !NO_LINE_END.contains(ch)
+                && !next.is_some_and(|next| NO_LINE_START.contains(next))
+        }
     }
 }
+
+/// The letters a line may not end with, by Word's standard East Asian line
+/// breaking rules (kinsoku): opening brackets and quotes, currency signs.
+const NO_LINE_END: &str = "$([{£¥‘“〈《「『【〔＄（［｛｢￡￥";
+
+/// The letters a line may not start with, by the same rules: closing
+/// brackets and quotes, punctuation, iteration marks, sound marks.
+const NO_LINE_START: &str = "!%),.:;?]}¢°’”‰′″℃、。々〉》」』】〕゛゜ゝゞ・ヽヾ！％），．：；？］｝｡｣､･ﾞﾟ￠";
 
 /// The words of a stretch of text: (start, end of the body, end with the
 /// trailing spaces), as byte offsets.
@@ -1751,4 +1763,22 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
         fake_italic: piece.fake_italic,
         scale: piece.scale,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn japanese_lines_keep_brackets_and_punctuation_to_their_letters() {
+        // Between two Japanese letters a line may break...
+        assert!(breaks_after('予', Some('定')));
+        // ...but not after an opening bracket, nor before a closing one or
+        // a full stop.
+        assert!(!breaks_after('(', Some('予')));
+        assert!(!breaks_after('（', Some('予')));
+        assert!(!breaks_after('日', Some('）')));
+        assert!(!breaks_after('日', Some('。')));
+        assert!(breaks_after('。', Some('次')));
+    }
 }
