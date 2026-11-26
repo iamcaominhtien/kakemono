@@ -695,7 +695,13 @@ fn gov_guide_keeps_card_headings_and_loses_its_feedback_form() {
         assert!(matches!(found.kind, BlockKind::Heading { .. }), "{:?}", found.kind);
     }
     assert!(has_text(&doc, "You need a passport to travel"));
-    for clutter in ["Skip contents", "Help us improve", "robots only", "What were you doing", "titleContent"] {
+    for clutter in [
+        "Skip contents",
+        "Help us improve",
+        "robots only",
+        "What were you doing",
+        "titleContent",
+    ] {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
 }
