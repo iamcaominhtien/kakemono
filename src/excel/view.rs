@@ -443,7 +443,7 @@ impl Page<'_> {
         let line = match edge.line {
             Line::Solid => "solid",
             Line::Dashed => "dashed",
-            Line::Dotted => "dotted",
+            Line::Dotted | Line::Hair => "dotted",
             Line::Double => "double",
         };
         let color = edge.color.and_then(|color| self.rgb(color)).unwrap_or([0; 3]);

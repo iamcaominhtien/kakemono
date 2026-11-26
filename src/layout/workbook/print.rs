@@ -60,6 +60,9 @@ const CELL_PADDING_PT: f32 = 1.5;
 const CELL_PADDING_TOP_PT: f32 = 1.0;
 /// The width of one step of a cell's indent, in points.
 const INDENT_STEP_PT: f32 = 7.5;
+/// The width of the thinnest border (`hair`), and the least of any border,
+/// on paper, in points.
+const HAIR_LINE_PT: f32 = 0.25;
 /// The colour of printed gridlines.
 const GRID_LINE_COLOR: Rgb = [0xBF, 0xBF, 0xBF];
 /// The most empty columns a text runs over, as the sheet view.
@@ -991,11 +994,15 @@ impl Printer<'_, '_, '_> {
         for ((x1, y1, x2, y2), edge) in sides.into_iter().zip(look.borders) {
             let Some(edge) = edge else { continue };
             let color = edge.color.and_then(|color| self.rgb(color)).unwrap_or([0; 3]);
-            let line_w = (edge.width_px * PT_PER_PX * scale.max(0.5)).max(0.25);
+            let line_w = if edge.line == Line::Hair {
+                HAIR_LINE_PT
+            } else {
+                (edge.width_px * PT_PER_PX * scale.max(0.5)).max(HAIR_LINE_PT)
+            };
             let dash = match edge.line {
                 Line::Dashed => Some(line_w * 3.0),
                 Line::Dotted => Some(line_w),
-                Line::Solid | Line::Double => None,
+                Line::Solid | Line::Hair | Line::Double => None,
             };
             if edge.line == Line::Double {
                 // Two thin lines, a line apart.

@@ -114,6 +114,9 @@ pub(crate) enum Line {
     Dashed,
     /// A dotted line.
     Dotted,
+    /// The thinnest line (`hair`): dotted on the screen, a thin solid line
+    /// on paper.
+    Hair,
     /// Two thin lines.
     Double,
 }
@@ -727,7 +730,7 @@ fn border(node: Node<'_, '_>) -> [Option<Edge>; 4] {
 fn edge(node: Node<'_, '_>) -> Option<Edge> {
     let (line, width_px) = match node.attribute("style")? {
         "thin" => (Line::Solid, 1.0),
-        "hair" => (Line::Dotted, 1.0),
+        "hair" => (Line::Hair, 1.0),
         "dotted" => (Line::Dotted, 1.0),
         "dashed" | "dashDot" | "dashDotDot" => (Line::Dashed, 1.0),
         "medium" => (Line::Solid, 2.0),
@@ -870,7 +873,7 @@ mod tests {
         );
         assert_eq!(look.borders[1], None);
         assert_eq!(look.borders[2].map(|edge| edge.line), Some(Line::Double));
-        assert_eq!(look.borders[3].map(|edge| edge.line), Some(Line::Dotted));
+        assert_eq!(look.borders[3].map(|edge| edge.line), Some(Line::Hair));
         assert_eq!(
             (look.h_align, look.v_align, look.wrap, look.indent),
             (HAlign::Right, VAlign::Middle, true, 2)

@@ -241,7 +241,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   font set in its place, so that no line is cut, and the drawn objects below it move down with
   their cells (it never shrinks: LibreOffice, which fits such rows both ways, can print fewer
   pages);
-- on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double), the text in the
+- on each page: cell fills, borders (thin, medium, thick, dashed, dotted, double; a hairline, dotted
+  on the screen, as a thin solid line, as Excel prints it), the text in the
   cell's font (its family or a font with its metrics: Calibri as Carlito, Century Gothic as URW
   Gothic...; MS Mincho and MS Gothic, P or not, as the IPA fonts, their Latin letters and digits
   in Times New Roman or Arial when they are not installed, since the IPA P fonts' digits are wider
