@@ -94,7 +94,16 @@ FIXED = [
     ("gov", "govuk-vat", "https://www.gov.uk/how-vat-works"),
     ("gov", "govuk-passport", "https://www.gov.uk/apply-renew-passport"),
     ("gov", "usagov-passport", "https://www.usa.gov/passport"),
-    ("gov", "chinhphu-home", "https://chinhphu.vn/"),
+    ("gov", "govuk-universal-credit", "https://www.gov.uk/universal-credit/eligibility"),
+    ("gov", "govuk-news-director", "https://www.gov.uk/government/news/company-director-sentenced-after-liquidators-unable-to-verify-more-than-1-million"),
+    ("gov", "usagov-social-security-card", "https://www.usa.gov/social-security-card"),
+    ("gov", "usagov-unemployment", "https://www.usa.gov/unemployment"),
+    ("gov", "irs-who-should-file", "https://www.irs.gov/filing/individuals/who-should-file"),
+    ("gov", "nhs-flu", "https://www.nhs.uk/conditions/flu/"),
+    ("gov", "europa-entry-exit", "https://europa.eu/youreurope/citizens/travel/entry-exit/eu-citizen/index_en.htm"),
+    ("gov", "service-public-passeport", "https://www.service-public.fr/particuliers/vosdroits/F1342"),
+    ("gov", "chinhphu-cuc-thong-tin", "https://chinhphu.vn/gioi-thieu-69424"),
+    ("gov", "baochinhphu-dong-da", "https://baochinhphu.vn/khan-truong-khac-phuc-hau-qua-vu-no-tai-dong-da-ha-noi-102261124132108005.htm"),
     ("other", "anthropic-tools", "https://www.anthropic.com/research/writing-tools-for-agents"),
     ("other", "anthropic-building-agents", "https://www.anthropic.com/engineering/building-effective-agents"),
     ("other", "cnn-huang", "https://edition.cnn.com/2026/11/23/politics/trump-administration-jensen-huang-reinstated"),
@@ -103,6 +112,7 @@ FIXED = [
     ("other", "willison-llms-2024", "https://simonwillison.net/2024/Dec/31/llms-in-2024/"),
     ("other", "hn-front", "https://news.ycombinator.com/"),
     ("other", "vnexpress-home", "https://vnexpress.net/"),
+    ("other", "chinhphu-home", "https://chinhphu.vn/"),
 ]
 
 

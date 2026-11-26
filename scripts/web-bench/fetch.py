@@ -34,7 +34,7 @@ def curl(url: str, dest: Path) -> bool:
     """Downloads `url` to `dest`; False when it fails (the file is then absent)."""
     part = dest.with_suffix(dest.suffix + ".part")
     run = subprocess.run(
-        ["curl", "-fsSL", "--retry", "2", "-m", "60", "-A", USER_AGENT, "-o", str(part), url],
+        ["curl", "-fsSL", "--compressed", "--retry", "2", "-m", "60", "-A", USER_AGENT, "-o", str(part), url],
         capture_output=True,
         check=False,
     )
