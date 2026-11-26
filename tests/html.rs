@@ -669,3 +669,64 @@ fn html_outputs_match_their_snapshot() {
          KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test html"
     );
 }
+
+/// A page of a government site as GOV.UK and usa.gov lay it out: a link to
+/// skip the contents, cards that are links with a heading in a
+/// `…__header`, a hidden heading that names a tab, and a feedback form.
+const GOV_GUIDE: &str = r##"<!doctype html><html lang="en"><head><title>How VAT works - GOV.UK</title></head>
+<body><main><h1>How VAT works</h1>
+<a class="gem-c-skip-link govuk-skip-link" href="#guide-contents">Skip contents</a>
+<p>VAT (Value Added Tax) is a tax added to most products and services sold by VAT-registered businesses.
+Businesses have to register for VAT if their taxable turnover is more than the threshold.</p>
+<h2 class="fr-sr-only">In the UK</h2>
+<p>As a VAT-registered business you must include VAT in the price of all goods and services at the correct rate.</p>
+<ul class="usa-list"><li><a href="/apply-adult-passport"><div class="usa-card__header"><h2>Apply for a new adult passport</h2></div>
+<div class="usa-card__body"><p>You need a passport to travel to most countries outside the U.S.</p></div></a></li></ul>
+<div class="gem-c-feedback"><h2>Help us improve GOV.UK</h2>
+<form><p class="govuk-visually-hidden">This field is for robots only. Please leave blank</p>
+<label>What were you doing?</label><textarea></textarea></form></div>
+</main></body></html>"##;
+
+#[test]
+fn gov_guide_keeps_card_headings_and_loses_its_feedback_form() {
+    let doc = page(GOV_GUIDE);
+    for heading in ["Apply for a new adult passport", "In the UK"] {
+        let found = block(&doc, heading);
+        assert!(matches!(found.kind, BlockKind::Heading { .. }), "{:?}", found.kind);
+    }
+    assert!(has_text(&doc, "You need a passport to travel"));
+    for clutter in ["Skip contents", "Help us improve", "robots only", "What were you doing"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
+/// A page of chinhphu.vn: its heading in capitals out of the article, the
+/// title again in the article, and the site, which holds the copyright, as
+/// the author.
+const GOV_VI: &str = r#"<!doctype html><html lang="vi"><head><title></title>
+<meta property="og:title" content="Giới thiệu Cục Thông tin và Truyền thông Chính phủ">
+<meta name="author" content="Cổng Thông tin điện tử Chính phủ">
+<meta name="copyright" content="Cổng Thông tin điện tử Chính phủ - Cục Thông tin và Truyền thông Chính phủ">
+</head><body><div class="category"><h1>GIỚI THIỆU CỤC THÔNG TIN VÀ TRUYỀN THÔNG CHÍNH PHỦ</h1></div>
+<div class="content"><div class="title">Giới thiệu Cục Thông tin và Truyền thông Chính phủ</div>
+<p>Cục Thông tin và Truyền thông Chính phủ là tổ chức hành chính trực thuộc Văn phòng Chính phủ, có chức năng tham mưu, giúp Bộ trưởng, Chủ nhiệm Văn phòng Chính phủ quản lý nhà nước về công báo.</p>
+<p>Tên giao dịch quốc tế bằng tiếng Anh là Department of Government Information and Communications.</p></div>
+</body></html>"#;
+
+#[test]
+fn gov_page_title_is_said_once_and_the_site_is_no_author() {
+    let doc = page(GOV_VI);
+    let title = "Giới thiệu Cục Thông tin và Truyền thông Chính phủ";
+    assert_eq!(doc.meta.title.as_deref(), Some(title));
+    assert_eq!(
+        texts(&doc)
+            .iter()
+            .filter(|text| text.to_lowercase() == title.to_lowercase())
+            .count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert!(has_text(&doc, "Tên giao dịch quốc tế"));
+    assert!(!has_text(&doc, "Cổng Thông tin điện tử"), "{:#?}", texts(&doc));
+}

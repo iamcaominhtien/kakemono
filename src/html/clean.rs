@@ -140,7 +140,7 @@ const CLUTTER_ROLES: [&str; 14] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 40] = [
+const CLUTTER_WORDS: [&str; 41] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -160,6 +160,8 @@ const CLUTTER_WORDS: [&str; 40] = [
     "cookies",
     "disqus",
     "editsection",
+    // `Is this page useful?`, `Help us improve GOV.UK`.
+    "feedback",
     "gdpr",
     "modal",
     "navbox",
@@ -442,7 +444,7 @@ impl Meta {
 /// The names of the site of a page, lower case, which are not authors
 /// (Dân trí's `author`): the name its metadata gives (`first` reads it),
 /// the end of its title after a separator, its domain without its suffix
-/// (`VnExpress` of `vnexpress.net`).
+/// (`VnExpress` of `vnexpress.net`), who holds its copyright.
 fn site_names(dom: &Dom, scope: Id, first: &dyn Fn(&[&str]) -> Option<String>) -> Vec<String> {
     let mut site: Vec<String> = first(&["og:site_name", "application-name"])
         .into_iter()
@@ -463,6 +465,23 @@ fn site_names(dom: &Dom, scope: Id, first: &dyn Fn(&[&str]) -> Option<String>) -
         host.split('.').next().map(|label| format!(" {label}"))
     });
     site.extend(domain);
+    // Who holds the copyright (`Cổng Thông tin điện tử Chính phủ - Cục…`).
+    let holder = first(&["copyright"]).and_then(|text| {
+        let text = text.to_lowercase();
+        let mark = |ch: char| ch == '©' || ch.is_ascii_digit() || ch.is_whitespace();
+        let text = text
+            .trim_start_matches(mark)
+            .trim_start_matches("copyright")
+            .trim_start_matches(mark);
+        let holder = SITE_SEPARATORS
+            .iter()
+            .filter_map(|separator| text.split_once(separator).map(|(holder, _)| holder))
+            .min_by_key(|holder| holder.len())
+            .unwrap_or(text)
+            .trim();
+        (!holder.is_empty()).then(|| holder.to_string())
+    });
+    site.extend(holder);
     site
 }
 
@@ -502,6 +521,7 @@ fn title(dom: &mut Dom, body: Id, root: Id, meta: &Meta) -> Option<String> {
         let text = dom.clean_text(h1);
         if !text.is_empty() {
             dom.add_class(h1, "title");
+            repeated_title(dom, root, h1, &text);
             return Some(text);
         }
     }
@@ -519,13 +539,46 @@ fn title(dom: &mut Dom, body: Id, root: Id, meta: &Meta) -> Option<String> {
             !text.is_empty() && (same_article || is_title)
         });
     if let Some((_, text)) = outer {
+        // The title of the metadata when the heading is in capitals.
+        let text = known
+            .iter()
+            .find_map(|title| {
+                title
+                    .as_deref()
+                    .filter(|title| same_text(title, &text) && text.to_uppercase() == text)
+            })
+            .map_or(text.clone(), str::to_string);
         let heading = dom.element("h1", &[("class", "title")]);
         let words = dom.text_node(&text);
         dom.append(heading, words);
         dom.insert(root, 0, heading);
+        repeated_title(dom, root, heading, &text);
         return Some(text);
     }
     meta.meta_title.clone().or_else(|| meta.page_title.clone())
+}
+
+/// Removes the block just after the title `h1` that says it again, in
+/// other case (a heading `GIỚI THIỆU…`, then `Giới thiệu…`).
+fn repeated_title(dom: &mut Dom, root: Id, h1: Id, title: &str) {
+    let inside = dom.descendants(h1);
+    let Some(text) = dom
+        .descendants(root)
+        .into_iter()
+        .skip_while(|&id| id != h1)
+        .filter(|id| !inside.contains(id))
+        .find(|&id| matches!(&dom.nodes[id].kind, Kind::Text(text) if !text.trim().is_empty()))
+    else {
+        return;
+    };
+    let block = dom.ancestor(text, |id| dom.is_any(id, &["p", "div", "h2", "h3", "h4", "h5", "h6"]));
+    if let Some(block) = block
+        && block != root
+        && dom.contains(root, block)
+        && same_text(&dom.clean_text(block), title)
+    {
+        dom.detach(block);
+    }
 }
 
 /// Whether two titles are the same, but for case and white space.
@@ -543,6 +596,34 @@ fn words(value: &str) -> impl Iterator<Item = String> {
         .map(str::to_lowercase)
 }
 
+/// Whether `node` is a heading (rustdoc's `code-header`) or the head of
+/// a card that is a link, all its text one heading (usa.gov's
+/// `usa-card__header`): the head of a part, not of the page.
+fn is_heading_box(dom: &Dom, node: Id) -> bool {
+    if dom.is_any(node, &["h2", "h3", "h4", "h5", "h6"]) {
+        return true;
+    }
+    let text = dom.clean_text(node);
+    !text.is_empty()
+        && dom.ancestor(node, |id| dom.is(id, "a")).is_some()
+        && ["h2", "h3", "h4"]
+            .iter()
+            .flat_map(|name| dom.find_all(node, name))
+            .any(|heading| dom.clean_text(heading) == text)
+}
+
+/// Whether a class of `node` hides it, alone or after the name of a
+/// design system (`govuk-visually-hidden`, `govuk-skip-link`).
+fn has_hidden_class(dom: &Dom, node: Id) -> bool {
+    dom.classes(node).any(|class| {
+        let class = class.to_ascii_lowercase();
+        HIDDEN_CLASSES.iter().any(|hidden| {
+            class == *hidden
+                || (hidden.contains('-') && class.strip_suffix(hidden).is_some_and(|rest| rest.ends_with('-')))
+        })
+    })
+}
+
 /// Whether the element `node` is clutter by its class or `id`.
 fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     let mut names = String::new();
@@ -551,10 +632,9 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     names.push_str(dom.attr(node, "id").unwrap_or_default());
     names.push(' ');
     names.push_str(dom.attr(node, "data-role").unwrap_or_default());
-    if dom
-        .classes(node)
-        .any(|class| HIDDEN_CLASSES.contains(&class.to_ascii_lowercase().as_str()))
-    {
+    // A hidden heading names a part (a tab, `En France`) to whom does not
+    // see the page: it names it to a reader too.
+    if has_hidden_class(dom, node) && !dom.is_any(node, &["h2", "h3", "h4", "h5", "h6"]) {
         return true;
     }
     if dom
@@ -565,7 +645,7 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     }
     let words: Vec<String> = words(&names).collect();
     let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
-    has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS))
+    has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS) && !is_heading_box(dom, node))
 }
 
 /// Whether the element is hidden by its attributes (`hidden`,
@@ -641,10 +721,12 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
                 .any(|role| CLUTTER_ROLES.contains(&role.to_ascii_lowercase().as_str()))
         });
         let share = weight[node] as f32 / total as f32;
-        let named_clutter = !NEVER_CLUTTER.contains(&name.as_str())
+        let named_clutter = (!NEVER_CLUTTER.contains(&name.as_str())
             && !in_heading
             && share <= CLUTTER_MAX_SHARE_RATIO
-            && is_clutter_by_name(dom, node);
+            && is_clutter_by_name(dom, node))
+            // A link to skip to the content.
+            || (name == "a" && has_hidden_class(dom, node));
         let landmark = matches!(name.as_str(), "header" | "footer")
             && dom.ancestor(node, |id| dom.is_any(id, &["article", "main"])).is_none();
         // A page that shows itself with a script hides its article until
