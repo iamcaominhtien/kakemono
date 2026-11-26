@@ -122,7 +122,7 @@ const REMOVED: [&str; 26] = [
     "track", "aside", "frameset",
 ];
 /// Roles of elements that are not part of an article.
-const CLUTTER_ROLES: [&str; 14] = [
+const CLUTTER_ROLES: [&str; 15] = [
     "navigation",
     "banner",
     "contentinfo",
@@ -137,6 +137,8 @@ const CLUTTER_ROLES: [&str; 14] = [
     "button",
     "alert",
     "status",
+    // Shown on hover, filled by a script (`: titleContent`).
+    "tooltip",
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).

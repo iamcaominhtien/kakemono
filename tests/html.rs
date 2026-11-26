@@ -679,7 +679,7 @@ const GOV_GUIDE: &str = r##"<!doctype html><html lang="en"><head><title>How VAT 
 <p>VAT (Value Added Tax) is a tax added to most products and services sold by VAT-registered businesses.
 Businesses have to register for VAT if their taxable turnover is more than the threshold.</p>
 <h2 class="fr-sr-only">In the UK</h2>
-<p>As a VAT-registered business you must include VAT in the price of all goods and services at the correct rate.</p>
+<p>As a VAT-registered business<span role="tooltip">: titleContent</span> you must include VAT in the price of all goods and services at the correct rate.</p>
 <ul class="usa-list"><li><a href="/apply-adult-passport"><div class="usa-card__header"><h2>Apply for a new adult passport</h2></div>
 <div class="usa-card__body"><p>You need a passport to travel to most countries outside the U.S.</p></div></a></li></ul>
 <div class="gem-c-feedback"><h2>Help us improve GOV.UK</h2>
@@ -695,7 +695,7 @@ fn gov_guide_keeps_card_headings_and_loses_its_feedback_form() {
         assert!(matches!(found.kind, BlockKind::Heading { .. }), "{:?}", found.kind);
     }
     assert!(has_text(&doc, "You need a passport to travel"));
-    for clutter in ["Skip contents", "Help us improve", "robots only", "What were you doing"] {
+    for clutter in ["Skip contents", "Help us improve", "robots only", "What were you doing", "titleContent"] {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
 }
