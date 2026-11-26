@@ -464,6 +464,39 @@ fn tech_news_repeats_bylines_and_author_boxes_are_gone() {
 }
 
 #[test]
+fn the_photo_above_an_article_is_its_lead_picture() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let body =
+        "The engineer is suing the company over how it handled her complaints, the lawsuit filed on Monday says. ";
+    let html = format!(
+        r#"<!doctype html><html><head><title>Lawsuit</title>
+<meta property="og:image" content="https://news.example.org/uploads/lawsuit.png?resize=1200,877"></head><body>
+<div class="hero"><figure><img src="https://news.example.org/uploads/lawsuit.png?w=1024" width="1024" height="749">
+<figcaption>Image Credits: Getty Images</figcaption></figure></div>
+<main><div class="entry-content"><h1>Engineer sues</h1><p>{body}</p><p>{body}</p><p>{body}</p></div></main></body></html>"#
+    );
+    let doc = page_at(
+        &html,
+        "https://news.example.org/lawsuit",
+        &[("https://news.example.org/uploads/lawsuit.png?w=1024", &png)],
+    );
+    let figure = block(&doc, "Image Credits");
+    assert!(
+        matches!(&figure.kind, BlockKind::Figure { image: Some(_), .. }),
+        "{:?}",
+        figure.kind
+    );
+    // After the title, before the text.
+    let at = |start: &str| {
+        doc.blocks
+            .iter()
+            .position(|block| block.text().starts_with(start))
+            .unwrap()
+    };
+    assert!(at("Engineer sues") < at("Image Credits") && at("Image Credits") < at("The engineer"));
+}
+
+#[test]
 fn links_become_absolute_or_internal() {
     let html = r##"<html><body><article><h1>Links</h1>
         <p>See <a href="../other.html">another page</a>, <a href="#part">the part below</a>,

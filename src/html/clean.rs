@@ -313,12 +313,16 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
         }
     }
     pictures(dom, body, base);
+    let lead = lead_picture(dom, body, &meta, base);
     remove_clutter(dom, body);
     let (root, trailing) = find_root(dom, body);
     for node in trailing {
         dom.detach(node);
     }
     let root = without_article(dom, root, &meta);
+    if let Some(lead) = lead {
+        place_lead_picture(dom, root, lead);
+    }
     remove_teasers(dom, root, base, &meta);
     before_title(dom, root);
     repeated_links(dom, root);
@@ -354,6 +358,8 @@ struct Meta {
     /// Its address, as it says (`og:url`, `<link rel="canonical">`): where a
     /// saved page came from.
     url: Option<String>,
+    /// The address of its picture (`og:image`).
+    image: Option<String>,
 }
 
 impl Meta {
@@ -421,12 +427,14 @@ impl Meta {
                 .map(str::to_string)
         });
         let url = first(&["og:url"]).or(canonical);
+        let image = first(&["og:image", "twitter:image"]);
         Meta {
             page_title,
             meta_title,
             authors,
             description,
             url,
+            image,
         }
     }
 }
@@ -847,6 +855,43 @@ fn is_author_box(dom: &Dom, node: Id) -> bool {
             .descendants(node)
             .into_iter()
             .any(|id| dom.is_any(id, &["table", "ol", "pre", "h1", "figure"]))
+}
+
+/// The picture of the page (its `og:image`) in `body`, to show at the
+/// start of an article without one: the photo above the title of a news
+/// article, outside the element that holds its text (TechCrunch, The
+/// Verge). Its `<figure>` when it is alone in one.
+fn lead_picture(dom: &Dom, body: Id, meta: &Meta, base: &Base<'_>) -> Option<Id> {
+    let image = absolute(meta.image.as_deref()?, base);
+    let file = |src: &str| {
+        let path = src.split(['?', '#']).next().unwrap_or(src);
+        path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
+    };
+    let wanted = file(&image);
+    if wanted.is_empty() {
+        return None;
+    }
+    let img = dom
+        .find_all(body, "img")
+        .into_iter()
+        .find(|&img| dom.attr(img, "src").is_some_and(|src| file(src) == wanted))?;
+    let figure = dom
+        .ancestor(img, |id| dom.is(id, "figure"))
+        .filter(|&figure| dom.find_all(figure, "img").len() == 1);
+    Some(figure.unwrap_or(img))
+}
+
+/// Puts the picture `lead` at the start of the article in `root` (after
+/// its title), when the article has no picture of its own.
+fn place_lead_picture(dom: &mut Dom, root: Id, lead: Id) {
+    if dom.contains(root, lead) || dom.find(root, "img").is_some() || dom.contains(lead, root) {
+        return;
+    }
+    dom.detach(lead);
+    match dom.find(root, "h1") {
+        Some(h1) => dom.insert_after(h1, lead),
+        None => dom.insert(root, 0, lead),
+    }
 }
 
 /// The element that holds the article, or, when the page has none (a
