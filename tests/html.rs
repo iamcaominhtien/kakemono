@@ -399,7 +399,7 @@ const TECH_NEWS: &str = r#"<!doctype html><html lang="en"><head><title>Hacker se
 <p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
 <p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
 <p>by</p><p><a href="/article#comments">43 Comments</a></p>
-<p class="byline"><a href="/author/beth/">Beth Mole</a> – Nov 23, 2026 4:58 pm | <a href="/article#comments">163</a></p>
+<p class="byline"><a href="/author/beth/">Beth Mole</a> – Nov 23, 2026 4:58 pm <span>|</span> <a href="/article#comments">163</a></p>
 <figure><img src="data:image/png;base64,iVBORw0KGgo=" width="600" height="300"><figcaption><span class="credits"><strong>Image Credits:</strong> Rockstar Games</span></figcaption></figure>
 <div class="caption-content">Credit: NASA</div><div class="caption-content">Credit: NASA</div>
 <p>The judge said the hacker would stay in a secure hospital, where he had already spent time before his trial.</p>

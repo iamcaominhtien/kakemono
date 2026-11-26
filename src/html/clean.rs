@@ -56,6 +56,8 @@ const REPEATED_BLOCK_MIN_CHARS: usize = 10;
 /// Most characters (not spaces) of a box around a button that asks the
 /// reader to press it.
 const CALL_TO_ACTION_MAX_CHARS: usize = 200;
+/// Characters that separate the parts of a byline.
+const SEPARATORS: [char; 4] = ['|', '·', '•', '/'];
 /// Most characters of a link to the comments of an article.
 const COMMENT_LINK_MAX_CHARS: usize = 30;
 /// The word of a byline before the name of its author, alone in a block
@@ -1116,17 +1118,26 @@ fn comment_links(dom: &mut Dom, root: Id) {
             })
         });
         if to_comments && dom.clean_text(link).chars().count() <= COMMENT_LINK_MAX_CHARS {
-            // The separator before it goes too (`– Nov 23, 2026 |`).
+            // The separator before it goes too (`– Nov 23, 2026 |`), as
+            // text or in an element of its own.
             let before = dom.nodes[link].parent.and_then(|parent| {
                 let siblings = &dom.nodes[parent].children;
                 let at = siblings.iter().position(|&id| id == link)?;
-                at.checked_sub(1).map(|at| siblings[at])
+                siblings[..at]
+                    .iter()
+                    .rev()
+                    .find(|&&id| !matches!(&dom.nodes[id].kind, Kind::Text(text) if text.trim().is_empty()))
+                    .copied()
             });
-            if let Some(before) = before
-                && let Kind::Text(text) = &mut dom.nodes[before].kind
-            {
-                let kept = text.trim_end().trim_end_matches(['|', '·', '•']).trim_end().len();
-                text.truncate(kept);
+            if let Some(before) = before {
+                let separator =
+                    |text: &str| !text.trim().is_empty() && text.trim().chars().all(|ch| SEPARATORS.contains(&ch));
+                if let Kind::Text(text) = &mut dom.nodes[before].kind {
+                    let kept = text.trim_end().trim_end_matches(SEPARATORS).trim_end().len();
+                    text.truncate(kept);
+                } else if separator(&dom.clean_text(before)) {
+                    dom.detach(before);
+                }
             }
             dom.detach(link);
         }
