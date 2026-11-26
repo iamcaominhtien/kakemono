@@ -211,6 +211,10 @@ pub(crate) struct Looks {
     pub(crate) conditional: BTreeMap<(u32, u32), Vec<u32>>,
     /// The data bars of the cells that have one.
     pub(crate) bars: BTreeMap<(u32, u32), DataBar>,
+    /// Where the fill of their number format (`*x`) widens the text of
+    /// the cells that have one, as a byte offset into it: the text before
+    /// it keeps to the cell's left edge, the text after to its right.
+    pub(crate) fills: BTreeMap<(u32, u32), usize>,
 }
 
 /// The data bar a conditional format draws in a cell.

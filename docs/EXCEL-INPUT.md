@@ -175,7 +175,9 @@ its formatting:
   italic, underline, strike), fill (solid and shaded patterns; a gradient's first colour), borders
   (thin, medium, thick, dashed, dotted, double), alignment (numbers right, text left unless the
   cell says otherwise; distributed, 均等割付, spread over the cell's width; vertical; indent;
-  wrapped text; text turned or stacked, a stacked text that wraps going on in columns to the left), with theme colours
+  wrapped text; text turned or stacked, a stacked text that wraps going on in columns to the left; a
+  number format's fill, `*x`, sets the text before it at the cell's left edge and the text after it
+  at the right, as an accounting format sets `$` apart from the amount), with theme colours
   and tints and the legacy palette; formats of whole rows and columns too;
 - text wider than its cell runs over the empty cells beside it, as in Excel, and is cut at the
   next cell with a value; a text centred across the selection (`centerContinuous`) is centred over
@@ -249,7 +251,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   text (均等割付) spread over the cell, its words, spaces and Japanese letters apart by even gaps;
   lines broken by Word's Japanese rules (no line ends with an opening bracket, none starts with a
   closing one or 、。); text turned 90° or stacked is set a letter a line, a stacked text that
-  wraps going on in columns to the left;
+  wraps going on in columns to the left; a number format's fill (`*x`) setting the text before it
+  at the cell's left edge and the text after it at the right;
   links kept (http, https, mailto, ftp);
 - charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break

@@ -7,8 +7,9 @@
 //! (thousands, or a scale of 1000 after the last digit), `%`, an exponent
 //! (`E+`), fractions (`?/?`), literal text (quoted, escaped with `\`, or
 //! `[$€-407]`) and, for dates and times, `y m d h s AM/PM [h]`. Colours
-//! and conditions (`[Red]`, `[>100]`) are left out, and so are the fill
-//! (`*x`) and the padding (`_x`) of a column.
+//! and conditions (`[Red]`, `[>100]`) are left out, and so is the padding
+//! (`_x`); the fill (`*x`, which repeats a character to the cell's width)
+//! writes nothing, and [`format_filled`] says where it is.
 //!
 //! Dates and times are always written ISO (`2024-01-31`, `14:05`,
 //! `2024-01-31 14:05`, with seconds only when the code shows them),
@@ -99,9 +100,31 @@ pub(crate) fn is_date(fmt: &NumFmt) -> bool {
     }
 }
 
+/// Marks the fill (`*x`) in the text a section writes.
+const FILL_MARK: char = '\u{1}';
+
 /// `value` as Excel shows it with the format `fmt`; `date1904` when the
 /// workbook counts dates from 1904.
 pub(crate) fn format(value: f64, fmt: &NumFmt, date1904: bool) -> String {
+    format_filled(value, fmt, date1904).0
+}
+
+/// `value` as [`format`] writes it, and where in it (a byte offset) the
+/// fill of its section (`*x`) widens it to the cell's width: an
+/// accounting format (`_("$"* #,##0.00_)`) sets the currency at the left
+/// edge and the number at the right. `None` when the code has no fill.
+pub(crate) fn format_filled(value: f64, fmt: &NumFmt, date1904: bool) -> (String, Option<usize>) {
+    let mut text = formatted(value, fmt, date1904);
+    let fill = text.find(FILL_MARK);
+    if fill.is_some() {
+        text.retain(|ch| ch != FILL_MARK);
+    }
+    (text, fill)
+}
+
+/// `value` as Excel shows it with the format `fmt`, with [`FILL_MARK`]
+/// where the fill is.
+fn formatted(value: f64, fmt: &NumFmt, date1904: bool) -> String {
     let NumFmt::Code(code) = fmt else {
         return general(value);
     };
@@ -161,6 +184,8 @@ enum Token {
     General,
     /// A date or time part.
     Date(DatePart),
+    /// The fill (`*x`): the character repeated to the cell's width.
+    Fill,
 }
 
 /// A date or time part of a format code.
@@ -215,9 +240,14 @@ fn sections(code: &str) -> Vec<Vec<Token>> {
                 }
                 at += 1;
             }
-            // Padding to the width of a character, and filling the cell
-            // with one: not text.
-            '_' | '*' => at += 1,
+            // Padding to the width of a character: not text.
+            '_' => at += 1,
+            '*' => {
+                if !tokens.contains(&Token::Fill) {
+                    tokens.push(Token::Fill);
+                }
+                at += 1;
+            }
             '0' | '#' | '?' => tokens.push(Token::Digit(ch)),
             '.' => tokens.push(Token::Point),
             ',' => tokens.push(Token::Comma),
@@ -646,6 +676,7 @@ fn number(value: f64, tokens: &[Token]) -> String {
             Token::Percent => out.push('%'),
             Token::Slash => out.push('/'),
             Token::General => out.push_str(&general(value)),
+            Token::Fill => out.push(FILL_MARK),
             Token::Point if at < layout.mantissa_end => out.push('.'),
             Token::Digit(_) if layout.exponent_at.is_some_and(|exp_at| at > exp_at) => {
                 exponent_digits.push(token.clone());
@@ -961,6 +992,11 @@ mod tests {
         assert_eq!(format(0.0, &builtin(43), false), "-");
         assert_eq!(format(1234.5, &builtin(44), false), "1,234.50");
         assert_eq!(format(1234.0, &builtin(37), false), "1,234");
+        // The fill sets the currency at the cell's left edge.
+        let dollars = NumFmt::Code(r#"_-"$"* #,##0.00_-;\-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-"#.into());
+        assert_eq!(format_filled(705.84, &dollars, false), ("$705.84".to_string(), Some(1)));
+        assert_eq!(format_filled(-5.0, &dollars, false), ("-$5.00".to_string(), Some(2)));
+        assert_eq!(format_filled(1.0, &builtin(4), false), ("1.00".to_string(), None));
     }
 
     #[test]

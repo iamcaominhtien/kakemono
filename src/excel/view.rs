@@ -11,8 +11,8 @@ use super::grid::{CellKind, Grid, GridCell, Marker, Merge, Sizes};
 use super::styles::{Color, Edge, HAlign, Line, Look, Styles, VAlign};
 use super::{DrawnSheet, ExcelConfig, read_book};
 use crate::chart::{Rgb, Theme};
-use crate::model::Picture;
 use crate::model::style::{BOLD, ITALIC, SUB, SUP};
+use crate::model::{Picture, Span};
 use crate::render::escape::esc;
 use anyhow::Result;
 use base64::Engine as _;
@@ -296,8 +296,12 @@ impl Page<'_> {
             .take(rows as usize)
             .map(|&row| area.height(row))
             .sum();
-        let text = cell.map(|cell| self.text(cell)).unwrap_or_default();
+        let fill = grid.looks.fills.get(&at).copied();
+        let text = cell.map(|cell| self.filled_text(cell, fill)).unwrap_or_default();
         let mut inner_style = String::new();
+        if fill.is_some() && !text.is_empty() {
+            inner_style.push_str("display:flex;");
+        }
         if !text.is_empty() {
             let wraps = look.wraps();
             // A text centred across the selection is set in its box,
@@ -497,6 +501,28 @@ impl Page<'_> {
             _ => return None,
         };
         (left + right > 0.0).then_some((left, right))
+    }
+
+    /// The text of `cell` as [`text`](Self::text) writes it; with a fill
+    /// (`fill`, its byte offset), the text before it and the text after it
+    /// at the two edges of a flex box, as Excel sets an accounting format.
+    fn filled_text(&self, cell: &GridCell, fill: Option<usize>) -> String {
+        let [span] = cell.spans.as_slice() else {
+            return self.text(cell);
+        };
+        let Some((before, after)) = fill.and_then(|at| Some((span.text.get(..at)?, span.text.get(at..)?))) else {
+            return self.text(cell);
+        };
+        let part = |text: &str| {
+            self.text(&GridCell {
+                spans: vec![Span {
+                    text: text.to_string(),
+                    ..span.clone()
+                }],
+                ..cell.clone()
+            })
+        };
+        format!("{}<span style=\"flex:1\"></span>{}", part(before), part(after))
     }
 
     /// The text of a cell as HTML, with its links (of the schemes a page

@@ -19,7 +19,7 @@ use super::ExcelConfig;
 use super::conditional;
 use super::drawing;
 use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, HeaderFooter, Merge, MergeIndex, Table};
-use super::numfmt;
+use super::numfmt::{self, NumFmt};
 use super::pull::{Event, Reader, Tag};
 use super::strings;
 use super::styles::{Screen, Styles};
@@ -734,6 +734,12 @@ impl SheetReader<'_, '_> {
                     && let Some(number) = raw.value.as_deref().and_then(|value| value.trim().parse::<f64>().ok())
                 {
                     self.numbers.insert(at, number);
+                    let num_fmt = &self.ctx.styles.get(raw.style).num_fmt;
+                    if matches!(num_fmt, NumFmt::Code(code) if code.contains('*'))
+                        && let (_, Some(fill)) = numfmt::format_filled(number, num_fmt, self.ctx.date1904)
+                    {
+                        self.grid.looks.fills.insert(at, fill);
+                    }
                 }
                 if let Some(at) = raw.at
                     && let Some(cell) = read_cell(raw, self.ctx)

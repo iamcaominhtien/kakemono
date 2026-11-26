@@ -1057,6 +1057,8 @@ impl Printer<'_, '_, '_> {
             (spread, ascent + descent)
         } else if look.wraps() {
             self.wrapped_text(cell, &base, align, pad, indent, inner_w)
+        } else if let Some(filled) = self.filled_text(at, cell, &base, (pad + indent, width - pad - indent), ascent) {
+            (filled, ascent + descent)
         } else {
             let mut items = Vec::new();
             let mut pen = 0.0;
@@ -1082,6 +1084,32 @@ impl Printer<'_, '_, '_> {
         };
         translate(&mut items, x, y + top);
         clip_items(items, clip)
+    }
+
+    /// The text of the number `cell` at `at` whose format has a fill
+    /// (`*x`), set in `base`: the text before the fill from `left`, the
+    /// text after it ending at `right`, as Excel sets an accounting format.
+    /// `None` when it has no fill.
+    fn filled_text(
+        &mut self,
+        at: (u32, u32),
+        cell: &GridCell,
+        base: &RunFmt,
+        (left, right): (f32, f32),
+        ascent: f32,
+    ) -> Option<Vec<Item>> {
+        let fill = *self.grid.looks.fills.get(&at)?;
+        let [span] = cell.spans.as_slice() else {
+            return None;
+        };
+        let (before, after) = (span.text.get(..fill)?, span.text.get(fill..)?);
+        let fmt = self.span_run(base, span);
+        let (mut items, _) = para::text_items(self.ctx, before, &fmt, 0.0, ascent);
+        let (mut tail, tail_w) = para::text_items(self.ctx, after, &fmt, 0.0, ascent);
+        translate(&mut items, left, 0.0);
+        translate(&mut tail, right - tail_w, 0.0);
+        items.append(&mut tail);
+        Some(items)
     }
 
     /// The text of `cell` a letter a line, centred in a cell `width`
