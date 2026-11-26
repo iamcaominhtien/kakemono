@@ -33,6 +33,8 @@ const JPEG_MAGIC: &[u8] = &[0xFF, 0xD8, 0xFF];
 const GIF_MAGIC: &[u8] = b"GIF8";
 /// Signature of a BMP file.
 const BMP_MAGIC: &[u8] = b"BM";
+/// Signatures of a TIFF file: little- and big-endian.
+const TIFF_MAGICS: [&[u8]; 2] = [b"II*\0", b"MM\0*"];
 /// Signature of a gzip-compressed file.
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 /// Most bytes of the vector pictures (SVG, metafiles) last made ready that
@@ -157,7 +159,7 @@ pub(crate) fn pixel_size_pt(picture: &Picture) -> Option<(f32, f32)> {
 }
 
 /// The picture `data` as a PNG, a JPEG or an SVG written again by usvg,
-/// or `None` when its format cannot be drawn (TIFF, a metafile that draws
+/// or `None` when its format cannot be drawn (a metafile that draws
 /// nothing, or damaged data), or when it is a bitmap of more than
 /// [`MAX_RASTER_PIXELS`](crate::backend::MAX_RASTER_PIXELS) pixels (an SVG
 /// or a metafile can have any size: one drawn as a bitmap is drawn smaller).
@@ -171,7 +173,10 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
     if data.starts_with(JPEG_MAGIC) {
         return Some(Picture::bitmap(data, PictureFormat::Jpeg));
     }
-    if data.starts_with(GIF_MAGIC) || data.starts_with(BMP_MAGIC) {
+    if data.starts_with(GIF_MAGIC)
+        || data.starts_with(BMP_MAGIC)
+        || TIFF_MAGICS.iter().any(|magic| data.starts_with(magic))
+    {
         return to_png(&data);
     }
     if super::metafile::is_metafile(&data) {
@@ -290,6 +295,19 @@ mod tests {
         data.extend(chunk);
         data.extend((!crc).to_be_bytes());
         data
+    }
+
+    /// A TIFF (a Mac Office picture), which browsers do not draw, becomes a
+    /// PNG.
+    #[test]
+    fn a_tiff_picture_becomes_a_png() {
+        let mut tiff = Vec::new();
+        image::RgbImage::from_pixel(3, 2, image::Rgb([200, 30, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut tiff), image::ImageFormat::Tiff)
+            .expect("a TIFF");
+        let picture = normalize(tiff).expect("a PNG");
+        assert_eq!(picture.format, PictureFormat::Png);
+        assert_eq!(crate::backend::declared_size(&picture.data), Some((3, 2)));
     }
 
     #[test]

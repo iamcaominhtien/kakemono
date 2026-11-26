@@ -88,7 +88,7 @@ read directly, without the layout analysis a PDF needs, and turned into the same
   and table of contents entries; list numbering gives list items with their markers ("1.", "(a)");
 - Word equations (Office Math) keep their structure: MathML, LaTeX and Office Math in the outputs,
   in running text too;
-- tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, SVG) figures,
+- tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, TIFF, SVG) figures,
   with the caption before or after them; footnotes and endnotes follow their paragraph;
 - hyperlinks, cross-references to bookmarks, citations and references to figures and tables become
   links, as for a PDF;
