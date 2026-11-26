@@ -53,6 +53,9 @@ const BEFORE_TITLE_MAX_CHARS: usize = 100;
 /// Fewest characters of a block of text that, repeating the one before
 /// it, is a copy (not a word said twice).
 const REPEATED_BLOCK_MIN_CHARS: usize = 10;
+/// Most characters (not spaces) of a box around a button that asks the
+/// reader to press it.
+const CALL_TO_ACTION_MAX_CHARS: usize = 200;
 /// Most characters of a link to the comments of an article.
 const COMMENT_LINK_MAX_CHARS: usize = 30;
 /// The word of a byline before the name of its author, alone in a block
@@ -591,6 +594,7 @@ fn text_weights(dom: &Dom, root: Id) -> Vec<usize> {
 
 /// Removes the clutter of the page in `body` (see the module).
 fn remove_clutter(dom: &mut Dom, body: Id) {
+    let calls = calls_to_action(dom, body);
     let weight = text_weights(dom, body);
     let total = weight[body].max(1);
     let main_h1 = dom.find(body, "h1");
@@ -646,6 +650,63 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             dom.detach(node);
         }
     }
+    for node in calls {
+        dom.detach(node);
+    }
+}
+
+/// The boxes in `body` that ask the reader to press a button (`Follow
+/// topics and authors from this story`, `Follow`, `Subscribe`): the block
+/// around a button (`<button>`, `role="button"`) that holds little text
+/// besides it and no picture, title or code.
+fn calls_to_action(dom: &Dom, body: Id) -> Vec<Id> {
+    let mut boxes: Vec<Id> = Vec::new();
+    for node in dom.descendants(body) {
+        let button = dom.is(node, "button")
+            || dom
+                .attr(node, "role")
+                .is_some_and(|role| role.trim().eq_ignore_ascii_case("button"));
+        if !button {
+            continue;
+        }
+        let Some(block) = dom.ancestor(node, |id| id != node && dom.is_any(id, &["div", "section", "aside"])) else {
+            continue;
+        };
+        if block == body || boxes.contains(&block) {
+            continue;
+        }
+        // What a pop-up holds is not shown (the author's photo and bio in
+        // The Verge's `Follow` box).
+        let shown = |id: Id| {
+            dom.ancestor(id, |up| {
+                dom.contains(block, up) && (dom.is(up, "aside") || dom.attr(up, "aria-hidden") == Some("true"))
+            })
+            .is_none()
+        };
+        let text: usize = dom
+            .descendants(block)
+            .into_iter()
+            .filter(|&id| shown(id))
+            .map(|id| match &dom.nodes[id].kind {
+                Kind::Text(text) => text.chars().filter(|ch| !ch.is_whitespace()).count(),
+                _ => 0,
+            })
+            .sum();
+        let content = dom.descendants(block).into_iter().filter(|&id| shown(id)).any(|id| {
+            dom.is_any(
+                id,
+                &[
+                    "img", "picture", "figure", "video", "table", "pre", "code", "h1", "h2", "h3", "math",
+                ],
+            ) || (dom.is(id, "p")
+                && dom.ancestor(id, |up| up == node).is_none()
+                && dom.clean_text(id).chars().count() >= CALL_TO_ACTION_MAX_CHARS)
+        });
+        if text <= CALL_TO_ACTION_MAX_CHARS && !content {
+            boxes.push(block);
+        }
+    }
+    boxes
 }
 
 /// A `<noscript>`: the picture it holds goes to the lazy picture before it
@@ -1055,6 +1116,18 @@ fn comment_links(dom: &mut Dom, root: Id) {
             })
         });
         if to_comments && dom.clean_text(link).chars().count() <= COMMENT_LINK_MAX_CHARS {
+            // The separator before it goes too (`– Nov 23, 2026 |`).
+            let before = dom.nodes[link].parent.and_then(|parent| {
+                let siblings = &dom.nodes[parent].children;
+                let at = siblings.iter().position(|&id| id == link)?;
+                at.checked_sub(1).map(|at| siblings[at])
+            });
+            if let Some(before) = before
+                && let Kind::Text(text) = &mut dom.nodes[before].kind
+            {
+                let kept = text.trim_end().trim_end_matches(['|', '·', '•']).trim_end().len();
+                text.truncate(kept);
+            }
             dom.detach(link);
         }
     }

@@ -399,6 +399,7 @@ const TECH_NEWS: &str = r#"<!doctype html><html lang="en"><head><title>Hacker se
 <p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
 <p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
 <p>by</p><p><a href="/article#comments">43 Comments</a></p>
+<p class="byline"><a href="/author/beth/">Beth Mole</a> – Nov 23, 2026 4:58 pm | <a href="/article#comments">163</a></p>
 <figure><img src="data:image/png;base64,iVBORw0KGgo=" width="600" height="300"><figcaption><span class="credits"><strong>Image Credits:</strong> Rockstar Games</span></figcaption></figure>
 <div class="caption-content">Credit: NASA</div><div class="caption-content">Credit: NASA</div>
 <p>The judge said the hacker would stay in a secure hospital, where he had already spent time before his trial.</p>
@@ -408,6 +409,8 @@ const TECH_NEWS: &str = r#"<!doctype html><html lang="en"><head><title>Hacker se
 <p>His lawyers said that he had cooperated with the investigation and that he had not profited from any of the leaks.</p>
 <p>The court heard that the leaks had cost the studio millions of dollars and thousands of hours of work by its staff.</p>
 <p>The game, the most expensive ever made, sold more copies in its first week than any game before it, the studio said.</p>
+<div class="follow"><span><strong>Follow topics and authors</strong> from this story to see more like this in your feed.</span>
+<ul><li><span role="button">Jay Peters</span></li></ul></div>
 </div>
 <p class="affiliate-disclaimer-text">When you purchase through links in our articles, we may earn a small commission.</p>
 <div class="post-authors"><a href="/author/jay-peters/">Jay Peters</a><p>Senior Reporter</p>
@@ -436,6 +439,9 @@ fn tech_news_repeats_bylines_and_author_boxes_are_gone() {
         "purchase through links",
         "Senior Reporter",
         "joined the site",
+        "Follow topics",
+        "163",
+        "pm |",
     ] {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
