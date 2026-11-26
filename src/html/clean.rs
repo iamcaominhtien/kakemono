@@ -50,6 +50,14 @@ const WIDGET_LINK_SHARE_RATIO: f32 = 0.5;
 /// Most characters of a part before the title (a breadcrumb, a date) that
 /// is removed.
 const BEFORE_TITLE_MAX_CHARS: usize = 100;
+/// Fewest characters of a block of text that, repeating the one before
+/// it, is a copy (not a word said twice).
+const REPEATED_BLOCK_MIN_CHARS: usize = 10;
+/// Most characters of a link to the comments of an article.
+const COMMENT_LINK_MAX_CHARS: usize = 30;
+/// The word of a byline before the name of its author, alone in a block
+/// when the name has gone.
+const BYLINE_WORDS: [&str; 5] = ["by", "von", "par", "por", "bởi"];
 /// Most characters of a block that holds only a number (counts of
 /// reactions, `0 0 0`).
 const COUNT_MAX_CHARS: usize = 20;
@@ -127,7 +135,7 @@ const CLUTTER_ROLES: [&str; 14] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 38] = [
+const CLUTTER_WORDS: [&str; 40] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -141,6 +149,8 @@ const CLUTTER_WORDS: [&str; 38] = [
     "comment",
     "comments",
     "consent",
+    // `affiliate-disclaimer`: links that earn a commission.
+    "disclaimer",
     "cookie",
     "cookies",
     "disqus",
@@ -157,6 +167,8 @@ const CLUTTER_WORDS: [&str; 38] = [
     "share",
     "sharing",
     "sidebar",
+    // The box about the author after an article (`author-bio`).
+    "bio",
     "skyscraper",
     "social",
     "sponsor",
@@ -189,6 +201,8 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
 const CLUTTER_IDS: [&str; 1] = ["secondary"];
+/// Most characters of the box about the authors after an article.
+const AUTHOR_BOX_MAX_CHARS: usize = 1000;
 /// Parts of the address of the page of an author.
 const AUTHOR_PATHS: [&str; 4] = ["/author/", "/authors/", "/tac-gia/", "/tacgia/"];
 /// Words of a class that mark the summary of an article, under its title.
@@ -303,6 +317,8 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     remove_teasers(dom, root, base, &meta);
     before_title(dom, root);
     repeated_links(dom, root);
+    repeated_blocks(dom, root);
+    comment_links(dom, root);
     remove_counts(dom, root);
     heading_self_links(dom, root);
     sentence_headings(dom, root);
@@ -703,7 +719,7 @@ fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
                 .filter(|&child| {
                     (weight[child] as f32) < TRAILING_MAX_SHARE_RATIO * total as f32
                         && (chars(child) as f32) < TRAILING_MAX_SHARE_RATIO * all as f32
-                        && is_widget(dom, child)
+                        && (is_widget(dom, child) || is_author_box(dom, child))
                 })
                 .collect();
             break;
@@ -745,6 +761,29 @@ fn is_widget(dom: &Dom, node: Id) -> bool {
         }
         _ => false,
     })
+}
+
+/// Whether `node`, after the body of an article, is the box about its
+/// authors: a link to the page of an author, and little text.
+fn is_author_box(dom: &Dom, node: Id) -> bool {
+    if !matches!(dom.nodes[node].kind, Kind::Element { .. })
+        || dom.clean_text(node).chars().count() > AUTHOR_BOX_MAX_CHARS
+    {
+        return false;
+    }
+    let author_link = dom.find_all(node, "a").into_iter().any(|a| {
+        dom.attr(a, "rel")
+            .is_some_and(|rel| rel.split_whitespace().any(|rel| rel.eq_ignore_ascii_case("author")))
+            || dom.attr(a, "href").is_some_and(|href| {
+                let href = href.to_ascii_lowercase();
+                AUTHOR_PATHS.iter().any(|path| href.contains(path))
+            })
+    });
+    author_link
+        && !dom
+            .descendants(node)
+            .into_iter()
+            .any(|id| dom.is_any(id, &["table", "ol", "pre", "h1", "figure"]))
 }
 
 /// The element that holds the article, or, when the page has none (a
@@ -950,8 +989,79 @@ fn repeated_links(dom: &mut Dom, root: Id) {
     }
 }
 
-/// Removes the blocks in `root` that hold only numbers: the counts of
-/// reactions and comments (`0 0 0`).
+/// Removes a block of text in `root` that repeats the block before it
+/// (a summary or a caption shown twice for wide and narrow screens, or in
+/// a lightbox).
+fn repeated_blocks(dom: &mut Dom, root: Id) {
+    let mut last = String::new();
+    for node in dom.descendants(root) {
+        if node == root || !dom.attached(node) || !is_leaf_block(dom, node) {
+            continue;
+        }
+        let text = dom.clean_text(node);
+        if text.is_empty() {
+            continue;
+        }
+        if text == last && text.chars().count() >= REPEATED_BLOCK_MIN_CHARS {
+            dom.detach(node);
+        } else {
+            last = text;
+        }
+    }
+}
+
+/// Whether `node` is a block of text with no block in it: a paragraph, a
+/// heading, a caption, or a `<div>` of inline content.
+fn is_leaf_block(dom: &Dom, node: Id) -> bool {
+    const BLOCKS: [&str; 10] = [
+        "p",
+        "figcaption",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "dd",
+        "dt",
+    ];
+    const INLINE: [&str; 14] = [
+        "a", "span", "em", "strong", "i", "b", "time", "br", "code", "sup", "sub", "small", "abbr", "cite",
+    ];
+    let is_block = dom.is_any(node, &BLOCKS) || dom.is(node, "div");
+    is_block
+        && dom.nodes[node]
+            .children
+            .iter()
+            .all(|&child| match &dom.nodes[child].kind {
+                Kind::Element { .. } => {
+                    dom.is_any(child, &INLINE)
+                        && dom
+                            .descendants(child)
+                            .into_iter()
+                            .all(|id| !matches!(dom.nodes[id].kind, Kind::Element { .. }) || dom.is_any(id, &INLINE))
+                }
+                _ => true,
+            })
+}
+
+/// Removes the links in `root` to the comments of the article (`43
+/// Comments`).
+fn comment_links(dom: &mut Dom, root: Id) {
+    for link in dom.find_all(root, "a") {
+        let to_comments = dom.attr(link, "href").is_some_and(|href| {
+            href.split_once('#').is_some_and(|(_, fragment)| {
+                fragment.to_ascii_lowercase().starts_with("comment") || fragment == "respond"
+            })
+        });
+        if to_comments && dom.clean_text(link).chars().count() <= COMMENT_LINK_MAX_CHARS {
+            dom.detach(link);
+        }
+    }
+}
+
+/// Removes the blocks in `root` that hold only numbers (the counts of
+/// reactions and comments: `0 0 0`) or only the word of a byline (`by`).
 fn remove_counts(dom: &mut Dom, root: Id) {
     for node in dom.descendants(root) {
         if node == root || !dom.attached(node) || !dom.is_any(node, &["p", "div", "li"]) {
@@ -962,6 +1072,11 @@ fn remove_counts(dom: &mut Dom, root: Id) {
             continue;
         }
         let text = dom.clean_text(node);
+        // A byline whose name went with its pop-up (The Verge).
+        if BYLINE_WORDS.contains(&text.to_lowercase().as_str()) {
+            dom.detach(node);
+            continue;
+        }
         let count = text.chars().count() <= COUNT_MAX_CHARS
             && text.chars().any(|ch| ch.is_ascii_digit())
             && text.chars().all(|ch| ch.is_ascii_digit() || ch.is_whitespace());

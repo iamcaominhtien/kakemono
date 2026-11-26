@@ -388,6 +388,75 @@ fn a_picture_that_fails_is_fetched_in_another_version() {
     assert_eq!(doc.pictures.len(), 1);
 }
 
+/// A technology news page as TechCrunch, The Verge and Ars Technica lay it
+/// out: a summary and a caption shown twice, a byline whose name is in a
+/// pop-up, a caption in a font named by a custom property, a link to the
+/// comments, an affiliate disclaimer and the box about the author after
+/// the body.
+const TECH_NEWS: &str = r#"<!doctype html><html lang="en"><head><title>Hacker sentenced</title>
+<style>.credits { font-family: var(--wp--custom--font--family--mono) }</style></head><body><main><div class="column">
+<div class="body"><h1>The hacker behind the leaks has been sentenced</h1>
+<p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
+<p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
+<p>by</p><p><a href="/article#comments">43 Comments</a></p>
+<figure><img src="data:image/png;base64,iVBORw0KGgo=" width="600" height="300"><figcaption><span class="credits"><strong>Image Credits:</strong> Rockstar Games</span></figcaption></figure>
+<div class="caption-content">Credit: NASA</div><div class="caption-content">Credit: NASA</div>
+<p>The judge said the hacker would stay in a secure hospital, where he had already spent time before his trial.</p>
+<p>Rockstar launched the game last week to positive reviews, and said the leaks had not hurt its sales at all.</p>
+<p>The studio declined to comment further on the case, which had been followed closely by players around the world.</p>
+<p>Prosecutors had argued that the hacker posed a continuing risk, as he had kept hacking while he was on bail last year.</p>
+<p>His lawyers said that he had cooperated with the investigation and that he had not profited from any of the leaks.</p>
+<p>The court heard that the leaks had cost the studio millions of dollars and thousands of hours of work by its staff.</p>
+<p>The game, the most expensive ever made, sold more copies in its first week than any game before it, the studio said.</p>
+</div>
+<p class="affiliate-disclaimer-text">When you purchase through links in our articles, we may earn a small commission.</p>
+<div class="post-authors"><a href="/author/jay-peters/">Jay Peters</a><p>Senior Reporter</p>
+<p>Jay is a senior reporter covering technology, gaming, and more. He joined the site in 2019 after two years elsewhere.</p></div>
+</div></main></body></html>"#;
+
+#[test]
+fn tech_news_repeats_bylines_and_author_boxes_are_gone() {
+    let doc = page(TECH_NEWS);
+    let summary = "Arion Kurtaj, who hacked";
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.starts_with(summary)).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.contains("Credit: NASA")).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert!(has_text(&doc, "studio declined to comment"));
+    for clutter in [
+        "43 Comments",
+        "purchase through links",
+        "Senior Reporter",
+        "joined the site",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    assert!(
+        !texts(&doc).iter().any(|text| text.trim() == "by"),
+        "{:#?}",
+        texts(&doc)
+    );
+    // The caption is not code.
+    let caption = doc
+        .blocks
+        .iter()
+        .find(|block| block.text().contains("Rockstar Games"))
+        .expect("the caption");
+    assert!(
+        caption.spans.iter().all(|span| span.style & kakemono::model::MONO == 0),
+        "{:?}",
+        caption.spans
+    );
+}
+
 #[test]
 fn links_become_absolute_or_internal() {
     let html = r##"<html><body><article><h1>Links</h1>
