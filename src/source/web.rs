@@ -22,7 +22,7 @@ pub const MAX_PICTURES: usize = 300;
 /// connection lost, a server error, too many requests at once.
 const ATTEMPTS: u32 = 3;
 /// Wait before the second try; it doubles at each try.
-const RETRY_WAIT: Duration = Duration::from_millis(500);
+const RETRY_WAIT: Duration = Duration::from_secs(1);
 /// Pictures fetched at the same time.
 const PICTURE_WORKERS: usize = 8;
 /// What is asked for a page: HTML first, any document otherwise.

@@ -365,6 +365,30 @@ fn a_page_without_article_reads_its_description() {
 }
 
 #[test]
+fn a_picture_that_fails_is_fetched_in_another_version() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let html = r#"<!doctype html><html><head><title>Storm</title></head><body><article><h1>Storm</h1>
+<p>The river rose through the night and reached the bridge before dawn, the highest in ten years.</p>
+<figure><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/river-1020.png"
+ data-srcset="/img/river-1020.png 1x, /img/river-1360.png 2x"><figcaption>The river at dawn.</figcaption></figure>
+<p>Residents of the lower town were asked to leave their homes until the water goes down again.</p>
+</article></body></html>"#;
+    // The best version (2x) fails; the 1x one is served.
+    let doc = page_at(
+        html,
+        "https://news.example.org/storm.html",
+        &[("https://news.example.org/img/river-1020.png", &png)],
+    );
+    let figure = block(&doc, "The river at dawn.");
+    assert!(
+        matches!(&figure.kind, BlockKind::Figure { image: Some(_), .. }),
+        "{:?}",
+        figure.kind
+    );
+    assert_eq!(doc.pictures.len(), 1);
+}
+
+#[test]
 fn links_become_absolute_or_internal() {
     let html = r##"<html><body><article><h1>Links</h1>
         <p>See <a href="../other.html">another page</a>, <a href="#part">the part below</a>,

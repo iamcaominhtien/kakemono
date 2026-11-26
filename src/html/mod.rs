@@ -138,12 +138,18 @@ pub fn read_with(data: &[u8], origin: Origin<'_>, source: Option<String>, fetch:
     if matches!(origin, Origin::File(_)) {
         head.extend(&article.sheets);
     }
-    let files = PageFiles {
+    let mut files = PageFiles {
         fetched: match origin {
             Origin::Url { .. } => fetch(&picture_urls(&dom, article.root)),
             _ => HashMap::new(),
         },
     };
+    if matches!(origin, Origin::Url { .. }) {
+        fallback_pictures(&mut dom, article.root, &mut files, fetch);
+    }
+    for img in dom.find_all(article.root, "img") {
+        dom.remove_attr(img, clean::FALLBACK_ATTR);
+    }
     remove_small_pictures(&mut dom, article.root, &files);
     let xhtml = dom.to_xhtml(&head, article.root, article.lang.as_deref());
     let name = match origin {
@@ -154,6 +160,52 @@ pub fn read_with(data: &[u8], origin: Origin<'_>, source: Option<String>, fetch:
     let mut doc = crate::word::build_document(book, source);
     doc.meta.source_format = Some("html".to_string());
     Ok(doc)
+}
+
+/// Gives the pictures in `root` that could not be fetched another of their
+/// versions ([`clean::FALLBACK_ATTR`]), the first that can be.
+fn fallback_pictures(dom: &mut Dom, root: dom::Id, files: &mut PageFiles, fetch: &FetchPictures) {
+    let missing: Vec<(dom::Id, Vec<String>)> = dom
+        .find_all(root, "img")
+        .into_iter()
+        .filter(|&img| {
+            dom.attr(img, "src")
+                .is_some_and(|src| !files.fetched.contains_key(src) && is_remote(src))
+        })
+        .filter_map(|img| {
+            let others = dom.attr(img, clean::FALLBACK_ATTR)?;
+            Some((
+                img,
+                others
+                    .split_whitespace()
+                    .filter(|url| is_remote(url))
+                    .map(str::to_string)
+                    .collect(),
+            ))
+        })
+        .collect();
+    let mut urls: Vec<String> = Vec::new();
+    for (_, others) in &missing {
+        for url in others {
+            if !urls.contains(url) {
+                urls.push(url.clone());
+            }
+        }
+    }
+    if urls.is_empty() {
+        return;
+    }
+    files.fetched.extend(fetch(&urls));
+    for (img, others) in missing {
+        if let Some(found) = others.iter().find(|url| files.fetched.contains_key(*url)) {
+            dom.set_attr(img, "src", found);
+        }
+    }
+}
+
+/// Whether `src` is an `http(s)` address.
+fn is_remote(src: &str) -> bool {
+    src.starts_with("http://") || src.starts_with("https://")
 }
 
 /// Removes the pictures in `root` whose file is smaller than
@@ -198,7 +250,7 @@ fn picture_urls(dom: &Dom, root: dom::Id) -> Vec<String> {
             _ => None,
         };
         if let Some(src) = src
-            && (src.starts_with("http://") || src.starts_with("https://"))
+            && is_remote(src)
         {
             let src = src.split_once('#').map_or(src, |(src, _)| src).to_string();
             if !urls.contains(&src) {

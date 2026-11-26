@@ -226,6 +226,11 @@ const LAZY_SOURCES: [&str; 5] = [
     "data-url",
     "data-hi-res-src",
 ];
+/// Most other versions of a picture tried when its own cannot be fetched.
+const MAX_FALLBACKS: usize = 2;
+/// Attribute of a picture that holds its other addresses, separated by
+/// spaces, to fetch when its own fails (removed once fetched).
+pub(crate) const FALLBACK_ATTR: &str = "data-kakemono-fallback";
 /// Attributes that hold a `srcset`.
 const SRCSETS: [&str; 3] = ["srcset", "data-srcset", "data-lazy-srcset"];
 /// Picture formats the reader cannot draw.
@@ -1051,6 +1056,15 @@ fn pictures(dom: &mut Dom, body: Id, base: &Base<'_>) {
             continue;
         };
         let src = absolute(&src, base);
+        let others: Vec<String> = other_sources(dom, img, &src)
+            .into_iter()
+            .map(|other| absolute(&other, base))
+            .filter(|other| *other != src)
+            .take(MAX_FALLBACKS)
+            .collect();
+        if !others.is_empty() {
+            dom.set_attr(img, FALLBACK_ATTR, &others.join(" "));
+        }
         dom.set_attr(img, "src", &src);
         for key in SRCSETS.iter().chain(&LAZY_SOURCES).chain(&["sizes"]) {
             dom.remove_attr(img, key);
@@ -1132,6 +1146,31 @@ fn best_source(dom: &Dom, img: Id) -> Option<String> {
         .or_else(|| lazy.map(str::to_string))
         .or_else(|| src.map(str::to_string))
         .map(|src| src.trim().to_string())
+}
+
+/// The other addresses of the picture `img` than `best`, its best: the
+/// other versions of its `srcset`s, widest first, then its lazy and plain
+/// addresses (to fetch when the best fails).
+fn other_sources(dom: &Dom, img: Id, best: &str) -> Vec<String> {
+    let mut versions: Vec<(String, f32)> = SRCSETS
+        .iter()
+        .filter_map(|key| dom.attr(img, key))
+        .flat_map(parse_srcset)
+        .collect();
+    versions.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut out: Vec<String> = Vec::new();
+    let plain = LAZY_SOURCES
+        .iter()
+        .chain(&["src"])
+        .filter_map(|key| dom.attr(img, key))
+        .filter(|src| !is_placeholder(src))
+        .map(|src| src.trim().to_string());
+    for url in versions.into_iter().map(|(url, _)| url).chain(plain) {
+        if url != best && !url.starts_with("data:") && !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
 }
 
 /// The best address of a `srcset`: the smallest version at least
