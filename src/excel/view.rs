@@ -675,7 +675,14 @@ impl Page<'_> {
             }
         }
         text_style(&mut style, shape);
-        if let Some([left, top, right, bottom]) = shape.insets_pt {
+        // A shape without text has no insets, which would make a small one
+        // larger; a text keeps them, overflowing a narrow box as in Excel.
+        let insets = if shape.text.is_empty() {
+            Some([0.0; 4])
+        } else {
+            shape.insets_pt
+        };
+        if let Some([left, top, right, bottom]) = insets {
             let _ = write!(
                 style,
                 "padding:{}pt {}pt {}pt {}pt;",
@@ -685,7 +692,8 @@ impl Page<'_> {
                 num(left)
             );
         }
-        if shape.clip {
+        // Only a text is cut at the box: an outline's stroke straddles it.
+        if shape.clip && !shape.text.is_empty() {
             style.push_str("overflow:hidden;");
         }
         let text = if shape.text.is_empty() {
