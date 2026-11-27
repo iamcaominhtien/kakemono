@@ -195,7 +195,10 @@ its formatting:
   lines and curves whose points are numbers; fill, outline, text with
   the look of each run, its insets, cut at the bottom edge when the shape says so, on lines as
   long as they are when it is not wrapped, `wrap="none"`) and connectors (straight and elbow, with arrow heads) at the place and size
-  of their anchors, groups included, turned and mirrored with their groups;
+  of their anchors, groups included, turned and mirrored with their groups; a hidden shape
+  (`cNvPr hidden`) only as the form control the sheet's VML drawing shows (`visibility`), a check
+  box or option button with its box or circle (ticked or filled when `x:Checked`) before its
+  label;
 - conditional formats (`src/excel/conditional.rs`), tested on the values read: a cell compared
   with numbers, texts or another cell (`cellIs`), containing, beginning or ending with a text,
   empty or not, a duplicate or unique value, each with the font colour and style, fill and

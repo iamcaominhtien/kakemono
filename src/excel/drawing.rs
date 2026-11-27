@@ -11,6 +11,7 @@ use crate::word::docx::parse;
 use crate::word::pictures::bounded_size;
 use anyhow::Result;
 use roxmltree::Node;
+use std::collections::HashMap;
 
 /// What a shape, a picture or a chart of a drawing gives.
 #[derive(Debug, Clone)]
@@ -81,6 +82,9 @@ pub(crate) struct TextShape {
     /// Its drawn outline (`a:custGeom`) as an SVG path in a 100 × 100 box;
     /// `None` for a preset one, or one whose points are formulas or arcs.
     pub(crate) custom_path: Option<String>,
+    /// Its id when it is hidden (`cNvPr hidden`): a form control, which
+    /// Excel draws from the sheet's VML drawing when that shows it.
+    pub(crate) hidden_id: Option<u32>,
 }
 
 /// A run of the text of a shape, and the look it sets (`a:rPr`); `None`
@@ -341,6 +345,8 @@ impl Collector<'_> {
                         push(Drawn::Text(shape), named(child, "spPr").next(), shapes);
                     }
                 }
+                "pic" if hidden_id(child).is_some() => {}
+                "graphicFrame" if hidden_id(child).is_some() => {}
                 "pic" => {
                     if let Some(picture) = picture(child) {
                         push(Drawn::Picture(picture), named(child, "spPr").next(), shapes);
@@ -607,7 +613,8 @@ fn text_shape(shape: Node<'_, '_>, theme: &Theme) -> Option<TextShape> {
     let style = named(shape, "style").next();
     let fill = paint(props, style, false, theme);
     let line = paint(props, style, true, theme);
-    if text.is_empty() && fill.is_none() && line.is_none() {
+    let hidden_id = hidden_id(shape);
+    if text.is_empty() && fill.is_none() && line.is_none() && hidden_id.is_none() {
         return None;
     }
     let runs = if text.is_empty() {
@@ -620,6 +627,7 @@ fn text_shape(shape: Node<'_, '_>, theme: &Theme) -> Option<TextShape> {
         fill,
         line,
         runs,
+        hidden_id,
         ..TextShape::default()
     };
     if let Some(body) = body {
@@ -629,6 +637,102 @@ fn text_shape(shape: Node<'_, '_>, theme: &Theme) -> Option<TextShape> {
         outline(&mut read, props);
     }
     Some(read)
+}
+
+/// The id of `shape` when its non-visual properties (`nvSpPr/cNvPr`) hide
+/// it; `None` when it shows.
+fn hidden_id(shape: Node<'_, '_>) -> Option<u32> {
+    let props = shape
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name().starts_with("nv"))
+        .find_map(|nv| named(nv, "cNvPr").next())?;
+    matches!(props.attribute("hidden"), Some("1" | "true"))
+        .then(|| props.attribute("id")?.parse().ok())
+        .flatten()
+}
+
+/// A form control as a sheet's VML drawing shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Control {
+    /// A check box, ticked or not.
+    CheckBox(bool),
+    /// An option button, chosen or not.
+    OptionButton(bool),
+    /// Another control (a button, a label, a list...).
+    Other,
+}
+
+impl Control {
+    /// The mark a control's label starts with: a box, ticked or not, or a
+    /// circle, filled or not; none for other controls.
+    pub(crate) fn mark(self) -> Option<&'static str> {
+        match self {
+            Control::CheckBox(false) => Some("\u{2610}"),
+            Control::CheckBox(true) => Some("\u{2611}"),
+            Control::OptionButton(false) => Some("\u{25cb}"),
+            Control::OptionButton(true) => Some("\u{25c9}"),
+            Control::Other => None,
+        }
+    }
+}
+
+/// The most VML shapes read of a drawing.
+const MAX_VML_SHAPES: usize = 20_000;
+
+/// The form controls a sheet's VML drawing `vml` shows, by shape id (its
+/// `_x0000_s1025` is 1025): those hidden (`visibility:hidden`) are left out.
+/// VML is often not well-formed XML, so it is read as text.
+pub(crate) fn vml_controls(vml: &str) -> HashMap<u32, Control> {
+    let mut controls = HashMap::new();
+    for shape in vml.split("<v:shape ").skip(1).take(MAX_VML_SHAPES) {
+        let shape = shape.split("</v:shape>").next().unwrap_or_default();
+        let head = format!(" {}", shape.split('>').next().unwrap_or_default());
+        let Some(kind) = attribute(shape, "ObjectType") else {
+            continue;
+        };
+        let style = attribute(&head, "style").unwrap_or_default();
+        let style: String = style.chars().filter(|ch| !ch.is_whitespace()).collect();
+        if style.contains("visibility:hidden") {
+            continue;
+        }
+        let Some(id) = attribute(&head, "id")
+            .and_then(|id| id.rsplit('s').next())
+            .and_then(|id| id.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let checked = shape
+            .split("<x:Checked>")
+            .nth(1)
+            .and_then(|rest| rest.split('<').next())
+            .is_some_and(|value| matches!(value.trim(), "1" | "2"));
+        let control = match kind {
+            "Checkbox" => Control::CheckBox(checked),
+            "Radio" => Control::OptionButton(checked),
+            "Note" => continue,
+            _ => Control::Other,
+        };
+        controls.insert(id, control);
+    }
+    controls
+}
+
+/// The value of the first attribute `name` in `text`, quoted with `"` or
+/// `'`.
+fn attribute<'t>(text: &'t str, name: &str) -> Option<&'t str> {
+    let key = format!("{name}=");
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&key) {
+        let at = from + found;
+        let value = &text[at + key.len()..];
+        if text[..at].ends_with(char::is_whitespace)
+            && let Some(quote) = value.chars().next().filter(|quote| matches!(quote, '"' | '\''))
+        {
+            return value[1..].split(quote).next();
+        }
+        from = at + key.len();
+    }
+    None
 }
 
 /// The fill (or with `line`, the outline colour) of a shape: its own (in
@@ -1109,6 +1213,31 @@ mod tests {
 
     /// A group turned a quarter turns its children about its centre, and
     /// a drawn outline of numbers is read as a path in a 100 × 100 box.
+    #[test]
+    fn a_hidden_shape_is_a_form_control_of_the_vml_drawing() {
+        let control = r#"<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="1025" name="Check Box 1" hidden="1"/></xdr:nvSpPr><xdr:spPr/><xdr:txBody><a:p><a:r><a:t>Yes</a:t></a:r></a:p></xdr:txBody></xdr:sp>"#;
+        let shapes = items(&format!("{HEAD}{}</xdr:wsDr>", two_cell(0, 0, control))).unwrap();
+        let Drawn::Text(shape) = &shapes[0].drawn else {
+            panic!("a text shape")
+        };
+        assert_eq!((shape.hidden_id, shape.text.as_str()), (Some(1025), "Yes"));
+        // VML tells which controls show, and whether they are ticked.
+        let vml = concat!(
+            "<xml><v:shapetype id=\"_x0000_t201\"/>",
+            "<v:shape id=\"_x0000_s1025\" style='position:absolute;\n visibility:visible'>",
+            "<x:ClientData ObjectType=\"Checkbox\"><x:Checked>1</x:Checked></x:ClientData></v:shape>",
+            "<v:shape id=\"_x0000_s1026\" style='position:absolute;\n  visibility:hidden'>",
+            "<x:ClientData ObjectType=\"Checkbox\"></x:ClientData></v:shape>",
+            "<v:shape id=\"_x0000_s1027\" style='position:absolute'>",
+            "<x:ClientData ObjectType=\"Radio\"><br></x:ClientData></v:shape>",
+            "<v:shape id=\"_x0000_s1028\" o:spid=\"x\"><x:ClientData ObjectType=\"Note\"/></v:shape></xml>",
+        );
+        let controls = vml_controls(vml);
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[&1025].mark(), Some("\u{2611}"));
+        assert_eq!(controls[&1027], Control::OptionButton(false));
+    }
+
     #[test]
     fn a_turned_group_turns_its_drawn_children() {
         let wave = r#"<xdr:sp><xdr:spPr><a:xfrm><a:off x="0" y="40"/><a:ext cx="200" cy="20"/></a:xfrm><a:custGeom><a:pathLst><a:path w="20" h="2"><a:moveTo><a:pt x="0" y="0"/></a:moveTo><a:cubicBezTo><a:pt x="5" y="2"/><a:pt x="15" y="2"/><a:pt x="20" y="0"/></a:cubicBezTo><a:close/></a:path></a:pathLst></a:custGeom><a:solidFill><a:srgbClr val="000000"/></a:solidFill></xdr:spPr></xdr:sp>"#;

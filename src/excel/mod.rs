@@ -44,6 +44,14 @@ const HYPERLINK_REL: &str = "hyperlink";
 const TABLE_REL: &str = "table";
 /// Relationship type of the drawing part of a sheet.
 const DRAWING_REL: &str = "drawing";
+/// The relationship type of a sheet's VML drawing (its form controls and
+/// notes), last segment.
+const VML_DRAWING_REL: &str = "vmlDrawing";
+/// The size of the box of a check box (or circle of an option button)
+/// without a label, in points.
+const CONTROL_MARK_PT: f32 = 9.0;
+/// The space between a form control's left edge and its box, in points.
+const CONTROL_INSET_PT: f32 = 1.5;
 /// Relationship type of the theme part of the workbook.
 const THEME_REL: &str = "theme";
 /// Relationship type of a picture.
@@ -353,7 +361,14 @@ fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec
 /// chart is drawn at the size its anchor takes on the sheet `grid`.
 fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pictures) -> Vec<Shape> {
     let mut shapes: Vec<Shape> = Vec::new();
-    for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
+    let rels = read_rels(zip, part).unwrap_or_default();
+    let controls: HashMap<u32, drawing::Control> = rels
+        .iter()
+        .filter(|(_, kind, rel)| kind == VML_DRAWING_REL && !rel.external)
+        .filter_map(|(_, _, rel)| zip.read_text(&rel.target).ok().flatten())
+        .flat_map(|vml| drawing::vml_controls(&vml))
+        .collect();
+    for (_, kind, rel) in rels {
         if kind == DRAWING_REL && !rel.external {
             let drawing = zip.read_text(&rel.target).ok().flatten();
             let items = drawing
@@ -388,7 +403,29 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pi
                     shape.drawn = Drawn::Chart(chart);
                     Some(shape)
                 }
-                Drawn::Text(_) | Drawn::CellPicture(_) => Some(shape),
+                Drawn::Text(mut text) => {
+                    if let Some(id) = text.hidden_id {
+                        // A hidden shape shows only as a form control the VML
+                        // drawing shows, its label after its mark.
+                        let mark = controls.get(&id)?.mark();
+                        if let Some(mark) = mark {
+                            // Its box sits at its left edge, centred down it.
+                            if text.text.is_empty() {
+                                text.size_pt = Some(CONTROL_MARK_PT);
+                            }
+                            text.insets_pt = Some([CONTROL_INSET_PT, 0.0, 0.0, 0.0]);
+                            text.anchor = Some("ctr".to_string());
+                            let gap = if text.text.is_empty() { "" } else { " " };
+                            text.text = format!("{mark}{gap}{}", text.text);
+                            if let Some(first) = text.runs.first_mut() {
+                                first.text = format!("{mark}{gap}{}", first.text);
+                            }
+                        }
+                    }
+                    shape.drawn = Drawn::Text(text);
+                    Some(shape)
+                }
+                Drawn::CellPicture(_) => Some(shape),
             }));
         }
     }
