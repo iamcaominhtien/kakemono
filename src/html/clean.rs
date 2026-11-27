@@ -797,7 +797,7 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
         && !has(&["noprint"])
         && dom.nodes[node]
             .parent
-            .is_some_and(|parent| dom.clean_text(parent).chars().count() > dom.clean_text(node).chars().count());
+            .is_some_and(|parent| dom.has_text_outside(parent, |id| id == node));
     has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS) && !is_heading_box(dom, node) && !inline)
 }
 
@@ -1600,8 +1600,23 @@ fn comment_links(dom: &mut Dom, root: Id) {
 /// Removes the blocks in `root` that hold only numbers (the counts of
 /// reactions and comments: `0 0 0`) or only the word of a byline (`by`).
 fn remove_counts(dom: &mut Dom, root: Id) {
+    // The blocks that go, taken out at the end, at once (20,000 numbers
+    // in one box): until then, a block in one that goes is skipped, and so
+    // is the text of those that go.
+    let mut gone = vec![false; dom.nodes.len()];
+    let mut removed = Vec::new();
+    let taken = |gone: &[bool], node: Id| {
+        let mut at = Some(node);
+        while let Some(id) = at {
+            if gone[id] {
+                return true;
+            }
+            at = dom.nodes[id].parent;
+        }
+        !dom.attached(node)
+    };
     for node in dom.descendants(root) {
-        if node == root || !dom.attached(node) || !dom.is_any(node, &["p", "div", "li"]) {
+        if node == root || !dom.is_any(node, &["p", "div", "li"]) || taken(&gone, node) {
             continue;
         }
         let kept = ["table", "pre", "code", "ol", "h1", "h2", "h3", "h4", "h5", "h6"];
@@ -1611,25 +1626,31 @@ fn remove_counts(dom: &mut Dom, root: Id) {
         let text = dom.clean_text(node);
         // A byline whose name went with its pop-up (The Verge).
         if BYLINE_WORDS.contains(&text.to_lowercase().as_str()) {
-            dom.detach(node);
+            gone[node] = true;
+            removed.push(node);
             continue;
         }
         let count = text.chars().count() <= COUNT_MAX_CHARS
             && text.chars().any(|ch| ch.is_ascii_digit())
             && text.chars().all(|ch| ch.is_ascii_digit() || ch.is_whitespace());
-        let parent_too = dom.nodes[node]
-            .parent
-            .is_some_and(|parent| parent != root && dom.clean_text(parent) == text);
+        // The parent holds the same text: it goes instead, as a whole.
+        let parent_too = || {
+            dom.nodes[node]
+                .parent
+                .is_some_and(|parent| parent != root && !dom.has_text_outside(parent, |id| id == node || gone[id]))
+        };
         if count
-            && !parent_too
+            && !parent_too()
             && !dom
                 .descendants(node)
                 .into_iter()
                 .any(|id| dom.is_any(id, &["img", "svg"]))
         {
-            dom.detach(node);
+            gone[node] = true;
+            removed.push(node);
         }
     }
+    dom.detach_all(&removed);
 }
 
 /// Whether `node` holds a heading (below the title) or a long paragraph,
@@ -2083,29 +2104,51 @@ fn heading_self_links(dom: &mut Dom, root: Id) {
 /// Two line breaks in a row (`<br><br>`, white space between) end a
 /// paragraph: pages written so get their paragraphs, as in a browser.
 fn split_at_double_breaks(dom: &mut Dom, root: Id) {
+    // The parents of the breaks, each once: its children are walked once
+    // (a line of text after each of 20,000 breaks).
+    let mut parents = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for br in dom.find_all(root, "br") {
-        if !dom.attached(br) {
+        if let Some(parent) = dom.nodes[br].parent
+            && seen.insert(parent)
+        {
+            parents.push(parent);
+        }
+    }
+    for parent in parents {
+        let mut pairs = Vec::new();
+        let mut open: Option<Id> = None;
+        for &child in &dom.nodes[parent].children {
+            if matches!(&dom.nodes[child].kind, Kind::Text(text) if text.trim().is_empty()) {
+                continue;
+            }
+            match open {
+                Some(first) if dom.is(child, "br") => {
+                    pairs.push((first, child));
+                    open = None;
+                }
+                _ => open = Some(child).filter(|&child| dom.is(child, "br")),
+            }
+        }
+        if pairs.is_empty() {
             continue;
         }
-        let Some(parent) = dom.nodes[br].parent else {
-            continue;
-        };
-        let siblings = dom.nodes[parent].children.clone();
-        let Some(at) = siblings.iter().position(|&child| child == br) else {
-            continue;
-        };
-        let next = siblings[at + 1..]
-            .iter()
-            .copied()
-            .find(|&child| !matches!(&dom.nodes[child].kind, Kind::Text(text) if text.trim().is_empty()));
-        if let Some(next) = next.filter(|&next| dom.is(next, "br")) {
-            // An empty block between the two parts: the reader ends the
-            // paragraph there.
+        // An empty block in place of each pair, between the two parts:
+        // the reader ends the paragraph there.
+        let mut blocks = std::collections::HashMap::new();
+        for &(first, second) in &pairs {
             let block = dom.element("div", &[]);
-            dom.insert_after(br, block);
-            dom.detach(br);
-            dom.detach(next);
+            dom.nodes[block].parent = Some(parent);
+            dom.nodes[first].parent = None;
+            dom.nodes[second].parent = None;
+            blocks.insert(first, Some(block));
+            blocks.insert(second, None);
         }
+        let children = std::mem::take(&mut dom.nodes[parent].children);
+        dom.nodes[parent].children = children
+            .into_iter()
+            .filter_map(|child| blocks.get(&child).copied().unwrap_or(Some(child)))
+            .collect();
     }
 }
 

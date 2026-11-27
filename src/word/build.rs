@@ -96,6 +96,9 @@ struct Builder<'a> {
     blocks: Vec<Block>,
     /// Anchors given so far.
     anchors: HashSet<String>,
+    /// For each base of [`Builder::unique_anchor`], the number of the
+    /// last anchor made from it (those before are all taken).
+    anchor_numbers: HashMap<String, usize>,
     /// For each Word bookmark, the index of the block it is in.
     bookmarks: HashMap<String, usize>,
     /// Bookmarks of empty paragraphs, given to the next block.
@@ -129,6 +132,7 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         endnote_blocks: Vec::new(),
         blocks: Vec::new(),
         anchors: HashSet::new(),
+        anchor_numbers: HashMap::new(),
         bookmarks: HashMap::new(),
         loose_bookmarks: Vec::new(),
         caption: None,
@@ -800,14 +804,17 @@ impl Builder<'_> {
         self.push(block);
     }
 
-    /// An anchor based on `base` that no block has yet.
+    /// An anchor based on `base` that no block has yet: `base`, else
+    /// `base-2`, `base-3`, ... The search goes on from the last number
+    /// given (20,000 headings of the same slug).
     fn unique_anchor(&mut self, base: String) -> String {
-        let mut anchor = base.clone();
-        let mut k = 2;
+        let mut k = self.anchor_numbers.get(&base).copied().unwrap_or(1);
+        let mut anchor = if k == 1 { base.clone() } else { format!("{base}-{k}") };
         while !self.anchors.insert(anchor.clone()) {
-            anchor = format!("{base}-{k}");
             k += 1;
+            anchor = format!("{base}-{k}");
         }
+        self.anchor_numbers.insert(base, k);
         anchor
     }
 
@@ -1108,12 +1115,14 @@ fn truncate_spans(spans: &mut Vec<Span>, keep: usize) {
 /// The lines of spans that hold line breaks (`\n`), each trimmed.
 fn split_lines(spans: Vec<Span>) -> Vec<Vec<Span>> {
     let mut lines = vec![Vec::new()];
-    for span in spans {
+    for mut span in spans {
         if span.math.is_some() || !span.text.contains('\n') {
             lines.last_mut().expect("one line at least").push(span);
             continue;
         }
-        for (i, piece) in span.text.split('\n').enumerate() {
+        // The text out of the span: it is not copied for each line.
+        let text = std::mem::take(&mut span.text);
+        for (i, piece) in text.split('\n').enumerate() {
             if i > 0 {
                 lines.push(Vec::new());
             }
@@ -1194,5 +1203,47 @@ mod tests {
         assert_eq!(caption_label("The detector"), None);
         assert_eq!(section_number("2.1 Methods").as_deref(), Some("2.1"));
         assert_eq!(roman_lower(14), "xiv");
+    }
+
+    /// Anchors of the same base are numbered on from the last one, past
+    /// those another base already took.
+    #[test]
+    fn unique_anchors_are_numbered_on() {
+        let mut builder = Builder {
+            notes: HashMap::new(),
+            note_numbers: HashMap::new(),
+            footnotes: 0,
+            endnotes: 0,
+            pending_notes: Vec::new(),
+            endnote_blocks: Vec::new(),
+            blocks: Vec::new(),
+            anchors: HashSet::new(),
+            anchor_numbers: HashMap::new(),
+            bookmarks: HashMap::new(),
+            loose_bookmarks: Vec::new(),
+            caption: None,
+            in_abstract: false,
+            in_references: false,
+            code: Vec::new(),
+            picture_sizes: Vec::new(),
+        };
+        let mut anchor = |base: &str| builder.unique_anchor(base.to_string());
+        assert_eq!(anchor("intro"), "intro");
+        assert_eq!(anchor("intro"), "intro-2");
+        assert_eq!(anchor("intro-3"), "intro-3");
+        assert_eq!(anchor("intro"), "intro-4");
+        assert_eq!(anchor("intro"), "intro-5");
+        assert_eq!(anchor("intro-2"), "intro-2-2");
+    }
+
+    /// A span of many lines is cut into one span a line.
+    #[test]
+    fn lines_of_a_span_are_split() {
+        let lines = split_lines(vec![Span::plain("a\nb\n\n c \nd")]);
+        let texts: Vec<Vec<&str>> = lines
+            .iter()
+            .map(|line| line.iter().map(|span| span.text.as_str()).collect())
+            .collect();
+        assert_eq!(texts, [vec!["a"], vec!["b"], vec![" c "], vec!["d"]]);
     }
 }
