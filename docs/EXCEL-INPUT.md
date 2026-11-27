@@ -187,11 +187,12 @@ its formatting:
   (`'Sheet'!A1`), which shows that sheet's tab;
 - charts (SVG; dashed and smoothed lines, a legend placed by hand on its side), pictures, pictures
   placed in cells, embedded objects (a Word document, ...) by the picture the file keeps of them,
-  shapes (preset outlines such as arrows, bent arrows, triangles, brackets, braces, cylinders;
-  arrow heads and the corners of brackets and braces sized by the shape's shorter side, as Excel
-  draws them; fill, outline, text with
+  shapes (preset outlines such as arrows, bent arrows, triangles, brackets, braces, cylinders,
+  callouts with their wedge to the tip they point at; arrow heads and the corners of brackets and
+  braces sized by the shape's shorter side, as Excel draws them; drawn outlines, `custGeom`, of
+  lines and curves whose points are numbers; fill, outline, text with
   the look of each run, its insets, cut at the bottom edge when the shape says so) and connectors (straight and elbow, with arrow heads) at the place and size
-  of their anchors, groups included;
+  of their anchors, groups included, turned and mirrored with their groups;
 - conditional formats (`src/excel/conditional.rs`), tested on the values read: a cell compared
   with numbers, texts or another cell (`cellIs`), containing, beginning or ending with a text,
   empty or not, a duplicate or unique value, each with the font colour and style, fill and

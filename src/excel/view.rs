@@ -632,7 +632,7 @@ impl Page<'_> {
             });
         }
         let mut outline = String::new();
-        if let Some((path, filled)) = outline_path(geometry, width, height) {
+        if let Some((path, filled)) = shape_path(shape, width, height) {
             let fill = if filled { shape.fill.map(hex) } else { None };
             let mirror = match (shape.flip_h, shape.flip_v) {
                 (false, false) => String::new(),
@@ -692,8 +692,9 @@ impl Page<'_> {
                 num(left)
             );
         }
-        // Only a text is cut at the box: an outline's stroke straddles it.
-        if shape.clip && !shape.text.is_empty() {
+        // Only a text is cut at the box: an outline's stroke straddles it,
+        // and a callout's tip lies outside.
+        if shape.clip && !shape.text.is_empty() && callout_tip(shape, width, height).is_none() {
             style.push_str("overflow:hidden;");
         }
         let text = if shape.text.is_empty() {
@@ -1107,6 +1108,74 @@ pub(crate) fn line_points(geometry: &str, width: f32, height: f32) -> Option<Vec
     })
 }
 
+/// The path of the outline of `shape` in a box `width` by `height` points,
+/// and whether it is filled: its drawn outline, its callout with its tip,
+/// or its preset outline ([`outline_path`]).
+pub(crate) fn shape_path(shape: &TextShape, width: f32, height: f32) -> Option<(String, bool)> {
+    let (wide, high) = (width.max(MIN_BOX_PT), height.max(MIN_BOX_PT));
+    if let Some(path) = &shape.custom_path {
+        return Some((scale_path(path, wide / 100.0, high / 100.0), true));
+    }
+    if let Some(path) = callout_path(shape, wide, high) {
+        return Some((path, true));
+    }
+    outline_path(shape.geometry.as_deref().unwrap_or("rect"), width, height)
+}
+
+/// The default place of a callout's tip (`adj1`, `adj2`): from the box's
+/// centre, in 100 000ths of its width and height.
+const CALLOUT_TIP: [f32; 2] = [-20_833.0, 62_500.0];
+
+/// The tip of `shape` when it is a callout with a wedge (`wedgeRectCallout`,
+/// `wedgeRoundRectCallout`), in a box `width` by `height` points.
+fn callout_tip(shape: &TextShape, width: f32, height: f32) -> Option<[f32; 2]> {
+    if !matches!(
+        shape.geometry.as_deref(),
+        Some("wedgeRectCallout" | "wedgeRoundRectCallout")
+    ) {
+        return None;
+    }
+    let adjust = |index: usize| shape.adjust.get(index).copied().unwrap_or(CALLOUT_TIP[index]) / 100_000.0;
+    Some([width / 2.0 + width * adjust(0), height / 2.0 + height * adjust(1)])
+}
+
+/// The path of a callout box with its wedge to its tip, as Excel draws a
+/// `wedgeRectCallout`: the wedge leaves the side the tip lies beyond,
+/// between a sixth and a quarter of that side from its middle.
+fn callout_path(shape: &TextShape, width: f32, height: f32) -> Option<String> {
+    let [tip_x, tip_y] = callout_tip(shape, width, height)?;
+    let (dx, dy) = (tip_x - width / 2.0, tip_y - height / 2.0);
+    // Beyond the top or bottom side rather than the left or right one.
+    let upright = dy.abs() > (dx * height / width).abs();
+    let twelfths = |side: f32, positive: bool| {
+        if positive {
+            [side * 7.0 / 12.0, side * 10.0 / 12.0]
+        } else {
+            [side * 2.0 / 12.0, side * 5.0 / 12.0]
+        }
+    };
+    let [x1, x2] = twelfths(width, dx > 0.0);
+    let [y1, y2] = twelfths(height, dy > 0.0);
+    let mut points = vec![[0.0, 0.0]];
+    if upright && dy <= 0.0 {
+        points.extend([[x1, 0.0], [tip_x, tip_y], [x2, 0.0]]);
+    }
+    points.push([width, 0.0]);
+    if !upright && dx > 0.0 {
+        points.extend([[width, y1], [tip_x, tip_y], [width, y2]]);
+    }
+    points.push([width, height]);
+    if upright && dy > 0.0 {
+        points.extend([[x2, height], [tip_x, tip_y], [x1, height]]);
+    }
+    points.push([0.0, height]);
+    if !upright && dx <= 0.0 {
+        points.extend([[0.0, y2], [tip_x, tip_y], [0.0, y1]]);
+    }
+    let steps: Vec<String> = points.iter().map(|[x, y]| format!("{},{}", num(*x), num(*y))).collect();
+    Some(format!("M{}Z", steps.join("L")))
+}
+
 /// The path of a preset outline that is not a box in a box `width` by
 /// `height` points, and whether it is filled (brackets are not); `None`
 /// for a box, drawn with CSS.
@@ -1397,7 +1466,11 @@ pub(crate) fn shape_svg(shape: &TextShape, width: f32, height: f32) -> Option<(S
     // included.
     let turn = shape.rotation_deg.to_radians();
     let (sin, cos) = (turn.sin().abs(), turn.cos().abs());
-    let pad = stroke_pt * ARROW_SIZE as f32;
+    // A callout's tip can lie outside the box.
+    let beyond = callout_tip(shape, width, height).map_or(0.0, |[tip_x, tip_y]| {
+        (-tip_x).max(tip_x - width).max(-tip_y).max(tip_y - height).max(0.0)
+    });
+    let pad = stroke_pt * ARROW_SIZE as f32 + beyond;
     let outer = [
         width * cos + height * sin + 2.0 * pad,
         width * sin + height * cos + 2.0 * pad,
@@ -1464,7 +1537,7 @@ fn outline_body(shape: &TextShape, width: f32, height: f32) -> Option<(String, f
             marker("start", shape.head),
             marker("end", shape.tail),
         )
-    } else if let Some((path, filled)) = outline_path(geometry, width, height) {
+    } else if let Some((path, filled)) = shape_path(shape, width, height) {
         let mut scaled = path;
         if shape.flip_h || shape.flip_v {
             scaled = format!(
@@ -1754,6 +1827,27 @@ mod tests {
         assert!(!filled && brackets.starts_with("M5,30A5,5 0 0 1 0,25"), "{brackets}");
         let (left, _) = outline_path("leftBrace", 10.0, 60.0).unwrap();
         assert!(left.starts_with("M10,0A5,0.83 0 0 0 5,0.83"), "{left}");
+    }
+
+    /// A callout's wedge leaves the side its tip lies beyond, and its
+    /// box is drawn as the shape's drawn outline when it has one.
+    #[test]
+    fn a_callout_points_at_its_tip() {
+        let callout = TextShape {
+            geometry: Some("wedgeRectCallout".into()),
+            adjust: vec![-90_000.0, 50_000.0],
+            ..TextShape::default()
+        };
+        // The tip is 0.9 of the width left of the centre, a half below:
+        // beyond the left side, between 10/12 and 7/12 of the height.
+        let (path, filled) = shape_path(&callout, 120.0, 60.0).unwrap();
+        assert!(filled);
+        assert_eq!(path, "M0,0L120,0L120,60L0,60L0,50L-48,60L0,35Z");
+        let drawn = TextShape {
+            custom_path: Some("M0,0L100,50L0,100Z".into()),
+            ..callout
+        };
+        assert_eq!(shape_path(&drawn, 20.0, 10.0).unwrap().0, "M0 0L20 5L0 10Z");
     }
 
     #[test]

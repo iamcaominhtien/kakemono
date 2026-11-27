@@ -72,6 +72,12 @@ pub(crate) struct TextShape {
     /// Its text run by run, `\n` between lines and paragraphs: what each
     /// run sets of its own look.
     pub(crate) runs: Vec<ShapeRun>,
+    /// The adjustments of its preset outline (`a:avLst`), in order: the
+    /// place of a callout's tip, ...; empty for the defaults.
+    pub(crate) adjust: Vec<f32>,
+    /// Its drawn outline (`a:custGeom`) as an SVG path in a 100 × 100 box;
+    /// `None` for a preset one, or one whose points are formulas or arcs.
+    pub(crate) custom_path: Option<String>,
 }
 
 /// A run of the text of a shape, and the look it sets (`a:rPr`); `None`
@@ -230,20 +236,68 @@ fn anchors(node: Node<'_, '_>, theme: &Theme, shapes: &mut Vec<Shape>) {
     }
 }
 
-/// How the coordinates of a group's children map to shares of the box of
-/// the group's anchor, on each axis: share = coordinate × scale + offset.
+/// How the coordinates of a group's children map to the box of the
+/// group's anchor: an affine map (scale, turn and mirror of each group
+/// down to them) to EMU from the anchor's corner, and the anchor's size.
 #[derive(Debug, Clone, Copy)]
 struct Map {
-    /// The scale of x and y.
-    scale: [f32; 2],
-    /// The offset of x and y.
-    offset: [f32; 2],
+    /// x' = m0·x + m1·y + m2, y' = m3·x + m4·y + m5.
+    matrix: [f32; 6],
+    /// The width and height of the anchor's box (its group's extent).
+    size: [f32; 2],
 }
 
 impl Map {
-    /// The share of the anchor's box of the point (`x`, `y`).
-    fn apply(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale[0] + self.offset[0], y * self.scale[1] + self.offset[1]]
+    /// The point (`x`, `y`), from the anchor's corner.
+    fn point(self, x: f32, y: f32) -> [f32; 2] {
+        let [xx, xy, x0, yx, yy, y0] = self.matrix;
+        [xx * x + xy * y + x0, yx * x + yy * y + y0]
+    }
+
+    /// The vector (`x`, `y`) mapped (without the offset).
+    fn vector(self, x: f32, y: f32) -> [f32; 2] {
+        let [xx, xy, _, yx, yy, _] = self.matrix;
+        [xx * x + xy * y, yx * x + yy * y]
+    }
+
+    /// `self` after `inner`: a point of `inner`'s space in the anchor's.
+    fn then(self, inner: [f32; 6]) -> Self {
+        let [xx, xy, x0, yx, yy, y0] = self.matrix;
+        let [in_xx, in_xy, in_x0, in_yx, in_yy, in_y0] = inner;
+        Self {
+            matrix: [
+                xx * in_xx + xy * in_yx,
+                xx * in_xy + xy * in_yy,
+                xx * in_x0 + xy * in_y0 + x0,
+                yx * in_xx + yy * in_yx,
+                yx * in_xy + yy * in_yy,
+                yx * in_x0 + yy * in_y0 + y0,
+            ],
+            size: self.size,
+        }
+    }
+
+    /// Where a child of box `off` + `ext` lands: its box as shares of the
+    /// anchor's (left, top, width, height), the angle it is turned by
+    /// clockwise, in degrees, and whether it is mirrored.
+    fn place(self, [x, y]: [f32; 2], [width, height]: [f32; 2]) -> ([f32; 4], f32, bool) {
+        let [cx, cy] = self.point(x + width / 2.0, y + height / 2.0);
+        let across = self.vector(width, 0.0);
+        let down = self.vector(0.0, height);
+        let (wide, high) = (across[0].hypot(across[1]), down[0].hypot(down[1]));
+        let turn = across[1].atan2(across[0]).to_degrees();
+        let mirrored = across[0] * down[1] - across[1] * down[0] < 0.0;
+        let [frame_w, frame_h] = self.size;
+        (
+            [
+                (cx - wide / 2.0) / frame_w,
+                (cy - high / 2.0) / frame_h,
+                wide / frame_w,
+                high / frame_h,
+            ],
+            if turn.is_finite() { turn } else { 0.0 },
+            mirrored,
+        )
     }
 }
 
@@ -262,14 +316,16 @@ impl Collector<'_> {
     /// group); `map` places the children of a group in the anchor's box.
     fn collect(&self, node: Node<'_, '_>, map: Option<Map>, shapes: &mut Vec<Shape>) {
         for child in node.children().filter(Node::is_element) {
-            let push = |drawn, props: Option<Node<'_, '_>>, shapes: &mut Vec<Shape>| {
-                let part = map
+            let push = |mut drawn, props: Option<Node<'_, '_>>, shapes: &mut Vec<Shape>| {
+                let placed = map
                     .zip(props.and_then(|props| named(props, "xfrm").next()).and_then(xfrm))
-                    .map(|(map, ([x, y], [width, height]))| {
-                        let [left, top] = map.apply(x, y);
-                        let [right, bottom] = map.apply(x + width, y + height);
-                        [left, top, right - left, bottom - top]
-                    });
+                    .map(|(map, (off, ext))| map.place(off, ext));
+                let part = placed.map(|(part, turn, mirrored)| {
+                    if let Drawn::Text(shape) = &mut drawn {
+                        turned(shape, turn, mirrored);
+                    }
+                    part
+                });
                 shapes.push(Shape {
                     at: self.at,
                     frame: Frame { part, ..self.frame },
@@ -306,9 +362,25 @@ impl Collector<'_> {
     }
 }
 
+/// Turns `shape`, which a group turns by `turn` degrees and mirrors when
+/// `mirrored`, by as much: a group's mirror runs its own turn backwards.
+fn turned(shape: &mut TextShape, turn: f32, mirrored: bool) {
+    let own = if mirrored {
+        -shape.rotation_deg
+    } else {
+        shape.rotation_deg
+    };
+    if mirrored {
+        shape.flip_v = !shape.flip_v;
+    }
+    shape.rotation_deg = (own + turn).rem_euclid(360.0);
+}
+
 /// The map of the children of a group whose `a:xfrm` is `xfrm`, inside
 /// the group mapped by `outer` (`None` for a group right under its
-/// anchor); `None` when its child extent is empty or missing.
+/// anchor): its child extent scaled to its extent, turned (`rot`) and
+/// mirrored (`flipH`, `flipV`) about its centre. `None` when its child
+/// extent is empty or missing.
 fn group_map(xfrm: Node<'_, '_>, outer: Option<Map>) -> Option<Map> {
     let pair = |name: &str, x: &str, y: &str| -> Option<[f32; 2]> {
         let node = named(xfrm, name).next()?;
@@ -326,27 +398,58 @@ fn group_map(xfrm: Node<'_, '_>, outer: Option<Map>) -> Option<Map> {
     if child_ext[0] <= 0.0 || child_ext[1] <= 0.0 {
         return None;
     }
-    match outer {
-        // Right under the anchor, the group fills the anchor's box.
-        None => Some(Map {
-            scale: [1.0 / child_ext[0], 1.0 / child_ext[1]],
-            offset: [-child_off[0] / child_ext[0], -child_off[1] / child_ext[1]],
-        }),
-        Some(outer) => {
-            let off = pair("off", "x", "y")?;
-            let ext = pair("ext", "cx", "cy")?;
-            // A child point p is at off + (p - chOff) × ext / chExt in the
-            // outer group's coordinates.
-            let ratio = [ext[0] / child_ext[0], ext[1] / child_ext[1]];
-            Some(Map {
-                scale: [outer.scale[0] * ratio[0], outer.scale[1] * ratio[1]],
-                offset: [
-                    outer.scale[0] * (off[0] - child_off[0] * ratio[0]) + outer.offset[0],
-                    outer.scale[1] * (off[1] - child_off[1] * ratio[1]) + outer.offset[1],
-                ],
-            })
+    let off = pair("off", "x", "y").unwrap_or(child_off);
+    let ext = pair("ext", "cx", "cy")
+        .filter(|ext| ext[0] > 0.0 && ext[1] > 0.0)
+        .unwrap_or(child_ext);
+    let degrees = xfrm
+        .attribute("rot")
+        .and_then(|rot| rot.trim().parse::<f32>().ok())
+        .map_or(0.0, |rot| rot / ANGLE_UNIT);
+    let (sin, cos) = if degrees.is_finite() {
+        degrees.to_radians().sin_cos()
+    } else {
+        (0.0, 1.0)
+    };
+    let sign = |name: &str| {
+        if xfrm
+            .attribute(name)
+            .is_some_and(|value| value == "1" || value == "true")
+        {
+            -1.0
+        } else {
+            1.0
         }
-    }
+    };
+    let (flip_x, flip_y) = (sign("flipH"), sign("flipV"));
+    // A child point p is at off + ext/2 + R·F·((p - chOff)·ext/chExt - ext/2)
+    // in the outer group's coordinates (R the turn, F the mirror).
+    let scale = [ext[0] / child_ext[0], ext[1] / child_ext[1]];
+    let [xx, xy, yx, yy] = [
+        cos * flip_x * scale[0],
+        -sin * flip_y * scale[1],
+        sin * flip_x * scale[0],
+        cos * flip_y * scale[1],
+    ];
+    let half = [ext[0] / 2.0, ext[1] / 2.0];
+    let turned_half = [
+        cos * flip_x * half[0] - sin * flip_y * half[1],
+        sin * flip_x * half[0] + cos * flip_y * half[1],
+    ];
+    let inner = [
+        xx,
+        xy,
+        off[0] + half[0] - turned_half[0] - (xx * child_off[0] + xy * child_off[1]),
+        yx,
+        yy,
+        off[1] + half[1] - turned_half[1] - (yx * child_off[0] + yy * child_off[1]),
+    ];
+    // Right under the anchor, the group's box is the anchor's.
+    let outer = outer.unwrap_or(Map {
+        matrix: [1.0, 0.0, -off[0], 0.0, 1.0, -off[1]],
+        size: ext,
+    });
+    Some(outer.then(inner))
 }
 
 /// The offset and extent (in EMU) of an `a:xfrm`.
@@ -609,10 +712,26 @@ fn text_look(shape: &mut TextShape, body: Node<'_, '_>, style: Option<Node<'_, '
 /// preset geometry, the width, dashes and arrow heads of its line, and
 /// how it is mirrored and turned.
 fn outline(shape: &mut TextShape, props: Node<'_, '_>) {
-    shape.geometry = named(props, "prstGeom")
-        .next()
-        .and_then(|geom| geom.attribute("prst"))
-        .map(str::to_string);
+    let preset = named(props, "prstGeom").next();
+    shape.geometry = preset.and_then(|geom| geom.attribute("prst")).map(str::to_string);
+    shape.adjust = preset
+        .and_then(|geom| named(geom, "avLst").next())
+        .map(|list| {
+            named(list, "gd")
+                .map_while(|guide| {
+                    guide
+                        .attribute("fmla")?
+                        .trim()
+                        .strip_prefix("val ")?
+                        .trim()
+                        .parse::<f32>()
+                        .ok()
+                })
+                .filter(|value| value.is_finite())
+                .collect()
+        })
+        .unwrap_or_default();
+    shape.custom_path = named(props, "custGeom").next().and_then(custom_path);
     let line = named(props, "ln").next();
     shape.line_width_pt = line
         .and_then(|line| line.attribute("w"))
@@ -643,6 +762,67 @@ fn outline(shape: &mut TextShape, props: Node<'_, '_>) {
         .map(|rot| (rot / ANGLE_UNIT).rem_euclid(360.0))
         .filter(|rot| rot.is_finite())
         .unwrap_or(0.0);
+}
+
+/// The most steps of a drawn outline (`a:custGeom`) that are read.
+const MAX_PATH_STEPS: usize = 20_000;
+
+/// The drawn outline `geometry` (`a:custGeom`) as an SVG path in a
+/// 100 × 100 box: its paths' moves, lines, curves and closes, each path
+/// scaled from its own size (`w`, `h`). `None` when a point is a formula
+/// (a guide's name), a path has no size or an arc, or it has no step.
+fn custom_path(geometry: Node<'_, '_>) -> Option<String> {
+    let list = named(geometry, "pathLst").next()?;
+    let mut out = String::new();
+    let mut steps = 0;
+    for path in named(list, "path") {
+        let size = |name: &str| {
+            path.attribute(name)?
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite() && *value > 0.0)
+        };
+        let (width, height) = (size("w")?, size("h")?);
+        for step in path.children().filter(Node::is_element) {
+            steps += 1;
+            if steps > MAX_PATH_STEPS {
+                return None;
+            }
+            let points = named(step, "pt")
+                .map(|point| {
+                    let value = |name: &str| point.attribute(name)?.trim().parse::<f32>().ok();
+                    Some([value("x")? / width * 100.0, value("y")? / height * 100.0])
+                })
+                .collect::<Option<Vec<[f32; 2]>>>()?;
+            let letter = match (step.tag_name().name(), points.len()) {
+                ("moveTo", 1) => 'M',
+                ("lnTo", 1) => 'L',
+                ("cubicBezTo", 3) => 'C',
+                ("quadBezTo", 2) => 'Q',
+                ("close", 0) => 'Z',
+                _ => return None,
+            };
+            out.push(letter);
+            let coordinates: Vec<String> = points
+                .iter()
+                .map(|[x, y]| format!("{},{}", short(*x), short(*y)))
+                .collect();
+            out.push_str(&coordinates.join(" "));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// `value` with at most two decimals, without trailing zeros.
+fn short(value: f32) -> String {
+    let text = format!("{value:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
 }
 
 /// The runs of the text body `body`: each run's text and the look it
@@ -918,6 +1098,37 @@ mod tests {
         );
     }
 
+    /// `part` to four decimals.
+    fn rounded(part: [f32; 4]) -> [f32; 4] {
+        part.map(|value| (value * 10_000.0).round() / 10_000.0)
+    }
+
+    /// A group turned a quarter turns its children about its centre, and
+    /// a drawn outline of numbers is read as a path in a 100 × 100 box.
+    #[test]
+    fn a_turned_group_turns_its_drawn_children() {
+        let wave = r#"<xdr:sp><xdr:spPr><a:xfrm><a:off x="0" y="40"/><a:ext cx="200" cy="20"/></a:xfrm><a:custGeom><a:pathLst><a:path w="20" h="2"><a:moveTo><a:pt x="0" y="0"/></a:moveTo><a:cubicBezTo><a:pt x="5" y="2"/><a:pt x="15" y="2"/><a:pt x="20" y="0"/></a:cubicBezTo><a:close/></a:path></a:pathLst></a:custGeom><a:solidFill><a:srgbClr val="000000"/></a:solidFill></xdr:spPr></xdr:sp>"#;
+        // A 200 × 100 group turned a quarter: the wave across its middle
+        // stands up through its centre.
+        let group = format!(
+            r#"<xdr:grpSp><xdr:grpSpPr><a:xfrm rot="5400000"><a:off x="0" y="0"/><a:ext cx="200" cy="100"/><a:chOff x="0" y="0"/><a:chExt cx="200" cy="100"/></a:xfrm></xdr:grpSpPr>{wave}</xdr:grpSp>"#
+        );
+        let shapes = items(&format!("{HEAD}{}</xdr:wsDr>", two_cell(1, 1, &group))).unwrap();
+        assert_eq!(shapes[0].frame.part.map(rounded), Some([0.0, 0.4, 1.0, 0.2]));
+        let Drawn::Text(shape) = &shapes[0].drawn else {
+            panic!("a shape")
+        };
+        assert!((shape.rotation_deg - 90.0).abs() < 0.01);
+        assert_eq!(shape.custom_path.as_deref(), Some("M0,0C25,100 75,100 100,0Z"));
+        // A point given by a formula is not drawn as a path.
+        let formula = wave.replace(
+            r#"<a:pt x="0" y="0"/></a:moveTo>"#,
+            r#"<a:pt x="T0" y="T1"/></a:moveTo>"#,
+        );
+        let shapes = items(&format!("{HEAD}{}</xdr:wsDr>", two_cell(1, 1, &formula))).unwrap();
+        assert!(matches!(&shapes[0].drawn, Drawn::Text(shape) if shape.custom_path.is_none()));
+    }
+
     #[test]
     fn shapes_in_a_group_take_their_part_of_the_anchor() {
         let child = |x: u32, y: u32, cx: u32, cy: u32| {
@@ -933,7 +1144,7 @@ mod tests {
             child(0, 0, 5, 10),
         );
         let shapes = items(&format!("{HEAD}{}</xdr:wsDr>", two_cell(1, 1, &group))).unwrap();
-        let parts: Vec<_> = shapes.iter().map(|shape| shape.frame.part).collect();
+        let parts: Vec<_> = shapes.iter().map(|shape| shape.frame.part.map(rounded)).collect();
         assert_eq!(parts, [Some([0.5, 0.0, 0.5, 0.5]), Some([0.5, 0.5, 0.25, 0.5])]);
         let frame = shapes[0].frame;
         assert_eq!((frame.from.unwrap().row, frame.to.unwrap().col), (1, 9));
