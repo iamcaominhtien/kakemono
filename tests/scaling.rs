@@ -1,8 +1,9 @@
 //! Pages that grow take a time in proportion: a rule that compares each
 //! node with its parent, or each item with all the ones before it, takes 16
 //! times longer on a page 4 times longer. Each page is written here at two
-//! sizes, read (and cut into chunks, for a long block), and the larger may
-//! take at most `SLOWDOWN_MAX` times longer than the smaller.
+//! sizes, read (and cut into chunks, or laid out in pages as a PDF), and
+//! the larger may take at most `SLOWDOWN_MAX` times longer than the
+//! smaller.
 
 use kakemono::{ChunkOptions, Paper};
 use std::time::{Duration, Instant};
@@ -58,21 +59,34 @@ fn page(name: &str, count: usize) -> String {
             "<div class='ad sidebar share'><a href='/x{i}'>x</a></div>",
             count,
         )),
+        "links" => article(&format!("<p>{}</p>", repeat("<a href='/p{i}'>link {i}</a> ", count))),
         _ => unreachable!("{name}"),
     }
 }
 
-/// The fastest of `RUNS` readings of `html` (and its chunks, with
-/// `chunks`); the first when it takes longer than `enough` (a page that is
-/// read too slowly is not read again).
-fn time(html: &str, chunks: bool, enough: Duration) -> Duration {
+/// What is done with a page.
+#[derive(Clone, Copy)]
+enum Work {
+    /// It is read.
+    Read,
+    /// It is read and cut into chunks.
+    Chunks,
+    /// It is read and laid out in pages as a PDF.
+    Pdf,
+}
+
+/// The fastest of `RUNS` times `work` is done with `html`; the first when
+/// it takes longer than `enough` (a page that is read too slowly is not
+/// read again).
+fn time(html: &str, work: Work, enough: Duration) -> Duration {
     let mut best = Duration::MAX;
     for _ in 0..RUNS {
         let start = Instant::now();
         let paper = Paper::from_bytes(html.as_bytes().to_vec()).unwrap();
-        let analysis = paper.analyze();
-        if chunks {
-            assert!(!paper.to_chunks(&analysis, &ChunkOptions::default()).is_empty());
+        match work {
+            Work::Read => drop(paper.analyze()),
+            Work::Chunks => assert!(!paper.to_chunks(&paper.analyze(), &ChunkOptions::default()).is_empty()),
+            Work::Pdf => assert!(!paper.to_pdf().unwrap().is_empty()),
         }
         best = best.min(start.elapsed());
         if best > enough {
@@ -86,22 +100,24 @@ fn time(html: &str, chunks: bool, enough: Duration) -> Duration {
 /// others run.
 #[test]
 fn pages_take_a_time_in_proportion_to_their_size() {
-    // The page, its smaller number of items, and whether it is cut into
-    // chunks.
+    // The page, its smaller number of items, and what is done with it.
     let cases = [
-        ("list items", 2_000, false),
-        ("menu spans", 4_000, false),
-        ("number paragraphs", 8_000, false),
-        ("line breaks", 4_000, false),
-        ("code lines", 10_000, true),
-        ("one note cited", 2_000, false),
-        ("same headings", 2_000, false),
-        ("clutter boxes", 10_000, false),
+        ("list items", 2_000, Work::Read),
+        ("menu spans", 4_000, Work::Read),
+        ("number paragraphs", 8_000, Work::Read),
+        ("line breaks", 4_000, Work::Read),
+        ("code lines", 10_000, Work::Chunks),
+        ("one note cited", 2_000, Work::Read),
+        ("same headings", 2_000, Work::Read),
+        ("clutter boxes", 10_000, Work::Read),
+        // Headings are kept with the next paragraph: a chain of them.
+        ("same headings", 200, Work::Pdf),
+        ("links", 3_000, Work::Pdf),
     ];
     let mut slow = Vec::new();
-    for (name, count, chunks) in cases {
-        let small = time(&page(name, count), chunks, Duration::MAX);
-        let large = time(&page(name, count * GROWTH), chunks, small.mul_f64(SLOWDOWN_MAX));
+    for (name, count, work) in cases {
+        let small = time(&page(name, count), work, Duration::MAX);
+        let large = time(&page(name, count * GROWTH), work, small.mul_f64(SLOWDOWN_MAX));
         let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
         eprintln!("{name}: {small:?} -> {large:?} ({ratio:.1} times)");
         if large > NOISE && ratio > SLOWDOWN_MAX {

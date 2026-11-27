@@ -13,6 +13,7 @@ use crate::word::fmt::model::{
     ParaProps, Rgb, RunFmt, Shape, TabKind, TabStop, Underline, VertAlign,
 };
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Superscripts and subscripts are set at this share of the font size.
 const SCRIPT_SIZE_RATIO: f32 = 2.0 / 3.0;
@@ -223,7 +224,9 @@ struct Piece {
     fake_bold: bool,
     fake_italic: bool,
     scale: f32,
-    fmt: RunFmt,
+    /// The format of its run, shared by the pieces of the run (a long
+    /// paragraph holds a piece for each word while it is laid out).
+    fmt: Rc<RunFmt>,
     glyphs: Vec<Glyph>,
     text: String,
     width: f32,
@@ -359,6 +362,11 @@ impl Ctx<'_> {
 
     /// Text in format `fmt` as pieces (split where the face changes).
     fn pieces(&mut self, text: &str, fmt: &RunFmt) -> Vec<Piece> {
+        self.shared_pieces(text, &Rc::new(fmt.clone()))
+    }
+
+    /// [`Ctx::pieces`] with a format the pieces share.
+    fn shared_pieces(&mut self, text: &str, fmt: &Rc<RunFmt>) -> Vec<Piece> {
         let text = transform_case(text, fmt);
         let mut pieces = Vec::new();
         let mut start = 0;
@@ -391,7 +399,7 @@ impl Ctx<'_> {
     }
 
     /// One piece: text in one face.
-    fn piece(&mut self, text: &str, fmt: &RunFmt, key: PieceKey) -> Piece {
+    fn piece(&mut self, text: &str, fmt: &Rc<RunFmt>, key: PieceKey) -> Piece {
         let (face, fake_bold, fake_italic, base_size, small, metric) = key;
         let metric = metric.map(|metric| metric.0);
         let (shown, mut size) = if small {
@@ -433,7 +441,7 @@ impl Ctx<'_> {
             fake_bold,
             fake_italic,
             scale: draw_scale,
-            fmt: fmt.clone(),
+            fmt: Rc::clone(fmt),
             glyphs,
             text: shown,
             width: x,
@@ -867,7 +875,10 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
     if stretch.is_empty() {
         return;
     }
-    let runs = std::mem::take(stretch);
+    let runs: Vec<(String, Rc<RunFmt>)> = std::mem::take(stretch)
+        .into_iter()
+        .map(|(text, fmt)| (text, Rc::new(fmt)))
+        .collect();
     let mut text = String::new();
     let mut bounds = Vec::new();
     for (piece, _) in &runs {
@@ -875,12 +886,22 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
         text.push_str(piece);
     }
     bounds.push(text.len());
+    // The first run that ends after the start of the word: the words go
+    // forward, and each only looks at the runs it overlaps (a paragraph
+    // of 100,000 links).
+    let mut first_run = 0;
     for (start, body_end, end) in words(&text) {
         let mut pieces = Vec::new();
         let mut body = 0.0;
         let mut trailing = 0.0;
-        for (at, (_, fmt)) in runs.iter().enumerate() {
+        while first_run < runs.len() && bounds[first_run + 1] <= start {
+            first_run += 1;
+        }
+        for (at, (_, fmt)) in runs.iter().enumerate().skip(first_run) {
             let (run_start, run_end) = (bounds[at], bounds[at + 1]);
+            if run_start >= end {
+                break;
+            }
             for (part_start, part_end, is_body) in [(start, body_end, true), (body_end, end, false)] {
                 let from = part_start.max(run_start);
                 let to = part_end.min(run_end);
@@ -892,7 +913,7 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
                 if part.is_empty() {
                     continue;
                 }
-                for piece in ctx.pieces(&part, fmt) {
+                for piece in ctx.shared_pieces(&part, fmt) {
                     if is_body {
                         body += piece.width;
                     } else {

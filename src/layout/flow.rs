@@ -659,9 +659,9 @@ impl Flow<'_> {
                         && !breaks_page(para)
                         && !para.props.page_break_before
                     {
-                        let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
+                        let need = self.chain_height(&blocks[at..], page_room);
                         if need > room + EPS && need <= page_room {
                             self.next_column();
                             self.state.pushed = true;
@@ -682,11 +682,16 @@ impl Flow<'_> {
     }
 
     /// Height of a chain of paragraphs kept with the next, with the first
-    /// two lines of the paragraph that ends it.
-    fn chain_height(&mut self, blocks: &[Block]) -> f32 {
+    /// two lines of the paragraph that ends it; once it is past `limit`
+    /// (a page), the rest of the chain is not measured (20,000 headings in
+    /// a row, each of them measuring the ones after it).
+    fn chain_height(&mut self, blocks: &[Block], limit: f32) -> f32 {
         let width = self.column_width();
         let mut height = 0.0;
         for block in blocks {
+            if height > limit {
+                break;
+            }
             match block {
                 Block::Para(para) => {
                     let layout = para::layout(&mut self.ctx(), para, width);
