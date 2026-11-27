@@ -75,6 +75,22 @@ On the pages with a ground truth, trafilatura and readability-lxml are scored as
 - The LaTeX output writes the Greek math alphabets as commands.
 - A table that only lays out an equation without a number (from Word, a book or a web page) reads as a displayed equation.
 
+#### Performance
+
+The 330 pages of the benchmark convert to Markdown in 10 ms each (median), 310 ms for the slowest (arXiv's Llama 3 paper), with 55 MB of memory at most. On 4 cores that is about 200 pages a second.
+
+Larger generated pages convert too:
+
+| Page | Size | Time | Memory |
+| --- | --- | --- | --- |
+| 130,000 paragraphs | 48 MB | 2.0 s | 460 MB |
+| 200,000 boxes of clutter | 12 MB | 0.8 s | 390 MB |
+| A single 20 MB line | 20 MB | 0.8 s | 175 MB |
+| A table of 5,000 rows | 1.7 MB | 0.4 s | 150 MB |
+| Elements nested 20,000 deep | 0.2 MB | 1.5 s | 21 MB |
+
+The clutter is removed in linear time. Elements nested 50,000 deep take 11 s, most of it in html5ever's building of so deep a tree.
+
 ## [0.18.0](https://github.com/iamcaominhtien/kakemono/compare/v0.17.1...v0.18.0) - 2026-11-24
 
 ### Added
