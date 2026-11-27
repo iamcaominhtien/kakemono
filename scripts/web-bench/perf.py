@@ -36,6 +36,8 @@ TIMEOUT_S = 300
 STRESS_SLOW_S = 5.0
 # Items of the written pages that repeat one thing.
 ITEMS = 20_000
+# The pages, by their name.
+HTML_FILES = "*.html"
 FORMATS = ["md", "html", "docx", "tex", "typ", "epub", "json", "jsonl", "pdf"]
 WORDS = "the quick brown fox jumps over lazy dog again near river bank under bright moon while birds sing".split()
 
@@ -56,7 +58,7 @@ def run(src: Path, out_name: str, extra: tuple[str, ...] = ()) -> dict:
 
 def pages() -> list[Path]:
     """The pages of the benchmark (fetch.py)."""
-    return sorted((DATA / "pages").glob("*.html")) + sorted((DATA / "aeb").glob("*.html"))
+    return sorted((DATA / "pages").glob(HTML_FILES)) + sorted((DATA / "aeb").glob(HTML_FILES))
 
 
 def percentile(values: list[float], share: float) -> float:
@@ -157,16 +159,22 @@ def written_pages() -> dict[str, str]:
     }
 
 
-def stress(pdf: bool) -> None:
+def write_pages() -> Path:
+    """Writes the pages of written_pages() that are not written yet; returns their folder."""
     written = OUT / "written"
     written.mkdir(exist_ok=True)
     for name, html in written_pages().items():
         path = written / f"{name}.html"
         if not path.exists():
-            path.write_bytes(os.urandom(5_000_000) if not html else html.encode())
+            path.write_bytes(html.encode() if html else os.urandom(5_000_000))
+    return written
+
+
+def stress(pdf: bool) -> None:
+    written = write_pages()
     outputs = ["md", "pdf"] if pdf else ["md"]
     print(f"{'page':20} {'MB':>5}  " + "  ".join(f"{fmt:>16}" for fmt in outputs))
-    for path in sorted(written.glob("*.html")):
+    for path in sorted(written.glob(HTML_FILES)):
         cells = []
         for fmt in outputs:
             row = run(path, f"{path.stem}.{fmt}")

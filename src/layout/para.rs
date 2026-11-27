@@ -891,40 +891,59 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
     // of 100,000 links).
     let mut first_run = 0;
     for (start, body_end, end) in words(&text) {
-        let mut pieces = Vec::new();
-        let mut body = 0.0;
-        let mut trailing = 0.0;
         while first_run < runs.len() && bounds[first_run + 1] <= start {
             first_run += 1;
         }
-        for (at, (_, fmt)) in runs.iter().enumerate().skip(first_run) {
-            let (run_start, run_end) = (bounds[at], bounds[at + 1]);
-            if run_start >= end {
-                break;
+        let word = Stretch {
+            text: &text,
+            runs: &runs[first_run..],
+            bounds: &bounds[first_run..],
+        };
+        atoms.push(word_atom(ctx, &word, (start, body_end, end)));
+    }
+}
+
+/// The text of a stretch of runs, from a run on: the runs, and where each
+/// starts in the text (and the last ends).
+struct Stretch<'s> {
+    text: &'s str,
+    runs: &'s [(String, Rc<RunFmt>)],
+    bounds: &'s [usize],
+}
+
+/// The word of `stretch` from `start` to `end` (its body ending at
+/// `body_end`): its pieces in the formats of the runs it overlaps, the
+/// first of which is the first of `stretch`.
+fn word_atom(ctx: &mut Ctx<'_>, stretch: &Stretch<'_>, (start, body_end, end): (usize, usize, usize)) -> Atom {
+    let mut pieces = Vec::new();
+    let mut body = 0.0;
+    let mut trailing = 0.0;
+    for (at, (_, fmt)) in stretch.runs.iter().enumerate() {
+        let (run_start, run_end) = (stretch.bounds[at], stretch.bounds[at + 1]);
+        if run_start >= end {
+            break;
+        }
+        for (part_start, part_end, is_body) in [(start, body_end, true), (body_end, end, false)] {
+            let from = part_start.max(run_start);
+            let to = part_end.min(run_end);
+            if from >= to {
+                continue;
             }
-            for (part_start, part_end, is_body) in [(start, body_end, true), (body_end, end, false)] {
-                let from = part_start.max(run_start);
-                let to = part_end.min(run_end);
-                if from >= to {
-                    continue;
+            let part = stretch.text[from..to].replace('\u{00AD}', "");
+            if part.is_empty() {
+                continue;
+            }
+            for piece in ctx.shared_pieces(&part, fmt) {
+                if is_body {
+                    body += piece.width;
+                } else {
+                    trailing += piece.width;
                 }
-                let part = &text[from..to];
-                let part = part.replace('\u{00AD}', "");
-                if part.is_empty() {
-                    continue;
-                }
-                for piece in ctx.shared_pieces(&part, fmt) {
-                    if is_body {
-                        body += piece.width;
-                    } else {
-                        trailing += piece.width;
-                    }
-                    pieces.push(piece);
-                }
+                pieces.push(piece);
             }
         }
-        atoms.push(Atom::Word { pieces, body, trailing });
     }
+    Atom::Word { pieces, body, trailing }
 }
 
 /// The left and right edges of a line of a paragraph with `props` in a
