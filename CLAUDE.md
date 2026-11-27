@@ -45,6 +45,7 @@ scripts/fetch-test-pdfs.sh                            # download the 7 test pape
 scripts/fetch-test-pages.sh                           # download the test web pages (once; tests/web_pages.rs)
 python3 scripts/web-bench/fetch.py && /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py   # web benchmark (~330 pages)
 /root/.venvs/web-bench/bin/python scripts/web-bench/report.py   # its review PDFs (out/web-bench/review/)
+python3 scripts/web-bench/perf.py stress --pdf                  # speed and memory on web pages (also sweep, parallel N, formats)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
 KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics

@@ -24,7 +24,7 @@ const FAKE_BOLD_STROKE_RATIO: f32 = 0.02;
 /// close to 1 is none: the scale of a stand-in face is a ratio of widths
 /// that comes out as 1.0000001 or 0.9999999 for a face of the same widths,
 /// a difference no one can see.
-const SCALE_TOLERANCE: f32 = 1e-4;
+pub(super) const SCALE_TOLERANCE: f32 = 1e-4;
 
 /// The fonts and pictures the items draw from, and those already loaded
 /// into the PDF, so that each is loaded once.
@@ -39,12 +39,13 @@ struct Loaded<'a> {
     pictures: HashMap<usize, Option<Image>>,
 }
 
-/// Writes `pages` as a PDF.
+/// Writes `pages` as a PDF. Each page is dropped once it is drawn, so
+/// that a long document's pages and its PDF are not all held at once.
 ///
 /// # Errors
 /// When krilla cannot write the document (a damaged font or picture).
 pub fn write(
-    pages: &[Page],
+    pages: Vec<Page>,
     destinations: &[Destination],
     book: &FontBook,
     images: &[FImage],
@@ -270,7 +271,7 @@ fn draw_text(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], font
             let next = placed.get(at + 1).map_or(x + glyph.advance, |&(next, _, _)| next);
             KrillaGlyph {
                 glyph_id: GlyphId::new(u32::from(glyph.id)),
-                text_range: base + glyph.text.0..base + glyph.text.1,
+                text_range: base + glyph.range().start..base + glyph.range().end,
                 x_advance: (next - x) / size / scale,
                 x_offset: glyph.dx / size / scale,
                 y_offset: -glyph.dy / size,

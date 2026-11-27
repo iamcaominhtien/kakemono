@@ -3,7 +3,7 @@
 //! orphans, paragraphs kept together or with the next one, page breaks,
 //! headers and footers, footnotes and floating objects.
 
-use super::display::{Destination, Item, Page};
+use super::display::{Destination, Glyph, Item, Page, TextRun};
 use super::fonts::FontBook;
 use super::para::{self, Ctx, Float, FloatKind, Line, ParaLayout};
 use super::shape::Shaper;
@@ -37,7 +37,8 @@ const EPS: f32 = 0.01;
 const METAFILE_FIT_RATIO: f32 = 0.02;
 
 fn trace() -> bool {
-    std::env::var_os("KAKEMONO_LAYOUT_TRACE").is_some()
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("KAKEMONO_LAYOUT_TRACE").is_some())
 }
 
 /// The laid-out document.
@@ -371,6 +372,10 @@ impl Flow<'_> {
 
     /// Opens a new page of section `at`, numbered `number`.
     fn start_page(&mut self, at: usize, section: &Section, number: u32, first_of_section: bool) {
+        // The page before is drawn: what its vectors hold spare goes.
+        if let Some(last) = self.pages.last_mut() {
+            last.compact();
+        }
         let page = &section.page;
         self.pages.push(Page {
             width: page.width,
@@ -654,9 +659,9 @@ impl Flow<'_> {
                         && !breaks_page(para)
                         && !para.props.page_break_before
                     {
-                        let need = self.chain_height(&blocks[at..]);
                         let room = self.state.bottom - self.state.notes_height - self.state.y;
                         let page_room = self.state.bottom - self.state.top;
+                        let need = self.chain_height(&blocks[at..], page_room);
                         if need > room + EPS && need <= page_room {
                             self.next_column();
                             self.state.pushed = true;
@@ -677,11 +682,16 @@ impl Flow<'_> {
     }
 
     /// Height of a chain of paragraphs kept with the next, with the first
-    /// two lines of the paragraph that ends it.
-    fn chain_height(&mut self, blocks: &[Block]) -> f32 {
+    /// two lines of the paragraph that ends it; once it is past `limit`
+    /// (a page), the rest of the chain is not measured (20,000 headings in
+    /// a row, each of them measuring the ones after it).
+    fn chain_height(&mut self, blocks: &[Block], limit: f32) -> f32 {
         let width = self.column_width();
         let mut height = 0.0;
         for block in blocks {
+            if height > limit {
+                break;
+            }
             match block {
                 Block::Para(para) => {
                     let layout = para::layout(&mut self.ctx(), para, width);
@@ -2399,9 +2409,16 @@ fn column_boxes(section: &Section, left: f32, width: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Adds `items` moved by (`dx`, `dy`) to `out`.
+/// Adds `items` moved by (`dx`, `dy`) to `out`. A run of text that
+/// continues the run just before it (see [`join_run`]) is added to it.
 fn push_items(out: &mut Vec<Item>, items: &[Item], dx: f32, dy: f32) {
     for item in items {
+        if let Item::Text(run) = item
+            && let Some(Item::Text(last)) = out.last_mut()
+            && join_run(last, run, run.x + dx, run.y + dy)
+        {
+            continue;
+        }
         let mut item = item.clone();
         match &mut item {
             Item::Text(run) => {
@@ -2421,6 +2438,41 @@ fn push_items(out: &mut Vec<Item>, items: &[Item], dx: f32, dy: f32) {
         }
         out.push(item);
     }
+}
+
+/// Adds `run`, placed at (`x`, `y`), to the end of `last` when it
+/// continues it: the same face, size, colour, faked styles and scale, on
+/// the same baseline, starting where `last` ends or to its right. The
+/// PDF draws such runs as one text object; kept as one, a page holds one
+/// run per line of a face instead of one per word (a long document's
+/// pages are held until the PDF is written).
+fn join_run(last: &mut TextRun, run: &TextRun, x: f32, y: f32) -> bool {
+    let end = last
+        .glyphs
+        .last()
+        .map_or(last.x, |glyph| last.x + glyph.x + glyph.advance);
+    let joins = !last.glyphs.is_empty()
+        && !run.glyphs.is_empty()
+        && run.size > 0.0
+        && last.face == run.face
+        && last.size == run.size
+        && last.y == y
+        && last.color == run.color
+        && last.fake_bold == run.fake_bold
+        && last.fake_italic == run.fake_italic
+        && (last.scale - run.scale).abs() < super::pdf::SCALE_TOLERANCE
+        && x >= end - EPS;
+    if joins {
+        let base = super::display::offset(last.text.len());
+        let shift = x - last.x;
+        last.text.push_str(&run.text);
+        last.glyphs.extend(run.glyphs.iter().map(|glyph| Glyph {
+            x: glyph.x + shift,
+            text: (glyph.text.0 + base, glyph.text.1 + base),
+            ..*glyph
+        }));
+    }
+    joins
 }
 
 /// Draws a border line.
@@ -2559,4 +2611,67 @@ fn shows_something(blocks: &[Block]) -> bool {
             _ => true,
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Glyph, Item, TextRun, push_items};
+
+    /// A run of `text` in face 0 at `x`, one glyph of width 5 a character.
+    fn run(x: f32, text: &str) -> Item {
+        let glyphs = (0..text.len())
+            .map(|at| Glyph {
+                id: 1,
+                x: at as f32 * 5.0,
+                advance: 5.0,
+                dx: 0.0,
+                dy: 0.0,
+                text: (at as u32, at as u32 + 1),
+            })
+            .collect();
+        Item::Text(TextRun {
+            face: 0,
+            size: 10.0,
+            x,
+            y: 0.0,
+            color: [0, 0, 0],
+            glyphs,
+            text: text.to_string(),
+            fake_bold: false,
+            fake_italic: false,
+            scale: 1.0,
+        })
+    }
+
+    /// The runs of the words of a line become one run on the page, with
+    /// the glyphs where they were; a run that starts before the end of
+    /// the one before it, or on another baseline, stays apart.
+    #[test]
+    fn runs_that_continue_one_another_are_joined() {
+        let mut page = Vec::new();
+        push_items(
+            &mut page,
+            &[run(0.0, "ab"), run(10.0, " "), run(20.0, "cd")],
+            100.0,
+            50.0,
+        );
+        let [Item::Text(joined)] = page.as_slice() else {
+            panic!("{page:?}")
+        };
+        assert_eq!(joined.text, "ab cd");
+        assert_eq!((joined.x, joined.y), (100.0, 50.0));
+        let xs: Vec<f32> = joined.glyphs.iter().map(|glyph| glyph.x).collect();
+        assert_eq!(xs, [0.0, 5.0, 10.0, 20.0, 25.0]);
+        assert_eq!(joined.glyphs[4].range(), 4..5);
+        push_items(&mut page, &[run(0.0, "e")], 100.0, 50.0);
+        push_items(&mut page, &[run(200.0, "f")], 100.0, 60.0);
+        assert_eq!(page.len(), 3);
+    }
+
+    /// A glyph stays small: a long document holds millions of them until
+    /// its PDF is written.
+    #[test]
+    fn a_glyph_takes_28_bytes() {
+        assert!(std::mem::size_of::<Glyph>() <= 28);
+    }
 }

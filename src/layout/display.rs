@@ -15,6 +15,20 @@ pub struct Page {
     pub items: Vec<Item>,
 }
 
+impl Page {
+    /// Frees the room its vectors hold spare (a page is held until the
+    /// PDF is written).
+    pub fn compact(&mut self) {
+        self.items.shrink_to_fit();
+        for item in &mut self.items {
+            if let Item::Text(run) = item {
+                run.glyphs.shrink_to_fit();
+                run.text.shrink_to_fit();
+            }
+        }
+    }
+}
+
 /// Something drawn on a page.
 #[derive(Debug, Clone)]
 pub enum Item {
@@ -118,8 +132,23 @@ pub struct Glyph {
     pub dx: f32,
     /// Offset above the baseline.
     pub dy: f32,
-    /// Byte range of its text in [`TextRun::text`].
-    pub text: (usize, usize),
+    /// Byte range of its text in [`TextRun::text`] (32 bits: a page
+    /// holds millions of glyphs in a long document).
+    pub text: (u32, u32),
+}
+
+impl Glyph {
+    /// The byte range of its text in [`TextRun::text`].
+    #[must_use]
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.text.0 as usize..self.text.1 as usize
+    }
+}
+
+/// A byte offset in a run's text, as a glyph holds it.
+#[must_use]
+pub fn offset(at: usize) -> u32 {
+    u32::try_from(at).unwrap_or(u32::MAX)
 }
 
 /// A bookmark: where it lands.

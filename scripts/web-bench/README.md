@@ -29,7 +29,18 @@ python3 scripts/web-bench/fetch.py                                   # once; pag
 /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py      # scores: out/web-bench/results.json
 /root/.venvs/web-bench/bin/python scripts/web-bench/report.py        # review PDFs: out/web-bench/review/*.pdf
 /root/.venvs/web-bench/bin/python scripts/web-bench/package.py       # every page as HTML and PDF, one zip per category
+python3 scripts/web-bench/perf.py sweep                              # speed and memory, page by page
+python3 scripts/web-bench/perf.py stress --pdf                       # pages written to push the limits
 ```
+
+`perf.py` times each conversion with GNU time (wall time, peak memory): `sweep` every page
+to Markdown, `parallel N` all of them N at a time, `formats` every output of the five
+largest, and `stress` pages it writes into `out/web-bench/perf/written/`: a page of 48 MB,
+a line of 20 MB, 5,000 nested elements, 200,000 boxes of clutter, and 20,000 items of
+lists, of number paragraphs, of line breaks, of headings of the same words, of notes cited
+from every paragraph. A page that takes more than 5 s is marked `SLOW`: a rule whose time
+grows with the square of the page (each node compared with its parent, each item with the
+ones before it). `tests/scaling.rs` reads the same pages at two sizes in `cargo test`.
 
 Each page of a review PDF shows one tested page: its scores, the page as its site
 shows it (the saved copy, with the site's style sheets and pictures), kakemono's

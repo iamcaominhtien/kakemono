@@ -27,11 +27,5 @@ pub fn to_pdf(doc: &FDoc) -> Result<Vec<u8>> {
     }
     let mut book = fonts::FontBook::new(&doc.fonts, &doc.font_kinds);
     let laid = flow::layout(doc, &mut book);
-    pdf::write(
-        &laid.pages,
-        &laid.destinations,
-        &book,
-        &doc.images,
-        doc.title.as_deref(),
-    )
+    pdf::write(laid.pages, &laid.destinations, &book, &doc.images, doc.title.as_deref())
 }

@@ -345,9 +345,46 @@ impl Dom {
             .collect()
     }
 
+    /// The nodes of [`Dom::descendants`] one at a time, for a search that
+    /// stops at the first it finds.
+    pub(crate) fn walk(&self, node: Id) -> impl Iterator<Item = Id> + '_ {
+        let mut stack = vec![node];
+        std::iter::from_fn(move || {
+            let next = stack.pop()?;
+            stack.extend(self.nodes[next].children.iter().rev());
+            Some(next)
+        })
+    }
+
+    /// Whether `node` holds text other than white space outside the nodes
+    /// in it that `skip` holds for: with `skip` true of one node in it,
+    /// whether its [`Dom::clean_text`] is longer than that node's. It
+    /// stops at the first such text, where comparing the texts takes the
+    /// whole of `node` for each node in it (and so does putting all of a
+    /// node's children on a stack at once).
+    pub(crate) fn has_text_outside(&self, node: Id, skip: impl Fn(Id) -> bool) -> bool {
+        let mut stack = vec![std::slice::from_ref(&node).iter()];
+        while let Some(children) = stack.last_mut() {
+            let Some(&next) = children.next() else {
+                stack.pop();
+                continue;
+            };
+            if skip(next) {
+                continue;
+            }
+            if let Kind::Text(text) = &self.nodes[next].kind
+                && text.chars().any(|ch| !ch.is_whitespace())
+            {
+                return true;
+            }
+            stack.push(self.nodes[next].children.iter());
+        }
+        false
+    }
+
     /// The first element in `node` named `name`.
     pub(crate) fn find(&self, node: Id, name: &str) -> Option<Id> {
-        self.descendants(node).into_iter().find(|&id| self.is(id, name))
+        self.walk(node).find(|&id| self.is(id, name))
     }
 
     /// Whether `ancestor` is `node` or contains it.
@@ -537,6 +574,25 @@ fn escape_into(out: &mut String, text: &str, attribute: bool) {
 #[cfg(test)]
 mod tests {
     use super::Dom;
+
+    /// `walk` goes through the nodes in the order of `descendants`, and
+    /// `has_text_outside` tells whether a node holds more text than one in
+    /// it.
+    #[test]
+    fn walk_and_text_outside() {
+        let dom = Dom::parse(
+            "<div id=a> <span id=b>x</span> <i id=c> </i><b id=d>y</b></div><p id=e> <span id=f>z</span></p>",
+        );
+        let (_, _, body) = dom.html_head_body();
+        let body = body.unwrap();
+        assert_eq!(dom.walk(body).collect::<Vec<_>>(), dom.descendants(body));
+        let id = |name: &str| dom.walk(0).find(|&node| dom.attr(node, "id") == Some(name)).unwrap();
+        let (div, span, bold, para, inner) = (id("a"), id("b"), id("d"), id("e"), id("f"));
+        assert!(dom.has_text_outside(div, |node| node == span));
+        assert!(!dom.has_text_outside(div, |node| node == span || node == bold));
+        assert!(!dom.has_text_outside(para, |node| node == inner));
+        assert!(dom.has_text_outside(para, |_| false));
+    }
 
     #[test]
     fn broken_html_becomes_well_formed_xhtml() {
