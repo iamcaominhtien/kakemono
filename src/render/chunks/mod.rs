@@ -42,6 +42,9 @@ const CELL_SEPARATOR: &str = " | ";
 /// A table's caption and last header row, repeated on each piece when the
 /// whole head is too long, are each cut to this share (1 / n) of a chunk.
 const HEAD_PART_SHARE: usize = 4;
+/// The first length (bytes) of the prefix of a long text that `cut` counts
+/// to find how far its head may go, doubled until it no longer fits.
+const FIRST_PROBE_BYTES: usize = 1024;
 
 /// Everything that controls how a document is cut into chunks.
 #[derive(Debug, Clone)]
@@ -395,12 +398,15 @@ fn split_long(text: &str, budget: usize, counter: &TokenCounter) -> Vec<String> 
             pieces.push(std::mem::take(&mut current));
         }
         let mut rest = sentence;
-        while counter.count(rest) > budget {
+        loop {
             let (head, tail) = cut(rest, budget, counter);
+            if tail.is_empty() {
+                current = head.to_string();
+                break;
+            }
             pieces.push(head.to_string());
             rest = tail;
         }
-        current = rest.to_string();
     }
     if !current.is_empty() {
         pieces.push(current);
@@ -444,18 +450,41 @@ fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-/// Cuts `text` (more than `budget` tokens) into its longest head of at most
-/// `budget` tokens and the rest: between words, or between characters when
-/// the first word alone is too long. The head is never empty.
+/// Cuts `text` into its longest head of at most `budget` tokens and the
+/// rest: between words, or between characters when the first word alone is
+/// too long. The head is never empty; the rest is empty when `text` fits
+/// whole.
 fn cut<'t>(text: &'t str, budget: usize, counter: &TokenCounter) -> (&'t str, &'t str) {
+    // The head ends before `bound`, the first prefix found, doubling from
+    // `FIRST_PROBE_BYTES`, that no longer fits: a long text is then not
+    // counted whole for each head cut from it (quadratic, minutes for the
+    // cells of a large workbook).
+    let mut bound = FIRST_PROBE_BYTES;
+    loop {
+        if bound >= text.len() {
+            if counter.count(text) <= budget {
+                return (text, "");
+            }
+            bound = text.len();
+            break;
+        }
+        while !text.is_char_boundary(bound) {
+            bound -= 1;
+        }
+        if counter.count(&text[..bound]) > budget {
+            break;
+        }
+        bound *= 2;
+    }
+    let window = &text[..bound];
     // Ends of the candidate heads: after each word, else after each char.
-    let mut ends: Vec<usize> = text
+    let mut ends: Vec<usize> = window
         .char_indices()
         .filter(|&(i, ch)| ch.is_whitespace() && i > 0 && !text[..i].ends_with(char::is_whitespace))
         .map(|(i, _)| i)
         .collect();
     if ends.first().is_none_or(|&end| counter.count(&text[..end]) > budget) {
-        ends = text.char_indices().skip(1).map(|(i, _)| i).collect();
+        ends = window.char_indices().skip(1).map(|(i, _)| i).collect();
     }
     // The count grows with the head: find the last end that fits.
     let fits = ends.partition_point(|&end| counter.count(&text[..end]) <= budget);

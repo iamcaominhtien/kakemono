@@ -1141,7 +1141,13 @@ fn place_glyphs(
     let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
     let mut x = 0.0;
     let mut spaces = 0;
-    let clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+    // The clusters in order, to find where each ends (the next one after
+    // it) by a binary search: a scan of every cluster for each glyph was
+    // quadratic, minutes for a cell of 32,000 characters. Right-to-left
+    // text has its clusters in falling order, hence the sort.
+    let mut clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+    clusters.sort_unstable();
+    clusters.dedup();
     let mut drawn_width = 0.0;
     for (at, glyph) in shaped.glyphs.iter().enumerate() {
         let start = glyph.cluster;
@@ -1158,10 +1164,8 @@ fn place_glyphs(
         drawn_width += glyph.advance;
         let advance = measured.unwrap_or(glyph.advance) * size * scale + spacing;
         let end = clusters
-            .iter()
+            .get(clusters.partition_point(|&cluster| cluster <= start))
             .copied()
-            .filter(|&cluster| cluster > start)
-            .min()
             .unwrap_or(shown.len());
         if shown[start..end].starts_with(' ') {
             spaces += 1;
