@@ -203,41 +203,9 @@ fn join_overlapping(mut regions: Vec<Merge>) -> Vec<Merge> {
         // The open regions by bottom row, lowest first; one joined since
         // it was filed here is no longer open as it was.
         let mut ends: BinaryHeap<Reverse<(u32, u32, u32, u32)>> = BinaryHeap::new();
-        for mut region in regions {
-            // Close those that end above this region.
-            while let Some(&Reverse((bottom, left, top, right))) = ends.peek() {
-                if bottom >= region.top {
-                    break;
-                }
-                ends.pop();
-                let filed = Merge {
-                    top,
-                    left,
-                    bottom,
-                    right,
-                };
-                if open.get(&left) == Some(&filed) {
-                    open.remove(&left);
-                    closed.push(filed);
-                }
-            }
-            // Join the open ones that share its columns, until none does.
-            loop {
-                let hits: Vec<u32> = open
-                    .range(..=region.right)
-                    .rev()
-                    .take_while(|(_, other)| other.right >= region.left)
-                    .map(|(&left, _)| left)
-                    .collect();
-                if hits.is_empty() {
-                    break;
-                }
-                for left in hits {
-                    if let Some(other) = open.remove(&left) {
-                        region = bounding(&region, &other);
-                    }
-                }
-            }
+        for region in regions {
+            close_ended(&mut open, &mut ends, &mut closed, region.top);
+            let region = absorb_overlapping(&mut open, region);
             open.insert(region.left, region);
             ends.push(Reverse((region.bottom, region.left, region.top, region.right)));
         }
@@ -247,6 +215,54 @@ fn join_overlapping(mut regions: Vec<Merge>) -> Vec<Merge> {
             return closed;
         }
         regions = closed;
+    }
+}
+
+/// Moves to `closed` the regions of `open` that end above row `top`
+/// (filed in `ends` by bottom row; one joined since it was filed is no
+/// longer open as it was, and is left).
+fn close_ended(
+    open: &mut BTreeMap<u32, Merge>,
+    ends: &mut BinaryHeap<Reverse<(u32, u32, u32, u32)>>,
+    closed: &mut Vec<Merge>,
+    top: u32,
+) {
+    while let Some(&Reverse((bottom, left, filed_top, right))) = ends.peek() {
+        if bottom >= top {
+            break;
+        }
+        ends.pop();
+        let filed = Merge {
+            top: filed_top,
+            left,
+            bottom,
+            right,
+        };
+        if open.get(&left) == Some(&filed) {
+            open.remove(&left);
+            closed.push(filed);
+        }
+    }
+}
+
+/// `region` joined with the regions of `open` that share its columns
+/// (taken out of `open`), until none does.
+fn absorb_overlapping(open: &mut BTreeMap<u32, Merge>, mut region: Merge) -> Merge {
+    loop {
+        let hits: Vec<u32> = open
+            .range(..=region.right)
+            .rev()
+            .take_while(|(_, other)| other.right >= region.left)
+            .map(|(&left, _)| left)
+            .collect();
+        if hits.is_empty() {
+            return region;
+        }
+        for left in hits {
+            if let Some(other) = open.remove(&left) {
+                region = bounding(&region, &other);
+            }
+        }
     }
 }
 

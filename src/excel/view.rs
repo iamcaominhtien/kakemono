@@ -553,16 +553,7 @@ impl Page<'_> {
                 body = format!("<u>{body}</u>");
             }
             if own.style {
-                let mut css = String::new();
-                if look.font.bold && span.style & BOLD == 0 {
-                    css.push_str("font-weight:400;");
-                }
-                if look.font.italic && span.style & ITALIC == 0 {
-                    css.push_str("font-style:normal;");
-                }
-                if own.color && span.color == [0; 3] && cell_color != [0; 3] {
-                    css.push_str("color:#000000;");
-                }
+                let css = own_font_css(look, span, own.color && cell_color != [0; 3]);
                 if !css.is_empty() {
                     body = format!("<span style=\"{css}\">{body}</span>");
                 }
@@ -570,24 +561,30 @@ impl Page<'_> {
             if span.color != [0; 3] {
                 body = format!("<span style=\"color:{}\">{body}</span>", hex(span.color));
             }
-            match &span.href {
-                Some(href) if LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)) => {
-                    let _ = write!(
-                        out,
-                        "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{body}</a>",
-                        esc(href)
-                    );
-                }
-                Some(href) if href.starts_with('#') => match self.sheet_id(&href[1..]) {
-                    Some(id) => {
-                        let _ = write!(out, "<a href=\"#sheet-{id}\">{body}</a>");
-                    }
-                    None => out.push_str(&body),
-                },
-                _ => out.push_str(&body),
-            }
+            self.push_linked(&mut out, span.href.as_deref(), &body);
         }
         out
+    }
+
+    /// Writes `body` to `out`, as a link to `href` when it is one a page
+    /// may open, or a place in a sheet shown.
+    fn push_linked(&self, out: &mut String, href: Option<&str>, body: &str) {
+        match href {
+            Some(href) if LINK_SCHEMES.iter().any(|scheme| href.starts_with(scheme)) => {
+                let _ = write!(
+                    out,
+                    "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">{body}</a>",
+                    esc(href)
+                );
+            }
+            Some(href) if href.starts_with('#') => match self.sheet_id(&href[1..]) {
+                Some(id) => {
+                    let _ = write!(out, "<a href=\"#sheet-{id}\">{body}</a>");
+                }
+                None => out.push_str(body),
+            },
+            _ => out.push_str(body),
+        }
     }
 
     /// The number of the section of the sheet an internal link's place
@@ -1759,6 +1756,23 @@ pub(crate) fn family(name: Option<&str>) -> String {
     } else {
         format!("{quoted},{fallback}")
     }
+}
+
+/// The style that undoes, for a run `span` that sets its own font, the bold
+/// and italic of its cell's look `look`, and its colour when the run's own
+/// colour is black (`black` when the cell's colour is not).
+fn own_font_css(look: &Look, span: &Span, black: bool) -> String {
+    let mut css = String::new();
+    if look.font.bold && span.style & BOLD == 0 {
+        css.push_str("font-weight:400;");
+    }
+    if look.font.italic && span.style & ITALIC == 0 {
+        css.push_str("font-style:normal;");
+    }
+    if black && span.color == [0; 3] {
+        css.push_str("color:#000000;");
+    }
+    css
 }
 
 /// A colour as CSS (`#rrggbb`).

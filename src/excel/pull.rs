@@ -137,51 +137,80 @@ impl<'a> Reader<'a> {
                 return Ok(None);
             }
             if !rest.starts_with('<') {
-                let end = rest.find('<').unwrap_or(rest.len());
-                let raw = &rest[..end];
-                self.pos += end;
-                if self.open.is_empty() {
-                    if raw.trim().is_empty() {
-                        continue;
-                    }
-                    bail!("damaged XML: text outside the root element");
+                match self.text(rest)? {
+                    Some(event) => return Ok(Some(event)),
+                    None => continue,
                 }
-                return Ok(Some(Event::Text(decode(raw)?)));
             }
-            let start = self.pos;
-            if let Some(body) = rest.strip_prefix("<?") {
-                let end = body
-                    .find("?>")
-                    .context("damaged XML: unclosed processing instruction")?;
-                self.pos += "<?".len() + end + "?>".len();
-                continue;
-            }
-            if let Some(body) = rest.strip_prefix("<!--") {
-                let end = body.find("-->").context("damaged XML: unclosed comment")?;
-                self.pos += "<!--".len() + end + "-->".len();
+            if self.skip_instruction_or_comment(rest)? {
                 continue;
             }
             if let Some(body) = rest.strip_prefix("<![CDATA[") {
-                let end = body.find("]]>").context("damaged XML: unclosed CDATA section")?;
-                self.pos += "<![CDATA[".len() + end + "]]>".len();
-                if self.open.is_empty() {
-                    bail!("damaged XML: CDATA outside the root element");
-                }
-                return Ok(Some(Event::Text(Cow::Borrowed(&body[..end]))));
+                return self.cdata(body).map(Some);
             }
             if rest.starts_with("<!") {
                 bail!("damaged XML: a document type declaration is not allowed");
             }
             if let Some(body) = rest.strip_prefix("</") {
-                let end = body.find('>').context("damaged XML: unclosed end tag")?;
-                let name = body[..end].trim_end();
-                self.pos += "</".len() + end + 1;
-                return match self.open.pop() {
-                    Some(open) if open == name => Ok(Some(Event::End(self.pos))),
-                    _ => bail!("damaged XML: mismatched end tag </{name}>"),
-                };
+                return self.end_tag(body).map(Some);
             }
+            let start = self.pos;
             return self.start_tag(rest, start).map(|tag| Some(Event::Start(tag)));
+        }
+    }
+
+    /// The text at the start of `rest`, up to the next tag; `None` for
+    /// white space outside the root element, which is skipped.
+    fn text(&mut self, rest: &'a str) -> Result<Option<Event<'a>>> {
+        let end = rest.find('<').unwrap_or(rest.len());
+        let raw = &rest[..end];
+        self.pos += end;
+        if self.open.is_empty() {
+            if raw.trim().is_empty() {
+                return Ok(None);
+            }
+            bail!("damaged XML: text outside the root element");
+        }
+        Ok(Some(Event::Text(decode(raw)?)))
+    }
+
+    /// Skips the processing instruction or comment at the start of `rest`;
+    /// `false` when there is none.
+    fn skip_instruction_or_comment(&mut self, rest: &str) -> Result<bool> {
+        if let Some(body) = rest.strip_prefix("<?") {
+            let end = body
+                .find("?>")
+                .context("damaged XML: unclosed processing instruction")?;
+            self.pos += "<?".len() + end + "?>".len();
+            return Ok(true);
+        }
+        if let Some(body) = rest.strip_prefix("<!--") {
+            let end = body.find("-->").context("damaged XML: unclosed comment")?;
+            self.pos += "<!--".len() + end + "-->".len();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// The CDATA section whose body starts `body`, as text.
+    fn cdata(&mut self, body: &'a str) -> Result<Event<'a>> {
+        let end = body.find("]]>").context("damaged XML: unclosed CDATA section")?;
+        self.pos += "<![CDATA[".len() + end + "]]>".len();
+        if self.open.is_empty() {
+            bail!("damaged XML: CDATA outside the root element");
+        }
+        Ok(Event::Text(Cow::Borrowed(&body[..end])))
+    }
+
+    /// The end tag whose name starts `body`, which must close the open
+    /// element.
+    fn end_tag(&mut self, body: &str) -> Result<Event<'a>> {
+        let end = body.find('>').context("damaged XML: unclosed end tag")?;
+        let name = body[..end].trim_end();
+        self.pos += "</".len() + end + 1;
+        match self.open.pop() {
+            Some(open) if open == name => Ok(Event::End(self.pos)),
+            _ => bail!("damaged XML: mismatched end tag </{name}>"),
         }
     }
 

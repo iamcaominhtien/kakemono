@@ -647,7 +647,7 @@ fn axis(node: Node<'_, '_>, limits: &mut Limits<'_>) -> Option<Axis> {
 fn axis_id(text: &str) -> Option<u32> {
     text.parse::<u32>()
         .ok()
-        .or_else(|| text.parse::<i32>().ok().map(|id| id.cast_unsigned()))
+        .or_else(|| text.parse::<i32>().ok().map(i32::cast_unsigned))
 }
 
 /// The side of the chart a legend placed by hand (`c:manualLayout`, its

@@ -229,12 +229,6 @@ fn bound(node: Node<'_, '_>) -> Option<Bound> {
 /// its data bar.
 pub(crate) fn apply(rules: &mut [Rule], numbers: &HashMap<(u32, u32), f64>, grid: &mut Grid) {
     rules.sort_by_key(|rule| rule.priority);
-    let text_of = |grid: &Grid, at: (u32, u32)| -> String {
-        grid.cells
-            .get(&at)
-            .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
-            .unwrap_or_default()
-    };
     let mut stopped: Vec<(u32, u32)> = Vec::new();
     let mut formats: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
     for rule in rules.iter() {
@@ -256,28 +250,7 @@ pub(crate) fn apply(rules: &mut [Rule], numbers: &HashMap<(u32, u32), f64>, grid
             if stopped.binary_search(at).is_ok() {
                 continue;
             }
-            let operand = |operand: &Operand| -> Value {
-                match operand {
-                    Operand::Number(number) => Value::Number(*number),
-                    Operand::Text(text) => Value::Text(text.clone()),
-                    Operand::Cell((row, col), fixed_row, fixed_col) => {
-                        let row = if *fixed_row {
-                            *row
-                        } else {
-                            row + at.0.saturating_sub(origin.0)
-                        };
-                        let col = if *fixed_col {
-                            *col
-                        } else {
-                            col + at.1.saturating_sub(origin.1)
-                        };
-                        numbers.get(&(row, col)).map_or_else(
-                            || Value::Text(text_of(grid, (row, col))),
-                            |number| Value::Number(*number),
-                        )
-                    }
-                }
-            };
+            let operand = |operand: &Operand| operand_value(operand, (*at, origin), numbers, grid);
             if !matches(&rule.test, value, &operand, &counts) {
                 continue;
             }
@@ -292,6 +265,44 @@ pub(crate) fn apply(rules: &mut [Rule], numbers: &HashMap<(u32, u32), f64>, grid
         }
     }
     grid.looks.conditional = formats;
+}
+
+/// The text of the cell at `at` of `grid`, empty when there is none.
+fn text_of(grid: &Grid, at: (u32, u32)) -> String {
+    grid.cells
+        .get(&at)
+        .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// The value of `operand` for the cell `at` of a rule whose range starts at
+/// `origin`: a reference that is not fixed moves with the cell.
+fn operand_value(
+    operand: &Operand,
+    (at, origin): ((u32, u32), (u32, u32)),
+    numbers: &HashMap<(u32, u32), f64>,
+    grid: &Grid,
+) -> Value {
+    match operand {
+        Operand::Number(number) => Value::Number(*number),
+        Operand::Text(text) => Value::Text(text.clone()),
+        Operand::Cell((row, col), fixed_row, fixed_col) => {
+            let row = if *fixed_row {
+                *row
+            } else {
+                row + at.0.saturating_sub(origin.0)
+            };
+            let col = if *fixed_col {
+                *col
+            } else {
+                col + at.1.saturating_sub(origin.1)
+            };
+            numbers.get(&(row, col)).map_or_else(
+                || Value::Text(text_of(grid, (row, col))),
+                |number| Value::Number(*number),
+            )
+        }
+    }
 }
 
 /// A value of a cell, as a rule tests it.

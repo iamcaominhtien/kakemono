@@ -296,25 +296,8 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         match event {
             Event::Start(tag) => {
                 let parent = stack.last().copied().unwrap_or(Place::Other);
-                let place = if prefixes.is_sml(&tag) {
-                    if parent == Place::Cell && tag.local() == "is" {
-                        let spans = inline_string(&mut reader, &tag, &prefixes)?;
-                        sheet.row_has_value = true;
-                        if let Some(cell) = &mut sheet.cell {
-                            cell.inline.get_or_insert(spans);
-                        }
-                        continue;
-                    }
-                    if parent == Place::Root
-                        && matches!(tag.local(), "conditionalFormatting" | "oleObjects" | "headerFooter")
-                    {
-                        let piece = subtree(&mut reader, &tag, &prefixes)?;
-                        sheet.read_piece(tag.local(), piece.as_deref());
-                        continue;
-                    }
-                    sheet.start(&tag, parent, &prefixes)
-                } else {
-                    Place::Other
+                let Some(place) = start_element(&mut reader, &mut sheet, &tag, parent, &prefixes)? else {
+                    continue;
                 };
                 if tag.empty {
                     sheet.finish(place);
@@ -335,6 +318,35 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
         }
     }
     Ok(sheet.done())
+}
+
+/// What the start tag `tag` (in `parent`) opens; `None` when the element
+/// was read whole, as an inline string or a piece read as a tree, and the
+/// reader is past its end tag.
+fn start_element(
+    reader: &mut Reader<'_>,
+    sheet: &mut SheetReader<'_, '_>,
+    tag: &Tag<'_>,
+    parent: Place,
+    prefixes: &Prefixes<'_>,
+) -> Result<Option<Place>> {
+    if !prefixes.is_sml(tag) {
+        return Ok(Some(Place::Other));
+    }
+    if parent == Place::Cell && tag.local() == "is" {
+        let spans = inline_string(reader, tag, prefixes)?;
+        sheet.row_has_value = true;
+        if let Some(cell) = &mut sheet.cell {
+            cell.inline.get_or_insert(spans);
+        }
+        return Ok(None);
+    }
+    if parent == Place::Root && matches!(tag.local(), "conditionalFormatting" | "oleObjects" | "headerFooter") {
+        let piece = subtree(reader, tag, prefixes)?;
+        sheet.read_piece(tag.local(), piece.as_deref());
+        return Ok(None);
+    }
+    Ok(Some(sheet.start(tag, parent, prefixes)))
 }
 
 /// The spans of an inline string (`is`), whose start tag `tag` the reader

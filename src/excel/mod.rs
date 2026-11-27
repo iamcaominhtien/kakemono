@@ -426,57 +426,77 @@ fn sheet_shapes(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pi
                 .filter(|(_, _, rel)| !rel.external)
                 .map(|(id, _, rel)| (id, rel.target))
                 .collect();
-            shapes.extend(items.into_iter().filter_map(|mut shape| match shape.drawn {
-                Drawn::Picture(mut picture) => {
-                    let index = pictures.read(zip, files.get(&picture.rel)?)?;
-                    picture.size_pt = picture.size_pt.or_else(|| pictures.pixel_size_pt(index));
-                    picture.index = Some(index);
-                    shape.drawn = Drawn::Picture(picture);
-                    Some(shape)
-                }
-                Drawn::Chart(mut chart) => {
-                    let size = match chart.cells {
-                        Some((from, to)) => grid.sizes.span_pt(from, to, &grid.hidden_rows, &grid.hidden_cols),
-                        None => chart.size_pt.unwrap_or_default(),
-                    };
-                    let xml = zip.read(files.get(&chart.rel)?).ok()??;
-                    let mut placed = pictures.charts().place(&xml, size)?;
-                    let index = placed
-                        .svg
-                        .take()
-                        .and_then(|svg| store_chart(&mut pictures.files, svg, placed.size_pt, MAX_PICTURE_BYTES));
-                    chart.placed = Some(Box::new((placed, index)));
-                    shape.drawn = Drawn::Chart(chart);
-                    Some(shape)
-                }
-                Drawn::Text(mut text) => {
-                    if let Some(id) = text.hidden_id {
-                        // A hidden shape shows only as a form control the VML
-                        // drawing shows, its label after its mark.
-                        let mark = controls.get(&id)?.mark();
-                        if let Some(mark) = mark {
-                            // Its box sits at its left edge, centred down it.
-                            if text.text.is_empty() {
-                                text.size_pt = Some(CONTROL_MARK_PT);
-                            }
-                            text.insets_pt = Some([CONTROL_INSET_PT, 0.0, 0.0, 0.0]);
-                            text.anchor = Some("ctr".to_string());
-                            let gap = if text.text.is_empty() { "" } else { " " };
-                            text.text = format!("{mark}{gap}{}", text.text);
-                            if let Some(first) = text.runs.first_mut() {
-                                first.text = format!("{mark}{gap}{}", first.text);
-                            }
-                        }
-                    }
-                    shape.drawn = Drawn::Text(text);
-                    Some(shape)
-                }
-                Drawn::CellPicture(_) => Some(shape),
-            }));
+            shapes.extend(
+                items
+                    .into_iter()
+                    .filter_map(|shape| resolve_shape(shape, zip, &files, grid, pictures, &controls)),
+            );
         }
     }
     shapes.sort_by_key(|shape| shape.at);
     shapes
+}
+
+/// `shape` of a drawing with its picture or chart read (`files`: the
+/// drawing's parts by relationship id) and a form control's mark before
+/// its label; `None` for what cannot be shown.
+fn resolve_shape(
+    mut shape: Shape,
+    zip: &ZipArchive<'_>,
+    files: &HashMap<String, String>,
+    grid: &Grid,
+    pictures: &mut Pictures,
+    controls: &HashMap<u32, drawing::Control>,
+) -> Option<Shape> {
+    match shape.drawn {
+        Drawn::Picture(mut picture) => {
+            let index = pictures.read(zip, files.get(&picture.rel)?)?;
+            picture.size_pt = picture.size_pt.or_else(|| pictures.pixel_size_pt(index));
+            picture.index = Some(index);
+            shape.drawn = Drawn::Picture(picture);
+        }
+        Drawn::Chart(mut chart) => {
+            let size = match chart.cells {
+                Some((from, to)) => grid.sizes.span_pt(from, to, &grid.hidden_rows, &grid.hidden_cols),
+                None => chart.size_pt.unwrap_or_default(),
+            };
+            let xml = zip.read(files.get(&chart.rel)?).ok()??;
+            let mut placed = pictures.charts().place(&xml, size)?;
+            let index = placed
+                .svg
+                .take()
+                .and_then(|svg| store_chart(&mut pictures.files, svg, placed.size_pt, MAX_PICTURE_BYTES));
+            chart.placed = Some(Box::new((placed, index)));
+            shape.drawn = Drawn::Chart(chart);
+        }
+        Drawn::Text(mut text) => {
+            if let Some(id) = text.hidden_id {
+                // A hidden shape shows only as a form control the VML
+                // drawing shows, its label after its mark.
+                if let Some(mark) = controls.get(&id)?.mark() {
+                    label_control(&mut text, mark);
+                }
+            }
+            shape.drawn = Drawn::Text(text);
+        }
+        Drawn::CellPicture(_) => {}
+    }
+    Some(shape)
+}
+
+/// Puts the mark of a form control (`☐`, `◉`...) before the label of its
+/// text shape `text`, its box at the shape's left edge, centred down it.
+fn label_control(text: &mut drawing::TextShape, mark: &str) {
+    if text.text.is_empty() {
+        text.size_pt = Some(CONTROL_MARK_PT);
+    }
+    text.insets_pt = Some([CONTROL_INSET_PT, 0.0, 0.0, 0.0]);
+    text.anchor = Some("ctr".to_string());
+    let gap = if text.text.is_empty() { "" } else { " " };
+    text.text = format!("{mark}{gap}{}", text.text);
+    if let Some(first) = text.runs.first_mut() {
+        first.text = format!("{mark}{gap}{}", first.text);
+    }
 }
 
 /// The pictures that show the embedded objects of the sheet `grid` (part
