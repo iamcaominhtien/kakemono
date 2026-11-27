@@ -228,7 +228,9 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   10 %); cut between columns, then rows, where a page is full and at the manual breaks
   (`rowBreaks`, `colBreaks`; those of a side fitted to a number of pages are left out, as Excel
   does, those of a side not fitted kept, as LibreOffice does); the rows repeated at the top
-  (`_xlnm.Print_Titles`) on every later page; pages down then over, or over then down
+  and the columns at the left (`_xlnm.Print_Titles`) on every later page; a text that runs over
+  empty cells past a page's columns going on on the page of the next columns, the letter on the
+  edge kept on the first; pages down then over, or over then down
   (`pageOrder`); centred when `printOptions` says so; gridlines only when it asks for them;
 - row heights as on the screen the workbook was saved on (see the sheet view); column widths as
   the printer draws them: Excel keeps a width in digits of the default font, which the screen

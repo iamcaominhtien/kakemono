@@ -297,6 +297,7 @@ fn read_sheets_with_styles<'w>(
                     links,
                     tables,
                     print_title_rows: workbook.print_titles.get(&index).copied(),
+                    print_title_cols: workbook.print_title_cols.get(&index).copied(),
                     config,
                     view,
                 };

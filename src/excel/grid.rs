@@ -336,6 +336,23 @@ pub(crate) struct GridCell {
     /// The cell's text is centred across the selection
     /// (`centerContinuous`).
     pub(crate) center_continuous: bool,
+    /// For each span, what it sets of its own font rather than take the
+    /// cell's (a rich run's bold and italic, and colour when it gives one:
+    /// [`OWN_STYLE`](super::strings::OWN_STYLE),
+    /// [`OWN_COLOR`](super::strings::OWN_COLOR)); empty when none does.
+    pub(crate) own_font: Vec<u8>,
+}
+
+impl GridCell {
+    /// What its span of index `index` sets of its own font: bold and
+    /// italic, colour.
+    pub(crate) fn own_font(&self, index: usize) -> (bool, bool) {
+        let own = self.own_font.get(index).copied().unwrap_or(0);
+        (
+            own & super::strings::OWN_STYLE != 0,
+            own & super::strings::OWN_COLOR != 0,
+        )
+    }
 }
 
 /// The kind of value of a cell.
@@ -488,4 +505,7 @@ pub(crate) struct Declared {
     /// The rows printed at the top of every page (`_xlnm.Print_Titles`):
     /// first and last, inclusive.
     pub(crate) print_title_rows: Option<(u32, u32)>,
+    /// The columns printed at the left of every page (`_xlnm.Print_Titles`):
+    /// first and last, inclusive.
+    pub(crate) print_title_cols: Option<(u32, u32)>,
 }

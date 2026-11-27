@@ -613,6 +613,7 @@ mod tests {
                         spans: vec![Span::plain(*text)],
                         kind,
                         center_continuous: false,
+                        own_font: Vec::new(),
                     },
                 );
             }
@@ -949,6 +950,7 @@ mod tests {
             spans: Vec::new(),
             kind: CellKind::Text,
             center_continuous: true,
+            own_font: Vec::new(),
         };
         grid.cells.get_mut(&(0, 0)).unwrap().center_continuous = true;
         grid.cells.insert((0, 1), centred.clone());
@@ -1029,6 +1031,7 @@ mod tests {
                         spans: vec![Span::plain("x")],
                         kind: CellKind::Text,
                         center_continuous: false,
+                        own_font: Vec::new(),
                     },
                 );
                 grid.merges.push(area(row, col, row, col + 1));

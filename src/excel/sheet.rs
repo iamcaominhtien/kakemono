@@ -60,6 +60,8 @@ pub(crate) struct SheetContext<'a> {
     pub(crate) tables: Vec<Table>,
     /// The print title rows of the sheet.
     pub(crate) print_title_rows: Option<(u32, u32)>,
+    /// The print title columns of the sheet.
+    pub(crate) print_title_cols: Option<(u32, u32)>,
     /// The limits of rows and columns.
     pub(crate) config: &'a ExcelConfig,
     /// The sheet is read for the sheet view: the cell formats of every
@@ -761,6 +763,7 @@ impl SheetReader<'_, '_> {
         link(&self.links, &mut self.grid.cells);
         self.grid.declared.tables.clone_from(&self.ctx.tables);
         self.grid.declared.print_title_rows = self.ctx.print_title_rows;
+        self.grid.declared.print_title_cols = self.ctx.print_title_cols;
         if !self.rules.is_empty() {
             conditional::apply(&mut self.rules, &self.numbers, &mut self.grid);
         }
@@ -839,10 +842,15 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
         return None;
     }
     let font = (if xf.bold { BOLD } else { 0 }) | (if xf.italic { ITALIC } else { 0 });
+    let own_font: Vec<u8> = if spans.iter().all(|(_, own)| *own == 0) {
+        Vec::new()
+    } else {
+        spans.iter().map(|(_, own)| *own).collect()
+    };
     let spans = spans
         .into_iter()
-        .map(|(mut span, inherits)| {
-            if inherits && span.style == 0 {
+        .map(|(mut span, own)| {
+            if own == 0 && span.style == 0 {
                 span.style = font;
             }
             span
@@ -852,6 +860,7 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
         spans,
         kind,
         center_continuous: xf.center_continuous,
+        own_font,
     })
 }
 
@@ -891,7 +900,7 @@ fn plain(text: String) -> strings::Runs {
     if text.is_empty() {
         Vec::new()
     } else {
-        vec![(Span::plain(text), true)]
+        vec![(Span::plain(text), 0)]
     }
 }
 
@@ -1072,7 +1081,7 @@ mod tests {
 
     /// Reads `body` with the shared strings `a`, `b` and `config`.
     fn read_with(body: &str, links: &[(&str, &str)], config: &ExcelConfig) -> Grid {
-        let strings = vec![vec![(Span::plain("a"), true)], vec![(Span::plain("b"), true)]];
+        let strings = vec![vec![(Span::plain("a"), 0)], vec![(Span::plain("b"), 0)]];
         let styles = test_styles();
         let ctx = SheetContext {
             strings: &strings,
@@ -1084,6 +1093,7 @@ mod tests {
                 .collect(),
             tables: Vec::new(),
             print_title_rows: None,
+            print_title_cols: None,
             config,
             view: false,
         };
@@ -1292,6 +1302,7 @@ mod tests {
             links: [("rId1".to_string(), "https://example.com/".to_string())].into(),
             tables: Vec::new(),
             print_title_rows: None,
+            print_title_cols: None,
             config: &config,
             view: false,
         };
@@ -1335,6 +1346,7 @@ mod tests {
             links: HashMap::new(),
             tables: vec![(table, 1)],
             print_title_rows: Some((0, 2)),
+            print_title_cols: None,
             config: &config,
             view: false,
         };
@@ -1488,6 +1500,7 @@ mod tests {
             links: HashMap::new(),
             tables: Vec::new(),
             print_title_rows: None,
+            print_title_cols: None,
             config: &config,
             view: false,
         };

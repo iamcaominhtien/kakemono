@@ -13,10 +13,16 @@ use super::workbook::is_sml;
 /// and palette. `None` for automatic (black).
 pub(crate) type Paint<'a> = &'a dyn Fn(Node<'_, '_>) -> Option<[u8; 3]>;
 
-/// The runs of a string, each with whether it takes the font of its cell:
-/// a run without properties does; a rich run (`rPr`) sets its own font, so
-/// that it is plain in a bold cell unless it is bold itself.
-pub(crate) type Runs = Vec<(Span, bool)>;
+/// The runs of a string, each with what it sets of its own font rather
+/// than take the cell's ([`OWN_STYLE`], [`OWN_COLOR`]; 0 for a run without
+/// properties).
+pub(crate) type Runs = Vec<(Span, u8)>;
+
+/// A rich run (`rPr`) sets its own bold and italic: it is plain in a bold
+/// cell unless it is bold itself.
+pub(crate) const OWN_STYLE: u8 = 1;
+/// A rich run sets its own colour (`color`), black too.
+pub(crate) const OWN_COLOR: u8 = 2;
 
 /// The shared strings of `xml`, in order: each string as its runs. A plain
 /// string is one unstyled span; a rich string keeps bold, italic,
@@ -41,35 +47,38 @@ pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Runs {
     let mut spans = Vec::new();
     for node in item.children() {
         if is_sml(node, "t") {
-            push(&mut spans, text(node), (0, [0; 3]), true);
+            push(&mut spans, text(node), (0, [0; 3]), 0);
         } else if is_sml(node, "r") {
             let props = node.children().find(|props| is_sml(*props, "rPr"));
             let style = props.map_or(0, run_style);
-            let color = props
-                .and_then(|props| props.children().find(|color| is_sml(*color, "color")))
-                .and_then(paint)
-                .unwrap_or_default();
+            let color_node = props.and_then(|props| props.children().find(|color| is_sml(*color, "color")));
+            let color = color_node.and_then(paint).unwrap_or_default();
+            let own = match (props, color_node) {
+                (None, _) => 0,
+                (Some(_), None) => OWN_STYLE,
+                (Some(_), Some(_)) => OWN_STYLE | OWN_COLOR,
+            };
             let run_text: String = node.children().filter(|part| is_sml(*part, "t")).map(text).collect();
-            push(&mut spans, run_text, (style, color), props.is_none());
+            push(&mut spans, run_text, (style, color), own);
         }
     }
     spans
 }
 
 /// Adds a run, joined to the previous one when it has the same style and
-/// colour and takes the cell's font (`inherits`) as well.
-fn push(spans: &mut Runs, text: String, (style, color): (u8, [u8; 3]), inherits: bool) {
+/// colour and sets as much of its own font (`own`).
+fn push(spans: &mut Runs, text: String, (style, color): (u8, [u8; 3]), own: u8) {
     if text.is_empty() {
         return;
     }
     match spans.last_mut() {
-        Some((last, last_inherits)) if last.style == style && last.color == color && *last_inherits == inherits => {
+        Some((last, last_own)) if last.style == style && last.color == color && *last_own == own => {
             last.text.push_str(&text);
         }
         _ => {
             let mut span = Span::styled(text, style);
             span.color = color;
-            spans.push((span, inherits));
+            spans.push((span, own));
         }
     }
 }
@@ -166,9 +175,12 @@ mod tests {
 
     #[test]
     fn only_runs_without_properties_take_the_cell_font() {
-        let xml = sst("<si><r><t>Head </t></r><r><rPr><sz val=\"12\"/></rPr><t>body</t></r></si>");
-        let inherits: Vec<bool> = read(&xml, &|_| None).unwrap()[0].iter().map(|run| run.1).collect();
-        assert_eq!(inherits, [true, false]);
+        let xml = sst(concat!(
+            "<si><r><t>Head </t></r><r><rPr><sz val=\"12\"/></rPr><t>body</t></r>",
+            "<r><rPr><color theme=\"1\"/></rPr><t> end</t></r></si>",
+        ));
+        let own: Vec<u8> = read(&xml, &|_| None).unwrap()[0].iter().map(|run| run.1).collect();
+        assert_eq!(own, [0, OWN_STYLE, OWN_STYLE | OWN_COLOR]);
     }
 
     #[test]

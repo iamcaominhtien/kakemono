@@ -57,6 +57,10 @@ pub(crate) struct Workbook {
     /// by index of the sheet in [`Workbook::sheets`]: the first and last
     /// row, zero-based, inclusive.
     pub(crate) print_titles: HashMap<usize, (u32, u32)>,
+    /// The columns printed at the left of every page (`_xlnm.Print_Titles`),
+    /// by index of the sheet: the first and last column, zero-based,
+    /// inclusive.
+    pub(crate) print_title_cols: HashMap<usize, (u32, u32)>,
     /// The print area of each sheet that has one (`_xlnm.Print_Area`),
     /// by index in [`Workbook::sheets`]: the box of its ranges.
     pub(crate) print_areas: HashMap<usize, Merge>,
@@ -128,6 +132,9 @@ impl Workbook {
         let print_titles = defined(PRINT_TITLES_NAME)
             .filter_map(|(sheet, text)| Some((sheet, title_rows(text)?)))
             .collect();
+        let print_title_cols = defined(PRINT_TITLES_NAME)
+            .filter_map(|(sheet, text)| Some((sheet, title_cols(text)?)))
+            .collect();
         let print_areas = defined(PRINT_AREA_NAME)
             .filter_map(|(sheet, text)| Some((sheet, print_area(text)?)))
             .collect();
@@ -137,6 +144,7 @@ impl Workbook {
             date1904,
             title: document_title(zip)?,
             print_titles,
+            print_title_cols,
             print_areas,
         })
     }
@@ -167,6 +175,24 @@ fn title_rows(reference: &str) -> Option<(u32, u32)> {
         let (first, last) = range.split_once(':')?;
         let row = |cell: &str| cell.trim().trim_start_matches('$').parse::<u32>().ok()?.checked_sub(1);
         Some((row(first)?, row(last)?))
+    })
+}
+
+/// The first and last columns of the column ranges of print titles
+/// (`'Sheet 1'!$A:$B,'Sheet 1'!$1:$2`), zero-based; `None` when there are
+/// none.
+fn title_cols(reference: &str) -> Option<(u32, u32)> {
+    reference.split(',').find_map(|area| {
+        let range = area.rsplit_once('!').map_or(area, |(_, range)| range);
+        let (first, last) = range.split_once(':')?;
+        let col = |cell: &str| {
+            let letters = cell.trim().trim_start_matches('$');
+            if letters.is_empty() || !letters.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+                return None;
+            }
+            super::sheet::cell_ref(&format!("{letters}1")).map(|(_, col)| col)
+        };
+        Some((col(first)?, col(last)?))
     })
 }
 
@@ -206,5 +232,9 @@ mod tests {
         assert_eq!(title_rows("'My sheet'!$1:$2"), Some((0, 1)));
         assert_eq!(title_rows("Sheet1!$A:$B,Sheet1!$3:$4"), Some((2, 3)));
         assert_eq!(title_rows("Sheet1!$A:$B"), None);
+        // And their columns.
+        assert_eq!(title_cols("Sheet1!$A:$B,Sheet1!$3:$4"), Some((0, 1)));
+        assert_eq!(title_cols("'CO-EST2024-POP'!$H:$J"), Some((7, 9)));
+        assert_eq!(title_cols("'My sheet'!$1:$2"), None);
     }
 }

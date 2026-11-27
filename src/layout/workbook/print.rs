@@ -67,6 +67,9 @@ const HAIR_LINE_PT: f32 = 0.25;
 const GRID_LINE_COLOR: Rgb = [0xBF, 0xBF, 0xBF];
 /// The most empty columns a text runs over, as the sheet view.
 const MAX_OVERFLOW_COLS: usize = 40;
+/// How near a text's clip is to the page's right edge to be cut there, in
+/// points.
+const PAGE_EDGE_SLACK_PT: f32 = 0.01;
 /// URL schemes a cell's link may have in the PDF.
 const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
 /// Japanese families tried, in order, for the East Asian text of a cell
@@ -137,6 +140,8 @@ pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig, file: Option<
             file: file.unwrap_or_default(),
             sizes: sheet.grid.sizes.clone(),
             placing: None,
+            page_right: f32::INFINITY,
+            repeats_cols: false,
         };
         printer.printed_columns();
         pages.extend(printer.pages(left));
@@ -178,6 +183,13 @@ struct Printer<'a, 'c, 'f> {
     /// columns as they print, where its drawn objects are placed (they
     /// move with their cells); `None` when the sheet's own sizes are.
     placing: Option<Grid>,
+    /// The right edge of the columns of the page drawn: a text cut there
+    /// keeps the letter that crosses it, whose rest the next page's
+    /// columns leave out.
+    page_right: f32,
+    /// The page drawn repeats the print title columns at its left: their
+    /// texts do not run on into its other columns.
+    repeats_cols: bool,
 }
 
 /// The part of a sheet that prints: its rows and columns, with where each
@@ -233,6 +245,10 @@ struct Layout {
     titles: Vec<u32>,
     /// Their height on the sheet.
     titles_h: f32,
+    /// The columns repeated at the left of each page.
+    title_cols: Vec<u32>,
+    /// Their width on the sheet.
+    titles_w: f32,
 }
 
 /// The scale a sheet of `area` prints at with the settings `print` on
@@ -333,19 +349,9 @@ impl Printer<'_, '_, '_> {
             (paper.0 - margin_l - margin_r).max(paper.0 / 4.0),
             (paper.1 - margin_t - margin_b).max(paper.1 / 4.0),
         );
-        let titles: Vec<u32> = self
-            .grid
-            .declared
-            .print_title_rows
-            .map(|(first, last)| {
-                area.rows
-                    .iter()
-                    .copied()
-                    .filter(|row| (first..=last).contains(row))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let (titles, title_cols) = self.titles(&area);
         let titles_h: f32 = titles.iter().map(|&row| area.height(row)).sum();
+        let titles_w: f32 = title_cols.iter().map(|&col| area.width(col)).sum();
         let scale = scale(print, &area, room);
         // Fitting the sheet to a number of pages leaves the manual breaks
         // of that side out; a side not fitted (0 pages) keeps them, as
@@ -362,7 +368,7 @@ impl Printer<'_, '_, '_> {
             |col| area.width(col),
             room.0 / scale,
             &keep(print.fit_width, &print.col_breaks),
-            0.0,
+            titles_w,
         );
         let row_groups = groups(
             &area.rows,
@@ -378,6 +384,8 @@ impl Printer<'_, '_, '_> {
             scale,
             titles,
             titles_h,
+            title_cols,
+            titles_w,
         };
         let mut order = Vec::new();
         if print.over_then_down {
@@ -398,6 +406,26 @@ impl Printer<'_, '_, '_> {
             .collect();
         self.headers_and_footers(&mut pages, &layout);
         pages
+    }
+
+    /// The print title rows and columns of the sheet that print in `area`.
+    fn titles(&self, area: &Area) -> (Vec<u32>, Vec<u32>) {
+        let within = |range: Option<(u32, u32)>, items: &[u32]| -> Vec<u32> {
+            range
+                .map(|(first, last)| {
+                    items
+                        .iter()
+                        .copied()
+                        .filter(|item| (first..=last).contains(item))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let declared = &self.grid.declared;
+        (
+            within(declared.print_title_rows, &area.rows),
+            within(declared.print_title_cols, &area.cols),
+        )
     }
 
     /// Draws the headers and footers of the sheet's `pages`, numbered from
@@ -511,18 +539,27 @@ impl Printer<'_, '_, '_> {
             .titles
             .last()
             .is_some_and(|last| rows.first().is_some_and(|first| first > last));
-        let content_w: f32 = cols.iter().map(|&col| area.width(col)).sum::<f32>() * scale;
+        // The repeated columns lead every page whose columns come after
+        // them.
+        let repeat_cols = layout
+            .title_cols
+            .last()
+            .is_some_and(|last| cols.first().is_some_and(|first| first > last));
+        let repeated_w = if repeat_cols { layout.titles_w } else { 0.0 };
+        let content_w: f32 = (cols.iter().map(|&col| area.width(col)).sum::<f32>() + repeated_w) * scale;
         let repeated_h = if repeat { layout.titles_h } else { 0.0 };
         let content_h: f32 = (rows.iter().map(|&row| area.height(row)).sum::<f32>() + repeated_h) * scale;
         let centred = |on: bool, room: f32, content: f32| if on { (room - content).max(0.0) / 2.0 } else { 0.0 };
         let left = layout.origin.0 + centred(print.h_centered, layout.room.0, content_w);
         let top = layout.origin.1 + centred(print.v_centered, layout.room.1, content_h);
-        let columns = Columns {
+        let columns_of = |cols: &[u32], page_left: f32| Columns {
             cols: cols.to_vec(),
             sheet_left: area.x(cols[0]),
             sheet_right: area.x(*cols.last().unwrap_or(&cols[0]) + 1),
-            page_left: left,
+            page_left,
         };
+        let columns = columns_of(cols, left + repeated_w * scale);
+        self.repeats_cols = repeat_cols;
         let mut bands = Vec::new();
         let mut page_top = top;
         if repeat {
@@ -535,6 +572,10 @@ impl Printer<'_, '_, '_> {
             height: layout.paper.1,
             items: Vec::new(),
         };
+        if repeat_cols {
+            let titles = columns_of(&layout.title_cols, left);
+            self.draw_page(&mut page.items, area, &titles, &bands, scale, repeat);
+        }
         self.draw_page(&mut page.items, area, &columns, &bands, scale, repeat);
         page
     }
@@ -769,6 +810,7 @@ impl Printer<'_, '_, '_> {
     ) {
         let mut texts = Vec::new();
         let mut lines = Vec::new();
+        self.page_right = columns.page_left + (columns.sheet_right - columns.sheet_left) * scale;
         for band in bands {
             let cells = self.band_cells(area, columns, band);
             for (at, rect, span) in &cells {
@@ -829,6 +871,7 @@ impl Printer<'_, '_, '_> {
                 let clip = self.clip(area, columns, band, *at, *span, rect, scale, look);
                 texts.extend(self.cell_text(*at, look, text_rect, clip, scale));
             }
+            texts.extend(self.spilled_in(area, columns, band, scale));
         }
         items.append(&mut lines);
         items.append(&mut texts);
@@ -845,6 +888,62 @@ impl Printer<'_, '_, '_> {
         for shape in &self.sheet.shapes {
             self.shape(items, shape, columns, band, scale, region);
         }
+    }
+
+    /// The texts of cells left of the page's columns that run over the
+    /// empty cells up to them and on into the page, as Excel prints the
+    /// rest of a long title on the page of the next columns.
+    fn spilled_in(&mut self, area: &Area, columns: &Columns, band: &Band, scale: f32) -> Vec<Item> {
+        let Some(&first) = columns.cols.first() else {
+            return Vec::new();
+        };
+        let before = area.cols.iter().position(|&col| col == first).unwrap_or(0);
+        let page_left = columns.page_left;
+        let titles = self.grid.declared.print_title_cols.filter(|_| self.repeats_cols);
+        let mut items = Vec::new();
+        for &row in &band.rows {
+            let free = |col: u32| self.grid.is_blank((row, col)) && !self.grid.merged((row, col));
+            let Some(&from) = area.cols[..before]
+                .iter()
+                .rev()
+                .take(MAX_OVERFLOW_COLS)
+                .find(|&&col| !free(col))
+            else {
+                continue;
+            };
+            if titles.is_some_and(|(first, last)| (first..=last).contains(&from)) {
+                continue;
+            }
+            let at = (row, from);
+            let look = self.styles.look(look_index(self.grid, at) as usize);
+            let cell = self.grid.cells.get(&at);
+            let left_aligned = alignment(look.h_align, cell.map(|cell| cell.kind)) == "left";
+            let runs_over = left_aligned
+                && !look.wrap
+                && !self.grid.merged(at)
+                && !cell.is_some_and(|cell| cell.center_continuous)
+                && cell.is_some_and(|cell| cell.kind == CellKind::Text);
+            if !runs_over || !free(first) {
+                continue;
+            }
+            let reach: f32 = columns
+                .cols
+                .iter()
+                .take_while(|&&col| free(col))
+                .take(MAX_OVERFLOW_COLS)
+                .map(|&col| area.width(col))
+                .sum();
+            let rect = self.to_page(
+                [area.x(from), area.y(row), area.width(from), area.height(row)],
+                columns,
+                band,
+                scale,
+            );
+            let clip = [page_left, rect[1], page_left + reach * scale, rect[1] + rect[3]];
+            let look = look.clone();
+            items.extend(self.cell_text(at, &look, rect, clip, scale));
+        }
+        items
     }
 
     /// The cells of a band of a page: (first cell, box on the sheet,
@@ -1069,8 +1168,8 @@ impl Printer<'_, '_, '_> {
         } else {
             let mut items = Vec::new();
             let mut pen = 0.0;
-            for span in &cell.spans {
-                let fmt = self.span_run(&base, span);
+            for (index, span) in cell.spans.iter().enumerate() {
+                let fmt = self.span_run(&base, span, cell.own_font(index));
                 let text = span.text.replace(['\n', '\r', '\t'], " ");
                 let (mut run, run_w) = para::text_items(self.ctx, &text, &fmt, pen, ascent);
                 items.append(&mut run);
@@ -1090,7 +1189,8 @@ impl Printer<'_, '_, '_> {
             VAlign::Bottom => height - pad_top - text_h,
         };
         translate(&mut items, x, y + top);
-        clip_items(items, clip)
+        let at_page_edge = (clip[2] - self.page_right).abs() < PAGE_EDGE_SLACK_PT;
+        clip_items(items, clip, at_page_edge)
     }
 
     /// The text of the number `cell` at `at` whose format has a fill
@@ -1110,7 +1210,7 @@ impl Printer<'_, '_, '_> {
             return None;
         };
         let (before, after) = (span.text.get(..fill)?, span.text.get(fill..)?);
-        let fmt = self.span_run(base, span);
+        let fmt = self.span_run(base, span, cell.own_font(0));
         let (mut items, _) = para::text_items(self.ctx, before, &fmt, 0.0, ascent);
         let (mut tail, tail_w) = para::text_items(self.ctx, after, &fmt, 0.0, ascent);
         translate(&mut items, left, 0.0);
@@ -1260,8 +1360,8 @@ impl Printer<'_, '_, '_> {
     /// is a line break.
     fn inlines(&self, cell: &GridCell, base: &RunFmt) -> Vec<Inline> {
         let mut inlines = Vec::new();
-        for span in &cell.spans {
-            let fmt = self.span_run(base, span);
+        for (index, span) in cell.spans.iter().enumerate() {
+            let fmt = self.span_run(base, span, cell.own_font(index));
             for (index, line) in span.text.split('\n').enumerate() {
                 if index > 0 {
                     inlines.push(Inline::Break {
@@ -1321,15 +1421,22 @@ impl Printer<'_, '_, '_> {
     }
 
     /// The run of a span of a cell set in `base`: its bold, italic, colour
-    /// and link (of the schemes a PDF may open). A span's bold and italic
-    /// are its own (those of the cell's font unless it is a rich run that
-    /// sets its own).
-    fn span_run(&self, base: &RunFmt, span: &crate::model::Span) -> RunFmt {
+    /// and link (of the schemes a PDF may open): those of the cell's look
+    /// and the span's own, or the span's alone when it is a rich run that
+    /// sets its own (`own_style`; `own_color` for a colour, black too).
+    fn span_run(&self, base: &RunFmt, span: &crate::model::Span, (own_style, own_color): (bool, bool)) -> RunFmt {
         let mut fmt = base.clone();
-        fmt.bold = span.style & BOLD != 0;
-        fmt.italic = span.style & ITALIC != 0;
+        if own_style {
+            fmt.bold = span.style & BOLD != 0;
+            fmt.italic = span.style & ITALIC != 0;
+        } else {
+            fmt.bold |= span.style & BOLD != 0;
+            fmt.italic |= span.style & ITALIC != 0;
+        }
         if span.color != [0; 3] {
             fmt.color = Some(span.color);
+        } else if own_color {
+            fmt.color = None;
         }
         fmt.href = span
             .href
@@ -1460,7 +1567,7 @@ impl Printer<'_, '_, '_> {
         } else {
             [region[1], region[3]]
         };
-        clip_items(items, [region[0], clip_top, region[2], clip_bottom])
+        clip_items(items, [region[0], clip_top, region[2], clip_bottom], false)
     }
 
     /// A colour of the styles as RGB.
@@ -1560,8 +1667,8 @@ fn groups(items: &[u32], size: impl Fn(u32) -> f32, room: f32, breaks: &HashSet<
     let mut used = 0.0;
     for &item in items {
         let item_size = size(item);
-        // A page after the first holds the repeated rows too; the first
-        // holds them in their place.
+        // A page after the first holds the repeated rows (or columns) too;
+        // the first holds them in their place.
         let room_here = if groups.is_empty() { room } else { room - repeated };
         let slack = (room_here * ROOM_SLACK_RATIO).max(MIN_ROOM_SLACK_PT);
         let full = !current.is_empty() && (used + item_size > room_here + slack || breaks.contains(&item));
@@ -1755,7 +1862,7 @@ fn translate(items: &mut [Item], dx: f32, dy: f32) {
 /// `items` cut to the box `clip` (left, top, right, bottom): the glyphs
 /// of a run outside it left out, as Excel cuts a cell's text at its edges;
 /// a run whose line is outside it left out whole.
-fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4]) -> Vec<Item> {
+fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4], open_right: bool) -> Vec<Item> {
     let mut kept = Vec::with_capacity(items.len());
     for mut item in items {
         match &mut item {
@@ -1768,7 +1875,8 @@ fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4]) -> Vec<Ite
                 let origin = run.x;
                 run.glyphs.retain(|glyph| {
                     let start = origin + glyph.x;
-                    start >= left - 0.5 && start + glyph.advance <= right + 0.5
+                    let end = if open_right { start } else { start + glyph.advance };
+                    start >= left - 0.5 && end <= right + 0.5
                 });
                 if run.glyphs.is_empty() {
                     continue;
@@ -1913,12 +2021,18 @@ mod tests {
             fake_italic: false,
             scale: 1.0,
         };
-        let kept = clip_items(vec![Item::Text(run.clone())], [0.0, 0.0, 10.0, 30.0]);
+        let kept = clip_items(vec![Item::Text(run.clone())], [0.0, 0.0, 10.0, 30.0], false);
+        let [Item::Text(cut)] = kept.as_slice() else {
+            panic!("one run")
+        };
+        assert_eq!(cut.glyphs.len(), 2);
+        // At a page's edge, the letter that crosses it stays.
+        let kept = clip_items(vec![Item::Text(run.clone())], [0.0, 0.0, 7.0, 30.0], true);
         let [Item::Text(cut)] = kept.as_slice() else {
             panic!("one run")
         };
         assert_eq!(cut.glyphs.len(), 2);
         // A line outside the box is left out.
-        assert!(clip_items(vec![Item::Text(run)], [0.0, 30.0, 10.0, 60.0]).is_empty());
+        assert!(clip_items(vec![Item::Text(run)], [0.0, 30.0, 10.0, 60.0], false).is_empty());
     }
 }

@@ -530,23 +530,33 @@ impl Page<'_> {
 
     /// The text of a cell as HTML, with its links (of the schemes a page
     /// may open) and the bold, italic, superscript and subscript of its
-    /// runs; a run that sets its own font is upright and plain in a cell
-    /// whose look (`look`) is bold or italic, unless it is so itself.
+    /// runs; a run that sets its own font takes neither the bold nor the
+    /// italic of the cell's look (`look`), nor its colour when it gives one.
     fn text(&self, cell: &GridCell, look: &Look) -> String {
         let mut out = String::new();
-        for span in &cell.spans {
+        let cell_color = look.font.color.and_then(|color| self.rgb(color)).unwrap_or_default();
+        for (index, span) in cell.spans.iter().enumerate() {
             let mut body = esc(&span.text);
             for (flag, tag) in [(SUB, "sub"), (SUP, "sup"), (ITALIC, "i"), (BOLD, "b")] {
                 if span.style & flag != 0 {
                     body = format!("<{tag}>{body}</{tag}>");
                 }
             }
-            let plain = look.font.bold && span.style & BOLD == 0;
-            let upright = look.font.italic && span.style & ITALIC == 0;
-            if plain || upright {
-                let weight = if plain { "font-weight:400;" } else { "" };
-                let slant = if upright { "font-style:normal;" } else { "" };
-                body = format!("<span style=\"{weight}{slant}\">{body}</span>");
+            let (own_style, own_color) = cell.own_font(index);
+            if own_style {
+                let mut css = String::new();
+                if look.font.bold && span.style & BOLD == 0 {
+                    css.push_str("font-weight:400;");
+                }
+                if look.font.italic && span.style & ITALIC == 0 {
+                    css.push_str("font-style:normal;");
+                }
+                if own_color && span.color == [0; 3] && cell_color != [0; 3] {
+                    css.push_str("color:#000000;");
+                }
+                if !css.is_empty() {
+                    body = format!("<span style=\"{css}\">{body}</span>");
+                }
             }
             if span.color != [0; 3] {
                 body = format!("<span style=\"color:{}\">{body}</span>", hex(span.color));

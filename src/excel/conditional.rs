@@ -479,6 +479,7 @@ mod tests {
                     spans: vec![Span::plain(*text)],
                     kind: CellKind::Text,
                     center_continuous: false,
+                    own_font: Vec::new(),
                 },
             );
         }

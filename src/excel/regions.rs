@@ -308,6 +308,7 @@ mod tests {
                     spans: vec![Span::plain("x")],
                     kind: CellKind::Text,
                     center_continuous: false,
+                    own_font: Vec::new(),
                 },
             );
         }
@@ -405,6 +406,7 @@ mod tests {
                 spans: Vec::new(),
                 kind: CellKind::Text,
                 center_continuous: true,
+                own_font: Vec::new(),
             },
         );
         grid
