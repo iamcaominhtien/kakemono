@@ -117,6 +117,12 @@ pub(crate) const STYLES: &str = concat!(
     "<w:style w:type=\"paragraph\" w:customStyle=\"1\" w:styleId=\"TableText\"><w:name w:val=\"Table Text\"/><w:basedOn w:val=\"Normal\"/>",
     "<w:pPr><w:spacing w:before=\"20\" w:after=\"20\" w:line=\"240\" w:lineRule=\"auto\"/><w:jc w:val=\"left\"/></w:pPr>",
     "<w:rPr><w:sz w:val=\"18\"/></w:rPr></w:style>",
+    "<w:style w:type=\"paragraph\" w:customStyle=\"1\" w:styleId=\"TableText8\"><w:name w:val=\"Table Text 8\"/><w:basedOn w:val=\"TableText\"/>",
+    "<w:rPr><w:sz w:val=\"16\"/></w:rPr></w:style>",
+    "<w:style w:type=\"paragraph\" w:customStyle=\"1\" w:styleId=\"TableText7\"><w:name w:val=\"Table Text 7\"/><w:basedOn w:val=\"TableText\"/>",
+    "<w:rPr><w:sz w:val=\"14\"/></w:rPr></w:style>",
+    "<w:style w:type=\"paragraph\" w:customStyle=\"1\" w:styleId=\"TableText6\"><w:name w:val=\"Table Text 6\"/><w:basedOn w:val=\"TableText\"/>",
+    "<w:rPr><w:sz w:val=\"12\"/></w:rPr></w:style>",
     "<w:style w:type=\"paragraph\" w:styleId=\"FootnoteText\"><w:name w:val=\"footnote text\"/><w:basedOn w:val=\"Normal\"/>",
     "<w:pPr><w:spacing w:after=\"80\"/></w:pPr><w:rPr><w:sz w:val=\"18\"/></w:rPr></w:style>",
     "<w:style w:type=\"paragraph\" w:styleId=\"Bibliography\"><w:name w:val=\"Bibliography\"/><w:basedOn w:val=\"Normal\"/>",
@@ -171,8 +177,22 @@ pub(crate) fn document_rels(images: &[(String, String)], links: &[(String, Strin
 /// The section properties that end the body: a US Letter page with
 /// one-inch margins.
 pub(crate) fn section_props() -> String {
+    page_section(false)
+}
+
+/// The width of the text column of a landscape page, in twips.
+pub(crate) const LANDSCAPE_TEXT_WIDTH_TWIPS: u32 = PAGE_HEIGHT_TWIPS - 2 * MARGIN_TWIPS;
+
+/// The page layout of a section (`w:sectPr`): a US Letter page with
+/// one-inch margins, turned when `landscape`.
+pub(crate) fn page_section(landscape: bool) -> String {
+    let (width, height, orient) = if landscape {
+        (PAGE_HEIGHT_TWIPS, PAGE_WIDTH_TWIPS, " w:orient=\"landscape\"")
+    } else {
+        (PAGE_WIDTH_TWIPS, PAGE_HEIGHT_TWIPS, "")
+    };
     format!(
-        "<w:sectPr><w:pgSz w:w=\"{PAGE_WIDTH_TWIPS}\" w:h=\"{PAGE_HEIGHT_TWIPS}\"/>\
+        "<w:sectPr><w:pgSz w:w=\"{width}\" w:h=\"{height}\"{orient}/>\
 <w:pgMar w:top=\"{MARGIN_TWIPS}\" w:right=\"{MARGIN_TWIPS}\" w:bottom=\"{MARGIN_TWIPS}\" w:left=\"{MARGIN_TWIPS}\" \
 w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>"
     )
