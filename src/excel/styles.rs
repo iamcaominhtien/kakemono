@@ -22,9 +22,10 @@ pub(crate) struct Styles {
     looks: Vec<Look>,
     /// The formats of the conditional formats (`dxfs`), in order.
     dxfs: Vec<Dxf>,
-    /// The cell formats made of a cell format and conditional formats, or
-    /// a font colour of its number format (an index of the palette).
-    made: HashMap<(u32, Vec<u32>, Option<u8>), u32>,
+    /// The cell formats made of a cell format and conditional formats, a
+    /// font colour of its number format (an index of the palette) or a
+    /// table style under it, by what they are made of.
+    made: HashMap<String, u32>,
     /// The colours of the legacy palette (`indexedColors`), when the file
     /// changes them; Excel's own otherwise.
     pub(crate) palette: Option<Vec<Rgb>>,
@@ -268,32 +269,41 @@ impl Styles {
     /// conditional formats `dxfs` over it, the first over all: what each
     /// sets (font colour and style, fill, borders) replaces the base's.
     pub(crate) fn with_dxfs(&mut self, base: u32, dxfs: &[u32]) -> u32 {
-        self.made_from((base, dxfs.to_vec(), None))
+        self.made_from(base, dxfs, None, None)
     }
 
     /// The index of a cell format made of the cell format `base` with its
     /// font in the colour `color` of the palette, which its number format
     /// names (`[Red]`).
     pub(crate) fn with_number_color(&mut self, base: u32, color: u8) -> u32 {
-        self.made_from((base, Vec::new(), Some(color)))
+        self.made_from(base, &[], Some(color), None)
     }
 
-    /// The index of the cell format made of `base`, with the font colour
-    /// `color` of its number format and the conditional formats `dxfs`
-    /// over it.
-    fn made_from(&mut self, key: (u32, Vec<u32>, Option<u8>)) -> u32 {
+    /// The index of a cell format made of the cell format `base` over the
+    /// look `table` of its table's style: what the base leaves unset.
+    pub(crate) fn with_table(&mut self, base: u32, table: &Dxf) -> u32 {
+        self.made_from(base, &[], None, Some(table))
+    }
+
+    /// The index of the cell format made of `base` over the table style
+    /// `under`, with the font colour `color` of its number format and the
+    /// conditional formats `dxfs` over it.
+    fn made_from(&mut self, base: u32, dxfs: &[u32], color: Option<u8>, under: Option<&Dxf>) -> u32 {
+        let key = format!("{base}|{dxfs:?}|{color:?}|{under:?}");
         if let Some(&index) = self.made.get(&key) {
             return index;
         }
-        let (base, dxfs, color) = &key;
-        let mut look = self.look(*base as usize).clone();
+        let mut look = self.look(base as usize).clone();
+        if let Some(under) = under {
+            under.under(&mut look, self.look(0).font.color);
+        }
         if let Some(color) = color {
-            look.font.color = Some(Color::Indexed(*color));
+            look.font.color = Some(Color::Indexed(color));
         }
         for dxf in dxfs.iter().rev().filter_map(|index| self.dxfs.get(*index as usize)) {
             dxf.over(&mut look);
         }
-        let xf = self.get(*base as usize).clone();
+        let xf = self.get(base as usize).clone();
         let index = u32::try_from(self.looks.len().max(self.xfs.len())).unwrap_or(u32::MAX);
         // Formats past the file's own are padded, so that both lists keep
         // the same order.
@@ -663,18 +673,18 @@ fn child_of<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
 
 /// The format a conditional format gives (`dxf`): only what it sets.
 #[derive(Debug, Clone, Default, PartialEq)]
-struct Dxf {
+pub(crate) struct Dxf {
     /// The font's colour.
-    color: Option<Color>,
+    pub(crate) color: Option<Color>,
     /// Bold, italic, underline and strike, when set.
-    bold: Option<bool>,
-    italic: Option<bool>,
-    underline: Option<bool>,
-    strike: Option<bool>,
+    pub(crate) bold: Option<bool>,
+    pub(crate) italic: Option<bool>,
+    pub(crate) underline: Option<bool>,
+    pub(crate) strike: Option<bool>,
     /// The fill.
-    fill: Option<Color>,
+    pub(crate) fill: Option<Color>,
     /// The borders: left, right, top, bottom.
-    borders: [Option<Edge>; 4],
+    pub(crate) borders: [Option<Edge>; 4],
 }
 
 impl Dxf {
@@ -689,6 +699,22 @@ impl Dxf {
         look.fill = self.fill.or(look.fill);
         for (side, edge) in look.borders.iter_mut().zip(self.borders) {
             *side = edge.or(*side);
+        }
+    }
+
+    /// Sets what it gives under `look`: what the look leaves unset (its
+    /// fill, borders, and its font colour when it is the Normal style's,
+    /// `normal`), and the bold and italic it adds.
+    fn under(&self, look: &mut Look, normal: Option<Color>) {
+        let font = &mut look.font;
+        if font.color.is_none() || font.color == normal {
+            font.color = self.color.or(font.color);
+        }
+        font.bold |= self.bold == Some(true);
+        font.italic |= self.italic == Some(true);
+        look.fill = look.fill.or(self.fill);
+        for (side, edge) in look.borders.iter_mut().zip(self.borders) {
+            *side = side.or(edge);
         }
     }
 }

@@ -206,9 +206,15 @@ its formatting:
   with numbers, texts or another cell (`cellIs`), containing, beginning or ending with a text,
   empty or not, a duplicate or unique value, each with the font colour and style, fill and
   borders of its format, the first rule over the others, a rule that stops (`stopIfTrue`) ending
-  them; and data bars, from their colour to white, as long as the value between their bounds.
+  them; and data bars, from their colour to white, as long as the value between their bounds;
+- the built-in styles of Excel Tables (`src/excel/table_style.rs`; `tableStyleInfo`, Light 1 to 21
+  and Medium 1 to 28): the header row in the style's colour (white bold text) or underlined,
+  banded rows and columns, lines, the first and last columns bold, a total row under a double
+  line, under the cells' own formats (a cell's own fill, borders and font colour, other than the
+  Normal style's, win).
 
-Not drawn: conditional formats on a formula of their own (`expression`), colour scales, icon
+Not drawn: the dark table styles and a workbook's own table styles, conditional formats on a
+formula of their own (`expression`), colour scales, icon
 sets, top or bottom values, above or below average, sparklines, comments, text turned by an angle other than ±90°, and the curves of curved connectors
 (drawn straight). A sheet is drawn up to 200 000 cells read and 600 000 positions (rows × columns)
 and 300 columns, the rows past them left out with a note.

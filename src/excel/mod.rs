@@ -16,6 +16,7 @@ mod richdata;
 mod sheet;
 mod strings;
 pub(crate) mod styles;
+mod table_style;
 pub(crate) mod view;
 mod workbook;
 
@@ -27,6 +28,7 @@ use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store, store_chart
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::{Drawn, Shape};
+use table_style::TableStyle;
 use grid::{Grid, Table};
 use sheet::SheetContext;
 use std::collections::{HashMap, HashSet};
@@ -297,7 +299,7 @@ fn read_sheets_with_styles<'w>(
         let mut shapes = Vec::new();
         let grid = match xml {
             Some(xml) => {
-                let (links, tables) = sheet_rels(zip, &sheet.part);
+                let (links, tables, table_styles) = sheet_rels(zip, &sheet.part);
                 let ctx = SheetContext {
                     strings: &strings,
                     styles: &styles,
@@ -310,6 +312,9 @@ fn read_sheets_with_styles<'w>(
                     view,
                 };
                 let mut grid = sheet::read(&xml, &ctx).unwrap_or_default();
+                if view {
+                    table_looks(&mut styles, &mut grid, &table_styles);
+                }
                 conditional_looks(&mut styles, &mut grid);
                 shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
                 shapes.extend(object_pictures(zip, &sheet.part, &grid, pictures));
@@ -322,6 +327,32 @@ fn read_sheets_with_styles<'w>(
         sheets.push((sheet.name.as_str(), grid, shapes));
     }
     Ok((sheets, styles))
+}
+
+/// The most cells of a sheet's tables given the look of their table's
+/// style.
+const MAX_TABLE_STYLE_CELLS: u64 = 1_000_000;
+
+/// Gives each cell of a table with a built-in style (`tables`) a cell format
+/// of its own in `styles`: its own over the style's look there.
+fn table_looks(styles: &mut styles::Styles, grid: &mut Grid, tables: &[TableStyle]) {
+    let mut budget = MAX_TABLE_STYLE_CELLS;
+    for table in tables {
+        let range = table.range;
+        let cells = u64::from(range.bottom - range.top + 1) * u64::from(range.right - range.left + 1);
+        if cells > budget {
+            break;
+        }
+        budget -= cells;
+        for row in range.top..=range.bottom {
+            for col in range.left..=range.right {
+                let Some(dxf) = table.cell((row, col)) else { continue };
+                let base = view::look_index(grid, (row, col));
+                let made = styles.with_table(base, &dxf);
+                grid.looks.cells.insert((row, col), made);
+            }
+        }
+    }
 }
 
 /// Gives each cell a conditional format formats (`grid`'s
@@ -346,17 +377,24 @@ fn conditional_looks(styles: &mut styles::Styles, grid: &mut Grid) {
 /// by relationship id, and its Excel Tables. Damaged relationships give
 /// none, and a damaged table part is left out: the sheet is read without
 /// them.
-fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec<Table>) {
+fn sheet_rels(zip: &ZipArchive<'_>, part: &str) -> (HashMap<String, String>, Vec<Table>, Vec<TableStyle>) {
     let mut links = HashMap::new();
     let mut tables = Vec::new();
+    let mut table_styles = Vec::new();
     for (id, kind, rel) in read_rels(zip, part).unwrap_or_default() {
         if kind == HYPERLINK_REL && rel.external {
             links.insert(id, rel.target);
         } else if kind == TABLE_REL && !rel.external {
-            tables.extend(table(zip, &rel.target));
+            let Some(xml) = zip.read_text(&rel.target).ok().flatten() else {
+                continue;
+            };
+            if let Some(found) = table(&xml) {
+                table_styles.extend(table_style::read(&xml, found.1));
+                tables.push(found);
+            }
         }
     }
-    (links, tables)
+    (links, tables, table_styles)
 }
 
 /// The text of the shapes and text boxes in the drawings of the sheet part
@@ -587,9 +625,8 @@ impl Pictures {
 
 /// The range and header rows of the table part `part`; `None` when it is
 /// missing or damaged.
-fn table(zip: &ZipArchive<'_>, part: &str) -> Option<Table> {
-    let xml = zip.read_text(part).ok()??;
-    let doc = parse(&xml).ok()?;
+fn table(xml: &str) -> Option<Table> {
+    let doc = parse(xml).ok()?;
     let table = doc.root_element();
     if !is_sml(table, "table") {
         return None;
