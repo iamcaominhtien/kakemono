@@ -52,6 +52,9 @@ pub(crate) struct TextShape {
     /// Text past its bottom edge is cut (`a:bodyPr vertOverflow="clip"`
     /// or `"ellipsis"`), rather than shown outside.
     pub(crate) clip: bool,
+    /// Its lines are not wrapped at its width (`a:bodyPr wrap="none"`):
+    /// they run past its edges when they are longer.
+    pub(crate) nowrap: bool,
     /// Its preset outline (`a:prstGeom prst`: `rect`, `ellipse`,
     /// `downArrow`, `straightConnector1`, ...); `None` for a drawn one.
     pub(crate) geometry: Option<String>,
@@ -705,6 +708,7 @@ fn text_look(shape: &mut TextShape, body: Node<'_, '_>, style: Option<Node<'_, '
             ]
         });
         shape.clip = matches!(props.attribute("vertOverflow"), Some("clip" | "ellipsis"));
+        shape.nowrap = props.attribute("wrap") == Some("none");
     }
 }
 

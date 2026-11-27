@@ -48,7 +48,7 @@ const MAX_SIZE: f32 = 1_000.0;
 /// What a sheet's cells refer to outside the sheet part.
 pub(crate) struct SheetContext<'a> {
     /// The shared strings of the workbook.
-    pub(crate) strings: &'a [Vec<Span>],
+    pub(crate) strings: &'a [strings::Runs],
     /// The cell formats of the workbook.
     pub(crate) styles: &'a Styles,
     /// Dates count from 1904.
@@ -190,7 +190,7 @@ struct RawCell {
     /// Its value (`v`).
     value: Option<String>,
     /// Its inline string (`is`).
-    inline: Option<Vec<Span>>,
+    inline: Option<strings::Runs>,
 }
 
 /// What the reader of a sheet has read so far.
@@ -331,7 +331,7 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
 /// The spans of an inline string (`is`), whose start tag `tag` the reader
 /// has just given: the element is read on its own as a tree, as a shared
 /// string is. The reader is left after its end tag.
-fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>) -> Result<Vec<Span>> {
+fn inline_string(reader: &mut Reader<'_>, tag: &Tag<'_>, prefixes: &Prefixes<'_>) -> Result<strings::Runs> {
     let Some(piece) = subtree(reader, tag, prefixes)? else {
         return Ok(Vec::new());
     };
@@ -834,14 +834,20 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
             None => (Vec::new(), CellKind::Text),
         },
     };
-    spans.retain(|span| !span.text.is_empty());
+    spans.retain(|(span, _)| !span.text.is_empty());
     if spans.is_empty() && !xf.center_continuous {
         return None;
     }
     let font = (if xf.bold { BOLD } else { 0 }) | (if xf.italic { ITALIC } else { 0 });
-    for span in spans.iter_mut().filter(|span| span.style == 0) {
-        span.style = font;
-    }
+    let spans = spans
+        .into_iter()
+        .map(|(mut span, inherits)| {
+            if inherits && span.style == 0 {
+                span.style = font;
+            }
+            span
+        })
+        .collect();
     Some(GridCell {
         spans,
         kind,
@@ -881,11 +887,11 @@ fn iso_date_time(text: &str) -> String {
 }
 
 /// `text` as one unstyled span, none when it is empty.
-fn plain(text: String) -> Vec<Span> {
+fn plain(text: String) -> strings::Runs {
     if text.is_empty() {
         Vec::new()
     } else {
-        vec![Span::plain(text)]
+        vec![(Span::plain(text), true)]
     }
 }
 
@@ -1066,7 +1072,7 @@ mod tests {
 
     /// Reads `body` with the shared strings `a`, `b` and `config`.
     fn read_with(body: &str, links: &[(&str, &str)], config: &ExcelConfig) -> Grid {
-        let strings = vec![vec![Span::plain("a")], vec![Span::plain("b")]];
+        let strings = vec![vec![(Span::plain("a"), true)], vec![(Span::plain("b"), true)]];
         let styles = test_styles();
         let ctx = SheetContext {
             strings: &strings,

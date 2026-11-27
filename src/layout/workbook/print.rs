@@ -1321,11 +1321,13 @@ impl Printer<'_, '_, '_> {
     }
 
     /// The run of a span of a cell set in `base`: its bold, italic, colour
-    /// and link (of the schemes a PDF may open).
+    /// and link (of the schemes a PDF may open). A span's bold and italic
+    /// are its own (those of the cell's font unless it is a rich run that
+    /// sets its own).
     fn span_run(&self, base: &RunFmt, span: &crate::model::Span) -> RunFmt {
         let mut fmt = base.clone();
-        fmt.bold |= span.style & BOLD != 0;
-        fmt.italic |= span.style & ITALIC != 0;
+        fmt.bold = span.style & BOLD != 0;
+        fmt.italic = span.style & ITALIC != 0;
         if span.color != [0; 3] {
             fmt.color = Some(span.color);
         }
@@ -1407,14 +1409,15 @@ impl Printer<'_, '_, '_> {
             shape.insets_pt.unwrap_or(DEFAULT_INSETS_PT).map(|inset| inset * scale);
         let [x, y, width, height] = rect;
         let inlines = shape_inlines(shape, &fmt, scale);
+        let align = match shape.align.as_deref() {
+            Some("ctr") => Align::Center,
+            Some("r") => Align::Right,
+            Some("just" | "dist") => Align::Both,
+            _ => Align::Left,
+        };
         let para = Para {
             props: ParaProps {
-                align: match shape.align.as_deref() {
-                    Some("ctr") => Align::Center,
-                    Some("r") => Align::Right,
-                    Some("just" | "dist") => Align::Both,
-                    _ => Align::Left,
-                },
+                align: if shape.nowrap { Align::Left } else { align },
                 line: LineSpacing::Auto(1.0),
                 ..Default::default()
             },
@@ -1422,11 +1425,24 @@ impl Printer<'_, '_, '_> {
             inlines,
             ..Default::default()
         };
-        let laid = para::layout(self.ctx, &para, (width - left - right).max(1.0));
+        // A text that is not wrapped is set on lines as long as they are,
+        // each placed in the box as its alignment says.
+        let inner = (width - left - right).max(1.0);
+        let laid = para::layout(self.ctx, &para, if shape.nowrap { NOWRAP_WIDTH_PT } else { inner });
         let mut items = Vec::new();
         let mut line_top = 0.0;
         for mut line in laid.lines {
-            translate(&mut line.items, 0.0, line_top);
+            let shift = if shape.nowrap {
+                let end = line_end(&line.items);
+                match align {
+                    Align::Center => (inner - end) / 2.0,
+                    Align::Right => inner - end,
+                    _ => 0.0,
+                }
+            } else {
+                0.0
+            };
+            translate(&mut line.items, shift, line_top);
             items.append(&mut line.items);
             line_top += line.height;
         }
@@ -1451,6 +1467,21 @@ impl Printer<'_, '_, '_> {
     fn rgb(&self, color: Color) -> Option<Rgb> {
         color.rgb(self.theme, self.styles.palette.as_deref())
     }
+}
+
+/// The width of a line no text box is as wide as, in points: that of a
+/// text that is not wrapped.
+const NOWRAP_WIDTH_PT: f32 = 100_000.0;
+
+/// Where the text of a line's items `items` ends, from its left edge.
+fn line_end(items: &[Item]) -> f32 {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Text(run) => run.glyphs.last().map(|glyph| run.x + glyph.x + glyph.advance),
+            _ => None,
+        })
+        .fold(0.0, f32::max)
 }
 
 /// The inlines of the text of `shape`, run by run, each run in `fmt`

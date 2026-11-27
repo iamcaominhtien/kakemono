@@ -117,7 +117,9 @@ The text is the value **as Excel shows it**, not the stored number:
   back to the general format.
 - **A currency symbol** is kept only when a custom format code writes it (`"¥"#,##0`, `[$€-407]`);
   the built-in currency formats (ids 5 to 8) give the number alone.
-- Strings keep bold, italic, subscript, superscript and the colour of their rich-text runs. **Furigana**
+- Strings keep bold, italic, subscript, superscript and the colour of their rich-text runs; a run
+  with its own properties (`rPr`) sets its own font, so it is plain in a bold cell unless it is
+  bold itself, while a run without them takes the cell's font. **Furigana**
   (phonetic runs, in nearly every Japanese workbook) never reaches the text.
 - Booleans are `TRUE` and `FALSE`; errors are written as in the cell (`#N/A`); a formula gives
   the value saved in the file (kakemono does not recompute): empty when the file has none.
@@ -162,9 +164,9 @@ its formatting:
   widths (in digits of the workbook's default font, as Excel measures them: a Western font's
   digit rounded to whole pixels, 7 for Calibri 11 or Arial 10, 8 for Calibri or Corbel 12, half
   the font's size in whole pixels, rounded up, for an East Asian font, 8 for MS P Mincho
-  11) and row heights of the file, on the screen the workbook was saved on: with an East Asian
+  11, 0.55 of it, rounded, for Yu Gothic, 9 at 12 points) and row heights of the file, on the screen the workbook was saved on: with an East Asian
   default font, the widths written as whole numbers of pixels of a larger screen (9 for an 11-point
-  Mincho at 120 dots per inch, 125 %) are that screen's, whose pixels are smaller, and its rows
+  Mincho at 120 dots per inch, 125 %, 12 for an 11-point Yu Gothic at 144) are that screen's, whose pixels are smaller, and its rows
   are whole numbers of its pixels; Excel prints them so, and a sheet set to fit a page at a given
   scale there fits it here too, hidden rows and columns left out, merged cells spanning their
   area, the column letters and row numbers kept in view when scrolling, the gridlines unless the
@@ -191,7 +193,8 @@ its formatting:
   callouts with their wedge to the tip they point at; arrow heads and the corners of brackets and
   braces sized by the shape's shorter side, as Excel draws them; drawn outlines, `custGeom`, of
   lines and curves whose points are numbers; fill, outline, text with
-  the look of each run, its insets, cut at the bottom edge when the shape says so) and connectors (straight and elbow, with arrow heads) at the place and size
+  the look of each run, its insets, cut at the bottom edge when the shape says so, on lines as
+  long as they are when it is not wrapped, `wrap="none"`) and connectors (straight and elbow, with arrow heads) at the place and size
   of their anchors, groups included, turned and mirrored with their groups;
 - conditional formats (`src/excel/conditional.rs`), tested on the values read: a cell compared
   with numbers, texts or another cell (`cellIs`), containing, beginning or ending with a text,

@@ -13,6 +13,11 @@ use super::workbook::is_sml;
 /// and palette. `None` for automatic (black).
 pub(crate) type Paint<'a> = &'a dyn Fn(Node<'_, '_>) -> Option<[u8; 3]>;
 
+/// The runs of a string, each with whether it takes the font of its cell:
+/// a run without properties does; a rich run (`rPr`) sets its own font, so
+/// that it is plain in a bold cell unless it is bold itself.
+pub(crate) type Runs = Vec<(Span, bool)>;
+
 /// The shared strings of `xml`, in order: each string as its runs. A plain
 /// string is one unstyled span; a rich string keeps bold, italic,
 /// superscript and subscript, and the colours `paint` gives. The phonetic reading of East Asian text
@@ -20,7 +25,7 @@ pub(crate) type Paint<'a> = &'a dyn Fn(Node<'_, '_>) -> Option<[u8; 3]>;
 ///
 /// # Errors
 /// When `xml` is not well-formed.
-pub(crate) fn read(xml: &str, paint: Paint<'_>) -> Result<Vec<Vec<Span>>> {
+pub(crate) fn read(xml: &str, paint: Paint<'_>) -> Result<Vec<Runs>> {
     let doc = parse(xml).context("reading the shared strings")?;
     Ok(doc
         .root_element()
@@ -32,11 +37,11 @@ pub(crate) fn read(xml: &str, paint: Paint<'_>) -> Result<Vec<Vec<Span>>> {
 
 /// The runs of one string item (`si`): its `t`, or its `r` runs coloured
 /// by `paint`.
-pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Vec<Span> {
+pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Runs {
     let mut spans = Vec::new();
     for node in item.children() {
         if is_sml(node, "t") {
-            push(&mut spans, text(node), (0, [0; 3]));
+            push(&mut spans, text(node), (0, [0; 3]), true);
         } else if is_sml(node, "r") {
             let props = node.children().find(|props| is_sml(*props, "rPr"));
             let style = props.map_or(0, run_style);
@@ -45,24 +50,26 @@ pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Vec<Span> {
                 .and_then(paint)
                 .unwrap_or_default();
             let run_text: String = node.children().filter(|part| is_sml(*part, "t")).map(text).collect();
-            push(&mut spans, run_text, (style, color));
+            push(&mut spans, run_text, (style, color), props.is_none());
         }
     }
     spans
 }
 
 /// Adds a run, joined to the previous one when it has the same style and
-/// colour.
-fn push(spans: &mut Vec<Span>, text: String, (style, color): (u8, [u8; 3])) {
+/// colour and takes the cell's font (`inherits`) as well.
+fn push(spans: &mut Runs, text: String, (style, color): (u8, [u8; 3]), inherits: bool) {
     if text.is_empty() {
         return;
     }
     match spans.last_mut() {
-        Some(last) if last.style == style && last.color == color => last.text.push_str(&text),
+        Some((last, last_inherits)) if last.style == style && last.color == color && *last_inherits == inherits => {
+            last.text.push_str(&text);
+        }
         _ => {
             let mut span = Span::styled(text, style);
             span.color = color;
-            spans.push(span);
+            spans.push((span, inherits));
         }
     }
 }
@@ -131,8 +138,8 @@ mod tests {
     use super::*;
 
     /// The text of a string, without styles.
-    fn plain(spans: &[Span]) -> String {
-        spans.iter().map(|span| span.text.as_str()).collect()
+    fn plain(spans: &Runs) -> String {
+        spans.iter().map(|(span, _)| span.text.as_str()).collect()
     }
 
     /// `body` as the items of a shared strings part.
@@ -150,8 +157,18 @@ mod tests {
     fn rich_runs_keep_bold() {
         let xml = sst("<si><r><rPr><b/></rPr><t>B</t></r><r><t>n</t></r></si>");
         let strings = read(&xml, &|_| None).unwrap();
-        let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.style)).collect();
+        let runs: Vec<_> = strings[0]
+            .iter()
+            .map(|(span, _)| (span.text.as_str(), span.style))
+            .collect();
         assert_eq!(runs, [("B", BOLD), ("n", 0)]);
+    }
+
+    #[test]
+    fn only_runs_without_properties_take_the_cell_font() {
+        let xml = sst("<si><r><t>Head </t></r><r><rPr><sz val=\"12\"/></rPr><t>body</t></r></si>");
+        let inherits: Vec<bool> = read(&xml, &|_| None).unwrap()[0].iter().map(|run| run.1).collect();
+        assert_eq!(inherits, [true, false]);
     }
 
     #[test]
@@ -161,7 +178,10 @@ mod tests {
             r#"<r><rPr><vertAlign val="subscript"/></rPr><t>i</t></r><r><rPr><b val="0"/></rPr><t>.</t></r></si>"#,
         ));
         let strings = read(&xml, &|_| None).unwrap();
-        let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.style)).collect();
+        let runs: Vec<_> = strings[0]
+            .iter()
+            .map(|(span, _)| (span.text.as_str(), span.style))
+            .collect();
         assert_eq!(runs, [("x", ITALIC), ("2", SUP), ("i", SUB), (".", 0)]);
     }
 
@@ -170,18 +190,17 @@ mod tests {
         let xml = sst(r#"<si><r><t>plan </t></r><r><rPr><color indexed="10"/></rPr><t>done</t></r></si>"#);
         let paint = |node: Node<'_, '_>| crate::excel::styles::color_of(node)?.rgb(&Default::default(), None);
         let strings = read(&xml, &paint).unwrap();
-        let runs: Vec<_> = strings[0].iter().map(|span| (span.text.as_str(), span.color)).collect();
+        let runs: Vec<_> = strings[0]
+            .iter()
+            .map(|(span, _)| (span.text.as_str(), span.color))
+            .collect();
         assert_eq!(runs, [("plan ", [0; 3]), ("done", [255, 0, 0])]);
     }
 
     #[test]
     fn strings_keep_their_index() {
         let xml = sst(r#"<si><t>a</t></si><si><t/></si><si><t xml:space="preserve"> c </t></si>"#);
-        let strings: Vec<String> = read(&xml, &|_| None)
-            .unwrap()
-            .iter()
-            .map(|spans| plain(spans))
-            .collect();
+        let strings: Vec<String> = read(&xml, &|_| None).unwrap().iter().map(plain).collect();
         assert_eq!(strings, ["a", "", " c "]);
     }
 

@@ -322,7 +322,7 @@ impl Styles {
         }
         let size = font.size_pt.unwrap_or(DEFAULT_FONT_PT);
         for dpi in SCREEN_DPIS {
-            let digit = EAST_ASIAN_DIGIT_EM * size * dpi / PT_PER_INCH;
+            let digit = self.east_asian_digit_em() * size * dpi / PT_PER_INCH;
             for digit_px in [digit.floor(), digit.ceil()] {
                 let whole = distinct.iter().filter(|width| whole_px(**width, digit_px)).count();
                 #[allow(clippy::cast_precision_loss)]
@@ -369,7 +369,30 @@ impl Styles {
             return (size_pt / PT_PER_PX * digit_em).round().max(1.0);
         }
         let size_px = (size_pt / PT_PER_PX).round();
+        if self.east_asian_digit_em() > EAST_ASIAN_DIGIT_EM {
+            return (size_px * YU_GOTHIC_DIGIT_EM).round();
+        }
         (size_px / 2.0).ceil()
+    }
+
+    /// The width of a digit of the default East Asian font, in ems: half
+    /// an em, wider for Yu Gothic (Excel's digit of an 11-point Yu Gothic is
+    /// 8 pixels at 96 dots per inch but 12 at 144, of a 12-point one 9 at
+    /// 96).
+    fn east_asian_digit_em(&self) -> f32 {
+        let name = self
+            .look(0)
+            .font
+            .name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        if name.starts_with("游ゴシック") || name.starts_with("yu gothic") {
+            YU_GOTHIC_DIGIT_EM
+        } else {
+            EAST_ASIAN_DIGIT_EM
+        }
     }
 }
 
@@ -423,6 +446,8 @@ const DEFAULT_FONT_PT: f32 = 11.0;
 
 /// The width of a digit of an East Asian font, in em.
 const EAST_ASIAN_DIGIT_EM: f32 = 0.5;
+/// The width of a digit of Yu Gothic (游ゴシック), in em.
+const YU_GOTHIC_DIGIT_EM: f32 = 0.55;
 
 /// Whether a column `chars` wide is a whole number of pixels when a digit
 /// is `digit_px` pixels: Excel writes the pixels over the digit, cut to a
@@ -799,7 +824,8 @@ mod tests {
         };
         assert_eq!(digit(r#"<sz val="11"/><name val="ＭＳ Ｐ明朝"/>"#), 8.0);
         assert_eq!(digit(r#"<sz val="10"/><name val="Meiryo"/>"#), 7.0);
-        assert_eq!(digit(r#"<sz val="12"/><name val="Yu Gothic"/>"#), 8.0);
+        assert_eq!(digit(r#"<sz val="12"/><name val="Yu Gothic"/>"#), 9.0);
+        assert_eq!(digit(r#"<sz val="11"/><name val="游ゴシック"/>"#), 8.0);
         assert_eq!(digit(r#"<sz val="11"/><name val="Calibri"/>"#), 7.0);
         assert_eq!(Styles::default().digit_px(), 7.0);
         // A Western font's digit grows with its size and family.
@@ -824,6 +850,13 @@ mod tests {
         // Too few widths, or widths of no screen: 96 dpi.
         assert_eq!(styles.screen(&[9.6640625]).pt_per_px, 0.75);
         assert_eq!(styles.screen(&[9.61, 5.23, 4.17]).digit_px, 8.0);
+        // Yu Gothic's digits are wider: 12 pixels at 144 dpi, not 168.
+        let yu_gothic = self::styles(concat!(
+            r#"<fonts count="1"><font><sz val="11"/><name val="游ゴシック"/></font></fonts>"#,
+            r#"<cellXfs count="1"><xf numFmtId="0" fontId="0"/></cellXfs>"#,
+        ));
+        let screen = yu_gothic.screen(&[4.582_031, 93.332_03, 34.582_03, 43.832_03, 62.0]);
+        assert_eq!((screen.pt_per_px, screen.digit_px), (0.5, 12.0));
     }
 
     #[test]

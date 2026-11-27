@@ -297,7 +297,7 @@ impl Page<'_> {
             .map(|&row| area.height(row))
             .sum();
         let fill = grid.looks.fills.get(&at).copied();
-        let text = cell.map(|cell| self.filled_text(cell, fill)).unwrap_or_default();
+        let text = cell.map(|cell| self.filled_text(cell, fill, look)).unwrap_or_default();
         let mut inner_style = String::new();
         if fill.is_some() && !text.is_empty() {
             inner_style.push_str("display:flex;");
@@ -506,29 +506,33 @@ impl Page<'_> {
     /// The text of `cell` as [`text`](Self::text) writes it; with a fill
     /// (`fill`, its byte offset), the text before it and the text after it
     /// at the two edges of a flex box, as Excel sets an accounting format.
-    fn filled_text(&self, cell: &GridCell, fill: Option<usize>) -> String {
+    fn filled_text(&self, cell: &GridCell, fill: Option<usize>, look: &Look) -> String {
         let [span] = cell.spans.as_slice() else {
-            return self.text(cell);
+            return self.text(cell, look);
         };
         let Some((before, after)) = fill.and_then(|at| Some((span.text.get(..at)?, span.text.get(at..)?))) else {
-            return self.text(cell);
+            return self.text(cell, look);
         };
         let part = |text: &str| {
-            self.text(&GridCell {
-                spans: vec![Span {
-                    text: text.to_string(),
-                    ..span.clone()
-                }],
-                ..cell.clone()
-            })
+            self.text(
+                &GridCell {
+                    spans: vec![Span {
+                        text: text.to_string(),
+                        ..span.clone()
+                    }],
+                    ..cell.clone()
+                },
+                look,
+            )
         };
         format!("{}<span style=\"flex:1\"></span>{}", part(before), part(after))
     }
 
     /// The text of a cell as HTML, with its links (of the schemes a page
     /// may open) and the bold, italic, superscript and subscript of its
-    /// runs.
-    fn text(&self, cell: &GridCell) -> String {
+    /// runs; a run that sets its own font is upright and plain in a cell
+    /// whose look (`look`) is bold or italic, unless it is so itself.
+    fn text(&self, cell: &GridCell, look: &Look) -> String {
         let mut out = String::new();
         for span in &cell.spans {
             let mut body = esc(&span.text);
@@ -536,6 +540,13 @@ impl Page<'_> {
                 if span.style & flag != 0 {
                     body = format!("<{tag}>{body}</{tag}>");
                 }
+            }
+            let plain = look.font.bold && span.style & BOLD == 0;
+            let upright = look.font.italic && span.style & ITALIC == 0;
+            if plain || upright {
+                let weight = if plain { "font-weight:400;" } else { "" };
+                let slant = if upright { "font-style:normal;" } else { "" };
+                body = format!("<span style=\"{weight}{slant}\">{body}</span>");
             }
             if span.color != [0; 3] {
                 body = format!("<span style=\"color:{}\">{body}</span>", hex(span.color));
@@ -675,28 +686,7 @@ impl Page<'_> {
             }
         }
         text_style(&mut style, shape);
-        // A shape without text has no insets, which would make a small one
-        // larger; a text keeps them, overflowing a narrow box as in Excel.
-        let insets = if shape.text.is_empty() {
-            Some([0.0; 4])
-        } else {
-            shape.insets_pt
-        };
-        if let Some([left, top, right, bottom]) = insets {
-            let _ = write!(
-                style,
-                "padding:{}pt {}pt {}pt {}pt;",
-                num(top),
-                num(right),
-                num(bottom),
-                num(left)
-            );
-        }
-        // Only a text is cut at the box: an outline's stroke straddles it,
-        // and a callout's tip lies outside.
-        if shape.clip && !shape.text.is_empty() && callout_tip(shape, width, height).is_none() {
-            style.push_str("overflow:hidden;");
-        }
+        text_box_css(&mut style, shape, callout_tip(shape, width, height).is_some());
         let text = if shape.text.is_empty() {
             String::new()
         } else {
@@ -1002,6 +992,42 @@ pub(crate) fn look_index(grid: &Grid, at: (u32, u32)) -> u32 {
         .rev()
         .find(|(first, last, _)| (*first..=*last).contains(&at.1))
         .map_or(0, |(_, _, style)| *style)
+}
+
+/// Writes to `style` how the text box of `shape` holds its text: its
+/// insets, its wrapping and where it is cut (not for a `callout`, whose tip
+/// lies outside).
+fn text_box_css(style: &mut String, shape: &TextShape, callout: bool) {
+    // A shape without text has no insets, which would make a small one
+    // larger; a text keeps them, overflowing a narrow box as in Excel.
+    let insets = if shape.text.is_empty() {
+        Some([0.0; 4])
+    } else {
+        shape.insets_pt
+    };
+    if let Some([left, top, right, bottom]) = insets {
+        let _ = write!(
+            style,
+            "padding:{}pt {}pt {}pt {}pt;",
+            num(top),
+            num(right),
+            num(bottom),
+            num(left)
+        );
+    }
+    // A text that is not wrapped keeps on one line, past the box's sides
+    // (rather than cut there) when the font set is wider.
+    if shape.nowrap {
+        style.push_str("white-space:pre;");
+    }
+    // Only a text is cut at the box: an outline's stroke straddles it.
+    if shape.clip && !shape.text.is_empty() && !callout {
+        style.push_str(if shape.nowrap {
+            "overflow-y:clip;"
+        } else {
+            "overflow:hidden;"
+        });
+    }
 }
 
 /// The width of the column `col` of a sheet of sizes `sizes`, in points.
