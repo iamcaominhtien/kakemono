@@ -207,6 +207,9 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
     "pagination",
     "subscription",
 ];
+/// Most characters of a `<cite>` that is the title of a work, not a whole
+/// reference.
+const CITED_TITLE_MAX_CHARS: usize = 100;
 /// Texts of the links to indexes of articles in a list of references.
 const REFERENCE_SERVICES: [&str; 17] = [
     "google scholar",
@@ -232,6 +235,8 @@ const REFERENCE_SERVICES: [&str; 17] = [
 /// `toc-section`: they are listed in it), the links to download a figure
 /// (`figure-inline-download`).
 const LINK_LIST_WORDS: [&str; 2] = ["toc", "download"];
+/// Elements inside a sentence.
+const INLINE_ELEMENTS: [&str; 10] = ["span", "i", "b", "em", "strong", "cite", "small", "abbr", "q", "time"];
 /// `id`s of clutter, as a whole: WordPress's sidebar (`#secondary`, beside
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
@@ -361,6 +366,7 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     remove_counts(dom, root);
     reference_links(dom, root);
     item_labels(dom, root);
+    citations(dom, root);
     heading_self_links(dom, root);
     sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
@@ -678,7 +684,14 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     if has(&LINK_LIST_WORDS) && link_share(dom, node) >= WIDGET_LINK_SHARE_RATIO {
         return true;
     }
-    has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS) && !is_heading_box(dom, node))
+    // A weak word marks a block of the page, not words in a sentence (the
+    // title of a reference in Wikipedia's `id-lock-subscription`).
+    let inline = dom.is_any(node, &INLINE_ELEMENTS)
+        && !has(&["noprint"])
+        && dom.nodes[node]
+            .parent
+            .is_some_and(|parent| dom.clean_text(parent).chars().count() > dom.clean_text(node).chars().count());
+    has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS) && !is_heading_box(dom, node) && !inline)
 }
 
 /// Whether the element is hidden by its attributes (`hidden`,
@@ -962,6 +975,18 @@ fn reference_links(dom: &mut Dom, root: Id) {
         {
             dom.detach(empty);
             empty = up;
+        }
+    }
+}
+
+/// Unwraps the `<cite>` elements in `root` that hold a whole reference
+/// (Wikipedia's `cite class="citation"`, PMC's), not the title of a work:
+/// a browser writes a `<cite>` in italics, and the whole reference was.
+fn citations(dom: &mut Dom, root: Id) {
+    for cite in dom.find_all(root, "cite") {
+        let styled = ["i", "em", "b"].iter().any(|name| dom.find(cite, name).is_some());
+        if styled || dom.clean_text(cite).chars().count() > CITED_TITLE_MAX_CHARS {
+            dom.unwrap(cite);
         }
     }
 }

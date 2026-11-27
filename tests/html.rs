@@ -811,3 +811,43 @@ fn the_label_of_an_unnumbered_reference_is_apart_from_it() {
     );
     assert!(has_text(&doc, "1. Tan W, Zhao X."), "{:#?}", texts(&doc));
 }
+
+/// An article of Wikipedia: a hatnote, a reference whose title is in a
+/// `span` of class `id-lock-subscription` inside a `cite`, a box of a
+/// sister project, a table of succession and the list of notes last.
+const WIKI: &str = r##"<!doctype html><html lang="en"><head><title>Fourier transform - Wikipedia</title></head>
+<body><main><h1>Fourier transform</h1><div class="mw-content-ltr mw-parser-output">
+<div role="note" class="hatnote navigation-not-searchable">Pour les articles homonymes, voir Fourier (homonymie).</div>
+<p>In mathematics, the Fourier transform is an integral transform that takes a function as input and outputs another function.<sup class="reference"><a href="#cite_note-1">[1]</a></sup>
+It describes the extent to which various frequencies are present in the original function.<sup class="reference"><a href="#cite_note-2">[2]</a></sup></p>
+<div class="side-box sistersitebox"><p>Wikimedia Commons has media related to Fourier transformation.</p></div>
+<table class="wikitable succession-box"><tr><td>Preceded by Fourier series</td><td>Succeeded by Laplace transform</td></tr></table>
+<h2>References</h2><ol class="mw-references references">
+<li id="cite_note-1"><cite class="citation journal">Ablowitz, Mark J. (1974). <span class="id-lock-subscription"><a href="https://example.org/a">"The Inverse Scattering Transform"</a></span>. <i>Studies in Applied Mathematics</i>.</cite></li>
+<li id="cite_note-2"><cite class="citation book">Stein, Elias; Shakarchi, Rami (2003). <i>Fourier Analysis: An introduction</i>. Princeton University Press.</cite></li>
+</ol></div></main></body></html>"##;
+
+#[test]
+fn wiki_references_keep_their_titles_and_the_navigation_goes() {
+    let doc = page(WIKI);
+    assert!(has_text(&doc, "The Inverse Scattering Transform"), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "takes a function as input"));
+    for clutter in ["homonymes", "Wikimedia Commons", "Preceded by"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    // The notes are read after the paragraph that calls them, their
+    // heading goes, and a whole reference is not in italics.
+    assert!(
+        !texts(&doc).iter().any(|text| text == "References"),
+        "{:#?}",
+        texts(&doc)
+    );
+    let note = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .flat_map(|block| &block.spans)
+        .find(|span| span.text.contains("Ablowitz"))
+        .unwrap_or_else(|| panic!("no note of Ablowitz in {:#?}", texts(&doc)));
+    assert_eq!(note.style & kakemono::model::ITALIC, 0, "{note:?}");
+}

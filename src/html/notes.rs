@@ -22,8 +22,27 @@ const NOTE_REF_ID_PREFIX: &str = "kakemono-noteref-";
 /// Words of a class that mark a link calling a note.
 const NOTE_REF_WORDS: [&str; 5] = ["footnote", "noteref", "fnref", "footnote-ref", "footnote-reference"];
 /// Classes of MediaWiki that are no text of the article: the links back
-/// from a note, and the markers of a missing citation.
-const MEDIAWIKI_REMOVED: [&str; 3] = ["mw-cite-backlink", "mw-ref-follow", "mw-empty-elt"];
+/// from a note, the markers of a missing citation, and what leads to other
+/// pages.
+const MEDIAWIKI_REMOVED: [&str; 11] = [
+    "mw-cite-backlink",
+    "mw-ref-follow",
+    "mw-empty-elt",
+    // Links to other articles before a part (`Main article:`, French
+    // `Articles détaillés :`, Japanese `→詳細は`), banners (French
+    // `bandeau-container`) and portals.
+    "hatnote",
+    "rellink",
+    "dablink",
+    "bandeau-container",
+    "bandeau-portail",
+    // The box of a sister project (`Wikimedia Commons has media…`).
+    "sistersitebox",
+    // A link to edit a template (French `modifier`).
+    "navigation-only",
+    // The table of who came before and after (Japanese `先代`, `次代`).
+    "succession-box",
+];
 /// Classes of LaTeXML that are no text: the separators of the authors,
 /// the names of macros it could not convert, the type of a note
 /// (`thanks:`) and the labels of an author's addresses (`Email:`).

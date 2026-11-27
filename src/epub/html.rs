@@ -939,8 +939,10 @@ fn emptied_headings(body: &mut Vec<Item>, moved_notes: &[usize]) {
         };
         let notes = moved_notes.iter().filter(|&&at| at == index + 1).count();
         let emptied = notes >= MIN_NOTES_OF_A_LIST
-            && body
-                .get(index + 1)
+            && body[index + 1..]
+                .iter()
+                // The bookmarks left at the end are no part.
+                .find(|item| !matches!(item, Item::Para(para) if para.inlines.is_empty()))
                 .is_none_or(|next| level(next).is_some_and(|next| next <= heading));
         if !emptied {
             continue;
