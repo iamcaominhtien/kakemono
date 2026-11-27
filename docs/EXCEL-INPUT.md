@@ -263,7 +263,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   text (均等割付) spread over the cell, its words, spaces and Japanese letters apart by even gaps,
   each of its lines so when it is wider than the cell; superscripts and subscripts of rich-text
   runs smaller and raised or lowered; a sheet printed in black and white (`blackAndWhite`)
-  without cell fills, its text and borders black;
+  without cell fills, its text and borders black; the row numbers and column letters when the
+  sheet prints them (`printOptions headings`), in boxes at the left and top of each page;
   lines broken by Word's Japanese rules (no line ends with an opening bracket, none starts with a
   closing one or 、。); text turned 90° or stacked is set a letter a line, a stacked text that
   wraps going on in columns to the left; a number format's fill (`*x`) setting the text before it

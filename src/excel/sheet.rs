@@ -542,6 +542,7 @@ impl SheetReader<'_, '_> {
                 print.h_centered = is_on(tag.attr("horizontalCentered").as_deref());
                 print.v_centered = is_on(tag.attr("verticalCentered").as_deref());
                 print.grid_lines = is_on(tag.attr("gridLines").as_deref());
+                print.headings = is_on(tag.attr("headings").as_deref());
                 Place::Other
             }
             (Place::Root, "sheetPr") => Place::SheetPr,

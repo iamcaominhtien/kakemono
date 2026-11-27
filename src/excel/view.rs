@@ -1686,7 +1686,7 @@ fn scale_path(path: &str, scale_x: f32, scale_y: f32) -> String {
 }
 
 /// The column letters of the 0-based column `col` (`A`, `Z`, `AA`).
-fn column_name(col: u32) -> String {
+pub(crate) fn column_name(col: u32) -> String {
     let mut name = Vec::new();
     let mut number = col + 1;
     while number > 0 {

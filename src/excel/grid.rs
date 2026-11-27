@@ -84,6 +84,8 @@ pub(crate) struct PrintSetup {
     pub(crate) v_centered: bool,
     /// The gridlines are printed.
     pub(crate) grid_lines: bool,
+    /// The row numbers and column letters are printed (`headings`).
+    pub(crate) headings: bool,
     /// Printed in black and white (`blackAndWhite`): cells without their
     /// fills, their text and borders black.
     pub(crate) black_and_white: bool,
@@ -181,6 +183,7 @@ impl Default for PrintSetup {
             v_centered: false,
             grid_lines: false,
             black_and_white: false,
+            headings: false,
             over_then_down: false,
             row_breaks: Vec::new(),
             col_breaks: Vec::new(),

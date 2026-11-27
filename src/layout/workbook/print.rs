@@ -19,7 +19,7 @@ use crate::chart::{Rgb, Theme};
 use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
 use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, OwnFont, Sizes};
 use crate::excel::styles::{Color, Line, Look, Styles, VAlign};
-use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg, text_insets};
+use crate::excel::view::{alignment, col_width, column_name, look_index, object_box, shape_svg, text_insets};
 use crate::excel::{DrawnSheet, SheetBook};
 use crate::model::style::{BOLD, ITALIC, SUB, SUP};
 use crate::word::fmt::model::{
@@ -65,6 +65,10 @@ const INDENT_STEP_PT: f32 = 7.5;
 const HAIR_LINE_PT: f32 = 0.25;
 /// The colour of printed gridlines.
 const GRID_LINE_COLOR: Rgb = [0xBF, 0xBF, 0xBF];
+/// The fewest digits the printed row numbers make room for.
+const MIN_HEADING_DIGITS: usize = 3;
+/// The room around the printed row numbers, in points of the sheet.
+const HEADING_PAD_PT: f32 = 4.0;
 /// The most empty columns a text runs over, as the sheet view.
 const MAX_OVERFLOW_COLS: usize = 40;
 /// How near a text's clip is to the page's right edge to be cut there, in
@@ -249,17 +253,22 @@ struct Layout {
     title_cols: Vec<u32>,
     /// Their width on the sheet.
     titles_w: f32,
+    /// The width of the row numbers and the height of the column letters
+    /// printed (`printOptions headings`) on the sheet; 0 when they are
+    /// not.
+    headings: (f32, f32),
 }
 
 /// The scale a sheet of `area` prints at with the settings `print` on
-/// pages of `room` (width, height within the margins): fitted to its pages
-/// (never larger than 100 %), else its own scale.
-fn scale(print: &crate::excel::grid::PrintSetup, area: &Area, room: (f32, f32)) -> f32 {
+/// pages of `room` (width, height within the margins), with its printed
+/// `headings` (width, height): fitted to its pages (never larger than
+/// 100 %), else its own scale.
+fn scale(print: &crate::excel::grid::PrintSetup, area: &Area, room: (f32, f32), headings: (f32, f32)) -> f32 {
     if !print.fit_to_page {
         return print.scale_percent / 100.0;
     }
-    let total_w: f32 = area.cols.iter().map(|&col| area.width(col)).sum();
-    let total_h: f32 = area.rows.iter().map(|&row| area.height(row)).sum();
+    let total_w: f32 = area.cols.iter().map(|&col| area.width(col)).sum::<f32>() + headings.0;
+    let total_h: f32 = area.rows.iter().map(|&row| area.height(row)).sum::<f32>() + headings.1;
     let mut scale: f32 = 1.0;
     if print.fit_width > 0 && total_w > 0.0 {
         scale = scale.min(print.fit_width as f32 * room.0 / total_w);
@@ -352,7 +361,8 @@ impl Printer<'_, '_, '_> {
         let (titles, title_cols) = self.titles(&area);
         let titles_h: f32 = titles.iter().map(|&row| area.height(row)).sum();
         let titles_w: f32 = title_cols.iter().map(|&col| area.width(col)).sum();
-        let scale = scale(print, &area, room);
+        let headings = if print.headings { self.headings(&area) } else { (0.0, 0.0) };
+        let scale = scale(print, &area, room, headings);
         // Fitting the sheet to a number of pages leaves the manual breaks
         // of that side out; a side not fitted (0 pages) keeps them, as
         // LibreOffice does.
@@ -366,14 +376,14 @@ impl Printer<'_, '_, '_> {
         let col_groups = groups(
             &area.cols,
             |col| area.width(col),
-            room.0 / scale,
+            room.0 / scale - headings.0,
             &keep(print.fit_width, &print.col_breaks),
             titles_w,
         );
         let row_groups = groups(
             &area.rows,
             |row| area.height(row),
-            room.1 / scale,
+            room.1 / scale - headings.1,
             &keep(print.fit_height, &print.row_breaks),
             titles_h,
         );
@@ -386,6 +396,7 @@ impl Printer<'_, '_, '_> {
             titles_h,
             title_cols,
             titles_w,
+            headings,
         };
         let mut order = Vec::new();
         if print.over_then_down {
@@ -545,20 +556,23 @@ impl Printer<'_, '_, '_> {
             .title_cols
             .last()
             .is_some_and(|last| cols.first().is_some_and(|first| first > last));
-        let repeated_w = if repeat_cols { layout.titles_w } else { 0.0 };
+        let (heading_w, heading_h) = layout.headings;
+        let repeated_w = if repeat_cols { layout.titles_w } else { 0.0 } + heading_w;
         let content_w: f32 = (cols.iter().map(|&col| area.width(col)).sum::<f32>() + repeated_w) * scale;
-        let repeated_h = if repeat { layout.titles_h } else { 0.0 };
+        let repeated_h = if repeat { layout.titles_h } else { 0.0 } + heading_h;
         let content_h: f32 = (rows.iter().map(|&row| area.height(row)).sum::<f32>() + repeated_h) * scale;
         let centred = |on: bool, room: f32, content: f32| if on { (room - content).max(0.0) / 2.0 } else { 0.0 };
-        let left = layout.origin.0 + centred(print.h_centered, layout.room.0, content_w);
-        let top = layout.origin.1 + centred(print.v_centered, layout.room.1, content_h);
+        let heading_left = layout.origin.0 + centred(print.h_centered, layout.room.0, content_w);
+        let heading_top = layout.origin.1 + centred(print.v_centered, layout.room.1, content_h);
+        let left = heading_left + heading_w * scale;
+        let top = heading_top + heading_h * scale;
         let columns_of = |cols: &[u32], page_left: f32| Columns {
             cols: cols.to_vec(),
             sheet_left: area.x(cols[0]),
             sheet_right: area.x(*cols.last().unwrap_or(&cols[0]) + 1),
             page_left,
         };
-        let columns = columns_of(cols, left + repeated_w * scale);
+        let columns = columns_of(cols, left + (repeated_w - heading_w) * scale);
         self.repeats_cols = repeat_cols;
         let mut bands = Vec::new();
         let mut page_top = top;
@@ -572,12 +586,76 @@ impl Printer<'_, '_, '_> {
             height: layout.paper.1,
             items: Vec::new(),
         };
+        let mut all_columns = Vec::new();
         if repeat_cols {
             let titles = columns_of(&layout.title_cols, left);
             self.draw_page(&mut page.items, area, &titles, &bands, scale, repeat);
+            all_columns.push(titles);
         }
         self.draw_page(&mut page.items, area, &columns, &bands, scale, repeat);
+        all_columns.push(columns);
+        if heading_w > 0.0 {
+            self.draw_headings(&mut page.items, area, (&all_columns, &bands), (heading_left, heading_top), scale);
+        }
         page
+    }
+
+    /// The width of the row numbers and the height of the column letters
+    /// Excel prints for `area` (`printOptions headings`), on the sheet: as
+    /// wide as the digits of its last row (three at least) and as high as
+    /// a row of the default height.
+    fn headings(&self, area: &Area) -> (f32, f32) {
+        let last = area.rows.last().copied().unwrap_or(0) + 1;
+        let digits = last.to_string().len().max(MIN_HEADING_DIGITS);
+        let digit = if self.sizes.screen_digit_pt > 0.0 {
+            self.sizes.screen_digit_pt
+        } else {
+            HALF_EM * DEFAULT_SIZE_PT
+        };
+        (
+            digits as f32 * digit + HEADING_PAD_PT,
+            self.sizes.default_row_pt.unwrap_or(DEFAULT_ROW_PT),
+        )
+    }
+
+    /// Draws the printed headings of a page: the letters of `columns`
+    /// above them and the numbers of the rows of `bands` at their left,
+    /// each in a box, with the corner box at `(left, top)`.
+    fn draw_headings(
+        &mut self,
+        items: &mut Vec<Item>,
+        area: &Area,
+        (columns, bands): (&[Columns], &[Band]),
+        (left, top): (f32, f32),
+        scale: f32,
+    ) {
+        let Some(first) = columns.first() else { return };
+        let width = first.page_left - left;
+        let height = bands.first().map_or(0.0, |band| band.page_top) - top;
+        let base = self.run(self.styles.look(0), scale);
+        let (ascent, descent, _) = self.ctx.line_metrics(&base);
+        let mut boxes = vec![([left, top, width, height], String::new())];
+        for group in columns {
+            for &col in &group.cols {
+                let x = group.page_left + (area.x(col) - group.sheet_left) * scale;
+                boxes.push(([x, top, area.width(col) * scale, height], column_name(col)));
+            }
+        }
+        for band in bands {
+            for &row in &band.rows {
+                let y = band.page_top + (area.y(row) - band.sheet_top) * scale;
+                boxes.push(([left, y, width, area.height(row) * scale], (row + 1).to_string()));
+            }
+        }
+        for ([x, y, box_w, box_h], label) in boxes {
+            if box_w <= 0.0 || box_h <= 0.0 {
+                continue;
+            }
+            outline(items, [x, y, box_w, box_h], scale);
+            let (mut run, run_w) = para::text_items(self.ctx, &label, &base, 0.0, ascent);
+            translate(&mut run, x + (box_w - run_w) / 2.0, y + (box_h - ascent - descent) / 2.0);
+            items.append(&mut run);
+        }
     }
 
     /// The part of the sheet that prints: its print area, else from A1 to
@@ -1850,7 +1928,16 @@ fn fill_lines<T>(runs: Vec<(T, f32, bool)>, room: f32) -> Vec<Vec<(T, f32, bool)
     lines.retain(|line| !line.is_empty());
     lines
 }
-/// The thin grey lines around a cell at `rect`, when the gridlines print.
+
+/// The thin grey lines around the four sides of a box at `[x, y, width,
+/// height]` (a printed heading).
+fn outline(lines: &mut Vec<Item>, [x, y, width, height]: [f32; 4], scale: f32) {
+    grid_lines(lines, [x, y, width, height], scale);
+    grid_lines(lines, [x - width, y - height, width, height], scale);
+}
+
+/// The thin grey lines of the right and bottom edges of a cell at `[x, y,
+/// width, height]`, when the gridlines print.
 fn grid_lines(lines: &mut Vec<Item>, [x, y, width, height]: [f32; 4], scale: f32) {
     let line_w = (0.5 * scale).max(0.25);
     for (x1, y1, x2, y2) in [
