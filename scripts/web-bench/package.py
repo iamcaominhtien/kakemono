@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "tests" / "data" / "web-bench"
 OUT = ROOT / "out" / "web-bench"
 PACKAGE = OUT / "package"
+# The page that lists the others.
+INDEX = "index.html"
 KAKEMONO = ROOT / "target" / "release" / "kakemono"
 # Seconds one conversion or compilation may take.
 TIMEOUT_S = 300
@@ -80,6 +82,33 @@ def pack(row: dict) -> dict:
     return {**row, **made}
 
 
+def tone(f1: float | None) -> str:
+    """The class of the colour of a score."""
+    if f1 is None:
+        return ""
+    if f1 < 0.7:
+        return "bad"
+    return "mid" if f1 < 0.9 else "good"
+
+
+def index_row(row: dict) -> str:
+    """The row of a page in the index: its title and address, its score, its files."""
+    esc = html.escape
+    f1 = row.get("kakemono", {}).get("f1")
+    score = "" if f1 is None else f"{f1:.2f}"
+    links = []
+    for kind in ("html", "pdf"):
+        path = row.get(kind)
+        if path:
+            links.append(f"<a href='{esc(str(Path(path).relative_to(PACKAGE)))}'>{kind.upper()}</a>")
+    title = esc(row.get("title") or row["name"])
+    url = esc(row.get("url") or "")
+    return (
+        f"<tr><td>{title}<br><small><a href='{url}'>{url[:90]}</a></small></td>"
+        f"<td class='n {tone(f1)}'>{score}</td><td>{' · '.join(links) or '<span class=bad>lỗi</span>'}</td></tr>"
+    )
+
+
 def index_page(rows: list[dict]) -> str:
     esc = html.escape
     parts = [
@@ -99,19 +128,7 @@ def index_page(rows: list[dict]) -> str:
         for host in sorted({site(row) for row in group}):
             parts.append(f"<h3>{esc(host)}</h3><table>")
             for row in sorted((row for row in group if site(row) == host), key=lambda row: row["name"]):
-                f1 = row.get("kakemono", {}).get("f1")
-                tone = "" if f1 is None else "bad" if f1 < 0.7 else "mid" if f1 < 0.9 else "good"
-                score = "" if f1 is None else f"{f1:.2f}"
-                links = []
-                for kind in ("html", "pdf"):
-                    path = row.get(kind)
-                    if path:
-                        links.append(f"<a href='{esc(str(Path(path).relative_to(PACKAGE)))}'>{kind.upper()}</a>")
-                title = esc(row.get("title") or row["name"])
-                parts.append(
-                    f"<tr><td>{title}<br><small><a href='{esc(row.get('url') or '')}'>{esc(row.get('url') or '')[:90]}</a></small></td>"
-                    f"<td class='n {tone}'>{score}</td><td>{' · '.join(links) or '<span class=bad>lỗi</span>'}</td></tr>"
-                )
+                parts.append(index_row(row))
             parts.append("</table>")
     return "".join(parts)
 
@@ -127,7 +144,7 @@ def main() -> int:
         rows = [row for row in rows if row["category"] == args.only]
     with ThreadPoolExecutor(args.jobs) as pool:
         done = list(pool.map(pack, rows))
-    (PACKAGE / "index.html").write_text(index_page(done), encoding="utf-8")
+    (PACKAGE / INDEX).write_text(index_page(done), encoding="utf-8")
     failed = [row["name"] for row in done if not (row["html"] and row["pdf"])]
     by_word = [row["name"] for row in done if row["pdf_by"] == "word layout"]
     print(f"{len(done) - len(failed)} of {len(done)} pages packed; PDF by the Word layout: {len(by_word)}")
@@ -139,7 +156,7 @@ def main() -> int:
             # Each zip holds the index too, so that it opens on its own.
             staging = Path(work) / f"kakemono-web-{category}"
             shutil.copytree(PACKAGE / category, staging / category)
-            shutil.copy(PACKAGE / "index.html", staging / "index.html")
+            shutil.copy(PACKAGE / INDEX, staging / INDEX)
             shutil.make_archive(str(archive), "zip", work)
         print(f"{archive}.zip")
     return 0

@@ -128,9 +128,9 @@ def get(url: str) -> str:
 
 def links(text: str, base: str) -> list[str]:
     """The addresses in a feed (<link>, <guid>, href) or a page (href), in order."""
-    found = re.findall(r"<link>\s*(?:<!\[CDATA\[)?\s*(https?://[^<\]\s]+)", text)
+    found = re.findall(r"<link>(?:\s|<!\[CDATA\[)*(https?://[^<\]\s]+)", text)
     found += re.findall(r"<link[^>]+href=\"(https?://[^\"]+)\"", text)
-    found += re.findall(r"<guid[^>]*>\s*(?:<!\[CDATA\[)?\s*(https?://[^<\]\s]+)", text)
+    found += re.findall(r"<guid[^>]*>(?:\s|<!\[CDATA\[)*(https?://[^<\]\s]+)", text)
     found += [urljoin(base, href) for href in re.findall(r"href=\"([^\"#]+)\"", text)]
     seen: list[str] = []
     for url in found:

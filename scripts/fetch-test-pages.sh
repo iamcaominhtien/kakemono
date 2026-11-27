@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../tests/data"
 mkdir -p web
 while IFS=$'\t' read -r name url; do
-  case "$name" in ''|'#'*) continue ;; esac
+  case "$name" in ''|'#'*) continue ;; *) ;; esac
   file="web/$name.html"
   [[ -f "$file" ]] && continue
   echo "downloading $name"

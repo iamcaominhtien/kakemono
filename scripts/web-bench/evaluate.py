@@ -73,8 +73,11 @@ def match(true: str, pred: str) -> tuple[float, float, float]:
 
 
 def scores(tp: float, fp: float, fn: float) -> dict:
-    precision = 1.0 if fp == fn == 0 else (0.0 if tp == fp == 0 else tp / (tp + fp))
-    recall = 1.0 if fp == fn == 0 else (0.0 if tp == fn == 0 else tp / (tp + fn))
+    if fp == fn == 0:
+        precision = recall = 1.0
+    else:
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {"precision": precision, "recall": recall, "f1": f1}
 

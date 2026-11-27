@@ -153,7 +153,7 @@ pub fn read_with(data: &[u8], origin: Origin<'_>, source: Option<String>, fetch:
     remove_small_pictures(&mut dom, article.root, &files);
     let xhtml = dom.to_xhtml(&head, article.root, article.lang.as_deref());
     let name = match origin {
-        Origin::File(path) => path.file_name().and_then(|name| name.to_str()).unwrap_or(PAGE_NAME),
+        Origin::File(path) => path.file_name().and_then(std::ffi::OsStr::to_str).unwrap_or(PAGE_NAME),
         _ => PAGE_NAME,
     };
     let book = crate::epub::html::read_documents(&files, &[(name, xhtml)], article.title.as_deref(), &article.authors)?;

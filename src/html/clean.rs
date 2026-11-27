@@ -891,30 +891,13 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             dom.unwrap(node);
             continue;
         }
-        let holds_title = holds_title[node];
-        let in_heading = in_heading[node];
-        let role_clutter = is_tooltip(dom, node)
-            || dom.attr(node, "role").is_some_and(|role| {
-                role.split_whitespace()
-                    .any(|role| CLUTTER_ROLES.contains(&role.to_ascii_lowercase().as_str()))
-            });
-        let share = weight[node] as f32 / total as f32;
-        let named_clutter = (!NEVER_CLUTTER.contains(&name.as_str())
-            && !in_heading
-            && (share <= CLUTTER_MAX_SHARE_RATIO || clutter_words(dom, node) >= SURE_CLUTTER_WORDS)
-            && is_clutter_by_name(dom, node))
-            // A link to skip to the content.
-            || (name == "a" && has_hidden_class(dom, node));
-        let landmark = matches!(name.as_str(), "header" | "footer") && !in_article[node];
-        // A page that shows itself with a script hides its article until
-        // then: what holds the title or most of the text is not hidden.
-        let hidden = is_hidden(dom, node) && !holds_title && share <= CLUTTER_MAX_SHARE_RATIO;
-        // The notes of the page (pandoc's `<aside role="doc-endnotes">`).
-        let notes = dom.attr(node, "role").is_some_and(|role| role.starts_with("doc-"));
-        let remove = (REMOVED.contains(&name.as_str()) && !notes)
-            || hidden
-            || ((role_clutter || named_clutter || landmark) && !holds_title)
-            || (name == "footer" && !holds_title);
+        let place = Place {
+            holds_title: holds_title[node],
+            in_heading: in_heading[node],
+            in_article: in_article[node],
+            share: weight[node] as f32 / total as f32,
+        };
+        let remove = is_clutter(dom, node, &name, &place);
         if remove {
             gone[node] = true;
             removed.push(node);
@@ -922,6 +905,44 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
     }
     removed.extend(calls);
     dom.detach_all(&removed);
+}
+
+/// Where an element is, for [`is_clutter`].
+struct Place {
+    /// It holds the title of the page.
+    holds_title: bool,
+    /// It is in a heading.
+    in_heading: bool,
+    /// It is in an `<article>` or `<main>`.
+    in_article: bool,
+    /// Its share of the text of the page that is not in links.
+    share: f32,
+}
+
+/// Whether the HTML element `node` (named `name`) at `place` is clutter:
+/// by its name, its role, its class or `id`, or because it is hidden.
+fn is_clutter(dom: &Dom, node: Id, name: &str, place: &Place) -> bool {
+    let role_clutter = is_tooltip(dom, node)
+        || dom.attr(node, "role").is_some_and(|role| {
+            role.split_whitespace()
+                .any(|role| CLUTTER_ROLES.contains(&role.to_ascii_lowercase().as_str()))
+        });
+    let named_clutter = (!NEVER_CLUTTER.contains(&name)
+        && !place.in_heading
+        && (place.share <= CLUTTER_MAX_SHARE_RATIO || clutter_words(dom, node) >= SURE_CLUTTER_WORDS)
+        && is_clutter_by_name(dom, node))
+        // A link to skip to the content.
+        || (name == "a" && has_hidden_class(dom, node));
+    let landmark = matches!(name, "header" | "footer") && !place.in_article;
+    // A page that shows itself with a script hides its article until
+    // then: what holds the title or most of the text is not hidden.
+    let hidden = is_hidden(dom, node) && !place.holds_title && place.share <= CLUTTER_MAX_SHARE_RATIO;
+    // The notes of the page (pandoc's `<aside role="doc-endnotes">`).
+    let notes = dom.attr(node, "role").is_some_and(|role| role.starts_with("doc-"));
+    (REMOVED.contains(&name) && !notes)
+        || hidden
+        || ((role_clutter || named_clutter || landmark) && !place.holds_title)
+        || (name == "footer" && !place.holds_title)
 }
 
 /// The boxes in `body` that ask the reader to press a button (`Follow
@@ -1040,7 +1061,7 @@ fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
         if lost_matters && lost as f32 >= LOST_SHARE_MAX_RATIO * total as f32 {
             // In links too: a page whose content is a list of links (a page
             // of a government that leads to others) keeps it.
-            let chars = |node: Id| dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count();
+            let chars = |node: Id| dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count() as f32;
             let all = chars(at);
             let children = &dom.nodes[at].children;
             let after = children.iter().skip_while(|&&child| child != best).skip(1);
@@ -1048,7 +1069,7 @@ fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
                 .copied()
                 .filter(|&child| {
                     (weight[child] as f32) < TRAILING_MAX_SHARE_RATIO * total as f32
-                        && (chars(child) as f32) < TRAILING_MAX_SHARE_RATIO * all as f32
+                        && chars(child) < TRAILING_MAX_SHARE_RATIO * all
                         && (is_widget(dom, child) || is_author_box(dom, child))
                 })
                 .collect();
@@ -1314,68 +1335,74 @@ fn remove_teasers(dom: &mut Dom, root: Id, base: &Base<'_>, meta: &Meta) {
     let site = address
         .and_then(Url::host_str)
         .map(|host| host.trim_start_matches("www.").to_ascii_lowercase());
-    let other_page = |dom: &Dom, node: Id| {
-        dom.find_all(node, "a").into_iter().any(|a| {
-            dom.attr(a, "href").is_some_and(|href| {
-                let href = href.trim();
-                if href.is_empty() || href.contains('#') {
-                    return false;
-                }
-                match Url::parse(href) {
-                    // A relative address: a page of the same site.
-                    Err(_) => true,
-                    Ok(url) => url.host_str().is_some_and(|host| {
-                        site.as_deref() == Some(host.trim_start_matches("www.").to_ascii_lowercase().as_str())
-                    }),
-                }
-            })
-        })
-    };
     for node in dom.descendants(root) {
         if node == root || !dom.attached(node) || dom.find(node, "h1").is_some() {
             continue;
         }
-        if dom.is(node, "article") {
-            if weight[node] < TEASER_MAX_CHARS && other_page(dom, node) {
-                dom.detach(node);
-            }
-            continue;
+        if let Some(teaser) = teaser(dom, root, node, &weight, site.as_deref()) {
+            dom.detach(teaser);
         }
-        // A box of a link to another article, as a block of its own, and
-        // its picture and summary (Tuổi Trẻ's `RelatedOneNews`).
-        if dom.is_any(node, &["div", "section"]) && weight[node] < TEASER_MAX_CHARS && is_link_box(dom, node) {
-            if other_page(dom, node) {
-                dom.detach(node);
-            }
-            continue;
-        }
-        // A paragraph that is a link to another article (`Đọc thêm`).
-        let link_paragraph = dom.is(node, "p")
-            && weight[node] == 0
-            && dom.find_all(node, "a").len() == 1
-            && dom.find(node, "img").is_none()
-            && dom.clean_text(node).chars().count() >= LINK_PARAGRAPH_MIN_CHARS
-            && other_page(dom, node);
-        if link_paragraph {
-            dom.detach(node);
-            continue;
-        }
-        let link_heading = dom.is_any(node, &HEADINGS[1..])
-            && weight[node] == 0
-            && !dom.clean_text(node).is_empty()
-            && other_page(dom, node);
-        if !link_heading {
-            continue;
-        }
-        let mut teaser = node;
-        while let Some(parent) = dom.nodes[teaser].parent {
-            if parent == root || weight[parent] > TEASER_LABEL_CHARS || dom.find(parent, "h1").is_some() {
-                break;
-            }
-            teaser = parent;
-        }
-        dom.detach(teaser);
     }
+}
+
+/// The teaser for another article that `node` in `root` is or heads (see
+/// [`remove_teasers`]), if any; `weight` is the text of each node not in
+/// links, `site` the host of the page.
+fn teaser(dom: &Dom, root: Id, node: Id, weight: &[usize], site: Option<&str>) -> Option<Id> {
+    let other_page = |node: Id| links_to_site(dom, node, site);
+    if dom.is(node, "article") {
+        return (weight[node] < TEASER_MAX_CHARS && other_page(node)).then_some(node);
+    }
+    // A box of a link to another article, as a block of its own, and its
+    // picture and summary (Tuổi Trẻ's `RelatedOneNews`).
+    if dom.is_any(node, &["div", "section"]) && weight[node] < TEASER_MAX_CHARS && is_link_box(dom, node) {
+        return other_page(node).then_some(node);
+    }
+    // A paragraph that is a link to another article (`Đọc thêm`).
+    let link_paragraph = dom.is(node, "p")
+        && weight[node] == 0
+        && dom.find_all(node, "a").len() == 1
+        && dom.find(node, "img").is_none()
+        && dom.clean_text(node).chars().count() >= LINK_PARAGRAPH_MIN_CHARS
+        && other_page(node);
+    if link_paragraph {
+        return Some(node);
+    }
+    let link_heading =
+        dom.is_any(node, &HEADINGS[1..]) && weight[node] == 0 && !dom.clean_text(node).is_empty() && other_page(node);
+    if !link_heading {
+        return None;
+    }
+    // The heading with the container around it that holds no more than a
+    // label.
+    let mut teaser = node;
+    while let Some(parent) = dom.nodes[teaser].parent {
+        if parent == root || weight[parent] > TEASER_LABEL_CHARS || dom.find(parent, "h1").is_some() {
+            break;
+        }
+        teaser = parent;
+    }
+    Some(teaser)
+}
+
+/// Whether a link in `node` leads to another page of the site `site`: a
+/// relative address, or one on that host (not a part of the same page).
+fn links_to_site(dom: &Dom, node: Id, site: Option<&str>) -> bool {
+    dom.find_all(node, "a").into_iter().any(|a| {
+        dom.attr(a, "href").is_some_and(|href| {
+            let href = href.trim();
+            if href.is_empty() || href.contains('#') {
+                return false;
+            }
+            match Url::parse(href) {
+                // A relative address: a page of the same site.
+                Err(_) => true,
+                Ok(url) => url
+                    .host_str()
+                    .is_some_and(|host| site == Some(host.trim_start_matches("www.").to_ascii_lowercase().as_str())),
+            }
+        })
+    })
 }
 
 /// Whether `node` is a box of one link as a block: its children are links

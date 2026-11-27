@@ -445,7 +445,7 @@ fn load(input: &str) -> Result<(Paper, String)> {
     if path.is_file() {
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("paper")
             .to_string();
         let name = path
@@ -485,7 +485,7 @@ fn load_saved_page(input: &str, url: &str) -> Result<(Paper, String)> {
     }
     let stem = path
         .file_stem()
-        .and_then(|stem| stem.to_str())
+        .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("page")
         .to_string();
     Ok((Paper::from_page_at(&data, url)?, stem))

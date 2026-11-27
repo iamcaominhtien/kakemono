@@ -74,7 +74,10 @@ def friendly(row: dict) -> Path | None:
 
 
 def tone(f1: float) -> str:
-    return "bad" if f1 < 0.7 else "mid" if f1 < 0.9 else "good"
+    """The class of the colour of a score."""
+    if f1 < 0.7:
+        return "bad"
+    return "mid" if f1 < 0.9 else "good"
 
 
 def sheet(row: dict, shots: Path) -> str:
@@ -149,6 +152,40 @@ def summary_page(title: str, rows: list[dict], overall: dict) -> str:
 <table><tr><th>page</th><th>F1</th><th>precision</th><th>recall</th><th>words</th><th>reference</th><th></th></tr>{lines}</table></section>"""
 
 
+def screenshot_jobs(row: dict, friendly_html: Path | None, shots: Path) -> list[dict]:
+    """The screenshots of a page still to take: the saved page, and its friendly HTML at its top,
+    middle and end."""
+    name = row["name"]
+    jobs = []
+    if not (shots / f"{name}.original.jpg").exists():
+        jobs.append({"url": (DATA / row["file"]).as_uri(), "base": row.get("url") or None, "out": str(shots / f"{name}.original.jpg"), "at": "top"})
+    if friendly_html:
+        for at in ("top", "middle", "end"):
+            if not (shots / f"{name}.{at}.jpg").exists():
+                jobs.append({"url": friendly_html.as_uri(), "out": str(shots / f"{name}.{at}.jpg"), "at": at})
+    return jobs
+
+
+def review_pages(category: str, rows: list[dict], results: dict, shots: Path) -> list[str]:
+    """Writes the HTML of the review of a category, in parts of PAGES_PER_PDF pages; returns
+    each part and the PDF to print it to."""
+    group = sorted(
+        (row for row in rows if row["category"] == category),
+        key=lambda row: row.get("kakemono", {}).get("f1", 0),
+    )
+    parts = [group[i : i + PAGES_PER_PDF] for i in range(0, len(group), PAGES_PER_PDF)]
+    to_print = []
+    for number, part in enumerate(parts, 1):
+        suffix = f"-{number}" if len(parts) > 1 else ""
+        title = f"kakemono web benchmark — {category}{suffix}"
+        body = summary_page(title, part, results["summary"].get(category, {}))
+        body += "".join(sheet(row, shots) for row in part)
+        page = OUT / "review" / f"{category}{suffix}.html"
+        page.write_text(f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title><style>{CSS}</style>{body}", encoding="utf-8")
+        to_print += [str(page), str(page.with_suffix(".pdf"))]
+    return to_print
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--only", help="only this category")
@@ -163,34 +200,13 @@ def main() -> int:
 
     with ThreadPoolExecutor(args.jobs) as pool:
         made = dict(zip([row["name"] for row in rows], pool.map(friendly, rows)))
-    jobs = []
-    for row in rows:
-        name = row["name"]
-        if not (shots / f"{name}.original.jpg").exists():
-            jobs.append({"url": (DATA / row["file"]).as_uri(), "base": row.get("url") or None, "out": str(shots / f"{name}.original.jpg"), "at": "top"})
-        if made.get(name):
-            for at in ("top", "middle", "end"):
-                if not (shots / f"{name}.{at}.jpg").exists():
-                    jobs.append({"url": made[name].as_uri(), "out": str(shots / f"{name}.{at}.jpg"), "at": at})
+    jobs = [job for row in rows for job in screenshot_jobs(row, made.get(row["name"]), shots)]
     if jobs:
         (OUT / "review" / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
         subprocess.run(["node", str(HERE / "shoot.js"), str(OUT / "review" / "jobs.json")], check=False)
-
     to_print = []
     for category in sorted({row["category"] for row in rows}):
-        group = sorted(
-            (row for row in rows if row["category"] == category),
-            key=lambda row: row.get("kakemono", {}).get("f1", 0),
-        )
-        parts = [group[i : i + PAGES_PER_PDF] for i in range(0, len(group), PAGES_PER_PDF)]
-        for number, part in enumerate(parts, 1):
-            suffix = f"-{number}" if len(parts) > 1 else ""
-            title = f"kakemono web benchmark — {category}{suffix}"
-            body = summary_page(title, part, results["summary"].get(category, {}))
-            body += "".join(sheet(row, shots) for row in part)
-            page = OUT / "review" / f"{category}{suffix}.html"
-            page.write_text(f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title><style>{CSS}</style>{body}", encoding="utf-8")
-            to_print += [str(page), str(page.with_suffix(".pdf"))]
+        to_print += review_pages(category, rows, results, shots)
     subprocess.run(["node", str(HERE / "print.js"), *to_print], check=True)
     return 0
 

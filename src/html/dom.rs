@@ -461,29 +461,7 @@ impl Dom {
                 }
                 Kind::Text(text) => escape_into(out, text, false),
                 Kind::Element { name, space, attrs } => {
-                    let name = if is_xml_name(name) { name.as_str() } else { "span" };
-                    out.push('<');
-                    out.push_str(name);
-                    if *space != outer {
-                        out.push_str(" xmlns=\"");
-                        out.push_str(match space {
-                            Space::Html => XHTML_NS,
-                            Space::Svg => SVG_NS,
-                            Space::Math => MATHML_NS,
-                        });
-                        out.push('"');
-                    }
-                    for (key, value) in attrs {
-                        let plain = key.strip_prefix("xlink:").or_else(|| key.strip_prefix("xml:"));
-                        if !is_xml_name(plain.unwrap_or(key)) || (plain.is_none() && key.contains(':')) {
-                            continue;
-                        }
-                        out.push(' ');
-                        out.push_str(key);
-                        out.push_str("=\"");
-                        escape_into(out, value, true);
-                        out.push('"');
-                    }
+                    let name = open_tag(out, name, *space, outer, attrs);
                     let children = &self.nodes[id].children;
                     if children.is_empty() {
                         out.push_str("/>");
@@ -498,6 +476,37 @@ impl Dom {
             }
         }
     }
+}
+
+/// Writes the start of the tag of an element into `out` (without its
+/// `>`): its name (`span` when XML does not accept it), its namespace when
+/// it is not the one of its parent (`outer`), its attributes that XML
+/// accepts. Returns the name written.
+fn open_tag<'a>(out: &mut String, name: &'a str, space: Space, outer: Space, attrs: &[(String, String)]) -> &'a str {
+    let name = if is_xml_name(name) { name } else { "span" };
+    out.push('<');
+    out.push_str(name);
+    if space != outer {
+        out.push_str(" xmlns=\"");
+        out.push_str(match space {
+            Space::Html => XHTML_NS,
+            Space::Svg => SVG_NS,
+            Space::Math => MATHML_NS,
+        });
+        out.push('"');
+    }
+    for (key, value) in attrs {
+        let plain = key.strip_prefix("xlink:").or_else(|| key.strip_prefix("xml:"));
+        if !is_xml_name(plain.unwrap_or(key)) || (plain.is_none() && key.contains(':')) {
+            continue;
+        }
+        out.push(' ');
+        out.push_str(key);
+        out.push_str("=\"");
+        escape_into(out, value, true);
+        out.push('"');
+    }
+    name
 }
 
 /// Whether `name` is a name XML accepts (without a prefix): a letter or
