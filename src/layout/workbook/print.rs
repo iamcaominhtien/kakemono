@@ -1300,7 +1300,8 @@ impl Printer<'_, '_, '_> {
         let [span] = cell.spans.as_slice() else {
             return None;
         };
-        let (before, after) = (span.text.get(..fill)?, span.text.get(fill..)?);
+        // The text has a space for the fill (`$ -`).
+        let (before, after) = (span.text.get(..fill)?, span.text.get(fill..)?.trim_start());
         let fmt = self.span_run(base, span, cell.own_font(0));
         let (mut items, _) = para::text_items(self.ctx, before, &fmt, 0.0, ascent);
         let (mut tail, tail_w) = para::text_items(self.ctx, after, &fmt, 0.0, ascent);

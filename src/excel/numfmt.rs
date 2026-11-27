@@ -104,9 +104,23 @@ pub(crate) fn is_date(fmt: &NumFmt) -> bool {
 const FILL_MARK: char = '\u{1}';
 
 /// `value` as Excel shows it with the format `fmt`; `date1904` when the
-/// workbook counts dates from 1904.
+/// workbook counts dates from 1904. The fill (`*x`) of an accounting
+/// format, which sets its parts apart across the cell (`$` at the left
+/// edge, the amount at the right), is a space between them: `$ -`,
+/// `$ 1,234.00`.
 pub(crate) fn format(value: f64, fmt: &NumFmt, date1904: bool) -> String {
-    format_filled(value, fmt, date1904).0
+    let (text, fill) = format_filled(value, fmt, date1904);
+    match fill.and_then(|at| Some((text.get(..at)?, text.get(at..)?))) {
+        Some((before, after))
+            if !before.trim().is_empty()
+                && !after.trim().is_empty()
+                && !before.ends_with(' ')
+                && !after.starts_with(' ') =>
+        {
+            format!("{before} {after}")
+        }
+        _ => text,
+    }
 }
 
 /// `value` as [`format`] writes it, and where in it (a byte offset) the
@@ -1038,6 +1052,10 @@ mod tests {
         assert_eq!(code(-5.0, "0;0"), "5");
         assert_eq!(code(0.0, "0;-0;"), "");
         assert_eq!(code(-1234.0, "#,##0;[Red]-#,##0"), "-1,234");
+        // An accounting format's fill is a space in the text.
+        let accounting = r#"_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)"#;
+        assert_eq!(code(0.0, accounting), "$ -");
+        assert_eq!(code(1234.0, accounting), "$ 1,234.00");
         let fmt = |code: &str| NumFmt::Code(code.to_string());
         assert_eq!(color(-1.0, &fmt("#,##0;[Red]-#,##0")), Some(10));
         assert_eq!(color(1.0, &fmt("#,##0;[Red]-#,##0")), None);

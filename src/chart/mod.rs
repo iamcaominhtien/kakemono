@@ -106,6 +106,9 @@ pub(crate) struct Chart {
     pub(crate) has_data: bool,
     /// A limit of [`ChartConfig`] cut series, points or texts.
     pub(crate) truncated: bool,
+    /// Every reference of its data is broken (`#REF!`): its cached values
+    /// are left over, not data.
+    pub(crate) broken_refs: bool,
 }
 
 /// A group of series plotted with one chart type, on one pair of axes.

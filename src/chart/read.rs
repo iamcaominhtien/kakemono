@@ -104,6 +104,17 @@ pub(crate) fn read(xml: &[u8], theme: &Theme, config: &ChartConfig) -> Result<Ch
     }
 }
 
+/// Every cell reference (`c:f`) under `chart` is broken (`#REF!`), and
+/// there is at least one.
+fn broken_refs(chart: Node<'_, '_>) -> bool {
+    let mut refs = chart
+        .descendants()
+        .filter(|node| node.tag_name().name() == "f" && node.tag_name().namespace() == Some(CHART_NS))
+        .map(|node| node.text().unwrap_or_default())
+        .peekable();
+    refs.peek().is_some() && refs.all(|text| text.contains("#REF!"))
+}
+
 /// The chart of the `c:chartSpace` element `root`.
 fn chart_space(root: Node<'_, '_>, theme: &Theme, config: &ChartConfig) -> Chart {
     let mut limits = Limits::new(config);
@@ -131,6 +142,7 @@ fn chart_space(root: Node<'_, '_>, theme: &Theme, config: &ChartConfig) -> Chart
         .any(|series| series.values.as_ref().is_some_and(|values| !values.points.is_empty()));
     chart.title = title;
     chart.has_data = has_data;
+    chart.broken_refs = broken_refs(chart_node);
     chart.truncated = limits.truncated;
     chart
 }
@@ -834,7 +846,7 @@ pub(crate) mod tests {
         );
         assert_eq!(values(&chart, 0, 0), vec![Some(1.0), Some(2.5), Some(3.0)]);
         assert_eq!(group.series[0].values.as_ref().unwrap().format, NumFmt::General);
-        assert!(chart.has_data && !chart.truncated);
+        assert!(chart.has_data && !chart.truncated && !chart.broken_refs);
         assert_eq!(chart.legend, Some(LegendPosition::Bottom));
         assert!(chart.plot_visible_only);
     }
@@ -1138,6 +1150,19 @@ pub(crate) mod tests {
         assert_eq!(chart.title.as_deref(), Some("Sales"));
         let series = &chart.groups[0].series[0];
         assert!(series.values.is_none() && series.categories.is_none() && series.name.is_none());
+    }
+
+    #[test]
+    fn a_chart_whose_references_are_all_broken_says_so() {
+        let val = r#"<c:val><c:numRef><c:f>S!#REF!</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>1</c:v></c:pt></c:numCache></c:numRef></c:val>"#;
+        let series = format!(r#"<c:ser><c:idx val="0"/><c:order val="0"/>{val}</c:ser>"#);
+        let broken = chart(&space("", &format!("<c:barChart>{series}</c:barChart>")));
+        assert!(broken.has_data && broken.broken_refs);
+        // One good reference is enough.
+        let good = val.replace("S!#REF!", "S!B2");
+        let series = format!(r#"<c:ser><c:idx val="0"/><c:order val="0"/>{val}</c:ser><c:ser><c:idx val="1"/><c:order val="1"/>{good}</c:ser>"#);
+        let fine = chart(&space("", &format!("<c:barChart>{series}</c:barChart>")));
+        assert!(!fine.broken_refs);
     }
 
     #[test]

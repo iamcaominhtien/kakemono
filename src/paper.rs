@@ -329,6 +329,10 @@ impl Paper {
             Source::Word(doc, _, _) | Source::Sheet(doc, ..) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
+                // A file with no title of its own is called by its name.
+                if doc.meta.title.is_none() {
+                    doc.meta.title = self.source.as_deref().and_then(file_title);
+                }
                 return Analysis {
                     doc,
                     loose: Vec::new(),
@@ -513,6 +517,14 @@ pub fn convert(data: Vec<u8>, opts: &HtmlOptions) -> Result<HtmlOutput> {
     Ok(paper.to_html(&analysis, opts))
 }
 
+/// The name of the file `source` (a path or a name) without its folder and
+/// extension (`report.xlsx` is `report`); `None` when nothing is left.
+fn file_title(source: &str) -> Option<String> {
+    let path = std::path::Path::new(source);
+    let stem = path.file_stem()?.to_str()?.trim();
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,3 +543,4 @@ mod tests {
         assert!(core.contains("Converted from Excel by kakemono"), "{core}");
     }
 }
+

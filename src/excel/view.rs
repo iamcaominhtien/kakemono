@@ -513,7 +513,10 @@ impl Page<'_> {
         let [span] = cell.spans.as_slice() else {
             return self.text(cell, look);
         };
-        let Some((before, after)) = fill.and_then(|at| Some((span.text.get(..at)?, span.text.get(at..)?))) else {
+        // The text has a space for the fill (`$ -`): the edges set the
+        // parts apart.
+        let Some((before, after)) = fill.and_then(|at| Some((span.text.get(..at)?, span.text.get(at..)?.trim_start())))
+        else {
             return self.text(cell, look);
         };
         let part = |text: &str| {

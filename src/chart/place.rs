@@ -9,6 +9,8 @@ use crate::model::{Block, BlockKind, FloatKind, ImageSpec, Span, Table};
 
 /// The note of a chart whose part keeps no data.
 const NO_DATA_NOTE: &str = "The data of this chart is not stored in the file.";
+/// The note of a chart whose references to its data are all broken.
+const BROKEN_REFS_NOTE: &str = "The references of this chart to its data are broken (#REF!).";
 /// The note of a chart past the most drawn of a document.
 const TOO_MANY_NOTE: &str = "This chart is not shown: the document has too many charts.";
 
@@ -75,8 +77,13 @@ fn placed(chart: &Chart, size_pt: (f32, f32)) -> Placed {
         title: chart.title.clone(),
         svg: svg(chart, size_pt),
         size_pt: drawn_size(size_pt),
-        table: data_table(chart),
-        note: (!chart.has_data).then_some(NO_DATA_NOTE),
+        // The cached values of broken references are no data to read.
+        table: if chart.broken_refs { None } else { data_table(chart) },
+        note: if chart.broken_refs {
+            Some(BROKEN_REFS_NOTE)
+        } else {
+            (!chart.has_data).then_some(NO_DATA_NOTE)
+        },
     }
 }
 
