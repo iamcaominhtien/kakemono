@@ -141,12 +141,13 @@ fn block_text(block: &Block) -> String {
 /// of the table, joined by [`CELL_SEPARATOR`], so that a field is under
 /// its header in every row. A cell's text is at its first column; the
 /// other columns it spans, those covered by a cell from a row above, and
-/// those without a cell are empty fields. The line is then trimmed: a row
-/// whose last fields are empty ends with `" |"`, but every row has as many
-/// `|` as the table has columns less one.
+/// those without a cell are empty fields; a column empty in every row is
+/// left out. The line is then trimmed: a row whose last fields are empty
+/// ends with `" |"`, but every row has as many `|` as the table has kept
+/// columns less one.
 fn table_rows(table: &Table) -> Vec<String> {
     let n_cols = table.n_cols.max(1);
-    table
+    let rows: Vec<Vec<String>> = table
         .rows
         .iter()
         .map(|row| {
@@ -154,7 +155,22 @@ fn table_rows(table: &Table) -> Vec<String> {
             for cell in row.iter().filter(|cell| cell.col < n_cols) {
                 fields[cell.col] = plain_of(&cell.spans);
             }
-            fields.join(CELL_SEPARATOR).trim().to_string()
+            fields
+        })
+        .collect();
+    // A column empty in every row says nothing.
+    let keep: Vec<bool> = (0..n_cols)
+        .map(|col| rows.iter().any(|row| !row[col].trim().is_empty()))
+        .collect();
+    rows.iter()
+        .map(|fields| {
+            let kept: Vec<&str> = fields
+                .iter()
+                .zip(&keep)
+                .filter(|(_, keep)| **keep)
+                .map(|(field, _)| field.as_str())
+                .collect();
+            kept.join(CELL_SEPARATOR).trim().to_string()
         })
         .collect()
 }

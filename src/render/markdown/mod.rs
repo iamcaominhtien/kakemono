@@ -589,13 +589,31 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
             _ => "---",
         })
         .collect();
-    let mut lines = vec![pipe_row(&header), pipe_row(&rule)];
-    lines.extend(
-        grid[header_rows..]
+    let body: Vec<Vec<String>> = grid[header_rows..]
+        .iter()
+        .filter_map(|row| flat_row(inline, head, row, table.n_cols))
+        .collect();
+    // A column empty in every row (one a merged cell covers, written once)
+    // is left out.
+    let keep: Vec<bool> = (0..table.n_cols)
+        .map(|col| !header[col].is_empty() || body.iter().any(|row| !row[col].is_empty()))
+        .collect();
+    let kept = |cells: &[String]| -> Vec<String> {
+        cells
             .iter()
-            .filter_map(|row| flat_row(inline, head, row, table.n_cols))
-            .map(|cells| pipe_row(&cells)),
-    );
+            .zip(&keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(cell, _)| cell.clone())
+            .collect()
+    };
+    let rule: Vec<String> = rule
+        .iter()
+        .zip(&keep)
+        .filter(|(_, keep)| **keep)
+        .map(|(rule, _)| (*rule).to_string())
+        .collect();
+    let mut lines = vec![pipe_row(&kept(&header)), pipe_row(&rule)];
+    lines.extend(body.iter().map(|cells| pipe_row(&kept(cells))));
     lines.join("\n")
 }
 
@@ -607,7 +625,10 @@ fn flat_header(inline: &Inline<'_>, head: &[Vec<Option<&TableCell>>], col: usize
     for (row_idx, row) in head.iter().enumerate() {
         let Some(cell) = row[col] else { continue };
         let is_group = is_group(head, row_idx, cell, n_cols);
-        if col != cell.col && !is_group {
+        // A wide group header no header row splits (a form's title) heads
+        // only its first column.
+        let repeated = is_group && (cell.colspan <= MAX_REPEATED_COLS || splits_below(head, row_idx, cell));
+        if col != cell.col && !repeated {
             continue;
         }
         let text = inline.cell(&cell.spans);
@@ -685,11 +706,15 @@ fn splits_below(header: &[Vec<Option<&TableCell>>], row_idx: usize, cell: &Table
     })
 }
 
-/// A cell spanning several columns lies under one group header: a group
-/// header covers all of its columns (as "Training Cost" over its two
-/// language pairs).
+/// The most columns a cell under a group header is repeated in: one over
+/// more (a form's merged field) is written once.
+const MAX_REPEATED_COLS: usize = 4;
+
+/// A cell spanning several columns (at most [`MAX_REPEATED_COLS`]) lies
+/// under one group header: a group header covers all of its columns (as
+/// "Training Cost" over its two language pairs).
 fn under_one_group(header: &[Vec<Option<&TableCell>>], cell: &TableCell, n_cols: usize) -> bool {
-    cell.colspan > 1
+    (2..=MAX_REPEATED_COLS).contains(&cell.colspan)
         && header.iter().enumerate().any(|(row_idx, row)| {
             row.get(cell.col).copied().flatten().is_some_and(|group| {
                 group.col <= cell.col
@@ -776,6 +801,25 @@ mod tests {
             math: false,
         };
         flat_table(&inline, table)
+    }
+
+    #[test]
+    fn a_form_s_wide_merged_fields_are_written_once() {
+        // A title over 6 of 8 columns, then a label and a field merged over
+        // 6 columns: the field once, and the columns it covers (and the last,
+        // empty) left out.
+        let table = table(
+            8,
+            1,
+            vec![
+                vec![cell(0, 6, 1, "Application"), cell(6, 1, 1, "Date")],
+                vec![cell(0, 1, 1, "Name"), cell(1, 6, 1, "Taro")],
+            ],
+        );
+        assert_eq!(
+            flat(&table),
+            "| Application |  | Date |\n| --- | --- | --- |\n| Name | Taro |  |"
+        );
     }
 
     #[test]
