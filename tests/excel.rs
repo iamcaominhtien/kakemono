@@ -316,7 +316,10 @@ fn output_hashes(name: &str) -> String {
             paper.to_html(&analysis, &options).html.into_bytes(),
         ));
     }
-    outputs.push(("docx".into(), paper.to_docx(&analysis, &DocxOptions::default())));
+    outputs.push((
+        "docx".into(),
+        without_pngs(&paper.to_docx(&analysis, &DocxOptions::default())),
+    ));
     outputs.push((
         "markdown".into(),
         paper
@@ -349,6 +352,34 @@ fn output_hashes(name: &str) -> String {
         text.push_str(&format!("{name} {output} {hash}\n"));
     }
     text
+}
+
+/// The parts of the Word document `docx` but its PNG pictures, each as its
+/// name then its contents: the PNG Word keeps beside a chart's SVG is drawn
+/// in the fonts of the machine that converts, which differ from one to
+/// another; its SVG is kept.
+fn without_pngs(docx: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let le16 = |at: usize| usize::from(u16::from_le_bytes([docx[at], docx[at + 1]]));
+    let le32 = |at: usize| u32::from_le_bytes(docx[at..at + 4].try_into().unwrap()) as usize;
+    let mut out = Vec::new();
+    let mut at = 0;
+    while docx[at..].starts_with(b"PK\x03\x04") {
+        let (method, size, name_len, extra_len) = (le16(at + 8), le32(at + 18), le16(at + 26), le16(at + 28));
+        let name = &docx[at + 30..at + 30 + name_len];
+        let start = at + 30 + name_len + extra_len;
+        let raw = &docx[start..start + size];
+        if !name.ends_with(b".png") {
+            out.extend_from_slice(name);
+            if method == 8 {
+                flate2::read::DeflateDecoder::new(raw).read_to_end(&mut out).unwrap();
+            } else {
+                out.extend_from_slice(raw);
+            }
+        }
+        at = start + size;
+    }
+    out
 }
 
 #[test]
