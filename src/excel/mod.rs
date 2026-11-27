@@ -28,10 +28,10 @@ use crate::word::pictures::{MAX_PICTURE_BYTES, pixel_size_pt, store, store_chart
 use crate::word::zip::ZipArchive;
 use anyhow::Result;
 use drawing::{Drawn, Shape};
-use table_style::TableStyle;
 use grid::{Grid, Table};
 use sheet::SheetContext;
 use std::collections::{HashMap, HashSet};
+use table_style::TableStyle;
 use workbook::{Workbook, is_sml};
 
 /// Font size of the running text, in points: Excel's default font size.

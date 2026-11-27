@@ -361,7 +361,11 @@ impl Printer<'_, '_, '_> {
         let (titles, title_cols) = self.titles(&area);
         let titles_h: f32 = titles.iter().map(|&row| area.height(row)).sum();
         let titles_w: f32 = title_cols.iter().map(|&col| area.width(col)).sum();
-        let headings = if print.headings { self.headings(&area) } else { (0.0, 0.0) };
+        let headings = if print.headings {
+            self.headings(&area)
+        } else {
+            (0.0, 0.0)
+        };
         let scale = scale(print, &area, room, headings);
         // Fitting the sheet to a number of pages leaves the manual breaks
         // of that side out; a side not fitted (0 pages) keeps them, as
@@ -595,7 +599,13 @@ impl Printer<'_, '_, '_> {
         self.draw_page(&mut page.items, area, &columns, &bands, scale, repeat);
         all_columns.push(columns);
         if heading_w > 0.0 {
-            self.draw_headings(&mut page.items, area, (&all_columns, &bands), (heading_left, heading_top), scale);
+            self.draw_headings(
+                &mut page.items,
+                area,
+                (&all_columns, &bands),
+                (heading_left, heading_top),
+                scale,
+            );
         }
         page
     }
@@ -653,7 +663,11 @@ impl Printer<'_, '_, '_> {
             }
             outline(items, [x, y, box_w, box_h], scale);
             let (mut run, run_w) = para::text_items(self.ctx, &label, &base, 0.0, ascent);
-            translate(&mut run, x + (box_w - run_w) / 2.0, y + (box_h - ascent - descent) / 2.0);
+            translate(
+                &mut run,
+                x + (box_w - run_w) / 2.0,
+                y + (box_h - ascent - descent) / 2.0,
+            );
             items.append(&mut run);
         }
     }

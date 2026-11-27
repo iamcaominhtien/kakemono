@@ -761,7 +761,12 @@ pub(crate) fn vml_pictures(vml: &str) -> Vec<VmlPicture> {
             .split("<x:Anchor>")
             .nth(1)
             .and_then(|rest| rest.split('<').next())
-            .map(|numbers| numbers.split(',').filter_map(|number| number.trim().parse().ok()).collect())
+            .map(|numbers| {
+                numbers
+                    .split(',')
+                    .filter_map(|number| number.trim().parse().ok())
+                    .collect()
+            })
             .unwrap_or_default();
         let (Some(id), Some(rel), [left, left_px, top, top_px, right, right_px, bottom, bottom_px]) =
             (id, rel, anchor.as_slice())
@@ -1287,7 +1292,10 @@ mod tests {
         assert_eq!(pictures.len(), 1);
         assert_eq!((pictures[0].id, pictures[0].rel.as_str()), (1032, "rId1"));
         assert_eq!((pictures[0].from.row, pictures[0].from.col), (17, 7));
-        assert_eq!((pictures[0].to.row, pictures[0].to.col, pictures[0].to.col_off_pt), (28, 11, 24.0));
+        assert_eq!(
+            (pictures[0].to.row, pictures[0].to.col, pictures[0].to.col_off_pt),
+            (28, 11, 24.0)
+        );
     }
 
     #[test]
