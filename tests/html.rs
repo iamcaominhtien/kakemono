@@ -938,3 +938,40 @@ fn a_drawing_of_a_symbol_of_the_sprite_of_the_page_is_an_icon() {
     );
     assert!(has_text(&doc, "International"));
 }
+
+/// A post of Substack: its body in `main-content-and-sidebar`, the whole
+/// post again in the data of a script, and a heading of a form at its end.
+const SUBSTACK: &str = r#"<!doctype html><html lang="en"><head><title>Software factories</title></head><body>
+<div class="main-content-and-sidebar"><div class="main-content"><div class="body markup">
+<h1>Software factories and code reviews</h1>
+<p>Harjot Gill is founder and CEO of CodeRabbit, an AI code review business, and he shipped over 5,000 pull requests last month.</p>
+<p>He posted an unconventional job ad, only inviting candidates who had shipped 1,000 pull requests in the past 30 days.</p>
+<p>CodeRabbit used to invest in fine-tuning models used in AI review, but new frontier models move faster than that.</p>
+<h2>Ready for more?</h2><form><input type="email" placeholder="Type your email"><button>Subscribe</button></form>
+</div></div></div>
+<script id="preloads-json">window._preloads = {"body": "Harjot Gill is founder and CEO of CodeRabbit, an AI code review business, and he shipped over 5,000 pull requests last month. He posted an unconventional job ad, only inviting candidates who had shipped 1,000 pull requests in the past 30 days. CodeRabbit used to invest in fine-tuning models used in AI review, but new frontier models move faster than that. Harjot Gill is founder and CEO of CodeRabbit."}</script>
+</body></html>"#;
+
+#[test]
+fn the_data_of_a_script_does_not_hide_the_post() {
+    let doc = page(SUBSTACK);
+    assert!(has_text(&doc, "unconventional job ad"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Ready for more"), "{:#?}", texts(&doc));
+}
+
+#[test]
+fn a_page_of_a_video_loses_its_keys_and_its_popup() {
+    let doc = page(
+        r#"<!doctype html><html lang="vi"><head><title>Khoảnh khắc quán lẩu phát nổ</title>
+<meta name="description" content="Camera nhà dân ghi lại khoảnh khắc quán lẩu phát nổ khiến mảnh vỡ văng khắp đoạn đường hơn 20 m."></head><body>
+<main><h1>Khoảnh khắc quán lẩu phát nổ</h1><video src="v.mp4"></video>
+<div class="keyboard-action"><p>Phím tắt điều khiển</p><ul><li>Trở về video trước</li><li>Tới video tiếp theo</li></ul></div></main>
+<section class="section section-popup-kp section-feedback"><div>Đánh giá trải nghiệm VnE-GO</div>
+<p>Bạn thấy trải nghiệm của mình thế nào? Hãy cho chúng tôi biết để phục vụ bạn tốt hơn, với ý kiến và góp ý của bạn về trang này.</p></section>
+</body></html>"#,
+    );
+    assert!(has_text(&doc, "Camera nhà dân ghi lại"), "{:#?}", texts(&doc));
+    for clutter in ["Phím tắt", "Đánh giá trải nghiệm"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}

@@ -76,6 +76,10 @@ const SENTENCE_HEADING_CHARS: usize = 100;
 /// for its class or `id` alone: one that holds more is the article, named
 /// oddly.
 const CLUTTER_MAX_SHARE_RATIO: f32 = 0.5;
+/// Different words of clutter in the names of an element that make it
+/// clutter whatever its share of the text (VnExpress's `section-popup-kp
+/// section-feedback` on a page of a video, which has little text).
+const SURE_CLUTTER_WORDS: usize = 2;
 /// Smallest width or height of a picture worth keeping, in CSS pixels:
 /// below it, an icon, a logo or a tracking pixel.
 pub(crate) const MIN_PICTURE_PX: f32 = 48.0;
@@ -142,7 +146,7 @@ const CLUTTER_ROLES: [&str; 15] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 41] = [
+const CLUTTER_WORDS: [&str; 42] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -164,6 +168,8 @@ const CLUTTER_WORDS: [&str; 41] = [
     "editsection",
     // `Is this page useful?`, `Help us improve GOV.UK`.
     "feedback",
+    // The keys of a player (`keyboard-action`).
+    "keyboard",
     "gdpr",
     "modal",
     "navbox",
@@ -371,6 +377,7 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     heading_self_links(dom, root);
     sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
+    trailing_headings(dom, root);
     let title = title(dom, body, root, &meta);
     absolute_links(dom, root, base);
     remove_icons(dom, root);
@@ -595,6 +602,30 @@ fn title(dom: &mut Dom, body: Id, root: Id, meta: &Meta) -> Option<String> {
     meta.meta_title.clone().or_else(|| meta.page_title.clone())
 }
 
+/// Removes the headings at the end of `root`, with nothing after them:
+/// the heading of a form that went (Ghost's `Get notified when we ship new
+/// features.`).
+fn trailing_headings(dom: &mut Dom, root: Id) {
+    loop {
+        let last = dom
+            .descendants(root)
+            .into_iter()
+            .rev()
+            .find(|&id| match &dom.nodes[id].kind {
+                Kind::Text(text) => !text.trim().is_empty(),
+                Kind::Element { .. } => dom.is_any(id, &["img", "svg", "video", "iframe", "table", "math"]),
+                _ => false,
+            });
+        let Some(heading) = last.and_then(|last| {
+            dom.ancestor(last, |id| dom.is_any(id, &["h2", "h3", "h4", "h5", "h6"]))
+                .filter(|&heading| dom.contains(root, heading))
+        }) else {
+            return;
+        };
+        dom.detach(heading);
+    }
+}
+
 /// The `h1` in `root` inside a link is the title of a teaser for another
 /// page (the first story of a home page), not of this one: it becomes a
 /// heading below the title, which the metadata gives.
@@ -652,6 +683,22 @@ fn words(value: &str) -> impl Iterator<Item = String> {
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
+}
+
+/// The number of different words of [`CLUTTER_WORDS`] in the class and
+/// `id` of `node`.
+fn clutter_words(dom: &Dom, node: Id) -> usize {
+    let names = format!(
+        "{} {}",
+        dom.attr(node, "class").unwrap_or_default(),
+        dom.attr(node, "id").unwrap_or_default()
+    );
+    let mut found: Vec<String> = words(&names)
+        .filter(|word| CLUTTER_WORDS.contains(&word.as_str()))
+        .collect();
+    found.sort();
+    found.dedup();
+    found.len()
 }
 
 /// Whether `node` is a heading (rustdoc's `code-header`) or the head of
@@ -743,7 +790,9 @@ fn text_weights(dom: &Dom, root: Id) -> Vec<usize> {
     for node in dom.descendants(root).into_iter().rev() {
         weight[node] = match &dom.nodes[node].kind {
             Kind::Text(text) => text.chars().filter(|ch| !ch.is_whitespace()).count(),
-            Kind::Element { .. } if dom.is(node, "a") => 0,
+            // Not text of the page: the data of a script (Substack's
+            // `preloads-json` holds the whole article again).
+            Kind::Element { .. } if dom.is_any(node, &["a", "script", "style", "template", "noscript"]) => 0,
             _ => dom.nodes[node].children.iter().map(|&child| weight[child]).sum(),
         };
     }
@@ -792,7 +841,7 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
         let share = weight[node] as f32 / total as f32;
         let named_clutter = (!NEVER_CLUTTER.contains(&name.as_str())
             && !in_heading
-            && share <= CLUTTER_MAX_SHARE_RATIO
+            && (share <= CLUTTER_MAX_SHARE_RATIO || clutter_words(dom, node) >= SURE_CLUTTER_WORDS)
             && is_clutter_by_name(dom, node))
             // A link to skip to the content.
             || (name == "a" && has_hidden_class(dom, node));
