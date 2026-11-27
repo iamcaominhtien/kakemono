@@ -808,11 +808,19 @@ impl Builder<'_> {
     /// `base-2`, `base-3`, ... The search goes on from the last number
     /// given (20,000 headings of the same slug).
     fn unique_anchor(&mut self, base: String) -> String {
+        // Most anchors are not taken yet: they cost what they did before
+        // the numbers were kept.
+        if self.anchors.insert(base.clone()) {
+            return base;
+        }
         let mut k = self.anchor_numbers.get(&base).copied().unwrap_or(1);
-        let mut anchor = if k == 1 { base.clone() } else { format!("{base}-{k}") };
-        while !self.anchors.insert(anchor.clone()) {
+        let mut anchor;
+        loop {
             k += 1;
             anchor = format!("{base}-{k}");
+            if self.anchors.insert(anchor.clone()) {
+                break;
+            }
         }
         self.anchor_numbers.insert(base, k);
         anchor

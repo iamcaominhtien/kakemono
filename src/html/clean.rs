@@ -1605,15 +1605,19 @@ fn remove_counts(dom: &mut Dom, root: Id) {
     // is the text of those that go.
     let mut gone = vec![false; dom.nodes.len()];
     let mut removed = Vec::new();
+    // Whether `node` went, with a block it is in, or is out of the tree:
+    // one walk up to the document.
     let taken = |gone: &[bool], node: Id| {
-        let mut at = Some(node);
-        while let Some(id) = at {
-            if gone[id] {
+        let mut at = node;
+        loop {
+            if gone[at] {
                 return true;
             }
-            at = dom.nodes[id].parent;
+            match dom.nodes[at].parent {
+                Some(parent) => at = parent,
+                None => return at != 0,
+            }
         }
-        !dom.attached(node)
     };
     for node in dom.descendants(root) {
         if node == root || !dom.is_any(node, &["p", "div", "li"]) || taken(&gone, node) {
