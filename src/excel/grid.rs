@@ -84,6 +84,9 @@ pub(crate) struct PrintSetup {
     pub(crate) v_centered: bool,
     /// The gridlines are printed.
     pub(crate) grid_lines: bool,
+    /// Printed in black and white (`blackAndWhite`): cells without their
+    /// fills, their text and borders black.
+    pub(crate) black_and_white: bool,
     /// Pages go across first, then down (`pageOrder="overThenDown"`).
     pub(crate) over_then_down: bool,
     /// The rows that start a page (manual breaks), 0-based.
@@ -177,6 +180,7 @@ impl Default for PrintSetup {
             h_centered: false,
             v_centered: false,
             grid_lines: false,
+            black_and_white: false,
             over_then_down: false,
             row_breaks: Vec::new(),
             col_breaks: Vec::new(),
@@ -215,6 +219,9 @@ pub(crate) struct Looks {
     /// the cells that have one, as a byte offset into it: the text before
     /// it keeps to the cell's left edge, the text after to its right.
     pub(crate) fills: BTreeMap<(u32, u32), usize>,
+    /// The colour the number format of the cells that have one sets
+    /// their number in (`[Red]`), as an index of the legacy palette.
+    pub(crate) number_colors: BTreeMap<(u32, u32), u8>,
 }
 
 /// The data bar a conditional format draws in a cell.
@@ -343,15 +350,28 @@ pub(crate) struct GridCell {
     pub(crate) own_font: Vec<u8>,
 }
 
+/// What a rich run of a cell sets of its own font rather than take the
+/// cell's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct OwnFont {
+    /// Its bold, italic and underline (it is plain in a bold cell unless
+    /// it is bold itself).
+    pub(crate) style: bool,
+    /// Its colour, black too.
+    pub(crate) color: bool,
+    /// It is underlined.
+    pub(crate) underline: bool,
+}
+
 impl GridCell {
-    /// What its span of index `index` sets of its own font: bold and
-    /// italic, colour.
-    pub(crate) fn own_font(&self, index: usize) -> (bool, bool) {
+    /// What its span of index `index` sets of its own font.
+    pub(crate) fn own_font(&self, index: usize) -> OwnFont {
         let own = self.own_font.get(index).copied().unwrap_or(0);
-        (
-            own & super::strings::OWN_STYLE != 0,
-            own & super::strings::OWN_COLOR != 0,
-        )
+        OwnFont {
+            style: own & super::strings::OWN_STYLE != 0,
+            color: own & super::strings::OWN_COLOR != 0,
+            underline: own & super::strings::RUN_UNDERLINE != 0,
+        }
     }
 }
 

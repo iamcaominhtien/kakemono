@@ -532,7 +532,7 @@ fn value_axis<'c>(
                     range(values.iter().copied()),
                     Fixed::of(axis),
                     zero,
-                    target,
+                    (target, !percent),
                     axis.is_some_and(|axis| axis.reversed),
                 )
             },
@@ -1228,8 +1228,8 @@ fn scatter(out: &mut Svg, chart: &Chart, area: Area) {
     let mut axes = ScatterAxes {
         x_axis,
         y_axis,
-        x_scale: Scale::nice(None, Fixed::default(), Zero::Auto, 1, false),
-        y_scale: Scale::nice(None, Fixed::default(), Zero::Auto, 1, false),
+        x_scale: Scale::nice(None, Fixed::default(), Zero::Auto, (1, true), false),
+        y_scale: Scale::nice(None, Fixed::default(), Zero::Auto, (1, true), false),
         x_format: x_axis.and_then(|axis| axis.format.clone()).unwrap_or(x_format),
         y_format: y_axis.and_then(|axis| axis.format.clone()).unwrap_or(y_format),
     };
@@ -1282,7 +1282,7 @@ fn scatter_layout(axes: &mut ScatterAxes<'_>, series: &[(&Series, Pairs)], area:
                 data,
                 Fixed::of(axis),
                 Zero::Auto,
-                target,
+                (target, true),
                 axis.is_some_and(|axis| axis.reversed),
             )
         };

@@ -567,12 +567,13 @@ impl SheetReader<'_, '_> {
         })
     }
 
-    /// Reads the orientation, scale, fitting and page order of
+    /// Reads the orientation, scale, fitting, page order and colours of
     /// `pageSetup`.
     fn page_setup(&mut self, tag: &Tag<'_>) {
         let print = &mut self.grid.print;
         print.landscape = tag.attr("orientation").as_deref() == Some("landscape");
         print.over_then_down = tag.attr("pageOrder").as_deref() == Some("overThenDown");
+        print.black_and_white = is_on(tag.attr("blackAndWhite").as_deref());
         let number = |name: &str| tag.attr(name).and_then(|value| value.trim().parse::<u32>().ok());
         if let Some(scale) = number("scale") {
             print.scale_percent = scale.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT) as f32;
@@ -741,6 +742,9 @@ impl SheetReader<'_, '_> {
                         && let (_, Some(fill)) = numfmt::format_filled(number, num_fmt, self.ctx.date1904)
                     {
                         self.grid.looks.fills.insert(at, fill);
+                    }
+                    if let Some(color) = numfmt::color(number, num_fmt) {
+                        self.grid.looks.number_colors.insert(at, color);
                     }
                 }
                 if let Some(at) = raw.at

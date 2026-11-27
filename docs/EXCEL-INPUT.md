@@ -112,12 +112,14 @@ The text is the value **as Excel shows it**, not the stored number:
   minutes and seconds, `05:08` or `05:08.4`; a date cell stored as ISO text (`t="d"`) gives
   `2024-01-31 14:05` too, without the time at midnight.
 - **Numbers** follow the cell's format code, with `.` as decimal separator and `,` as thousands
-  separator: `1,234.50`, `12.5%`, `1.5E+3`, negative and zero sections, fractions. Colours and
-  conditions in a format code (`[Red]`, `[>100]`) are ignored. A code kakemono cannot read falls
+  separator: `1,234.50`, `12.5%`, `1.5E+3`, negative and zero sections, fractions. Conditions
+  in a format code (`[>100]`) are ignored; its colours (`[Red]`, `[Color10]`) colour the number
+  in the sheet view and the PDF, not in the text outputs. A code kakemono cannot read falls
   back to the general format.
 - **A currency symbol** is kept only when a custom format code writes it (`"¥"#,##0`, `[$€-407]`);
   the built-in currency formats (ids 5 to 8) give the number alone.
-- Strings keep bold, italic, subscript, superscript and the colour of their rich-text runs; a run
+- Strings keep bold, italic, subscript, superscript and the colour of their rich-text runs (and
+  their underline in the sheet view and the PDF); a run
   with its own properties (`rPr`) sets its own font, so it is plain in a bold cell unless it is
   bold itself, while a run without them takes the cell's font. **Furigana**
   (phonetic runs, in nearly every Japanese workbook) never reaches the text.
@@ -207,8 +209,7 @@ its formatting:
   them; and data bars, from their colour to white, as long as the value between their bounds.
 
 Not drawn: conditional formats on a formula of their own (`expression`), colour scales, icon
-sets, top or bottom values, above or below average, sparklines, comments, number colours of a
-format (`[Red]`), text turned by an angle other than ±90°, and the curves of curved connectors
+sets, top or bottom values, above or below average, sparklines, comments, text turned by an angle other than ±90°, and the curves of curved connectors
 (drawn straight). A sheet is drawn up to 200 000 cells read and 600 000 positions (rows × columns)
 and 300 columns, the rows past them left out with a note.
 
@@ -259,11 +260,15 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   than half an em; Japanese text of a Western font in a Japanese font), size, colour, bold, italic, underline, strike,
   aligned as Excel aligns it (centred across the selection too, wrapped in its width), wrapped when the cell wraps,
   running over the empty cells beside it and cut at the next value or the page's edge; a distributed
-  text (均等割付) spread over the cell, its words, spaces and Japanese letters apart by even gaps;
+  text (均等割付) spread over the cell, its words, spaces and Japanese letters apart by even gaps,
+  each of its lines so when it is wider than the cell; superscripts and subscripts of rich-text
+  runs smaller and raised or lowered; a sheet printed in black and white (`blackAndWhite`)
+  without cell fills, its text and borders black;
   lines broken by Word's Japanese rules (no line ends with an opening bracket, none starts with a
   closing one or 、。); text turned 90° or stacked is set a letter a line, a stacked text that
   wraps going on in columns to the left; a number format's fill (`*x`) setting the text before it
-  at the cell's left edge and the text after it at the right;
+  at the cell's left edge and the text after it at the right, whatever the cell's alignment and
+  wrapping;
   links kept (http, https, mailto, ftp);
 - charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break

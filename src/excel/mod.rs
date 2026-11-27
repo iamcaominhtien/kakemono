@@ -325,9 +325,16 @@ fn read_sheets_with_styles<'w>(
 }
 
 /// Gives each cell a conditional format formats (`grid`'s
-/// [`conditional`](grid::Looks::conditional)) a cell format of its own in
-/// `styles`: its own with the conditional ones over it.
+/// [`conditional`](grid::Looks::conditional)), or whose number format
+/// names a colour, a cell format of its own in `styles`: its own in that
+/// colour, with the conditional ones over it.
 fn conditional_looks(styles: &mut styles::Styles, grid: &mut Grid) {
+    // The colour of a number format first: a conditional format's is over it.
+    for (at, color) in std::mem::take(&mut grid.looks.number_colors) {
+        let base = view::look_index(grid, at);
+        let made = styles.with_number_color(base, color);
+        grid.looks.cells.insert(at, made);
+    }
     for (at, dxfs) in std::mem::take(&mut grid.looks.conditional) {
         let base = view::look_index(grid, at);
         let made = styles.with_dxfs(base, &dxfs);

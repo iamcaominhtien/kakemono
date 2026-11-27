@@ -16,6 +16,11 @@ const MIN_TARGET_TICKS: usize = 2;
 const MAX_COARSER_STEPS: usize = 8;
 /// The most ticks a scale aims at.
 const MAX_TARGET_TICKS: usize = 10;
+/// Excel's automatic maximum is the first tick above the data's highest
+/// value plus this share of their spread (and its minimum, below zero, the
+/// first tick below their lowest minus as much): data up to 100 end at
+/// 120, not 100.
+const HEADROOM_RATIO: f64 = 0.05;
 
 /// Whether a scale reaches zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +69,15 @@ pub(super) struct Scale {
 impl Scale {
     /// A scale of the data from `low` to `high` (`None` when there is no
     /// data), with the bounds and step `fixed` the file gives, aiming at
-    /// about `target` ticks otherwise.
-    pub(super) fn nice(data: Option<(f64, f64)>, fixed: Fixed, zero: Zero, target: usize, reversed: bool) -> Self {
+    /// about `target` ticks otherwise; with Excel's [`HEADROOM_RATIO`]
+    /// past the data when `headroom` (not for shares of 100 %).
+    pub(super) fn nice(
+        data: Option<(f64, f64)>,
+        fixed: Fixed,
+        zero: Zero,
+        (target, headroom): (usize, bool),
+        reversed: bool,
+    ) -> Self {
         let (mut low, mut high) = data.unwrap_or((0.0, 1.0));
         let spread = high - low;
         let reaches_zero = match zero {
@@ -76,6 +88,7 @@ impl Scale {
             low = low.min(0.0);
             high = high.max(0.0);
         }
+
         // Fixed bounds that contradict each other are left out.
         let (fixed_min, fixed_max) = match (fixed.min, fixed.max) {
             (Some(min), Some(max)) if min >= max => (None, None),
@@ -106,6 +119,17 @@ impl Scale {
         while (high - low) / step > MAX_TICKS as f64 {
             step *= 2.0;
         }
+        // The data's bounds with Excel's headroom, rounded to the step.
+        let spread_data = headroom && data.is_some_and(|(first, last)| last > first);
+        let room = if spread_data {
+            (high - low) * HEADROOM_RATIO
+        } else {
+            0.0
+        };
+        let (low, high) = (
+            if low < 0.0 { low - room } else { low },
+            if high > 0.0 { high + room } else { high },
+        );
         let min = fixed_min.unwrap_or_else(|| (low / step).floor() * step);
         let mut max = fixed_max.unwrap_or_else(|| (high / step).ceil() * step);
         if max <= min {
@@ -219,19 +243,19 @@ mod tests {
 
     #[test]
     fn nice_ticks_from_zero() {
-        let scale = Scale::nice(Some((5.0, 37.0)), Fixed::default(), Zero::Always, 5, false);
+        let scale = Scale::nice(Some((5.0, 37.0)), Fixed::default(), Zero::Always, (5, true), false);
         assert_eq!(scale.ticks(), [0.0, 10.0, 20.0, 30.0, 40.0]);
-        let scale = Scale::nice(Some((0.0, 0.37)), Fixed::default(), Zero::Always, 5, false);
+        let scale = Scale::nice(Some((0.0, 0.37)), Fixed::default(), Zero::Always, (5, true), false);
         assert_eq!(scale.ticks(), [0.0, 0.1, 0.2, 0.3, 0.4]);
-        let scale = Scale::nice(Some((-12.0, 7.0)), Fixed::default(), Zero::Always, 4, false);
+        let scale = Scale::nice(Some((-12.0, 7.0)), Fixed::default(), Zero::Always, (4, true), false);
         assert_eq!(scale.ticks(), [-15.0, -10.0, -5.0, 0.0, 5.0, 10.0]);
     }
 
     #[test]
     fn lines_far_from_zero_leave_it_out() {
-        let scale = Scale::nice(Some((92.0, 104.0)), Fixed::default(), Zero::Auto, 5, false);
+        let scale = Scale::nice(Some((92.0, 104.0)), Fixed::default(), Zero::Auto, (5, true), false);
         assert!(scale.min >= 90.0 && scale.max <= 105.0, "{scale:?}");
-        let scale = Scale::nice(Some((10.0, 100.0)), Fixed::default(), Zero::Auto, 5, false);
+        let scale = Scale::nice(Some((10.0, 100.0)), Fixed::default(), Zero::Auto, (5, true), false);
         assert_eq!(scale.min, 0.0);
     }
 
@@ -245,7 +269,7 @@ mod tests {
                 unit: None,
             },
             Zero::Always,
-            6,
+            (6, true),
             false,
         );
         assert_eq!(scale.ticks(), [-10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0]);
@@ -258,10 +282,22 @@ mod tests {
                 unit: None,
             },
             Zero::Always,
-            4,
+            (4, true),
             false,
         );
-        assert_eq!(scale.ticks(), [0.0, 1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(scale.ticks(), [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn the_maximum_keeps_room_past_the_data_as_excel_s() {
+        // Data up to 100 by 20: Excel ends the scale at 120.
+        let scale = Scale::nice(Some((0.0, 100.0)), Fixed::default(), Zero::Always, (5, true), false);
+        assert_eq!(scale.max, 120.0);
+        let scale = Scale::nice(Some((0.0, 94.0)), Fixed::default(), Zero::Always, (5, true), false);
+        assert_eq!(scale.max, 100.0);
+        // Shares of 100 % end at 100 %.
+        let scale = Scale::nice(Some((0.0, 1.0)), Fixed::default(), Zero::Always, (5, false), false);
+        assert_eq!(scale.max, 1.0);
     }
 
     #[test]
@@ -271,32 +307,32 @@ mod tests {
             max: Some(280.0),
             unit: Some(40.0),
         };
-        let scale = Scale::nice(Some((60.0, 270.0)), fixed, Zero::Auto, 5, false);
+        let scale = Scale::nice(Some((60.0, 270.0)), fixed, Zero::Auto, (5, true), false);
         assert_eq!(scale.ticks(), [40.0, 80.0, 120.0, 160.0, 200.0, 240.0, 280.0]);
         // A unit that would give too many ticks is left out.
         let tiny = Fixed {
             unit: Some(1e-9),
             ..Fixed::default()
         };
-        let scale = Scale::nice(Some((0.0, 10.0)), tiny, Zero::Always, 5, false);
+        let scale = Scale::nice(Some((0.0, 10.0)), tiny, Zero::Always, (5, true), false);
         assert!(scale.ticks().len() <= MAX_TICKS + 1);
-        assert_eq!(scale.ticks().len(), 6);
+        assert_eq!(scale.ticks().len(), 7);
     }
 
     #[test]
     fn repeated_labels_take_a_coarser_step() {
         let format = NumFmt::Code("0".into());
-        let build = |target| Scale::nice(Some((0.0, 3.0)), Fixed::default(), Zero::Always, target, false);
+        let build = |target| Scale::nice(Some((0.0, 3.0)), Fixed::default(), Zero::Always, (target, true), false);
         assert_eq!(build(7).step, 0.5);
         let scale = readable(build, 7, &format, false);
-        assert_eq!(scale.ticks(), [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(scale.ticks(), [0.0, 1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn a_scale_of_zeros_in_whole_dollars_does_not_repeat_a_label() {
         // All values 0: the scale runs 0 to 1, by 0.5 at the fewest ticks.
         let format = NumFmt::Code("\"$\"#,##0".into());
-        let build = |target| Scale::nice(Some((0.0, 0.0)), Fixed::default(), Zero::Always, target, false);
+        let build = |target| Scale::nice(Some((0.0, 0.0)), Fixed::default(), Zero::Always, (target, true), false);
         let scale = readable(build, 5, &format, false);
         let labels: Vec<String> = scale.ticks().iter().map(|tick| label(*tick, &format, false)).collect();
         assert_eq!(labels, ["$0", "$1"]);
@@ -305,7 +341,7 @@ mod tests {
     #[test]
     fn odd_data_still_gives_a_scale() {
         for data in [None, Some((3.0, 3.0)), Some((0.0, 0.0)), Some((-1e300, 1e300))] {
-            let scale = Scale::nice(data, Fixed::default(), Zero::Auto, 5, false);
+            let scale = Scale::nice(data, Fixed::default(), Zero::Auto, (5, true), false);
             assert!(scale.max > scale.min && scale.step > 0.0, "{data:?} {scale:?}");
             let ticks = scale.ticks();
             assert!(!ticks.is_empty() && ticks.len() <= MAX_TICKS + 1);
@@ -314,13 +350,13 @@ mod tests {
 
     #[test]
     fn positions_follow_the_direction() {
-        let scale = Scale::nice(Some((0.0, 10.0)), Fixed::default(), Zero::Always, 5, false);
-        assert_eq!(scale.at(5.0, 100.0, 0.0), 50.0);
+        let scale = Scale::nice(Some((0.0, 10.0)), Fixed::default(), Zero::Always, (5, true), false);
+        assert_eq!(scale.at(f64::midpoint(scale.min, scale.max), 100.0, 0.0), 50.0);
         assert_eq!(scale.at(50.0, 100.0, 0.0), 0.0);
         let reversed = Scale {
             reversed: true,
             ..scale
         };
-        assert_eq!(reversed.at(10.0, 100.0, 0.0), 100.0);
+        assert_eq!(reversed.at(scale.max, 100.0, 0.0), 100.0);
     }
 }

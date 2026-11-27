@@ -246,7 +246,8 @@ pub(super) fn radar(out: &mut Svg, chart: &Chart, area: Area) {
         range(means.iter().flatten().flatten().copied()),
         Fixed::of(axis),
         Zero::Always,
-        (radius / TICK_SPACING_PT) as usize,
+        // Excel's radar scale is not known to keep room past the data.
+        ((radius / TICK_SPACING_PT) as usize, false),
         false,
     );
     grid(out, center, radius, spokes, &scale, axis);

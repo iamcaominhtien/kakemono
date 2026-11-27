@@ -22,8 +22,9 @@ pub(crate) struct Styles {
     looks: Vec<Look>,
     /// The formats of the conditional formats (`dxfs`), in order.
     dxfs: Vec<Dxf>,
-    /// The cell formats made of a cell format and conditional formats.
-    made: HashMap<(u32, Vec<u32>), u32>,
+    /// The cell formats made of a cell format and conditional formats, or
+    /// a font colour of its number format (an index of the palette).
+    made: HashMap<(u32, Vec<u32>, Option<u8>), u32>,
     /// The colours of the legacy palette (`indexedColors`), when the file
     /// changes them; Excel's own otherwise.
     pub(crate) palette: Option<Vec<Rgb>>,
@@ -267,15 +268,32 @@ impl Styles {
     /// conditional formats `dxfs` over it, the first over all: what each
     /// sets (font colour and style, fill, borders) replaces the base's.
     pub(crate) fn with_dxfs(&mut self, base: u32, dxfs: &[u32]) -> u32 {
-        let key = (base, dxfs.to_vec());
+        self.made_from((base, dxfs.to_vec(), None))
+    }
+
+    /// The index of a cell format made of the cell format `base` with its
+    /// font in the colour `color` of the palette, which its number format
+    /// names (`[Red]`).
+    pub(crate) fn with_number_color(&mut self, base: u32, color: u8) -> u32 {
+        self.made_from((base, Vec::new(), Some(color)))
+    }
+
+    /// The index of the cell format made of `base`, with the font colour
+    /// `color` of its number format and the conditional formats `dxfs`
+    /// over it.
+    fn made_from(&mut self, key: (u32, Vec<u32>, Option<u8>)) -> u32 {
         if let Some(&index) = self.made.get(&key) {
             return index;
         }
-        let mut look = self.look(base as usize).clone();
+        let (base, dxfs, color) = &key;
+        let mut look = self.look(*base as usize).clone();
+        if let Some(color) = color {
+            look.font.color = Some(Color::Indexed(*color));
+        }
         for dxf in dxfs.iter().rev().filter_map(|index| self.dxfs.get(*index as usize)) {
             dxf.over(&mut look);
         }
-        let xf = self.get(base as usize).clone();
+        let xf = self.get(*base as usize).clone();
         let index = u32::try_from(self.looks.len().max(self.xfs.len())).unwrap_or(u32::MAX);
         // Formats past the file's own are padded, so that both lists keep
         // the same order.

@@ -17,13 +17,13 @@ use super::WorkbookPdfConfig;
 use super::header;
 use crate::chart::{Rgb, Theme};
 use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
-use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, Sizes};
+use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, OwnFont, Sizes};
 use crate::excel::styles::{Color, Line, Look, Styles, VAlign};
 use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg, text_insets};
 use crate::excel::{DrawnSheet, SheetBook};
-use crate::model::style::{BOLD, ITALIC};
+use crate::model::style::{BOLD, ITALIC, SUB, SUP};
 use crate::word::fmt::model::{
-    Align, BreakKind, FDoc, FImage, Inline, LineSpacing, Para, ParaProps, RunFmt, Underline,
+    Align, BreakKind, FDoc, FImage, Inline, LineSpacing, Para, ParaProps, RunFmt, Underline, VertAlign,
 };
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -845,7 +845,7 @@ impl Printer<'_, '_, '_> {
                     Some(region) => cut(item, region),
                     None => Some(item),
                 };
-                if let Some(fill) = look.fill.and_then(|color| self.rgb(color)) {
+                if let Some(fill) = look.fill.and_then(|color| self.cell_rgb(color)) {
                     items.extend(keep(Item::Rect {
                         x: rect[0],
                         y: rect[1],
@@ -1071,7 +1071,7 @@ impl Printer<'_, '_, '_> {
     /// edges; `None` when it has none.
     fn data_bar(&self, at: (u32, u32), rect: [f32; 4], scale: f32) -> Option<Item> {
         let bar = self.grid.looks.bars.get(&at)?;
-        let color = self.rgb(bar.color)?;
+        let color = self.cell_rgb(bar.color)?;
         let inset = DATA_BAR_INSET_PT * scale;
         Some(Item::Rect {
             x: rect[0] + inset / 2.0,
@@ -1092,7 +1092,7 @@ impl Printer<'_, '_, '_> {
         ];
         for ((x1, y1, x2, y2), edge) in sides.into_iter().zip(look.borders) {
             let Some(edge) = edge else { continue };
-            let color = edge.color.and_then(|color| self.rgb(color)).unwrap_or([0; 3]);
+            let color = edge.color.and_then(|color| self.cell_rgb(color)).unwrap_or([0; 3]);
             let line_w = if edge.line == Line::Hair {
                 HAIR_LINE_PT
             } else {
@@ -1156,15 +1156,14 @@ impl Printer<'_, '_, '_> {
                 f32::INFINITY
             };
             self.stacked_text(cell, &base, (width, room), (ascent, descent))
-        } else if let Some(spread) = (align == "distributed")
-            .then(|| self.distributed_text(cell, &base, pad + indent, inner_w - indent, ascent))
-            .flatten()
-        {
-            (spread, ascent + descent)
+        } else if let Some(filled) = self.filled_text(at, cell, &base, (pad + indent, width - pad - indent), ascent) {
+            // A number's fill sets it across the cell, whatever its
+            // alignment and wrapping.
+            (filled, ascent + descent)
+        } else if align == "distributed" {
+            self.distributed_text(cell, &base, (pad + indent, inner_w - indent), (ascent, descent))
         } else if look.wraps() {
             self.wrapped_text(cell, &base, align, pad, indent, inner_w)
-        } else if let Some(filled) = self.filled_text(at, cell, &base, (pad + indent, width - pad - indent), ascent) {
-            (filled, ascent + descent)
         } else {
             let mut items = Vec::new();
             let mut pen = 0.0;
@@ -1261,55 +1260,49 @@ impl Printer<'_, '_, '_> {
 
     /// The text of `cell` spread over `room` points from `left`, as
     /// Excel distributes a text: its words, its spaces and each of its
-    /// Japanese and Chinese letters apart by even gaps, the first at the left and the
-    /// last at the right; one word centred. `None` when it does not fit
-    /// on a line, to be wrapped instead.
+    /// Japanese and Chinese letters apart by even gaps, the first at the
+    /// left and the last at the right; one word centred. A text wider
+    /// than `room` is wrapped, and every line is spread so; a line feed
+    /// starts a line. Its items from the top of the cell, and its height.
     fn distributed_text(
         &mut self,
         cell: &GridCell,
         base: &RunFmt,
-        left: f32,
-        room: f32,
-        ascent: f32,
-    ) -> Option<Vec<Item>> {
+        (left, room): (f32, f32),
+        (ascent, descent): (f32, f32),
+    ) -> (Vec<Item>, f32) {
         let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
-        // Each wide letter and each space is spread as a word is.
-        let mut units: Vec<String> = Vec::new();
-        let mut latin = String::new();
-        for ch in text.trim().chars() {
-            if ch.is_whitespace() || u32::from(ch) >= WIDE_LETTERS_FROM {
-                units.extend((!latin.is_empty()).then(|| std::mem::take(&mut latin)));
-                units.push(ch.to_string());
-            } else {
-                latin.push(ch);
+        let mut items = Vec::new();
+        let mut line_top = 0.0;
+        for paragraph in text.trim().split('\n') {
+            let runs: Vec<(Vec<Item>, f32, bool)> = distributed_units(paragraph)
+                .iter()
+                .map(|unit| {
+                    let (run, run_w) = para::text_items(self.ctx, unit, base, 0.0, ascent);
+                    (run, run_w, unit.trim().is_empty())
+                })
+                .collect();
+            for line in fill_lines(runs, room) {
+                let used: f32 = line.iter().map(|(_, run_w, _)| run_w).sum();
+                let gap = if line.len() > 1 {
+                    (room - used) / (line.len() - 1) as f32
+                } else {
+                    0.0
+                };
+                let mut pen = if line.len() > 1 {
+                    left
+                } else {
+                    left + (room - used) / 2.0
+                };
+                for (mut run, run_w, _) in line {
+                    translate(&mut run, pen, line_top);
+                    items.append(&mut run);
+                    pen += run_w + gap;
+                }
+                line_top += ascent + descent;
             }
         }
-        units.extend((!latin.is_empty()).then_some(latin));
-        let runs: Vec<(Vec<Item>, f32)> = units
-            .iter()
-            .map(|unit| para::text_items(self.ctx, unit, base, 0.0, ascent))
-            .collect();
-        let used: f32 = runs.iter().map(|(_, run_w)| run_w).sum();
-        if units.is_empty() || used > room {
-            return None;
-        }
-        let gap = if runs.len() > 1 {
-            (room - used) / (runs.len() - 1) as f32
-        } else {
-            0.0
-        };
-        let mut pen = if runs.len() > 1 {
-            left
-        } else {
-            left + (room - used) / 2.0
-        };
-        let mut items = Vec::new();
-        for (mut run, run_w) in runs {
-            translate(&mut run, pen, 0.0);
-            items.append(&mut run);
-            pen += run_w + gap;
-        }
-        Some(items)
+        (items, line_top.max(ascent + descent))
     }
 
     /// The text of `cell` wrapped at `inner_w`, aligned `align`, `pad` and
@@ -1345,6 +1338,8 @@ impl Printer<'_, '_, '_> {
                     "center" => Align::Center,
                     "right" => Align::Right,
                     "justify" => Align::Both,
+                    // Every line spread across the cell, as Excel does.
+                    "distributed" => Align::Distribute,
                     _ => Align::Left,
                 },
                 line: LineSpacing::Auto(1.0),
@@ -1414,28 +1409,37 @@ impl Printer<'_, '_, '_> {
             strike: font.strike,
             color: font
                 .color
-                .and_then(|color| self.rgb(color))
+                .and_then(|color| self.cell_rgb(color))
                 .filter(|rgb| *rgb != [0; 3]),
             ..RunFmt::default()
         }
     }
 
-    /// The run of a span of a cell set in `base`: its bold, italic, colour
-    /// and link (of the schemes a PDF may open): those of the cell's look
-    /// and the span's own, or the span's alone when it is a rich run that
-    /// sets its own (`own_style`; `own_color` for a colour, black too).
-    fn span_run(&self, base: &RunFmt, span: &crate::model::Span, (own_style, own_color): (bool, bool)) -> RunFmt {
+    /// The run of a span of a cell set in `base`: its bold, italic,
+    /// underline, superscript, colour and link (of the schemes a PDF may
+    /// open): those of the cell's look and the span's own, or the span's
+    /// alone when it is a rich run that sets its own (`own`; a colour,
+    /// black too).
+    fn span_run(&self, base: &RunFmt, span: &crate::model::Span, own: OwnFont) -> RunFmt {
         let mut fmt = base.clone();
-        if own_style {
+        if own.style {
             fmt.bold = span.style & BOLD != 0;
             fmt.italic = span.style & ITALIC != 0;
+            fmt.underline = own.underline.then_some(Underline::Single);
         } else {
             fmt.bold |= span.style & BOLD != 0;
             fmt.italic |= span.style & ITALIC != 0;
         }
-        if span.color != [0; 3] {
+        if span.style & SUP != 0 {
+            fmt.vert = VertAlign::Super;
+        } else if span.style & SUB != 0 {
+            fmt.vert = VertAlign::Sub;
+        }
+        if self.grid.print.black_and_white {
+            fmt.color = None;
+        } else if span.color != [0; 3] {
             fmt.color = Some(span.color);
-        } else if own_color {
+        } else if own.color {
             fmt.color = None;
         }
         fmt.href = span
@@ -1574,6 +1578,16 @@ impl Printer<'_, '_, '_> {
     /// A colour of the styles as RGB.
     fn rgb(&self, color: Color) -> Option<Rgb> {
         color.rgb(self.theme, self.styles.palette.as_deref())
+    }
+
+    /// The colour of a cell's fill, border or text: none when the sheet
+    /// prints in black and white (a border or text is then black).
+    fn cell_rgb(&self, color: Color) -> Option<Rgb> {
+        if self.grid.print.black_and_white {
+            None
+        } else {
+            self.rgb(color)
+        }
     }
 }
 
@@ -1790,6 +1804,52 @@ const DATA_BAR_INSET_PT: f32 = 1.5;
 /// be drawn (on its edge), in points: rounding.
 const CUT_SLACK_PT: f32 = 0.01;
 
+/// The units a distributed text spreads apart: its words, its spaces and
+/// each of its wide (Japanese and Chinese) letters.
+fn distributed_units(text: &str) -> Vec<String> {
+    let mut units: Vec<String> = Vec::new();
+    let mut latin = String::new();
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() || u32::from(ch) >= WIDE_LETTERS_FROM {
+            units.extend((!latin.is_empty()).then(|| std::mem::take(&mut latin)));
+            units.push(ch.to_string());
+        } else {
+            latin.push(ch);
+        }
+    }
+    units.extend((!latin.is_empty()).then_some(latin));
+    units
+}
+
+/// `runs` (items, width, is a space) cut into lines at most `room` wide,
+/// a run wider than it alone on its line; the spaces at the ends of a
+/// line are left out.
+fn fill_lines<T>(runs: Vec<(T, f32, bool)>, room: f32) -> Vec<Vec<(T, f32, bool)>> {
+    let mut lines: Vec<Vec<(T, f32, bool)>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for run in runs {
+        let line = lines.last_mut().expect("there is always a line");
+        if run.2 && line.is_empty() {
+            continue;
+        }
+        if !line.is_empty() && used + run.1 > room && !run.2 {
+            while line.last().is_some_and(|last| last.2) {
+                line.pop();
+            }
+            lines.push(Vec::new());
+            used = 0.0;
+        }
+        used += run.1;
+        lines.last_mut().expect("there is always a line").push(run);
+    }
+    if let Some(line) = lines.last_mut() {
+        while line.last().is_some_and(|last| last.2) {
+            line.pop();
+        }
+    }
+    lines.retain(|line| !line.is_empty());
+    lines
+}
 /// The thin grey lines around a cell at `rect`, when the gridlines print.
 fn grid_lines(lines: &mut Vec<Item>, [x, y, width, height]: [f32; 4], scale: f32) {
     let line_w = (0.5 * scale).max(0.25);

@@ -6,9 +6,9 @@
 //! made of digit placeholders (`0`, `#`, `?`), the decimal point, `,`
 //! (thousands, or a scale of 1000 after the last digit), `%`, an exponent
 //! (`E+`), fractions (`?/?`), literal text (quoted, escaped with `\`, or
-//! `[$€-407]`) and, for dates and times, `y m d h s AM/PM [h]`. Colours
-//! and conditions (`[Red]`, `[>100]`) are left out, and so is the padding
-//! (`_x`); the fill (`*x`, which repeats a character to the cell's width)
+//! `[$€-407]`) and, for dates and times, `y m d h s AM/PM [h]`. Conditions
+//! (`[>100]`) are left out, and so is the padding (`_x`); a colour
+//! (`[Red]`, `[Color10]`) writes nothing, and [`color`] gives it; the fill (`*x`, which repeats a character to the cell's width)
 //! writes nothing, and [`format_filled`] says where it is.
 //!
 //! Dates and times are always written ISO (`2024-01-31`, `14:05`,
@@ -159,6 +159,79 @@ fn formatted(value: f64, fmt: &NumFmt, date1904: bool) -> String {
     let shows_digit = text.bytes().any(|byte| byte.is_ascii_digit() && byte != b'0');
     let sign = if minus && shows_digit { "-" } else { "" };
     format!("{sign}{}", text.trim())
+}
+
+/// The colours a format code may name (`[Red]`), as indices of the
+/// legacy palette: `[Color1]` is its index 8, black.
+const NAMED_COLORS: [(&str, u8); 8] = [
+    ("black", 8),
+    ("white", 9),
+    ("red", 10),
+    ("green", 11),
+    ("blue", 12),
+    ("yellow", 13),
+    ("magenta", 14),
+    ("cyan", 15),
+];
+/// The palette index of `[Color1]`.
+const FIRST_COLOR_INDEX: u8 = 8;
+/// The most `[ColorN]` names: `[Color56]`.
+const MAX_COLOR_NUMBER: u8 = 56;
+
+/// The colour, as an index of the legacy palette, that the section of
+/// `fmt` showing `value` sets the text in (`[Red]`, `[Color10]`); `None`
+/// when it names none.
+pub(crate) fn color(value: f64, fmt: &NumFmt) -> Option<u8> {
+    let NumFmt::Code(code) = fmt else { return None };
+    if code.chars().count() > MAX_CODE_CHARS {
+        return None;
+    }
+    // The colour of each section, split as `sections` does.
+    let mut colors = vec![None];
+    let mut chars = code.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            ';' => colors.push(None),
+            '"' => {
+                chars.by_ref().find(|&next| next == '"');
+            }
+            '\\' | '_' | '*' => {
+                chars.next();
+            }
+            '[' => {
+                let inside: String = chars.by_ref().take_while(|&next| next != ']').collect();
+                let last = colors.last_mut().expect("there is always a section");
+                *last = last.or_else(|| color_name(&inside));
+            }
+            _ => {}
+        }
+    }
+    // The section shown, as `formatted` picks it.
+    let index = match (colors.len(), value) {
+        (1, _) => 0,
+        (_, negative) if negative < 0.0 => 1,
+        (2, _) => 0,
+        (_, 0.0) => 2,
+        _ => 0,
+    };
+    colors.get(index).copied().flatten()
+}
+
+/// The palette index of the colour named `name` in a format code (`Red`,
+/// `Color10`).
+fn color_name(name: &str) -> Option<u8> {
+    let lower = name.trim().to_ascii_lowercase();
+    if let Some(number) = lower.strip_prefix("color") {
+        let number = number
+            .parse::<u8>()
+            .ok()
+            .filter(|number| (1..=MAX_COLOR_NUMBER).contains(number))?;
+        return Some(FIRST_COLOR_INDEX + number - 1);
+    }
+    NAMED_COLORS
+        .iter()
+        .find(|(named, _)| *named == lower)
+        .map(|(_, index)| *index)
 }
 
 /// One piece of a section of a format code.
@@ -965,6 +1038,13 @@ mod tests {
         assert_eq!(code(-5.0, "0;0"), "5");
         assert_eq!(code(0.0, "0;-0;"), "");
         assert_eq!(code(-1234.0, "#,##0;[Red]-#,##0"), "-1,234");
+        let fmt = |code: &str| NumFmt::Code(code.to_string());
+        assert_eq!(color(-1.0, &fmt("#,##0;[Red]-#,##0")), Some(10));
+        assert_eq!(color(1.0, &fmt("#,##0;[Red]-#,##0")), None);
+        assert_eq!(color(-9.1, &fmt(r"[Red]\-0.0")), Some(10));
+        assert_eq!(color(0.0, &fmt("0;[Blue]-0;[Color10]0")), Some(17));
+        assert_eq!(color(-1.0, &fmt(r#""[Red]"0;-0"#)), None);
+        assert_eq!(color(1.0, &fmt("[$-411]0")), None);
         assert_eq!(code(-0.001, "0.00"), "0.00");
         assert_eq!(code(3.0, "General\" units\""), "3 units");
     }

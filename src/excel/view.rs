@@ -532,8 +532,8 @@ impl Page<'_> {
     }
 
     /// The text of a cell as HTML, with its links (of the schemes a page
-    /// may open) and the bold, italic, superscript and subscript of its
-    /// runs; a run that sets its own font takes neither the bold nor the
+    /// may open) and the bold, italic, underline, superscript and subscript
+    /// of its runs; a run that sets its own font takes neither the bold nor the
     /// italic of the cell's look (`look`), nor its colour when it gives one.
     fn text(&self, cell: &GridCell, look: &Look) -> String {
         let mut out = String::new();
@@ -545,8 +545,11 @@ impl Page<'_> {
                     body = format!("<{tag}>{body}</{tag}>");
                 }
             }
-            let (own_style, own_color) = cell.own_font(index);
-            if own_style {
+            let own = cell.own_font(index);
+            if own.underline {
+                body = format!("<u>{body}</u>");
+            }
+            if own.style {
                 let mut css = String::new();
                 if look.font.bold && span.style & BOLD == 0 {
                     css.push_str("font-weight:400;");
@@ -554,7 +557,7 @@ impl Page<'_> {
                 if look.font.italic && span.style & ITALIC == 0 {
                     css.push_str("font-style:normal;");
                 }
-                if own_color && span.color == [0; 3] && cell_color != [0; 3] {
+                if own.color && span.color == [0; 3] && cell_color != [0; 3] {
                     css.push_str("color:#000000;");
                 }
                 if !css.is_empty() {

@@ -14,7 +14,8 @@ use super::workbook::is_sml;
 pub(crate) type Paint<'a> = &'a dyn Fn(Node<'_, '_>) -> Option<[u8; 3]>;
 
 /// The runs of a string, each with what it sets of its own font rather
-/// than take the cell's ([`OWN_STYLE`], [`OWN_COLOR`]; 0 for a run without
+/// than take the cell's ([`OWN_STYLE`], [`OWN_COLOR`], with
+/// [`RUN_UNDERLINE`] when it is underlined; 0 for a run without
 /// properties).
 pub(crate) type Runs = Vec<(Span, u8)>;
 
@@ -23,6 +24,8 @@ pub(crate) type Runs = Vec<(Span, u8)>;
 pub(crate) const OWN_STYLE: u8 = 1;
 /// A rich run sets its own colour (`color`), black too.
 pub(crate) const OWN_COLOR: u8 = 2;
+/// A rich run is underlined (`u`).
+pub(crate) const RUN_UNDERLINE: u8 = 4;
 
 /// The shared strings of `xml`, in order: each string as its runs. A plain
 /// string is one unstyled span; a rich string keeps bold, italic,
@@ -57,6 +60,10 @@ pub(crate) fn string_item(item: Node<'_, '_>, paint: Paint<'_>) -> Runs {
                 (None, _) => 0,
                 (Some(_), None) => OWN_STYLE,
                 (Some(_), Some(_)) => OWN_STYLE | OWN_COLOR,
+            } | if props.is_some_and(underlined) {
+                RUN_UNDERLINE
+            } else {
+                0
             };
             let run_text: String = node.children().filter(|part| is_sml(*part, "t")).map(text).collect();
             push(&mut spans, run_text, (style, color), own);
@@ -81,6 +88,14 @@ fn push(spans: &mut Runs, text: String, (style, color): (u8, [u8; 3]), own: u8) 
             spans.push((span, own));
         }
     }
+}
+
+/// A run's properties (`rPr`) underline it (`u`, any but `none`).
+fn underlined(props: Node<'_, '_>) -> bool {
+    props
+        .children()
+        .find(|node| is_sml(*node, "u"))
+        .is_some_and(|node| !matches!(node.attribute("val"), Some("none" | "0" | "false")))
 }
 
 /// The style bits of a run's properties (`rPr`).
