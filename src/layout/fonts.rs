@@ -53,6 +53,21 @@ type StyleKey = (String, bool, bool);
 /// The face chosen for a style, and whether bold and italic must be faked.
 type ChosenFace = (FaceId, bool, bool);
 
+/// What text of a family in a style is set with: [`FontBook::style`].
+#[derive(Debug, Clone, Copy)]
+pub struct Style {
+    /// The face.
+    pub face: FaceId,
+    /// Bold is faked.
+    pub fake_bold: bool,
+    /// Italic is faked.
+    pub fake_italic: bool,
+    /// The family is not installed (only a stand-in is).
+    pub missing: bool,
+    /// Built-in metrics of the family, if any.
+    pub metric: Option<&'static super::metrics::MetricFace>,
+}
+
 /// A face found on the computer or in the document, before it is loaded.
 #[derive(Debug, Clone)]
 struct Candidate {
@@ -78,6 +93,9 @@ pub struct FontBook {
     loaded: HashMap<(Source, u32), FaceId>,
     embedded: Vec<Arc<Vec<u8>>>,
     resolved: HashMap<StyleKey, Option<ChosenFace>>,
+    /// [`FontBook::style`] by family as the document spells it, then by
+    /// bold and italic (`2 * bold + italic`).
+    styles: HashMap<String, [Option<Style>; 4]>,
     fallback_faces: Option<Vec<FaceId>>,
     kinds: HashMap<String, FontKind>,
 }
@@ -141,6 +159,7 @@ impl FontBook {
             loaded: HashMap::new(),
             embedded: Vec::new(),
             resolved: HashMap::new(),
+            styles: HashMap::new(),
             fallback_faces: None,
             kinds: kinds.clone(),
         };
@@ -199,6 +218,26 @@ impl FontBook {
                 }
             }
         }
+    }
+
+    /// The face of `family` in a style, the faked styles and whether the
+    /// family is missing, and its built-in metrics, cached: resolving them
+    /// for each run of text was a sixth of the layout's time.
+    pub fn style(&mut self, family: &str, bold: bool, italic: bool) -> Style {
+        let at = usize::from(bold) * 2 + usize::from(italic);
+        if let Some(style) = self.styles.get(family).and_then(|styles| styles[at]) {
+            return style;
+        }
+        let (face, fake_bold, fake_italic) = self.face(family, bold, italic);
+        let style = Style {
+            face,
+            fake_bold,
+            fake_italic,
+            missing: !self.has_family(family),
+            metric: super::metrics::lookup(family, bold, italic),
+        };
+        self.styles.entry(family.to_string()).or_default()[at] = Some(style);
+        style
     }
 
     /// The face for `family` in the given style: the family itself, a font

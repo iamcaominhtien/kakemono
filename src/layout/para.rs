@@ -4,7 +4,7 @@
 //! (`usWinAscent`, `usWinDescent` and the external leading) and the line
 //! spacing rule.
 
-use super::display::{Glyph, Item, TextRun};
+use super::display::{Glyph, Item, TextRun, offset};
 use super::fonts::{FaceId, FontBook};
 use super::metrics::MetricFace;
 use super::shape::{Shaped, Shaper};
@@ -55,11 +55,22 @@ const JUSTIFY_OVERHANG_RATIO: f32 = 0.45;
 const FIT_TOLERANCE_PT: f32 = 0.01;
 
 /// How a piece of text is set: face, faked bold and italic, size, small
-/// capitals, and the address of the metrics of a missing font.
-type PieceKey = (FaceId, bool, bool, f32, bool, Option<usize>);
+/// capitals, and the metrics of a missing font.
+type PieceKey = (FaceId, bool, bool, f32, bool, Option<Metric>);
 
 /// The face choice for a character: [`PieceKey`] without small capitals.
-type FaceChoice = (FaceId, bool, bool, f32, Option<usize>);
+type FaceChoice = (FaceId, bool, bool, f32, Option<Metric>);
+
+/// Built-in metrics of a font, told apart by their address (there is one
+/// of each in the table).
+#[derive(Debug, Clone, Copy)]
+struct Metric(&'static super::metrics::MetricFace);
+
+impl PartialEq for Metric {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
 
 /// Font slot of a run for East Asian characters (`w:eastAsia`).
 const SLOT_EAST_ASIA: usize = 0;
@@ -109,15 +120,6 @@ fn font_slot(ch: char, fmt: &RunFmt) -> usize {
 const MIN_STAND_IN_SCALE: f32 = 0.75;
 /// See [`MIN_STAND_IN_SCALE`].
 const MAX_STAND_IN_SCALE: f32 = 1.25;
-
-/// The metric face whose address is `address`, looked up again from the
-/// run's fonts (the address only tells pieces apart).
-fn metric_by_address(address: usize, fmt: &RunFmt) -> Option<&'static super::metrics::MetricFace> {
-    [&fmt.font, &fmt.font_hansi, &fmt.font_east_asia, &fmt.font_cs]
-        .into_iter()
-        .filter_map(|family| super::metrics::lookup(family, fmt.bold, fmt.italic))
-        .find(|metric| *metric as *const _ as usize == address)
-}
 
 /// What a paragraph's layout needs to know about its surroundings.
 pub struct Ctx<'a> {
@@ -320,13 +322,7 @@ impl Ctx<'_> {
         let metric = slot.metric.filter(|metric| {
             metric.vertical_only() || slot.missing && (ch.is_whitespace() || metric.advance(ch).is_some())
         });
-        (
-            face,
-            fake_bold,
-            fake_italic,
-            slot.size,
-            metric.map(|metric| metric as *const _ as usize),
-        )
+        (face, fake_bold, fake_italic, slot.size, metric.map(Metric))
     }
 
     /// What does not depend on the character in the font slot `slot` of
@@ -340,14 +336,14 @@ impl Ctx<'_> {
             SLOT_ASCII => (&fmt.font, fmt.size),
             _ => (&fmt.font_hansi, fmt.size),
         };
-        let (face, fake_bold, fake_italic) = self.book.face(family, fmt.bold, fmt.italic);
+        let style = self.book.style(family, fmt.bold, fmt.italic);
         SlotFace {
-            face,
-            fake_bold,
-            fake_italic,
+            face: style.face,
+            fake_bold: style.fake_bold,
+            fake_italic: style.fake_italic,
             size,
-            missing: !self.book.has_family(family),
-            metric: super::metrics::lookup(family, fmt.bold, fmt.italic),
+            missing: style.missing,
+            metric: style.metric,
         }
     }
 
@@ -397,7 +393,7 @@ impl Ctx<'_> {
     /// One piece: text in one face.
     fn piece(&mut self, text: &str, fmt: &RunFmt, key: PieceKey) -> Piece {
         let (face, fake_bold, fake_italic, base_size, small, metric) = key;
-        let metric = metric.and_then(|address| metric_by_address(address, fmt));
+        let metric = metric.map(|metric| metric.0);
         let (shown, mut size) = if small {
             (text.to_uppercase(), base_size * SMALL_CAPS_RATIO)
         } else {
@@ -459,7 +455,7 @@ impl Ctx<'_> {
     pub(crate) fn line_metrics(&mut self, fmt: &RunFmt) -> (f32, f32, f32) {
         let ch = 'x';
         let (face, _, _, size, metric) = self.face_for(ch, fmt);
-        if let Some(metric) = metric.and_then(|address| metric_by_address(address, fmt)) {
+        if let Some(Metric(metric)) = metric {
             return (metric.ascent * size, metric.descent * size, metric.leading * size);
         }
         let metrics = self.book.get(face).metrics;
@@ -676,7 +672,8 @@ fn cut_piece(piece: Piece, keep: usize) -> (Option<Piece>, Option<Piece>) {
     if keep >= piece.glyphs.len() || !in_order {
         return (Some(piece), None);
     }
-    let split_byte = piece.glyphs[keep].text.0;
+    let split = piece.glyphs[keep].text.0;
+    let split_byte = split as usize;
     let mut first = piece.clone();
     first.glyphs.truncate(keep);
     first.text = piece.text[..split_byte].to_string();
@@ -687,7 +684,7 @@ fn cut_piece(piece: Piece, keep: usize) -> (Option<Piece>, Option<Piece>) {
         .iter()
         .map(|glyph| Glyph {
             x: glyph.x - offset,
-            text: (glyph.text.0 - split_byte, glyph.text.1 - split_byte),
+            text: (glyph.text.0 - split, glyph.text.1 - split),
             ..*glyph
         })
         .collect();
@@ -1135,7 +1132,7 @@ fn place_glyphs(
             advance,
             dx: glyph.dx * size * scale,
             dy: glyph.dy * size,
-            text: (start, end),
+            text: (offset(start), offset(end)),
         });
         x += advance;
     }
@@ -1156,10 +1153,13 @@ struct Builder {
 /// Share of the width of its spaces a justified line may lose to fit a
 /// word (`KAKEMONO_JUSTIFY_SHRINK` overrides it, for tuning).
 fn justify_shrink() -> f32 {
-    std::env::var("KAKEMONO_JUSTIFY_SHRINK")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(JUSTIFY_SHRINK_RATIO)
+    static SHRINK: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHRINK.get_or_init(|| {
+        std::env::var("KAKEMONO_JUSTIFY_SHRINK")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(JUSTIFY_SHRINK_RATIO)
+    })
 }
 
 impl Builder {
@@ -1587,7 +1587,7 @@ fn decimal_offset(segment: &[&Placed]) -> Option<f32> {
 /// The text a glyph of `piece` stands for (empty when its range is not in
 /// the piece's text).
 fn glyph_text<'a>(piece: &'a Piece, glyph: &Glyph) -> &'a str {
-    piece.text.get(glyph.text.0..glyph.text.1).unwrap_or("")
+    piece.text.get(glyph.range()).unwrap_or("")
 }
 
 /// Moves an item placed on baseline 0 to `baseline`.
@@ -1771,7 +1771,7 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
         for glyph in &piece.glyphs {
             glyphs.push(Glyph {
                 x: x - start + glyph.x,
-                text: (text.len(), text.len() + leader.len_utf8()),
+                text: (offset(text.len()), offset(text.len() + leader.len_utf8())),
                 ..*glyph
             });
         }
