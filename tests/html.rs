@@ -742,7 +742,7 @@ fn gov_page_title_is_said_once_and_the_site_is_no_author() {
 /// download a figure, a numbered list of references with its own labels
 /// and the links to indexes of articles, citations that link to the
 /// references (which become notes).
-const SCIENCE: &str = r##"<!doctype html><html lang="en"><head><title>The citation advantage</title></head>
+const SCIENCE: &str = r##"<!doctype html><html lang="en"><head><title>The citation advantage</title><style>.u-hide { display: none }</style></head>
 <body><main><div class="article-text">
 <h1>The citation advantage of linking publications to research data</h1>
 <ul class="author-list"><li data-js-tooltip="tooltip_trigger"><a class="author-name">Giovanni Colavizza</a>
@@ -761,6 +761,9 @@ const SCIENCE: &str = r##"<!doctype html><html lang="en"><head><title>The citati
 <div class="section toc-section"><h2>Notes</h2><ol>
 <li><p id="c1">A note on funding agencies.</p></li><li><p id="c2">A note on data policies.</p></li></ol></div>
 <h2>Acknowledgments</h2><p>The authors would like to thank the European Bioinformatics Institute.</p>
+<ul><li><p>Received<span class="u-hide">: </span><span>21 February 2020</span></p></li></ul>
+<section class="c-article-recommendations"><h3>Similar content being viewed by others</h3>
+<a href="/articles/other">The FAIR Guiding Principles</a></section>
 </div></main></body></html>"##;
 
 #[test]
@@ -793,6 +796,9 @@ fn science_paper_keeps_its_sections_and_loses_its_widgets() {
     // The notes left the flow: their heading goes with them.
     assert!(!texts(&doc).iter().any(|text| text == "Notes"), "{:#?}", texts(&doc));
     assert!(texts(&doc).iter().any(|text| text == "References"));
+    // A hidden separator leaves a space.
+    assert!(has_text(&doc, "Received 21 February 2020"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Similar content"), "{:#?}", texts(&doc));
 }
 
 #[test]

@@ -142,7 +142,7 @@ const CLUTTER_ROLES: [&str; 15] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 40] = [
+const CLUTTER_WORDS: [&str; 41] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -172,6 +172,8 @@ const CLUTTER_WORDS: [&str; 40] = [
     "paywall",
     "popup",
     "promo",
+    // `c-article-recommendations`: similar articles.
+    "recommendations",
     "related",
     "share",
     "sharing",
@@ -206,9 +208,10 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
     "subscription",
 ];
 /// Texts of the links to indexes of articles in a list of references.
-const REFERENCE_SERVICES: [&str; 16] = [
+const REFERENCE_SERVICES: [&str; 17] = [
     "google scholar",
     "pubmed",
+    "pubmed/ncbi",
     "pmc free article",
     "pubmed central",
     "europe pmc",

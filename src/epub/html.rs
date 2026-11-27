@@ -406,6 +406,16 @@ impl<'a> Reader<'a> {
             if let Some(id) = id {
                 flow.bookmark(id, true);
             }
+            // A hidden separator between words (Nature's `Received<span
+            // class="u-hide">: </span>21 February`) leaves a space.
+            let text: String = node.descendants().filter_map(|child| child.text()).collect();
+            if props.hidden
+                && text.contains(char::is_whitespace)
+                && text.chars().all(|ch| !ch.is_alphanumeric())
+                && !BLOCKS.contains(&name.as_str())
+            {
+                self.text(ctx, flow, " ");
+            }
             return;
         }
         let is_block = BLOCKS.contains(&name.as_str()) || is_heading(&name).is_some();
