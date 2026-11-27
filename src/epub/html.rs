@@ -124,6 +124,8 @@ struct Flow {
     ids: Vec<String>,
     /// List numbering of the next paragraph.
     list: Option<ListMark>,
+    /// The places in `items` where a note left the flow.
+    moved_notes: Vec<usize>,
 }
 
 /// One content document of the book.
@@ -225,7 +227,9 @@ pub(crate) fn read_documents(
         reader.element(&page, body, &Ctx::default(), &mut flow);
         flow.flush();
     }
+    let moved_notes = std::mem::take(&mut flow.moved_notes);
     let mut body = flow.finish();
+    emptied_headings(&mut body, &moved_notes);
     front_matter(&mut body, title, creators);
     raise_headings(&mut body);
     Ok(WordDoc {
@@ -388,6 +392,7 @@ impl<'a> Reader<'a> {
         if id.as_ref().is_some_and(|id| self.note_ids.contains(id)) {
             let id = id.unwrap_or_default();
             let body = self.note_body(page, node, ctx);
+            flow.moved_notes.push(flow.items.len());
             self.notes.push(Note {
                 endnote: false,
                 id,
@@ -899,6 +904,44 @@ fn front_matter(body: &mut Vec<Item>, title: Option<&str>, creators: &[String]) 
         let start = at.map_or(0, |idx| idx + 1);
         for (offset, creator) in creators.iter().enumerate() {
             body.insert(start + offset, plain_para(AUTHOR_STYLE, creator));
+        }
+    }
+}
+
+/// Fewest notes of a list of notes.
+const MIN_NOTES_OF_A_LIST: usize = 2;
+
+/// Removes the headings whose part held only a list of notes, which left
+/// the flow (`References` of a page whose citations are notes): notes
+/// left the flow right after it, and the next item is a heading of the
+/// same level or above, or there is none. Their
+/// bookmarks go to the next item.
+fn emptied_headings(body: &mut Vec<Item>, moved_notes: &[usize]) {
+    let level = |item: &Item| match item {
+        Item::Para(para) => para.outline,
+        Item::Table(_) => None,
+    };
+    let mut index = body.len();
+    while index > 0 {
+        index -= 1;
+        let Some(heading) = level(&body[index]) else {
+            continue;
+        };
+        let notes = moved_notes.iter().filter(|&&at| at == index + 1).count();
+        let emptied = notes >= MIN_NOTES_OF_A_LIST
+            && body
+                .get(index + 1)
+                .is_none_or(|next| level(next).is_some_and(|next| next <= heading));
+        if !emptied {
+            continue;
+        }
+        let Item::Para(para) = body.remove(index) else {
+            continue;
+        };
+        if let Some(Item::Para(next)) = body.get_mut(index) {
+            let mut bookmarks = para.bookmarks;
+            bookmarks.append(&mut next.bookmarks);
+            next.bookmarks = bookmarks;
         }
     }
 }
