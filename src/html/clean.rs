@@ -1822,6 +1822,20 @@ fn remove_icons(dom: &mut Dom, root: Id) {
 /// file or drawing), or named so ([`ICON_WORDS`]) by its class or `id` or
 /// those of what holds it. A picture with a caption is the article's.
 fn is_icon(dom: &Dom, node: Id) -> bool {
+    // A drawing that only uses a symbol of the page's sprite
+    // (`<use href="#Search"/>`): the sprite is not in the article.
+    let elements: Vec<Id> = dom
+        .descendants(node)
+        .into_iter()
+        .filter(|&id| id != node && matches!(dom.nodes[id].kind, Kind::Element { .. }))
+        .collect();
+    let named = |id: Id, names: &[&str]| dom.name(id).is_some_and(|name| names.contains(&name));
+    let sprite = named(node, &["svg"])
+        && elements.iter().any(|&id| named(id, &["use"]))
+        && elements.iter().all(|&id| named(id, &["use", "g", "title", "desc"]));
+    if sprite {
+        return true;
+    }
     let (width, height) = class_size_px(dom, node);
     if width.is_some_and(|width| width < MIN_PICTURE_PX) || height.is_some_and(|height| height < MIN_PICTURE_PX) {
         return true;

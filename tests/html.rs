@@ -920,3 +920,21 @@ fn the_links_to_the_stories_of_a_topic_before_the_title_are_gone() {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
 }
+
+#[test]
+fn a_drawing_of_a_symbol_of_the_sprite_of_the_page_is_an_icon() {
+    let doc = page(
+        r##"<!doctype html><html lang="en"><head><title>News</title></head><body><main><h1>News of the day</h1>
+<p><a href="https://e.vnexpress.net/"><svg class="ic"><use xlink:href="#letter-E"></use></svg>International</a></p>
+<p>The first story of the day is about a gas explosion that destroyed a restaurant and damaged the building around it.</p>
+</main></body></html>"##,
+    );
+    assert!(
+        !doc.blocks
+            .iter()
+            .any(|block| matches!(block.kind, BlockKind::Figure { .. })),
+        "{:#?}",
+        doc.blocks.iter().map(|block| &block.kind).collect::<Vec<_>>()
+    );
+    assert!(has_text(&doc, "International"));
+}
