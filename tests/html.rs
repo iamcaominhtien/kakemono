@@ -736,3 +736,72 @@ fn gov_page_title_is_said_once_and_the_site_is_no_author() {
     assert!(has_text(&doc, "Tên giao dịch quốc tế"));
     assert!(!has_text(&doc, "Cổng Thông tin điện tử"), "{:#?}", texts(&doc));
 }
+
+/// A paper as PLOS, PMC and Nature lay it out: sections of class
+/// `toc-section`, the roles of an author in a tooltip, the links to
+/// download a figure, a numbered list of references with its own labels
+/// and the links to indexes of articles, citations that link to the
+/// references (which become notes).
+const SCIENCE: &str = r##"<!doctype html><html lang="en"><head><title>The citation advantage</title></head>
+<body><main><div class="article-text">
+<h1>The citation advantage of linking publications to research data</h1>
+<ul class="author-list"><li data-js-tooltip="tooltip_trigger"><a class="author-name">Giovanni Colavizza</a>
+<div class="author-info" data-js-tooltip="tooltip_target"><p><span>Roles</span> Conceptualization, Data curation</p></div></li></ul>
+<div class="section toc-section"><h2>Introduction</h2>
+<p>More research funding agencies, institutions, journals and publishers are introducing policies that encourage or require the sharing of research data.<sup><a href="#c1">1</a></sup></p>
+<p>Journal research data policies often include requirements for researchers to provide Data Availability Statements.<sup><a href="#c2">2</a></sup></p>
+<div class="figure"><img src="fig1.png" alt="Fig 1"><div class="figure-inline-download">Download:
+<ul><li><a href="fig1-large.png">PNG larger image</a></li><li><a href="fig1.tiff">TIFF original image</a></li></ul></div>
+<p class="caption">Fig 1. Data extraction and processing steps.</p></div></div>
+<div class="section toc-section"><h2>References</h2><ol class="references">
+<li id="ref1"><span class="order">1.</span> Hodson S, Molloy L. Current Best Practice for Research Data Management Policies. 2015.
+<ul class="reflinks"><li><a href="#">View Article</a></li><li><a href="https://scholar.google.com/x">Google Scholar</a></li></ul></li>
+<li id="ref2"><span class="order">2.</span> Kelvin DJ, Rubino S. Fear of the novel coronavirus. 2020. [<a href="https://pubmed.ncbi.nlm.nih.gov/1/">PubMed</a>]</li>
+</ol></div>
+<div class="section toc-section"><h2>Notes</h2><ol>
+<li><p id="c1">A note on funding agencies.</p></li><li><p id="c2">A note on data policies.</p></li></ol></div>
+<h2>Acknowledgments</h2><p>The authors would like to thank the European Bioinformatics Institute.</p>
+</div></main></body></html>"##;
+
+#[test]
+fn science_paper_keeps_its_sections_and_loses_its_widgets() {
+    let doc = page(SCIENCE);
+    assert!(has_text(&doc, "More research funding agencies"), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Data extraction and processing steps"));
+    // The list numbers the references: their own labels go.
+    let reference = block(&doc, "1. Hodson S");
+    assert!(
+        reference.text().starts_with("1. Hodson S, Molloy L."),
+        "{:?}",
+        reference.text()
+    );
+    let second = block(&doc, "2. Kelvin DJ");
+    assert_eq!(
+        second.text().trim_end(),
+        "2. Kelvin DJ, Rubino S. Fear of the novel coronavirus. 2020."
+    );
+    for clutter in [
+        "Conceptualization",
+        "Download",
+        "larger image",
+        "View Article",
+        "Google Scholar",
+        "PubMed",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    // The notes left the flow: their heading goes with them.
+    assert!(!texts(&doc).iter().any(|text| text == "Notes"), "{:#?}", texts(&doc));
+    assert!(texts(&doc).iter().any(|text| text == "References"));
+}
+
+#[test]
+fn the_label_of_an_unnumbered_reference_is_apart_from_it() {
+    let doc = page(
+        r#"<html><head><title>R</title></head><body><main><h1>References</h1>
+<p>A paper about coronaviruses, with a list of references that are not numbered by the list.</p>
+<ul class="ref-list"><li><span class="label">1.</span><cite>Tan W, Zhao X. A novel coronavirus genome. 2020.</cite></li></ul>
+</main></body></html>"#,
+    );
+    assert!(has_text(&doc, "1. Tan W, Zhao X."), "{:#?}", texts(&doc));
+}

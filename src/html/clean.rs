@@ -142,7 +142,7 @@ const CLUTTER_ROLES: [&str; 15] = [
 ];
 /// Words of a class or `id` that mark clutter, whatever else it says
 /// (`sidebar-content` is a sidebar).
-const CLUTTER_WORDS: [&str; 41] = [
+const CLUTTER_WORDS: [&str; 40] = [
     "ad",
     "ads",
     "adsbygoogle",
@@ -186,7 +186,6 @@ const CLUTTER_WORDS: [&str; 41] = [
     "taboola",
     // A list of tags (`article-tags`; one tag is too common a word).
     "tags",
-    "toc",
     "toolbar",
     "catlinks",
 ];
@@ -206,6 +205,30 @@ const WEAK_CLUTTER_WORDS: [&str; 12] = [
     "pagination",
     "subscription",
 ];
+/// Texts of the links to indexes of articles in a list of references.
+const REFERENCE_SERVICES: [&str; 16] = [
+    "google scholar",
+    "pubmed",
+    "pmc free article",
+    "pubmed central",
+    "europe pmc",
+    "crossref",
+    "view article",
+    "article",
+    "ads",
+    "mathscinet",
+    "cas",
+    "isi",
+    "web of science",
+    "scopus",
+    "math review",
+    "zbmath",
+];
+/// Words of a class or `id` of a list of links: clutter when most of its
+/// text is in links. A table of contents (PLOS's sections are
+/// `toc-section`: they are listed in it), the links to download a figure
+/// (`figure-inline-download`).
+const LINK_LIST_WORDS: [&str; 2] = ["toc", "download"];
 /// `id`s of clutter, as a whole: WordPress's sidebar (`#secondary`, beside
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
@@ -333,6 +356,8 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     repeated_blocks(dom, root);
     comment_links(dom, root);
     remove_counts(dom, root);
+    reference_links(dom, root);
+    item_labels(dom, root);
     heading_self_links(dom, root);
     sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
@@ -647,6 +672,9 @@ fn is_clutter_by_name(dom: &Dom, node: Id) -> bool {
     }
     let words: Vec<String> = words(&names).collect();
     let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
+    if has(&LINK_LIST_WORDS) && link_share(dom, node) >= WIDGET_LINK_SHARE_RATIO {
+        return true;
+    }
     has(&CLUTTER_WORDS) || (has(&WEAK_CLUTTER_WORDS) && !has(&CONTENT_WORDS) && !is_heading_box(dom, node))
 }
 
@@ -718,10 +746,11 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
         let in_heading = dom
             .ancestor(node, |id| dom.is_any(id, &["h1", "h2", "h3", "h4", "h5", "h6"]))
             .is_some();
-        let role_clutter = dom.attr(node, "role").is_some_and(|role| {
-            role.split_whitespace()
-                .any(|role| CLUTTER_ROLES.contains(&role.to_ascii_lowercase().as_str()))
-        });
+        let role_clutter = is_tooltip(dom, node)
+            || dom.attr(node, "role").is_some_and(|role| {
+                role.split_whitespace()
+                    .any(|role| CLUTTER_ROLES.contains(&role.to_ascii_lowercase().as_str()))
+            });
         let share = weight[node] as f32 / total as f32;
         let named_clutter = (!NEVER_CLUTTER.contains(&name.as_str())
             && !in_heading
@@ -884,6 +913,113 @@ fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
     (at, trailing)
 }
 
+/// Removes the links of an item of a list to an index of articles (`[Google
+/// Scholar]`, `[PubMed]`, `View Article`): the services that find a work
+/// of a list of references, not its text. Their brackets go with them, and
+/// the blocks they leave empty.
+fn reference_links(dom: &mut Dom, root: Id) {
+    for link in dom.find_all(root, "a") {
+        let text = dom.clean_text(link).to_lowercase();
+        if !REFERENCE_SERVICES.contains(&text.trim())
+            || dom.ancestor(link, |id| dom.is(id, "li")).is_none()
+            || dom.find(link, "img").is_some()
+        {
+            continue;
+        }
+        let Some(parent) = dom.nodes[link].parent else {
+            continue;
+        };
+        let siblings = &dom.nodes[parent].children;
+        let at = siblings.iter().position(|&child| child == link).unwrap_or_default();
+        let before = at.checked_sub(1).and_then(|index| siblings.get(index)).copied();
+        let after = siblings.get(at + 1).copied();
+        let opens = before.is_some_and(
+            |before| matches!(&dom.nodes[before].kind, Kind::Text(text) if text.trim_end().ends_with('[')),
+        );
+        let closes =
+            after.is_some_and(|after| matches!(&dom.nodes[after].kind, Kind::Text(text) if text.starts_with(']')));
+        if opens
+            && closes
+            && let (Some(before), Some(after)) = (before, after)
+        {
+            if let Kind::Text(text) = &mut dom.nodes[before].kind {
+                *text = text.trim_end().trim_end_matches('[').to_string();
+            }
+            if let Kind::Text(text) = &mut dom.nodes[after].kind {
+                *text = text.trim_start_matches(']').to_string();
+            }
+        }
+        dom.detach(link);
+        // The blocks left empty (Nature's `c-article-references__links`).
+        let mut empty = parent;
+        while !dom.is(empty, "li")
+            && dom.clean_text(empty).is_empty()
+            && dom.find(empty, "img").is_none()
+            && let Some(up) = dom.nodes[empty].parent
+        {
+            dom.detach(empty);
+            empty = up;
+        }
+    }
+}
+
+/// The label of the number of an item of a list at its start
+/// (`<span class="label">1.</span>`): in a numbered list it repeats the
+/// number the list gives, in another one a space follows it (PMC's labels
+/// touch the reference).
+fn item_labels(dom: &mut Dom, root: Id) {
+    for item in dom.find_all(root, "li") {
+        let Some(&first) = dom.nodes[item]
+            .children
+            .iter()
+            .find(|&&child| !matches!(&dom.nodes[child].kind, Kind::Text(text) if text.trim().is_empty()))
+        else {
+            continue;
+        };
+        if !matches!(dom.nodes[first].kind, Kind::Element { .. }) || dom.is(first, "a") {
+            continue;
+        }
+        let label = dom.clean_text(first);
+        let number = label.trim_end_matches(['.', ')']);
+        if number.is_empty() || !number.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let numbered = dom.nodes[item].parent.is_some_and(|list| dom.is(list, "ol"));
+        if numbered {
+            dom.detach(first);
+        } else {
+            let space = dom.text_node(" ");
+            dom.insert_after(first, space);
+        }
+    }
+}
+
+/// Whether `node` is what a tooltip shows, which a script shows on hover
+/// (PLOS's `data-js-tooltip="tooltip_target"`: the roles and affiliations
+/// of an author), not what shows it.
+fn is_tooltip(dom: &Dom, node: Id) -> bool {
+    let Kind::Element { attrs, .. } = &dom.nodes[node].kind else {
+        return false;
+    };
+    attrs.iter().any(|(name, value)| {
+        let name = name.to_ascii_lowercase();
+        name.starts_with("data-") && name.contains("tooltip") && value.to_ascii_lowercase().contains("target")
+    })
+}
+
+/// The share of the text of `node` that is in links (1 when it has no
+/// text).
+fn link_share(dom: &Dom, node: Id) -> f32 {
+    let all = dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count();
+    let linked: usize = dom
+        .find_all(node, "a")
+        .into_iter()
+        .filter(|&a| dom.ancestor(a, |up| dom.is(up, "a")).is_none())
+        .map(|a| dom.clean_text(a).chars().filter(|ch| !ch.is_whitespace()).count())
+        .sum();
+    if all == 0 { 1.0 } else { linked as f32 / all as f32 }
+}
+
 /// Whether `node`, after the body of an article, is a widget: no long
 /// paragraph, picture (but icons, and the pictures of links: thumbnails of
 /// other articles, banners), table, numbered list or notes.
@@ -893,15 +1029,7 @@ fn is_widget(dom: &Dom, node: Id) -> bool {
     }
     // Most of its text in links: a list of other articles, whatever their
     // summaries say.
-    let all = dom.clean_text(node).chars().filter(|ch| !ch.is_whitespace()).count();
-    let links = dom
-        .find_all(node, "a")
-        .into_iter()
-        .filter(|&a| dom.ancestor(a, |up| dom.is(up, "a")).is_none());
-    let linked: usize = links
-        .map(|a| dom.clean_text(a).chars().filter(|ch| !ch.is_whitespace()).count())
-        .sum();
-    let list_of_links = linked as f32 >= WIDGET_LINK_SHARE_RATIO * all as f32;
+    let list_of_links = link_share(dom, node) >= WIDGET_LINK_SHARE_RATIO;
     !dom.descendants(node).into_iter().any(|id| match &dom.nodes[id].kind {
         Kind::Text(text) => !list_of_links && text.trim().chars().count() >= LONG_PARAGRAPH_CHARS,
         Kind::Element { .. } => {
