@@ -67,8 +67,7 @@ corpus against the workbooks' XML.
       the Excel-style PDF (keeping ISO in Markdown, JSON and chunks)? ISO
       dates overflow or are clipped in narrow cells whose format is short
       (`d`, `d-mmm`): ms-project-schedule (the day row), poi-excelpivottablesample.
-- [ ] The cap of cells read per sheet, trimming empty columns, a benchmark of
-      large workbooks.
+- [ ] The cap of cells read per sheet, trimming empty columns.
 
 ### Regions and header rows (`regions.rs`, `build.rs`; compare with `scripts/excel-report.py`)
 
@@ -141,6 +140,33 @@ corpus against the workbooks' XML.
       title columns prints fragments (LibreOffice does too).
 - [ ] digital-common-spec-gyomuflow: the gateway "X" (`mathMultiply`) looks
       bolder and larger than LibreOffice draws it; not checked against Excel.
+
+### Size and speed (`scripts/excel-bench.py synth`)
+
+Measured on 4 cores and 16 GB, after the speed-ups of the stress test
+(quadratic glyph clusters, row splits, chunk cuts, clipped cell text).
+
+- [ ] The document-style PDF holds every laid-out page until the PDF is
+      written, about 80 bytes per character (a `TextRun` per word, with its
+      glyphs). A workbook of 320 million characters (10,000 cells of 32,000,
+      about 100,000 pages) runs out of memory past 10 GB; Word documents
+      share the limit. Either write the PDF page by page (shared `flow.rs`
+      and the PDF writer; `NUMPAGES`, `SECTIONPAGES` and `PAGEREF` need the
+      page count or a second pass, so check `scripts/word-fidelity.py`), or
+      stop a workbook's document-style PDF at a number of pages with a note
+      saying what is left out. Joining the runs of a line set in one font and
+      storing glyph text ranges as `u32` would halve the memory.
+- [ ] Large grids: 2.5 million cells (the cap) take 2.6 GB for Word, 2.3 GB for
+      the document-style PDF, 1.9 GB and 21 s for the Excel-style PDF, 10 s for
+      the sheet view; the `Grid` and the `Document` are held at once.
+- [ ] Nothing bounds the size of the text outputs: the long-text workbook gives
+      320 MB of Markdown and of sheet view, in 5 s. Decide whether a workbook
+      needs a cap of characters, with a note, as the cells have.
+- [ ] The chunks of the long-text workbook take 29 s (320 million characters):
+      profile what remains.
+- [ ] Not measured yet: the corpus against LibreOffice's PDF
+      (`excel-bench.py corpus DIR`), and several conversions at once
+      (`excel-bench.py concurrent FILE`: memory and throughput).
 
 ## Chunks for retrieval (`src/render/chunks`)
 
