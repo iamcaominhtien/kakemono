@@ -851,3 +851,72 @@ fn wiki_references_keep_their_titles_and_the_navigation_goes() {
         .unwrap_or_else(|| panic!("no note of Ablowitz in {:#?}", texts(&doc)));
     assert_eq!(note.style & kakemono::model::ITALIC, 0, "{note:?}");
 }
+
+/// A page that is a table (Hacker News): rows of a rank, an empty cell
+/// for the arrow to vote, the title, then a row of its points.
+const LINK_TABLE: &str = r#"<!doctype html><html lang="en"><head><title>Hacker News</title></head><body>
+<table><tr><td><a href="news"><b>Hacker News</b></a> | <a href="newest">new</a> | <a href="submit">submit</a></td></tr>
+<tr><td><table>
+<tr class="athing"><td class="title"><span class="rank">1.</span></td><td class="votelinks"><a href="vote?id=1"><div class="votearrow"></div></a></td>
+<td class="title"><a href="https://example.org/early">2035 Came Early, a long story of a future that arrived before its time</a></td></tr>
+<tr><td colspan="2"></td><td class="subtext">225 points by setheron 3 hours ago | 60 comments on this story</td></tr>
+<tr class="athing"><td class="title"><span class="rank">2.</span></td><td class="votelinks"><a href="vote?id=2"><div class="votearrow"></div></a></td>
+<td class="title"><a href="https://example.org/ladybird">Ladybird is now in alpha, the browser built from scratch by its community</a></td></tr>
+<tr><td colspan="2"></td><td class="subtext">1970 points by janvdberg 18 hours ago | 459 comments on this story</td></tr>
+</table></td></tr></table></body></html>"#;
+
+#[test]
+fn a_page_that_is_a_table_reads_as_a_table_without_its_empty_column() {
+    let doc = page(LINK_TABLE);
+    let table = doc
+        .blocks
+        .iter()
+        .find_map(|block| block.table.as_ref())
+        .unwrap_or_else(|| panic!("no table in {:#?}", texts(&doc)));
+    assert_eq!(table.n_cols, 2, "{table:#?}");
+    let cell = |row: usize, col: usize| -> String {
+        table.rows[row]
+            .iter()
+            .find(|cell| cell.col == col)
+            .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(cell(0, 0).trim(), "1.");
+    assert!(cell(0, 1).starts_with("2035 Came Early"), "{table:#?}");
+    assert!(cell(1, 1).starts_with("225 points"), "{table:#?}");
+}
+
+/// A home page: the title of its first story is an `h1` in a link.
+const HOME: &str = r#"<!doctype html><html lang="vi"><head><title></title>
+<meta property="og:title" content="Cổng Thông tin điện tử Chính phủ"></head><body><main>
+<div class="stories"><a href="https://baochinhphu.vn/khan-truong.htm"><div><h1>Khẩn trương khắc phục hậu quả vụ nổ tại Đống Đa, Hà Nội</h1></div>
+<div>(Chinhphu.vn) - Phó Thủ tướng Thường trực vừa ký Công điện về vụ nổ cửa hàng ăn uống tại phố Nguyễn Văn Tuyết.</div></a>
+<p>Thủ tướng Chính phủ yêu cầu các bộ, ngành và Ủy ban nhân dân thành phố Hà Nội khẩn trương khắc phục hậu quả, hỗ trợ người dân bị ảnh hưởng và điều tra nguyên nhân vụ việc.</p>
+</div></main></body></html>"#;
+
+#[test]
+fn the_heading_of_a_story_in_a_link_is_not_the_title_of_a_home_page() {
+    let doc = page(HOME);
+    assert_eq!(doc.meta.title.as_deref(), Some("Cổng Thông tin điện tử Chính phủ"));
+    let story = block(&doc, "Khẩn trương khắc phục");
+    assert!(matches!(story.kind, BlockKind::Heading { .. }), "{:?}", story.kind);
+    assert!(has_text(&doc, "khắc phục hậu quả, hỗ trợ người dân"));
+}
+
+#[test]
+fn the_links_to_the_stories_of_a_topic_before_the_title_are_gone() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>Inside the pressure campaign</title></head><body><main>
+<div class="topic"><h2>Nvidia spy scandal</h2><a href="/a">Trump's intervention</a> <a href="/b">Boardroom blunder</a>
+<a href="/c">Republican pushback</a> <a href="/d">Market reaction</a> <a href="/e">Inside the pressure campaign</a>
+<a href="/f">What comes next for the company and its chief executive</a></div>
+<div class="article"><h1>Inside the Trump pressure campaign that restored Jensen Huang as Nvidia's CEO</h1>
+<p>President Donald Trump had been stewing for days over the US stock market's deepening sell-off when he decided there was only one way to stop the slide.</p>
+<p>Trump's conclusion late last week sparked an unprecedented West Wing pressure campaign orchestrated by the president to convince the tech giant.</p></div>
+</main></body></html>"#,
+    );
+    assert!(has_text(&doc, "stewing for days"));
+    for clutter in ["Nvidia spy scandal", "Boardroom blunder"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}

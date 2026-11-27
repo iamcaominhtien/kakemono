@@ -359,6 +359,7 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
         place_lead_picture(dom, root, lead);
     }
     remove_teasers(dom, root, base, &meta);
+    teaser_title(dom, root, &meta);
     before_title(dom, root);
     repeated_links(dom, root);
     repeated_blocks(dom, root);
@@ -592,6 +593,27 @@ fn title(dom: &mut Dom, body: Id, root: Id, meta: &Meta) -> Option<String> {
         return Some(text);
     }
     meta.meta_title.clone().or_else(|| meta.page_title.clone())
+}
+
+/// The `h1` in `root` inside a link is the title of a teaser for another
+/// page (the first story of a home page), not of this one: it becomes a
+/// heading below the title, which the metadata gives.
+fn teaser_title(dom: &mut Dom, root: Id, meta: &Meta) {
+    let Some(h1) = dom.find(root, "h1") else {
+        return;
+    };
+    let in_link = dom
+        .ancestor(h1, |id| dom.is(id, "a"))
+        .is_some_and(|link| dom.attr(link, "href").is_some_and(|href| !href.trim().starts_with('#')));
+    let text = dom.clean_text(h1);
+    let other = meta
+        .meta_title
+        .as_deref()
+        .or(meta.page_title.as_deref())
+        .is_some_and(|title| !title.trim().is_empty() && !same_text(title, &text));
+    if in_link && other {
+        dom.rename(h1, "h2");
+    }
 }
 
 /// Removes the block just after the title `h1` that says it again, in
@@ -925,6 +947,12 @@ fn find_root(dom: &Dom, body: Id) -> (Id, Vec<Id>) {
             break;
         }
         at = best;
+    }
+    // A part of a table is read as a table only in one (Hacker News's rows).
+    if dom.is_any(at, &["tbody", "thead", "tfoot", "tr"])
+        && let Some(table) = dom.ancestor(at, |id| dom.is(id, "table"))
+    {
+        at = table;
     }
     (at, trailing)
 }
@@ -1265,8 +1293,9 @@ fn is_link_box(dom: &Dom, node: Id) -> bool {
     titles == 1 && paragraphs <= 1
 }
 
-/// Removes what comes before the title in `root` and is short, with no
-/// picture: a breadcrumb, a date, a label.
+/// Removes what comes before the title in `root` and is short or mostly
+/// links, with no picture: a breadcrumb, a date, a label, a list of
+/// articles.
 fn before_title(dom: &mut Dom, root: Id) {
     let Some(h1) = dom.find(root, "h1") else {
         return;
@@ -1288,7 +1317,11 @@ fn before_title(dom: &mut Dom, root: Id) {
                     .descendants(node)
                     .into_iter()
                     .any(|id| dom.is_any(id, &["img", "picture", "figure", "svg"]));
-            if !picture && dom.clean_text(node).chars().count() <= BEFORE_TITLE_MAX_CHARS {
+            let element = matches!(dom.nodes[node].kind, Kind::Element { .. });
+            // Or links: the other articles of a story (CNN's `Nvidia spy
+            // scandal`).
+            let links = element && link_share(dom, node) >= WIDGET_LINK_SHARE_RATIO;
+            if !picture && (links || dom.clean_text(node).chars().count() <= BEFORE_TITLE_MAX_CHARS) {
                 dom.detach(node);
             }
         }
