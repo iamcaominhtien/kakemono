@@ -1015,3 +1015,21 @@ fn the_photo_of_an_author_is_no_picture_of_the_article() {
         .count();
     assert_eq!(figures, 1, "{:#?}", texts(&doc));
 }
+
+#[test]
+fn a_table_that_lays_out_an_equation_without_number_is_an_equation() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>Scaling laws</title></head><body><main><h1>Scaling laws</h1>
+<p>We assume a power-law relation between the compute budget and the optimal number of training tokens:</p>
+<table class="ltx_equation"><tr><td></td><td><math display="block"><mi>N</mi><mo>=</mo><mi>A</mi><msup><mi>C</mi><mi>α</mi></msup></math></td><td></td></tr></table>
+<p>We then fit A and alpha using the data from the compute-optimal models of the experiments.</p>
+</main></body></html>"#,
+    );
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|block| matches!(block.kind, BlockKind::Equation { number: None, .. })),
+        "{:#?}",
+        doc.blocks.iter().map(|block| &block.kind).collect::<Vec<_>>()
+    );
+}
