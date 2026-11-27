@@ -112,6 +112,19 @@ const LONG_TABLE_SIZES: &[(usize, &str, f32, f32)] = &[
     (usize::MAX, "\\scriptsize", 8.0, 2.0),
     (usize::MAX, "\\tiny", 6.0, 1.0),
 ];
+/// A table with no geometry (read from a workbook or a Word document) too
+/// wide for the text even in `\scriptsize`: shrunk to the width of the text
+/// in a box, it would be unreadable, so it is a `longtable` (turned, or cut
+/// into groups of columns, when it must be). A paper's table, which fitted
+/// its page, is boxed as before.
+fn too_wide_to_box(table: &Table) -> bool {
+    let readable = &LONG_TABLE_SIZES[..LONG_TABLE_SIZES.len() - 1];
+    table.geom.col_bounds.is_empty()
+        && !readable
+        .iter()
+        .any(|size| Columns::fitted(table, size.2, size.3, TEXT_WIDTH_PT).fits())
+}
+
 /// The height of the text in pt: letter paper with the 2.5 cm margins of
 /// [`PREAMBLE`]. Only used to guess whether the header of a long table is
 /// too tall to repeat.
@@ -909,7 +922,8 @@ impl Writer<'_, '_> {
         let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
             Some(
-                if table.rows.len().saturating_sub(table.header_rows) > MAX_BOXED_TABLE_BODY_ROWS {
+                if table.rows.len().saturating_sub(table.header_rows) > MAX_BOXED_TABLE_BODY_ROWS || too_wide_to_box(table)
+                {
                     return self.paragraph(&self.longtable(table, caption.as_deref(), caption_first));
                 } else {
                     format!(
