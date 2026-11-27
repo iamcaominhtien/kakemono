@@ -991,3 +991,27 @@ fn a_line_that_only_names_the_authors_is_not_said_twice() {
     assert_eq!(named, 2, "{:#?}", texts(&doc));
     assert!(has_text(&doc, "Ivan Klaric"));
 }
+
+#[test]
+fn the_photo_of_an_author_is_no_picture_of_the_article() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let doc = page_at(
+        r#"<!doctype html><html lang="en"><head><title>Data Contracts</title></head><body><main><h1>Data Contracts</h1>
+<div class="author"><div class="photo"><a href="https://simonharrer.com/"><img alt="Photo of Simon Harrer" src="simon.jpg" width="80"></a></div>
+<address class="name"><a href="https://simonharrer.com/" rel="author">Simon Harrer</a></address></div>
+<p>Data contracts are a way to describe the contents and guarantees of datasets, as an API describes a service.</p>
+<figure><img src="contract.png" alt="A data contract"><figcaption>A data contract and its parts.</figcaption></figure>
+</main></body></html>"#,
+        "https://martinfowler.com/articles/data-contracts.html",
+        &[
+            ("https://martinfowler.com/articles/simon.jpg", &png),
+            ("https://martinfowler.com/articles/contract.png", &png),
+        ],
+    );
+    let figures = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { .. }))
+        .count();
+    assert_eq!(figures, 1, "{:#?}", texts(&doc));
+}

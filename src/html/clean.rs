@@ -1624,13 +1624,24 @@ fn sentence_headings(dom: &mut Dom, root: Id) {
 /// Whether the picture `img` is the photo of an author: in a link to the
 /// page of an author (`rel="author"`, `/author/`, `/tac-gia/`).
 fn is_author_photo(dom: &Dom, img: Id) -> bool {
-    dom.ancestor(img, |id| dom.is(id, "a")).is_some_and(|link| {
+    let is_author = |link: Id| {
         dom.attr(link, "rel")
             .is_some_and(|rel| rel.split_whitespace().any(|rel| rel.eq_ignore_ascii_case("author")))
-            || dom.attr(link, "href").is_some_and(|href| {
-                let href = href.to_ascii_lowercase();
-                AUTHOR_PATHS.iter().any(|path| href.contains(path))
-            })
+    };
+    dom.ancestor(img, |id| dom.is(id, "a")).is_some_and(|link| {
+        let href = dom.attr(link, "href").map(str::trim).unwrap_or_default();
+        is_author(link)
+            || AUTHOR_PATHS.iter().any(|path| href.to_ascii_lowercase().contains(path))
+            // A link to where another link of the author leads (Martin
+            // Fowler's photo, then the name `rel="author"`).
+            || (!href.is_empty()
+                && dom.nodes[link].parent.is_some_and(|parent| {
+                    let block = dom.ancestor(parent, |id| !dom.is_any(id, &INLINE_ELEMENTS) && !dom.is(id, "a")).unwrap_or(parent);
+                    let around = dom.nodes[block].parent.unwrap_or(block);
+                    dom.find_all(around, "a")
+                        .into_iter()
+                        .any(|other| other != link && is_author(other) && dom.attr(other, "href").map(str::trim) == Some(href))
+                }))
     })
 }
 
