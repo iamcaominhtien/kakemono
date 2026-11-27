@@ -204,6 +204,8 @@ def main() -> int:
     if jobs:
         (OUT / "review" / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
         subprocess.run(["node", str(HERE / "shoot.mjs"), str(OUT / "review" / "jobs.json")], check=False)
+        taken = sum(Path(job["out"]).exists() for job in jobs)
+        print(f"{taken} of {len(jobs)} screenshots")
     to_print = []
     for category in sorted({row["category"] for row in rows}):
         to_print += review_pages(category, rows, results, shots)

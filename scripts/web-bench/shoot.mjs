@@ -67,7 +67,6 @@ async function main() {
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
   const browser = await chromium.launch(proxy ? { proxy: { server: proxy } } : {});
   let next = 0;
-  let failed = 0;
   // Each worker takes the next job when it is done with one.
   async function worker() {
     const number = next++;
@@ -77,7 +76,6 @@ async function main() {
     try {
       await shoot(await context.newPage(), job);
     } catch (error) {
-      failed++;
       console.error(`job ${number + 1}: no screenshot (${error.name})`);
     }
     await context.close();
@@ -88,7 +86,6 @@ async function main() {
   } finally {
     await browser.close();
   }
-  console.log(`${jobs.length - failed} of ${jobs.length} screenshots`);
 }
 
 try {
