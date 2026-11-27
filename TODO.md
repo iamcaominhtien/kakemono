@@ -55,6 +55,93 @@ uses get new fields, not new formats.
 - [ ] Text boxes come after the paragraph they are anchored in, in `.docx`
       and `.doc`, not where they stand on the page.
 
+## Excel input (`src/excel`)
+
+The workbooks named are those of `tests/data/excel-corpus.tsv`
+(`scripts/fetch-excel-corpus.sh`). Found by reviewing every output of the
+corpus against the workbooks' XML.
+
+### Decisions still open
+
+- [ ] Dates: show them as the cell's format shows them in the sheet view and
+      the Excel-style PDF (keeping ISO in Markdown, JSON and chunks)? ISO
+      dates overflow or are clipped in narrow cells whose format is short
+      (`d`, `d-mmm`): ms-project-schedule (the day row), poi-excelpivottablesample.
+- [ ] The cap of cells read per sheet, trimming empty columns, a benchmark of
+      large workbooks.
+
+### Regions and header rows (`regions.rs`, `build.rs`; compare with `scripts/excel-report.py`)
+
+- [ ] Header rows taken wrongly:
+      - ss-simple-gantt: the merged info block B3:H6 ("Project Title",
+        "Project Manager"...) is the header; the real one (PHASE, WEEK n, Task)
+        is body.
+      - hellowork-kyujin-moushikomi: 11 of the 14 rows of the table at rows
+        104-113 are header rows.
+      - boe-inflation-attitudes: the notes in B1:B3 and the title block A1:A5
+        are glued into the first column headers.
+      - abs-cpi-640101, Data1: 9 header rows (Unit, Series Type, Series ID...)
+        glued into one cell per column.
+      - statjp-nenkan-age-sex: the unit rows ("（単位　1,000人）") are in the
+        header cells; they are a note.
+      - mhlw-kokumin-seikatsu-r6-06: a section row ("推計数（単位：千世帯）")
+        in the column headers; a mid-table section row repeated in every
+        column.
+- [ ] Row labels parted from their numbers: boe-inflation-attitudes, about 16
+      questions have their labels in A and their data from AM, so the labels
+      become paragraphs and the numbers a table without labels or dates.
+      citizens-financial-supplement, "Average Balance Sheets": column AD
+      ("Proof") is cut off the table into one-number paragraphs.
+- [ ] Two tables side by side read as one: statjp-nenkan-age-sex (ages 0-49 in
+      A:G, 50-100+ in I:O).
+- [ ] A form is still one wide table (hellowork-kyujin-moushikomi, 31 columns;
+      ur-kinkyu-renraku-taisei): a list of fields and values would read
+      better.
+- [ ] ss-kpi-performance-dashboard, DASHBOARD DATA: four small tables in one
+      12-column table under an empty header.
+
+### Text outputs
+
+- [ ] A chart without a title of its own is "Chart N"; its title is the cell
+      above it (ss-kpi-performance-dashboard: PROJECTS / TASKS, MONTHLY
+      REVENUE...), written apart as a paragraph. The chart type is not said.
+- [ ] Line breaks inside a cell become spaces (digital-glossary bullet lists,
+      citizens KPM text; statjp "All \nages" gives a double space).
+- [ ] Bold of part of a cell: `**100**%` where the whole cell is bold; a
+      closing `)` moved out of the bold.
+- [ ] The data-validation list of ss-campaign-budget-roi (O8:O20) comes out as
+      12 paragraphs after the table.
+- [ ] Rich-text runs keep no size of their own (`sz`): a footnote mark set
+      smaller in the cell is as large as its text.
+
+### Document outputs
+
+- [ ] Workbook PDF in document style: a table kept whole that does not fit
+      under its heading leaves the heading alone on a page
+      (ss-simple-gantt); the fix is in the shared `flow.rs` (keep chains),
+      to check with `scripts/word-fidelity.py`.
+- [ ] docx and EPUB: a table of 100 columns and more (boe-inflation-attitudes,
+      109) still runs off the page or the screen; the PDF cuts it into groups
+      of columns, they do not.
+
+### Sheet view and Excel-style PDF
+
+- [ ] Conditional formats on a formula of their own (`expression`) are not
+      applied (github-wbs-template's Gantt bars, ms-project-schedule).
+- [ ] Visible comments are not shown in the sheet view.
+- [ ] The dark table styles (`TableStyleDark*`) and a workbook's own table
+      styles (`tableStyles`) are not drawn.
+- [ ] WordArt with a gradient or outline fill is drawn plain
+      (poi-excelwithattachments); the icon in a Word object's preview
+      metafile is missing.
+- [ ] The `&N` code of a footer (number of pages) counts the sheet's pages;
+      check whether Excel counts those of the whole print
+      (worldbank-commodity-pinksheet).
+- [ ] census-state-pop: a merged note crossing the page cut beside repeated
+      title columns prints fragments (LibreOffice does too).
+- [ ] digital-common-spec-gyomuflow: the gateway "X" (`mathMultiply`) looks
+      bolder and larger than LibreOffice draws it; not checked against Excel.
+
 ## Chunks for retrieval (`src/render/chunks`)
 
 Everything below was measured on PDFs only (Qasper: 100 arXiv NLP papers,
