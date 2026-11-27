@@ -19,7 +19,7 @@ use crate::chart::{Rgb, Theme};
 use crate::excel::drawing::{DEFAULT_INSETS_PT, Drawn, Shape, ShapeRun, TextShape};
 use crate::excel::grid::{CellKind, DEFAULT_COL_PT, Grid, GridCell, Marker, Merge, Sizes};
 use crate::excel::styles::{Color, Line, Look, Styles, VAlign};
-use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg};
+use crate::excel::view::{alignment, col_width, look_index, object_box, shape_svg, text_insets};
 use crate::excel::{DrawnSheet, SheetBook};
 use crate::model::style::{BOLD, ITALIC};
 use crate::word::fmt::model::{
@@ -1512,9 +1512,10 @@ impl Printer<'_, '_, '_> {
         }
         fmt.bold = shape.bold;
         fmt.color = shape.color.filter(|rgb| *rgb != [0; 3]);
-        let [left, top_inset, right, bottom_inset] =
-            shape.insets_pt.unwrap_or(DEFAULT_INSETS_PT).map(|inset| inset * scale);
         let [x, y, width, height] = rect;
+        let [left, top_inset, right, bottom_inset] = text_insets(shape, width / scale, height / scale)
+            .unwrap_or(DEFAULT_INSETS_PT)
+            .map(|inset| inset * scale);
         let inlines = shape_inlines(shape, &fmt, scale);
         let align = match shape.align.as_deref() {
             Some("ctr") => Align::Center,

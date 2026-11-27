@@ -6,7 +6,7 @@
 //! anchored. It is a second reading of the file, with the look of every
 //! cell, as the page layout of a Word document is.
 
-use super::drawing::{Drawn, Frame, Shape, TextShape};
+use super::drawing::{DEFAULT_INSETS_PT, Drawn, Frame, Shape, TextShape};
 use super::grid::{CellKind, Grid, GridCell, Marker, Merge, Sizes};
 use super::styles::{Color, Edge, HAlign, Line, Look, Styles, VAlign};
 use super::{DrawnSheet, ExcelConfig, read_book};
@@ -72,7 +72,10 @@ const MIN_LINE_PT: f32 = 0.5;
 /// The radius of the corners of a rounded rectangle, in points.
 const ROUND_CORNER_PT: f32 = 6.0;
 /// The size of an arrow head, in widths of its line.
-const ARROW_SIZE: u32 = 4;
+const ARROW_SIZE: f32 = 4.0;
+/// The smallest arrow head, in points: Office keeps the arrows of thin
+/// lines visible.
+const MIN_ARROW_PT: f32 = 5.0;
 /// URL schemes a cell's link may have; others (`javascript:`, local
 /// files) are not links in the page.
 const LINK_SCHEMES: [&str; 4] = ["http://", "https://", "mailto:", "ftp://"];
@@ -696,7 +699,12 @@ impl Page<'_> {
             }
         }
         text_style(&mut style, shape);
-        text_box_css(&mut style, shape, callout_tip(shape, width, height).is_some());
+        text_box_css(
+            &mut style,
+            shape,
+            (width, height),
+            callout_tip(shape, width, height).is_some(),
+        );
         let text = if shape.text.is_empty() {
             String::new()
         } else {
@@ -734,7 +742,7 @@ impl Page<'_> {
             }
         };
         format!(
-            "<svg class=\"line\" style=\"{style}min-width:{MIN_LINE_PT}pt;min-height:{MIN_LINE_PT}pt;\" viewBox=\"0 0 {} {}\"><defs><marker id=\"a{id}\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"{ARROW_SIZE}\" markerHeight=\"{ARROW_SIZE}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\"{}{}{}/></svg>",
+            "<svg class=\"line\" style=\"{style}min-width:{MIN_LINE_PT}pt;min-height:{MIN_LINE_PT}pt;\" viewBox=\"0 0 {} {}\"><defs><marker id=\"a{id}\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerUnits=\"userSpaceOnUse\" markerWidth=\"{arrow}\" markerHeight=\"{arrow}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\"{}{}{}/></svg>",
             num(width.max(MIN_LINE_PT)),
             num(height.max(MIN_LINE_PT)),
             path.join(" "),
@@ -742,6 +750,7 @@ impl Page<'_> {
             if shape.dashed { " stroke-dasharray=\"4 3\"" } else { "" },
             marker("start", shape.head),
             marker("end", shape.tail),
+            arrow = num(arrow_pt(stroke_pt)),
         )
     }
 
@@ -1004,18 +1013,35 @@ pub(crate) fn look_index(grid: &Grid, at: (u32, u32)) -> u32 {
         .map_or(0, |(_, _, style)| *style)
 }
 
+/// The space between the edges of a shape `width` by `height` points and
+/// its text, in points (left, top, right, bottom): its insets within the
+/// text box of its outline (a cylinder's below its lid); `None` for the
+/// default insets of a shape whose text box is the whole shape.
+pub(crate) fn text_insets(shape: &TextShape, width: f32, height: f32) -> Option<[f32; 4]> {
+    // The text box of the preset outlines whose text keeps off their
+    // edges, as fractions of the shape (left, top, right, bottom).
+    let fractions = match shape.geometry.as_deref() {
+        Some("flowChartMagneticDisk") => [0.0, 1.0 / 3.0, 0.0, 1.0 / 6.0],
+        Some("can") => {
+            let lid = width.min(height) / 4.0 / height.max(f32::EPSILON);
+            [0.0, lid, 0.0, 0.0]
+        }
+        _ => return shape.insets_pt,
+    };
+    let insets = shape.insets_pt.unwrap_or(DEFAULT_INSETS_PT);
+    let sides = [width, height, width, height];
+    Some(std::array::from_fn(|side| insets[side] + fractions[side] * sides[side]))
+}
+
 /// Writes to `style` how the text box of `shape` holds its text: its
 /// insets, its wrapping and where it is cut (not for a `callout`, whose tip
 /// lies outside).
-fn text_box_css(style: &mut String, shape: &TextShape, callout: bool) {
+fn text_box_css(style: &mut String, shape: &TextShape, (width, height): (f32, f32), callout: bool) {
     // A shape without text has no insets, which would make a small one
     // larger; a text keeps them, overflowing a narrow box as in Excel.
-    let insets = if shape.text.is_empty() {
-        Some([0.0; 4])
-    } else {
-        shape.insets_pt
-    };
-    if let Some([left, top, right, bottom]) = insets {
+    if shape.text.is_empty() {
+        style.push_str("padding:0pt 0pt 0pt 0pt;");
+    } else if let Some([left, top, right, bottom]) = text_insets(shape, width, height) {
         let _ = write!(
             style,
             "padding:{}pt {}pt {}pt {}pt;",
@@ -1506,7 +1532,7 @@ pub(crate) fn shape_svg(shape: &TextShape, width: f32, height: f32) -> Option<(S
     let beyond = callout_tip(shape, width, height).map_or(0.0, |[tip_x, tip_y]| {
         (-tip_x).max(tip_x - width).max(-tip_y).max(tip_y - height).max(0.0)
     });
-    let pad = stroke_pt * ARROW_SIZE as f32 + beyond;
+    let pad = arrow_pt(stroke_pt) + beyond;
     let outer = [
         width * cos + height * sin + 2.0 * pad,
         width * sin + height * cos + 2.0 * pad,
@@ -1524,6 +1550,11 @@ pub(crate) fn shape_svg(shape: &TextShape, width: f32, height: f32) -> Option<(S
         h = num(outer[1]),
     );
     Some((svg, [-left, -top, outer[0], outer[1]]))
+}
+
+/// The size of the arrow heads of a line `stroke_pt` wide, in points.
+fn arrow_pt(stroke_pt: f32) -> f32 {
+    (stroke_pt * ARROW_SIZE).max(MIN_ARROW_PT)
 }
 
 /// The SVG elements of a shape's outline in a box `width` by `height`
@@ -1567,11 +1598,12 @@ fn outline_body(shape: &TextShape, width: f32, height: f32) -> Option<(String, f
             }
         };
         format!(
-            "<defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"{ARROW_SIZE}\" markerHeight=\"{ARROW_SIZE}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\"{}{}{}/>",
+            "<defs><marker id=\"a\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerUnits=\"userSpaceOnUse\" markerWidth=\"{arrow}\" markerHeight=\"{arrow}\" orient=\"auto-start-reverse\"><path d=\"M0,0L10,5L0,10z\" fill=\"{stroke}\"/></marker></defs><polyline points=\"{}\"{}{}{}/>",
             path.join(" "),
             paint(None),
             marker("start", shape.head),
             marker("end", shape.tail),
+            arrow = num(arrow_pt(stroke_pt)),
         )
     } else if let Some((path, filled)) = shape_path(shape, width, height) {
         let mut scaled = path;
@@ -1868,6 +1900,25 @@ mod tests {
     /// A callout's wedge leaves the side its tip lies beyond, and its
     /// box is drawn as the shape's drawn outline when it has one.
     #[test]
+    fn a_cylinder_keeps_its_text_below_its_lid_and_arrows_show() {
+        let disk = TextShape {
+            text: "DB".into(),
+            geometry: Some("flowChartMagneticDisk".into()),
+            insets_pt: Some([3.0; 4]),
+            ..TextShape::default()
+        };
+        assert_eq!(text_insets(&disk, 90.0, 60.0), Some([3.0, 23.0, 3.0, 13.0]));
+        let plain = TextShape {
+            text: "x".into(),
+            ..TextShape::default()
+        };
+        assert_eq!(text_insets(&plain, 90.0, 60.0), None);
+        // The arrow of a thin line keeps a size that shows.
+        assert_eq!(arrow_pt(0.75), MIN_ARROW_PT);
+        assert_eq!(arrow_pt(2.0), 8.0);
+    }
+
+    #[test]
     fn a_callout_points_at_its_tip() {
         let callout = TextShape {
             geometry: Some("wedgeRectCallout".into()),
@@ -1907,11 +1958,11 @@ mod tests {
             svg.contains("rotate(90 ")
                 && svg.contains(r##"<rect width="40" height="10" fill="#ff0000" stroke="none""##)
         );
-        // The turned box, 10 wide and 40 tall, with room for a line of the
-        // default width (3 points around), about the box's centre.
+        // The turned box, 10 wide and 40 tall, with room for an arrow head
+        // (5 points around), about the box's centre.
         let near = |a: f32, b: f32| (a - b).abs() < 0.01;
-        assert!(near(width, 16.0) && near(height, 46.0), "{width} {height}");
-        assert!(near(left, 12.0) && near(top, -18.0), "{left} {top}");
+        assert!(near(width, 20.0) && near(height, 50.0), "{width} {height}");
+        assert!(near(left, 10.0) && near(top, -20.0), "{left} {top}");
         assert!(shape_svg(&TextShape::default(), 10.0, 10.0).is_none());
     }
 

@@ -193,8 +193,9 @@ its formatting:
   callouts with their wedge to the tip they point at; arrow heads and the corners of brackets and
   braces sized by the shape's shorter side, as Excel draws them; drawn outlines, `custGeom`, of
   lines and curves whose points are numbers; fill, outline, text with
-  the look of each run, its insets, cut at the bottom edge when the shape says so, on lines as
-  long as they are when it is not wrapped, `wrap="none"`) and connectors (straight and elbow, with arrow heads) at the place and size
+  the look of each run, its insets (within its outline's text box: a cylinder's below its lid),
+  cut at the bottom edge when the shape says so, on lines as
+  long as they are when it is not wrapped, `wrap="none"`) and connectors (straight and elbow, with arrow heads, at least 5 points long on thin lines) at the place and size
   of their anchors, groups included, turned and mirrored with their groups; a hidden shape
   (`cNvPr hidden`) only as the form control the sheet's VML drawing shows (`visibility`), a check
   box or option button with its box or circle (ticked or filled when `x:Checked`) before its
