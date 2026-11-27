@@ -203,11 +203,11 @@ def main() -> int:
     jobs = [job for row in rows for job in screenshot_jobs(row, made.get(row["name"]), shots)]
     if jobs:
         (OUT / "review" / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
-        subprocess.run(["node", str(HERE / "shoot.js"), str(OUT / "review" / "jobs.json")], check=False)
+        subprocess.run(["node", str(HERE / "shoot.mjs"), str(OUT / "review" / "jobs.json")], check=False)
     to_print = []
     for category in sorted({row["category"] for row in rows}):
         to_print += review_pages(category, rows, results, shots)
-    subprocess.run(["node", str(HERE / "print.js"), *to_print], check=True)
+    subprocess.run(["node", str(HERE / "print.mjs"), *to_print], check=True)
     return 0
 
 

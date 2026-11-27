@@ -1,6 +1,6 @@
 // Screenshots for the review PDF of the web benchmark (report.py runs it).
 //
-//   node scripts/web-bench/shoot.js jobs.json
+//   node scripts/web-bench/shoot.mjs jobs.json
 //
 // jobs.json: [{ "url": "file:///...", "base": "https://...", "out": "x.jpg", "at": "top" | "middle" | "end" }]
 // A saved page ("base" set) is shown as at its address (a <base> element is put in its
@@ -8,15 +8,18 @@
 // through the proxy of the environment when there is one.
 // Every file it reads or writes is in the repository: the jobs, the saved pages and the
 // screenshots.
-const fs = require('node:fs');
-const path = require('node:path');
-const { fileURLToPath } = require('node:url');
-const { chromium } = require('playwright');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// Playwright as CommonJS finds it (the one installed for the whole machine too).
+const { chromium } = createRequire(import.meta.url)('playwright');
 
 const WIDTH = 1100;
 const HEIGHT = 760;
 const WORKERS = 6;
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** `file` resolved, when it is in the repository; an error otherwise. */
 function inRepository(file) {
@@ -67,14 +70,15 @@ async function main() {
   let failed = 0;
   // Each worker takes the next job when it is done with one.
   async function worker() {
-    const job = jobs[next++];
+    const number = next++;
+    const job = jobs[number];
     if (!job) return;
     const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, javaScriptEnabled: true });
     try {
       await shoot(await context.newPage(), job);
     } catch (error) {
       failed++;
-      console.error(`${path.basename(String(job.out))}: no screenshot (${error.name})`);
+      console.error(`job ${number + 1}: no screenshot (${error.name})`);
     }
     await context.close();
     await worker();
@@ -87,7 +91,9 @@ async function main() {
   console.log(`${jobs.length - failed} of ${jobs.length} screenshots`);
 }
 
-main().catch((error) => {
-  console.error(`shoot.js: ${error.name}`);
+try {
+  await main();
+} catch (error) {
+  console.error(`shoot.mjs: ${error.name}`);
   process.exitCode = 1;
-});
+}

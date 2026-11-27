@@ -1,12 +1,16 @@
 // Prints HTML files to PDF (A4 landscape) with Chromium (report.py runs it).
 //
-//   node scripts/web-bench/print.js in.html out.pdf [in2.html out2.pdf ...]
+//   node scripts/web-bench/print.mjs in.html out.pdf [in2.html out2.pdf ...]
 //
 // The files are in the repository.
-const path = require('node:path');
-const { chromium } = require('playwright');
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
-const ROOT = path.resolve(__dirname, '..', '..');
+// Playwright as CommonJS finds it (the one installed for the whole machine too).
+const { chromium } = createRequire(import.meta.url)('playwright');
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** `file` resolved, when it is in the repository; an error otherwise. */
 function inRepository(file) {
@@ -43,7 +47,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`print.js: ${error.name}`);
+try {
+  await main();
+} catch (error) {
+  console.error(`print.mjs: ${error.name}`);
   process.exitCode = 1;
-});
+}
