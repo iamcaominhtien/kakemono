@@ -48,6 +48,10 @@ pub(crate) struct Grid {
     pub(crate) print: PrintSetup,
     /// The embedded objects (a Word document, ...) shown by a picture.
     pub(crate) objects: Vec<EmbeddedObject>,
+    /// The shapes (`shapeId`) of the embedded objects written as before
+    /// Excel 2010, without a picture and anchor of their own: the sheet's
+    /// VML drawing places their picture.
+    pub(crate) legacy_objects: Vec<u32>,
 }
 
 /// An object embedded in a sheet (`oleObject`), which the sheet shows by

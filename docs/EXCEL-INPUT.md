@@ -277,7 +277,8 @@ layout engine's fonts and PDF writer (krilla), not with TeX: `--pdf-style print`
   at the cell's left edge and the text after it at the right, whatever the cell's alignment and
   wrapping;
   links kept (http, https, mailto, ftp);
-- charts (vector), pictures, pictures in cells, embedded objects by their picture, shapes (preset
+- charts (vector), pictures, pictures in cells, embedded objects by their picture (placed by the
+  VML drawing for objects written before Excel 2010; a metafile preview as vector), shapes (preset
   outlines as vector, their text as text, run by run) and connectors with their arrow heads, where they are anchored; one across a page break
   is cut, its parts on their pages;
 - a merged range cut by a page break shows its part on each page, its borders and fill cut at

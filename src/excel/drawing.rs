@@ -717,6 +717,73 @@ pub(crate) fn vml_controls(vml: &str) -> HashMap<u32, Control> {
     controls
 }
 
+/// A picture a VML drawing places on the sheet (`v:imagedata`), as the
+/// picture of an embedded object written before Excel 2010.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VmlPicture {
+    /// The shape's number (`_x0000_s1032` is 1032).
+    pub(crate) id: u32,
+    /// The relationship (in the VML part) of the picture.
+    pub(crate) rel: String,
+    /// The top left corner of its anchor (`x:Anchor`).
+    pub(crate) from: Marker,
+    /// The bottom right corner of its anchor.
+    pub(crate) to: Marker,
+}
+
+/// Points per pixel of a VML anchor's offsets (96 per inch).
+const VML_PT_PER_PX: f32 = 0.75;
+
+/// The pictures the VML drawing `vml` places with an anchor (`x:Anchor`:
+/// left column, its offset in pixels, top row, its offset, right column,
+/// offset, bottom row, offset), hidden ones left out.
+pub(crate) fn vml_pictures(vml: &str) -> Vec<VmlPicture> {
+    let mut pictures = Vec::new();
+    for shape in vml.split("<v:shape ").skip(1).take(MAX_VML_SHAPES) {
+        let shape = shape.split("</v:shape>").next().unwrap_or_default();
+        let head = format!(" {}", shape.split('>').next().unwrap_or_default());
+        let style: String = attribute(&head, "style")
+            .unwrap_or_default()
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect();
+        if style.contains("visibility:hidden") {
+            continue;
+        }
+        let id = attribute(&head, "id")
+            .and_then(|id| id.rsplit('s').next())
+            .and_then(|id| id.parse::<u32>().ok());
+        let rel = shape
+            .split("<v:imagedata")
+            .nth(1)
+            .and_then(|data| attribute(&format!(" {data}"), "o:relid").map(str::to_string));
+        let anchor: Vec<f32> = shape
+            .split("<x:Anchor>")
+            .nth(1)
+            .and_then(|rest| rest.split('<').next())
+            .map(|numbers| numbers.split(',').filter_map(|number| number.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        let (Some(id), Some(rel), [left, left_px, top, top_px, right, right_px, bottom, bottom_px]) =
+            (id, rel, anchor.as_slice())
+        else {
+            continue;
+        };
+        let marker = |row: f32, row_px: f32, col: f32, col_px: f32| Marker {
+            row: row as u32,
+            row_off_pt: row_px * VML_PT_PER_PX,
+            col: col as u32,
+            col_off_pt: col_px * VML_PT_PER_PX,
+        };
+        pictures.push(VmlPicture {
+            id,
+            rel,
+            from: marker(*top, *top_px, *left, *left_px),
+            to: marker(*bottom, *bottom_px, *right, *right_px),
+        });
+    }
+    pictures
+}
+
 /// The value of the first attribute `name` in `text`, quoted with `"` or
 /// `'`.
 fn attribute<'t>(text: &'t str, name: &str) -> Option<&'t str> {
@@ -1213,6 +1280,16 @@ mod tests {
 
     /// A group turned a quarter turns its children about its centre, and
     /// a drawn outline of numbers is read as a path in a 100 × 100 box.
+    #[test]
+    fn a_vml_drawing_places_the_pictures_of_old_objects() {
+        let vml = "<xml><v:shape id=\"_x0000_s1032\" type=\"#_x0000_t75\" style='position:absolute;\n margin-left:496.5pt;width:3in'>\n <v:imagedata o:relid=\"rId1\" o:title=\"\"/>\n <x:ClientData ObjectType=\"Pict\">\n <x:Anchor>\n 7, 0, 17, 0, 11, 32, 28, 5</x:Anchor></x:ClientData></v:shape><v:shape id=\"_x0000_s1034\" style='visibility:hidden'><v:imagedata o:relid=\"rId2\"/><x:Anchor>1, 15, 0, 2, 3, 15, 3, 13</x:Anchor></v:shape></xml>";
+        let pictures = vml_pictures(vml);
+        assert_eq!(pictures.len(), 1);
+        assert_eq!((pictures[0].id, pictures[0].rel.as_str()), (1032, "rId1"));
+        assert_eq!((pictures[0].from.row, pictures[0].from.col), (17, 7));
+        assert_eq!((pictures[0].to.row, pictures[0].to.col, pictures[0].to.col_off_pt), (28, 11, 24.0));
+    }
+
     #[test]
     fn a_hidden_shape_is_a_form_control_of_the_vml_drawing() {
         let control = r#"<xdr:sp><xdr:nvSpPr><xdr:cNvPr id="1025" name="Check Box 1" hidden="1"/></xdr:nvSpPr><xdr:spPr/><xdr:txBody><a:p><a:r><a:t>Yes</a:t></a:r></a:p></xdr:txBody></xdr:sp>"#;

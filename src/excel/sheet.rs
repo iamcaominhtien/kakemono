@@ -400,6 +400,33 @@ fn embedded_objects(piece: &str) -> Vec<EmbeddedObject> {
         .collect()
 }
 
+/// The shapes (`shapeId`) of the embedded objects of the document `piece`
+/// that have no picture and anchor of their own (`objectPr`), as Excel
+/// writes them before 2010 (and as the fallback of those that have one).
+/// A damaged piece gives none, and so do objects past
+/// [`MAX_EMBEDDED_OBJECTS`].
+fn legacy_objects(piece: &str) -> Vec<u32> {
+    let Ok(doc) = parse(piece) else {
+        return Vec::new();
+    };
+    let objects: Vec<(u32, bool)> = doc
+        .descendants()
+        .filter(|node| is_sml(*node, "oleObject"))
+        .filter_map(|object| {
+            let shape = object.attribute("shapeId")?.parse::<u32>().ok()?;
+            Some((shape, object.descendants().any(|node| is_sml(node, "objectPr"))))
+        })
+        .take(MAX_EMBEDDED_OBJECTS)
+        .collect();
+    let mut legacy: Vec<u32> = objects
+        .iter()
+        .filter(|(shape, placed)| !placed && !objects.contains(&(*shape, true)))
+        .map(|(shape, _)| *shape)
+        .collect();
+    legacy.dedup();
+    legacy
+}
+
 /// The headers and footers of the document `piece` (`headerFooter`);
 /// `None` when it is damaged.
 fn header_footer(piece: &str) -> Option<HeaderFooter> {
@@ -682,6 +709,7 @@ impl SheetReader<'_, '_> {
     fn read_piece(&mut self, name: &str, piece: Option<&str>) {
         if name == "oleObjects" {
             self.grid.objects = piece.map(embedded_objects).unwrap_or_default();
+            self.grid.legacy_objects = piece.map(legacy_objects).unwrap_or_default();
         } else if name == "headerFooter" {
             self.grid.print.header_footer = piece.and_then(header_footer).unwrap_or_default();
         } else if self.ctx.view {
@@ -1512,6 +1540,15 @@ mod tests {
         assert!(read("<worksheet", &ctx).is_err());
         let dtd = r#"<!DOCTYPE worksheet [<!ENTITY e "x">]><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>"#;
         assert!(read(dtd, &ctx).is_err());
+    }
+
+    #[test]
+    fn objects_written_before_2010_are_placed_by_the_vml_drawing() {
+        let sheet = grid(
+            r#"<sheetData/><oleObjects><oleObject progId="MSGraph.Chart.8" shapeId="1032" r:id="rId7"/><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="x14"><oleObject shapeId="1033" r:id="rId8"><objectPr r:id="rId9"/></oleObject></mc:Choice><mc:Fallback><oleObject shapeId="1033" r:id="rId8"/></mc:Fallback></mc:AlternateContent></oleObjects>"#,
+        );
+        // The second has a picture of its own (`objectPr`), in its choice.
+        assert_eq!(sheet.legacy_objects, [1032]);
     }
 
     #[test]

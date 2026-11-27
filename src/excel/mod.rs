@@ -318,6 +318,7 @@ fn read_sheets_with_styles<'w>(
                 conditional_looks(&mut styles, &mut grid);
                 shapes = sheet_shapes(zip, &sheet.part, &grid, pictures);
                 shapes.extend(object_pictures(zip, &sheet.part, &grid, pictures));
+                shapes.extend(legacy_object_pictures(zip, &sheet.part, &grid, pictures));
                 shapes.sort_by_key(|shape| shape.at);
                 shapes.extend(cell_pictures(zip, &mut grid, &in_cells, pictures));
                 grid
@@ -514,6 +515,58 @@ fn object_pictures(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut
             })
         })
         .collect()
+}
+
+/// The pictures of the embedded objects of the sheet part `part` written
+/// as before Excel 2010 (`grid`'s
+/// [`legacy_objects`](grid::Grid::legacy_objects)), which its VML drawing
+/// places; their files are added to `pictures`. One whose file cannot be
+/// shown is left out.
+fn legacy_object_pictures(zip: &ZipArchive<'_>, part: &str, grid: &Grid, pictures: &mut Pictures) -> Vec<Shape> {
+    if grid.legacy_objects.is_empty() {
+        return Vec::new();
+    }
+    let mut shapes = Vec::new();
+    for (_, kind, rel) in read_rels(zip, part).unwrap_or_default() {
+        if kind != VML_DRAWING_REL || rel.external {
+            continue;
+        }
+        let Some(vml) = zip.read_text(&rel.target).ok().flatten() else {
+            continue;
+        };
+        let files: HashMap<String, String> = read_rels(zip, &rel.target)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, kind, rel)| kind == IMAGE_REL && !rel.external)
+            .map(|(id, _, rel)| (id, rel.target))
+            .collect();
+        for picture in drawing::vml_pictures(&vml) {
+            if !grid.legacy_objects.contains(&picture.id) {
+                continue;
+            }
+            let Some(index) = files.get(&picture.rel).and_then(|file| pictures.read(zip, file)) else {
+                continue;
+            };
+            let size = grid
+                .sizes
+                .span_pt(picture.from, picture.to, &grid.hidden_rows, &grid.hidden_cols);
+            shapes.push(Shape {
+                at: (picture.from.row, picture.from.col),
+                frame: drawing::Frame {
+                    from: Some(picture.from),
+                    to: Some(picture.to),
+                    ..drawing::Frame::default()
+                },
+                drawn: Drawn::Picture(drawing::PictureRef {
+                    rel: picture.rel,
+                    alt: EMBEDDED_OBJECT_ALT.to_string(),
+                    size_pt: Some(size),
+                    index: Some(index),
+                }),
+            });
+        }
+    }
+    shapes
 }
 
 /// The pictures placed in the cells of `grid`, by the cells' value
