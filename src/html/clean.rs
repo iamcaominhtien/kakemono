@@ -247,6 +247,8 @@ const INLINE_ELEMENTS: [&str; 10] = ["span", "i", "b", "em", "strong", "cite", "
 /// `#primary`). As a word of a class it can name anything (a style of
 /// button).
 const CLUTTER_IDS: [&str; 1] = ["secondary"];
+/// Most characters of a line that names the authors of an article.
+const AUTHOR_LINE_MAX_CHARS: usize = 200;
 /// Most characters of the box about the authors after an article.
 const AUTHOR_BOX_MAX_CHARS: usize = 1000;
 /// Parts of the address of the page of an author.
@@ -375,6 +377,7 @@ pub(crate) fn article(dom: &mut Dom, base: &Base<'_>) -> Article {
     item_labels(dom, root);
     citations(dom, root);
     heading_self_links(dom, root);
+    author_lines(dom, root, &meta);
     sentence_headings(dom, root);
     split_at_double_breaks(dom, root);
     trailing_headings(dom, root);
@@ -600,6 +603,41 @@ fn title(dom: &mut Dom, body: Id, root: Id, meta: &Meta) -> Option<String> {
         return Some(text);
     }
     meta.meta_title.clone().or_else(|| meta.page_title.clone())
+}
+
+/// Removes the blocks in `root` that only name the authors the metadata
+/// gives (Substack's `byline-wrapper`: `Gergely Orosz and Ivan Klaric`):
+/// the front matter names them already.
+fn author_lines(dom: &mut Dom, root: Id, meta: &Meta) {
+    if meta.authors.is_empty() {
+        return;
+    }
+    for node in dom.descendants(root) {
+        // A block of class `author` is the front matter itself (pandoc's).
+        let front =
+            dom.has_class(node, "author") || dom.descendants(node).iter().any(|&id| dom.has_class(id, "author"));
+        if !dom.attached(node) || !dom.is_any(node, &["p", "div"]) || dom.find(node, "img").is_some() || front {
+            continue;
+        }
+        let mut rest = dom.clean_text(node);
+        if rest.trim().is_empty() || rest.chars().count() > AUTHOR_LINE_MAX_CHARS {
+            continue;
+        }
+        for name in &meta.authors {
+            rest = rest.replace(name.as_str(), " ");
+        }
+        let words: Vec<String> = rest
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        let only_names = words
+            .iter()
+            .all(|word| word == "and" || BYLINE_WORDS.contains(&word.as_str()));
+        if only_names && rest.len() < dom.clean_text(node).len() {
+            dom.detach(node);
+        }
+    }
 }
 
 /// Removes the headings at the end of `root`, with nothing after them:

@@ -975,3 +975,19 @@ fn a_page_of_a_video_loses_its_keys_and_its_popup() {
         assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
     }
 }
+
+#[test]
+fn a_line_that_only_names_the_authors_is_not_said_twice() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>The Pulse</title><meta name="author" content="Gergely Orosz"></head><body><main>
+<h1>The Pulse: Is Amazon's writing culture collapsing because of AI?</h1>
+<div class="byline-wrapper"><div><a href="https://substack.com/@pragmaticengineer">Gergely Orosz</a></div></div>
+<p>By Gergely Orosz and Ivan Klaric</p>
+<p>Today's a busy day: Anthropic has gone public in the largest-ever IPO, and the GTA VI video game is out.</p>
+</main></body></html>"#,
+    );
+    let named = texts(&doc).iter().filter(|text| text.contains("Gergely Orosz")).count();
+    // The front matter, and the line that names another author too.
+    assert_eq!(named, 2, "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Ivan Klaric"));
+}
