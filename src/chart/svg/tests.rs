@@ -669,6 +669,49 @@ fn radar_rings_follow_the_file_s_unit_and_hidden_labels() {
 }
 
 #[test]
+fn radar_labels_near_the_bottom_move_out_rather_than_go() {
+    // The 25 items of IPA's self-check, whose labels at the bottom are
+    // near each other.
+    let cats = [
+        "1-1 アップデート",
+        "1-2 ウイルス感染",
+        "1-3 パスワード",
+        "1-4 アクセス制御",
+        "1-5 バックアップ",
+        "1-6 情報共有",
+        "2-7 電子メール受信",
+        "2-8 電子メール送信",
+        "2-9 添付重要情報の保護",
+        "2-10 無線LAN",
+        "2-11 インターネット",
+        "2-12 保管",
+        "2-13 盗難対策",
+        "2-14 破棄",
+        "2-15 利用者限定",
+        "2-16 立ち入り監視",
+        "2-17 盗難防止",
+        "3-18 ネットワーク監視",
+        "3-19 ウェブサイト管理",
+        "3-20 意識教育",
+        "3-21 個人所有",
+        "3-22 取引先",
+        "3-23 外部サービス",
+        "3-24 事故対応",
+        "3-25 対策の明確化",
+    ];
+    let values = vec!["1"; 25];
+    let xml = space(
+        "",
+        &format!(
+            r#"<c:radarChart><c:radarStyle val="marker"/>{}{AXES}</c:radarChart>{AXIS_PARTS}"#,
+            ser(0, "S", &cats, &values, "")
+        ),
+    );
+    let svg = svg(&chart(&xml), (540.0, 500.0)).expect("drawn");
+    assert_eq!(of_class(&parsed(&svg), "category").len(), 25);
+}
+
+#[test]
 fn a_side_legend_of_stacked_columns_lists_the_top_first() {
     let xml = columns("stacked", "col").replace(r#"<c:legendPos val="b"/>"#, r#"<c:legendPos val="r"/>"#);
     let svg = draw(&xml);

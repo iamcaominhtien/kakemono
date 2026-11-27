@@ -38,6 +38,11 @@ const RADAR_LABEL_RATIO: f32 = 0.2;
 const RADAR_SIDE_SIN: f32 = 0.05;
 /// The space between a radar and its labels, in points.
 const RADAR_LABEL_GAP_PT: f32 = 4.0;
+/// How many times a radar label that overlaps another moves away from the
+/// radar before it is left out.
+const RADAR_LABEL_NUDGES: usize = 4;
+/// How far a radar label moves each time, in lines of its text.
+const RADAR_NUDGE_RATIO: f32 = 0.5;
 
 /// Draws the pie or doughnut `group` in `area`: the first series of a
 /// pie, a ring per series (the first outermost) of a doughnut, with the
@@ -390,45 +395,20 @@ fn radar_labels(
     let mut placed: Vec<[f32; 4]> = Vec::new();
     for (spoke, label) in labels.iter().enumerate().step_by(step) {
         let angle = 360.0 * spoke as f32 / spokes as f32;
-        let (x, y) = polar(center, radius + RADAR_LABEL_GAP_PT, angle);
-        let sin = angle.to_radians().sin();
-        let cos = angle.to_radians().cos();
-        let anchor = if sin > RADAR_SIDE_SIN {
-            "start"
-        } else if sin < -RADAR_SIDE_SIN {
-            "end"
-        } else {
-            "middle"
-        };
-        // Above the top, below the bottom, centred on the sides.
-        let lift = if cos > 0.0 {
-            BASELINE_RATIO
-        } else {
-            1.0 - BASELINE_RATIO
-        };
-        let y = y + TEXT_SIZE_PT * (BASELINE_RATIO - cos * lift);
         let text = fit(label, TEXT_SIZE_PT, widest.max(TEXT_SIZE_PT));
-        // A label that would overlap one already placed is left out.
-        let width = text_width(&text, TEXT_SIZE_PT);
-        let left = match anchor {
-            "start" => x,
-            "end" => x - width,
-            _ => x - width / 2.0,
-        };
-        let bounds = [
-            left,
-            y - TEXT_SIZE_PT,
-            left + width,
-            y + TEXT_SIZE_PT * (1.0 - BASELINE_RATIO) / 2.0,
-        ];
-        let overlaps = |other: &[f32; 4]| {
-            bounds[0] < other[2] && other[0] < bounds[2] && bounds[1] < other[3] && other[1] < bounds[3]
-        };
-        if placed.iter().any(overlaps) {
+        // A label that would overlap one already placed moves away from
+        // the radar, as far as a line or two; further, it is left out.
+        let spot = (0..=RADAR_LABEL_NUDGES).find_map(|nudge| {
+            #[allow(clippy::cast_precision_loss)]
+            let out_by = nudge as f32 * TEXT_SIZE_PT * RADAR_NUDGE_RATIO;
+            let spot = radar_label_spot(center, radius + RADAR_LABEL_GAP_PT + out_by, angle, &text);
+            (!placed.iter().any(|other| overlap(&spot.2, other))).then_some(spot)
+        });
+        let Some((at, anchor, bounds)) = spot else {
             continue;
-        }
+        };
         placed.push(bounds);
-        out.text("category", (x, y), TextStyle { anchor, ..SMALL }, &text);
+        out.text("category", at, TextStyle { anchor, ..SMALL }, &text);
     }
     if axis.is_some_and(|axis| axis.deleted || !axis.tick_labels) {
         return;
@@ -453,4 +433,44 @@ fn radar_labels(
             &tick_label(tick, &format, date1904),
         );
     }
+}
+
+/// Where the label `text` of the spoke at `angle` degrees goes, `reach`
+/// points from `center`: its point, its anchor and its bounds.
+fn radar_label_spot(center: (f32, f32), reach: f32, angle: f32, text: &str) -> ((f32, f32), &'static str, [f32; 4]) {
+    let (x, y) = polar(center, reach, angle);
+    let sin = angle.to_radians().sin();
+    let cos = angle.to_radians().cos();
+    let anchor = if sin > RADAR_SIDE_SIN {
+        "start"
+    } else if sin < -RADAR_SIDE_SIN {
+        "end"
+    } else {
+        "middle"
+    };
+    // Above the top, below the bottom, centred on the sides.
+    let lift = if cos > 0.0 {
+        BASELINE_RATIO
+    } else {
+        1.0 - BASELINE_RATIO
+    };
+    let y = y + TEXT_SIZE_PT * (BASELINE_RATIO - cos * lift);
+    let width = text_width(text, TEXT_SIZE_PT);
+    let left = match anchor {
+        "start" => x,
+        "end" => x - width,
+        _ => x - width / 2.0,
+    };
+    let bounds = [
+        left,
+        y - TEXT_SIZE_PT,
+        left + width,
+        y + TEXT_SIZE_PT * (1.0 - BASELINE_RATIO) / 2.0,
+    ];
+    ((x, y), anchor, bounds)
+}
+
+/// Whether the boxes `one` and `other` (left, top, right, bottom) overlap.
+fn overlap(one: &[f32; 4], other: &[f32; 4]) -> bool {
+    one[0] < other[2] && other[0] < one[2] && one[1] < other[3] && other[1] < one[3]
 }
