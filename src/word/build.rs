@@ -550,18 +550,12 @@ impl Builder<'_> {
         self.push(block);
     }
 
-    /// Adds a table: an equation with its number when it is the usual
-    /// layout table of a numbered equation, its content when it has a
+    /// Adds a table: an equation (with its number) when it is the usual
+    /// layout table of an equation, its content when it has a
     /// single cell, a table float otherwise.
     fn table(&mut self, table: &WordTable) {
-        if let Some((node, number)) = numbered_equation(table) {
-            let mut block = self.block(
-                BlockKind::Equation {
-                    image: None,
-                    number: Some(number),
-                },
-                Vec::new(),
-            );
+        if let Some((node, number)) = table_equation(table) {
+            let mut block = self.block(BlockKind::Equation { image: None, number }, Vec::new());
             block.spans = vec![Span::plain(plain_text(&node))];
             block.math = Some(node);
             self.push(block);
@@ -973,10 +967,10 @@ fn label_is_table(label: Option<&str>) -> bool {
     label.is_some_and(|label| label.starts_with("Tab") || label.starts_with("TAB"))
 }
 
-/// The formula and number of a table that only lays out a numbered
-/// equation: one row, one cell with a formula and nothing else, one with a
-/// number such as "(3)", the others empty.
-fn numbered_equation(table: &WordTable) -> Option<(MathNode, String)> {
+/// The formula and number of a table that only lays out an equation: one
+/// row, one cell with a formula and nothing else, maybe one with a number
+/// such as "(3)", the others empty.
+fn table_equation(table: &WordTable) -> Option<(MathNode, Option<String>)> {
     let [row] = table.rows.as_slice() else { return None };
     let mut formula = None;
     let mut number = None;
@@ -1010,7 +1004,7 @@ fn numbered_equation(table: &WordTable) -> Option<(MathNode, String)> {
             }
         }
     }
-    Some((formula?, number?))
+    Some((formula?, number))
 }
 
 /// `text` without control characters other than line breaks: the

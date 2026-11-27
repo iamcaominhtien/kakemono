@@ -5,8 +5,10 @@ __version__: str
 class Document:
     def __init__(
         self,
-        data: bytes,
+        data: Optional[bytes] = None,
         *,
+        path: Optional[str] = None,
+        url: Optional[str] = None,
         source: Optional[str] = None,
         tables: bool = True,
         jobs: int = 0,

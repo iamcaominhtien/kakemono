@@ -1,8 +1,8 @@
 [package]
 name = "kakemono"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
-description = "Convert PDF, Word and EPUB documents to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
+description = "Convert PDF, Word and EPUB documents and web pages to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
 repository = "https://github.com/iamcaominhtien/kakemono"
 documentation = "https://docs.rs/kakemono"
 readme = "README.md"
@@ -35,7 +35,7 @@ serde_json = "1"
 base64 = "0.22"
 crc32fast = "1"
 flate2 = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 regex = "1"
 unicode-normalization = "0.1"
 skrifa = "0.49"
@@ -49,6 +49,12 @@ libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 png = "0.18"
 sha2 = "0.10"
 roxmltree = "0.20"
+# Web pages (`src/html/`): the HTML5 parser of browsers, its DOM, the
+# character encodings of the Web, and URLs.
+html5ever = "0.40"
+markup5ever_rcdom = "0.40"
+encoding_rs = "0.8"
+url = "2"
 cfb = "0.16"
 # The Word layout engine: text shaping, and the PDF it writes.
 rustybuzz = "0.20"

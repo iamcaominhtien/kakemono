@@ -6,6 +6,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.19.0](https://github.com/iamcaominhtien/kakemono/compare/v0.18.0...v0.19.0) - 2026-11-27
+
+### Added
+
+- Read web pages (HTML files and http(s) addresses) as input
+
+kakemono now reads web pages. You can give it a saved `.html` file or an `http(s)` address, and convert it to any output: the four HTML modes, Word, Markdown, LaTeX, Typst, EPUB, JSON and chunks. It finds the article in the page, leaves out what is around it, and fetches its pictures.
+
+```bash
+kakemono convert https://example.org/post -o post.md
+kakemono convert saved.html --base-url https://example.org/post -o post.docx
+```
+
+#### Reading a page
+
+- The page is parsed with html5ever. The article is the part of the page that holds most of its text outside links.
+- Around and inside the article, kakemono leaves out what a site puts there:
+  - navigation, headers and footers, ads, cookie banners and pop-ups;
+  - share buttons, newsletter and feedback forms, tooltips;
+  - lists of related or recommended articles, teasers, tags;
+  - author boxes and author photos, comment links, view counts;
+  - the icons of the site, and drawings that only point to the site's sprite.
+- The article keeps its title, authors, summary, headings, lists, tables, code, formulas (MathML) and pictures.
+  - A picture that fails to download is retried, then fetched in another size.
+  - When an article has no picture of its own, the photo shown above it (`og:image`) is kept.
+- Notes and citations that link to a list become footnotes. The heading of a list that is left empty this way goes too.
+- Some sites get their own handling:
+  - Wikipedia: notes, hatnotes, portals, sister projects and succession tables.
+  - arXiv (LaTeXML): authors, notes and equations.
+  - Journals (PLOS, PMC, Nature): references without their links to Google Scholar or PubMed, and without a number written twice.
+- A page that is a table (Hacker News) reads as a table without its empty columns. A home page takes its title from its metadata, not from its first story. A page with no article (a video) reads its description.
+- `--base-url` reads a saved page as if it were at its address, so its links and pictures resolve.
+
+#### Web benchmark
+
+`scripts/web-bench/` scores kakemono on about 330 pages, the way the Scrapinghub article extraction benchmark does: F1 of 4-word shingles. 181 of the pages have a ground truth. The others are, by category:
+
+- Vietnamese and international news;
+- tech news, blogs and documentation;
+- Wikipedia in seven languages;
+- science, government sites, and pages that are not articles.
+
+It also writes every page to every output to find crashes. For each category it makes a review PDF and a zip of the conversions.
+
+| Category | Pages | F1 |
+| --- | --- | --- |
+| Ground truth (Scrapinghub) | 181 | 0.928 |
+| Government | 13 | 0.970 |
+| Blogs | 21 | 0.956 |
+| Documentation | 19 | 0.956 |
+| International news | 20 | 0.913 |
+| Science | 7 | 0.905 |
+| Vietnamese news | 31 | 0.900 |
+| Tech news | 12 | 0.866 |
+| Wikipedia | 15 | 0.849 |
+| Not articles | 9 | 0.803 |
+| All | 328 | 0.920 |
+
+On the pages with a ground truth, trafilatura and readability-lxml are scored as well. Outside the ground truth, the reference is trafilatura's own extraction, so its mistakes count against kakemono. For example:
+
+- trafilatura leaves out formulas and image captions;
+- Chinese and Japanese paragraphs are one shingle each, so a different note number fails the whole paragraph.
+
+#### Other fixes
+
+- The friendly view lets the article take the whole width when it has no table of contents.
+- The LaTeX output writes the Greek math alphabets as commands.
+- A table that only lays out an equation without a number (from Word, a book or a web page) reads as a displayed equation.
+
+#### Performance
+
+The 330 pages of the benchmark convert to Markdown in 10 ms each (median), 310 ms for the slowest (arXiv's Llama 3 paper), with 55 MB of memory at most. On 4 cores that is about 200 pages a second.
+
+Larger generated pages convert too:
+
+| Page | Size | Time | Memory |
+| --- | --- | --- | --- |
+| 130,000 paragraphs | 48 MB | 2.0 s | 460 MB |
+| 200,000 boxes of clutter | 12 MB | 0.8 s | 390 MB |
+| A single 20 MB line | 20 MB | 0.8 s | 175 MB |
+| A table of 5,000 rows | 1.7 MB | 0.4 s | 150 MB |
+| Elements nested 20,000 deep | 0.2 MB | 1.5 s | 21 MB |
+
+The clutter is removed in linear time. Elements nested 50,000 deep take 11 s, most of it in html5ever's building of so deep a tree.
+
 ## [0.18.0](https://github.com/iamcaominhtien/kakemono/compare/v0.17.1...v0.18.0) - 2026-11-24
 
 ### Added

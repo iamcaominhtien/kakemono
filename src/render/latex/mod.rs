@@ -157,6 +157,7 @@ fn document(doc: &Document, body: &str) -> String {
     if doc.pages.is_empty() {
         let source = match crate::render::source_label(doc) {
             "EPUB" => "an EPUB book",
+            "HTML" => "a web page",
             _ => "a Word document",
         };
         out = out.replacen("Converted from a PDF", &format!("Converted from {source}"), 1);

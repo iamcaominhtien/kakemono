@@ -2,7 +2,9 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF; and EPUB books, `.epub`, read by `src/epub/` into the form of `src/word/`)
+writes them as a PDF; EPUB books, `.epub`, read by `src/epub/` into the form of `src/word/`; and
+web pages, an `.html` file or an `http(s)` address, whose article `src/html/` finds and hands to
+the reader of `src/epub/`)
 to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
 LaTeX (`.tex`, `src/render/latex/`), to Typst (`.typ`, `src/render/typst/`, an article or a
@@ -37,8 +39,12 @@ cargo build --release
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
 ./target/release/kakemono convert <file.epub> -o out/x.md                    # an EPUB book as input (any output)
+./target/release/kakemono convert <https://... | file.html> -o out/x.md      # a web page as input (any output)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
+scripts/fetch-test-pages.sh                           # download the test web pages (once; tests/web_pages.rs)
+python3 scripts/web-bench/fetch.py && /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py   # web benchmark (~330 pages)
+/root/.venvs/web-bench/bin/python scripts/web-bench/report.py   # its review PDFs (out/web-bench/review/)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
 KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
@@ -157,6 +163,22 @@ committing.
 - The test sample is `tests/data/epub/sample.epub` (pandoc, from `tests/data/word/sample.md`): it
   must read like `sample.docx` (`epub_sample_reads_like_the_docx`); a change to the reading shows
   in `tests/data/snapshots/epub-sample.txt`.
+
+## Web pages as input (`src/html`)
+
+- A page is parsed by html5ever, cleaned (`clean.rs`: clutter, the article, title, pictures,
+  links; `notes.rs`: notes and the markup of LaTeXML and MediaWiki), and written as XHTML for
+  `epub/html.rs`: a rule about block kinds goes in `word/build.rs`, a rule about markup that a
+  book can have too in `epub/html.rs`, a rule about web pages only in `src/html/`.
+- A rule that cleans one site easily removes the article of another: after a change, compare the
+  output of the sample, of the pages of `tests/data/web-pages.tsv` (`scripts/fetch-test-pages.sh`;
+  `tests/web_pages.rs` holds their bounds) and the web benchmark (`scripts/web-bench/`: compare
+  its F1 per category before and after).
+  The thresholds are documented constants of `clean.rs`, their names ending with their unit.
+- The test sample is `tests/data/html/sample.html` (pandoc, from `tests/data/word/sample.md`): it
+  must read like `sample.docx` and `sample.epub` (`html_sample_reads_like_the_docx`); a change to
+  the reading shows in `tests/data/snapshots/html-sample.txt`. Tests of pages at an address use
+  `html::read_with` with their own pictures, not the network.
 
 ## Public API and packages
 

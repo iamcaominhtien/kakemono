@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
 use kakemono::model::{Block, BlockKind, Loc};
-use kakemono::source::arxiv;
+use kakemono::source::{arxiv, web};
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
     MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
@@ -78,7 +78,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc) or an EPUB book (.epub) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -268,7 +268,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF, Word (.docx, .doc) or EPUB (.epub) file, arXiv id (1706.03762) or arXiv URL
+    /// Local PDF, Word (.docx, .doc), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
     input: String,
     /// Fidelity mode (HTML); for Markdown, friendly adapts the tables to pipe tables and medium keeps their layout
     #[arg(short, long, value_enum, default_value = "friendly")]
@@ -324,6 +324,9 @@ struct ConvertArgs {
     /// Number of worker threads: 0 = one per CPU core, 1 = no parallelism
     #[arg(short, long, default_value_t = 0, value_name = "N")]
     jobs: usize,
+    /// Read a saved web page (an .html file) as the page at this address: its links point there, and its pictures are fetched from there
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
 }
 
 /// Where the files of one `convert` run go.
@@ -429,19 +432,20 @@ fn render_svg(input: &Path, output: &Path, scale: f32) -> Result<()> {
     std::fs::write(output, png).with_context(|| format!("writing {}", output.display()))
 }
 
-/// Loads the PDF named by `input` (an existing file, else an arXiv id or
-/// URL) and returns it with the stem for output file names.
+/// Loads the document named by `input` (an existing file, else an arXiv
+/// id or URL, else the address of a web page or document) and returns it
+/// with the stem for output file names.
 ///
 /// # Errors
-/// When the file cannot be read, the download fails, the data is not a PDF,
-/// or `input` is neither a file nor an arXiv id.
+/// When the file cannot be read, the download fails, the data is not a
+/// document that can be read, or `input` is neither a file, an arXiv id
+/// nor an address.
 fn load(input: &str) -> Result<(Paper, String)> {
     let path = Path::new(input);
     if path.is_file() {
-        let data = std::fs::read(path).with_context(|| format!("reading {input}"))?;
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("paper")
             .to_string();
         let name = path
@@ -449,7 +453,7 @@ fn load(input: &str) -> Result<(Paper, String)> {
             .and_then(|name| name.to_str())
             .unwrap_or(input)
             .to_string();
-        return Ok((Paper::from_bytes(data)?.with_source(name), stem));
+        return Ok((Paper::from_path(path)?.with_source(name), stem));
     }
     if let Some(id) = arxiv::parse_id(input) {
         eprintln!("fetching arXiv:{id} ...");
@@ -457,7 +461,92 @@ fn load(input: &str) -> Result<(Paper, String)> {
         let stem = id.replace('/', "_");
         return Ok((Paper::from_bytes(data)?.with_source(format!("arXiv:{id}")), stem));
     }
-    bail!("'{input}' is neither an existing file nor an arXiv id/URL")
+    if web::is_url(input) {
+        eprintln!("fetching {input} ...");
+        return Ok((Paper::from_url(input)?, url_stem(input)));
+    }
+    bail!("'{input}' is neither an existing file, an arXiv id/URL nor an http(s) address")
+}
+
+/// Loads the saved web page `input` as the page at the address `url`, with
+/// the stem for output file names.
+///
+/// # Errors
+/// When the file cannot be read, is not a web page, or `url` is not an
+/// http(s) address.
+fn load_saved_page(input: &str, url: &str) -> Result<(Paper, String)> {
+    if !web::is_url(url) {
+        bail!("--base-url: '{url}' is not an http(s) address");
+    }
+    let path = Path::new(input);
+    let data = std::fs::read(path).with_context(|| format!("reading {input}"))?;
+    if !kakemono::html::is_html(&data) {
+        bail!("--base-url applies to a web page; {input} is not one");
+    }
+    let stem = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("page")
+        .to_string();
+    Ok((Paper::from_page_at(&data, url)?, stem))
+}
+
+/// The stem of output file names for the address `url`: its last path
+/// segment without its extension (`Rust_(programming_language)` →
+/// `Rust_programming_language`), else its host.
+fn url_stem(url: &str) -> String {
+    let parsed = url::Url::parse(url.trim()).ok();
+    let segment = parsed
+        .as_ref()
+        .and_then(|url| {
+            url.path_segments()?
+                .rev()
+                .find(|segment| !segment.is_empty())
+                .map(str::to_string)
+        })
+        .map(|segment| {
+            let decoded = percent_decode(&segment);
+            match decoded.rsplit_once('.') {
+                Some((stem, ext)) if !stem.is_empty() && ext.len() <= 5 => stem.to_string(),
+                _ => decoded,
+            }
+        });
+    let name = segment
+        .or_else(|| parsed.as_ref().and_then(|url| url.host_str().map(str::to_string)))
+        .unwrap_or_default();
+    let mut stem = String::new();
+    for ch in name.chars() {
+        let ch = if ch.is_alphanumeric() || matches!(ch, '-' | '.') {
+            ch
+        } else {
+            '_'
+        };
+        if !(ch == '_' && stem.ends_with('_')) {
+            stem.push(ch);
+        }
+    }
+    let stem = stem.trim_matches(['_', '.']).to_string();
+    if stem.is_empty() { "page".to_string() } else { stem }
+}
+
+/// `text` with its `%XX` escapes decoded (as UTF-8, invalid bytes
+/// replaced).
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(byte) = text.get(i + 1..i + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            out.push(byte);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Writes `data` to `path`, creating the parent directories first.
@@ -557,7 +646,10 @@ fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
 /// LaTeX, the input cannot be loaded or an output file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     let format = check_args(&args)?;
-    let (paper, stem) = load(&args.input)?;
+    let (paper, stem) = match &args.base_url {
+        Some(url) => load_saved_page(&args.input, url)?,
+        None => load(&args.input)?,
+    };
     let paper = paper.with_png_compression(args.png_compression.into());
     if format == FormatArg::Pdf {
         return write_pdf(&paper, &args, &stem);
@@ -1204,8 +1296,23 @@ fn zone_label(loc: &Loc) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::utc_timestamp;
+    use super::{url_stem, utc_timestamp};
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn addresses_give_file_names() {
+        assert_eq!(
+            url_stem("https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            "Rust_programming_language"
+        );
+        assert_eq!(url_stem("https://vi.wikipedia.org/wiki/H%C3%A0_N%E1%BB%99i"), "Hà_Nội");
+        assert_eq!(
+            url_stem("https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"),
+            "ch04-01-what-is-ownership"
+        );
+        assert_eq!(url_stem("https://example.org/"), "example.org");
+        assert_eq!(url_stem("https://example.org/a/b/?q=1"), "b");
+    }
 
     #[test]
     fn timestamps_are_utc_dates() {

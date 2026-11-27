@@ -177,6 +177,7 @@ pub fn render_typst(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &TypstOpti
 fn document(doc: &Document, layout: TypstLayout, body: &str) -> String {
     let source = match super::source_label(doc) {
         "EPUB" => "an EPUB book",
+        "HTML" => "a web page",
         "Word" => "a Word document",
         _ => "a PDF",
     };

@@ -13,10 +13,9 @@
 //! links between documents keep working.
 
 use super::css::{Props, Sheet};
-use super::{entities, mathml, parse, resolve};
+use super::{Resources, entities, mathml, parse, resolve};
 use crate::model::{BOLD, ITALIC, MONO, Picture, SUB, SUP, Span};
 use crate::word::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
-use crate::word::zip::ZipArchive;
 use crate::word::{normalize_picture, pixel_size};
 use anyhow::{Context, Result};
 use roxmltree::{Document as Xml, Node};
@@ -125,6 +124,8 @@ struct Flow {
     ids: Vec<String>,
     /// List numbering of the next paragraph.
     list: Option<ListMark>,
+    /// The places in `items` where a note left the flow.
+    moved_notes: Vec<usize>,
 }
 
 /// One content document of the book.
@@ -137,8 +138,9 @@ struct Page<'a> {
 
 /// Reads the content documents of a book.
 struct Reader<'a> {
-    /// The archive.
-    zip: &'a ZipArchive<'a>,
+    /// Where the style sheets and pictures are read from (the archive of
+    /// a book, or the files of a web page).
+    files: &'a dyn Resources,
     /// The pictures read so far.
     pictures: Vec<Picture>,
     /// Index of the picture of each path; `None` when it cannot be shown.
@@ -161,37 +163,36 @@ struct Reader<'a> {
     note_backlink: bool,
 }
 
-/// Reads the content documents `spine` of a book (`title` and `creators`
-/// from its metadata) into the form of a Word document.
+/// Reads the content documents `docs` (path, XHTML text), in reading
+/// order, of a book (`title` and `creators` from its metadata) into the
+/// form of a Word document; their style sheets and pictures are read from
+/// `files`. A web page is read as a book of one document.
 ///
 /// # Errors
-/// When a content document is missing or is not well-formed XML.
-pub(crate) fn read_book(
-    zip: &ZipArchive<'_>,
-    spine: &[String],
+/// When a content document is not well-formed XML.
+pub(crate) fn read_documents(
+    files: &dyn Resources,
+    docs: &[(&str, String)],
     title: Option<&str>,
     creators: &[String],
 ) -> Result<WordDoc> {
-    let mut texts = Vec::new();
-    for path in spine {
-        let text = zip
-            .read_text(path)?
-            .with_context(|| format!("the EPUB has no content document {path}"))?;
+    let mut texts = Vec::with_capacity(docs.len());
+    for (path, text) in docs {
         // A document with HTML's named references parses once they are
         // numbers (parsed twice only then: most documents have none).
-        let text = if entities::has_html_names(&text) && parse(&text).is_err() {
-            entities::to_numeric(&text)
+        let text = if entities::has_html_names(text) && parse(text).is_err() {
+            entities::to_numeric(text)
         } else {
-            text
+            text.clone()
         };
-        texts.push((path.as_str(), text));
+        texts.push((*path, text));
     }
     let docs = texts
         .iter()
         .map(|(path, text)| parse(text).with_context(|| format!("reading {path}")))
         .collect::<Result<Vec<Xml<'_>>>>()?;
     let mut reader = Reader {
-        zip,
+        files,
         pictures: Vec::new(),
         picture_index: HashMap::new(),
         sheets: HashMap::new(),
@@ -226,7 +227,9 @@ pub(crate) fn read_book(
         reader.element(&page, body, &Ctx::default(), &mut flow);
         flow.flush();
     }
+    let moved_notes = std::mem::take(&mut flow.moved_notes);
     let mut body = flow.finish();
+    emptied_headings(&mut body, &moved_notes);
     front_matter(&mut body, title, creators);
     raise_headings(&mut body);
     Ok(WordDoc {
@@ -369,11 +372,13 @@ impl<'a> Reader<'a> {
                 && let Some(href) = node.attribute("href")
             {
                 let (css_path, _) = resolve(path, href);
-                let zip = self.zip;
-                let text = self
-                    .sheets
-                    .entry(css_path)
-                    .or_insert_with_key(|key| zip.read_text(key).ok().flatten().unwrap_or_default());
+                let files = self.files;
+                let text = self.sheets.entry(css_path).or_insert_with_key(|key| {
+                    files
+                        .read(key)
+                        .map(|data| String::from_utf8_lossy(&data).into_owned())
+                        .unwrap_or_default()
+                });
                 sheet.add(text);
             }
         }
@@ -387,6 +392,7 @@ impl<'a> Reader<'a> {
         if id.as_ref().is_some_and(|id| self.note_ids.contains(id)) {
             let id = id.unwrap_or_default();
             let body = self.note_body(page, node, ctx);
+            flow.moved_notes.push(flow.items.len());
             self.notes.push(Note {
                 endnote: false,
                 id,
@@ -399,6 +405,16 @@ impl<'a> Reader<'a> {
         if SKIPPED.contains(&name.as_str()) || props.hidden || has_semantics(node, &PAGE_BREAKS) {
             if let Some(id) = id {
                 flow.bookmark(id, true);
+            }
+            // A hidden separator between words (Nature's `Received<span
+            // class="u-hide">: </span>21 February`) leaves a space.
+            let text: String = node.descendants().filter_map(|child| child.text()).collect();
+            if props.hidden
+                && text.contains(char::is_whitespace)
+                && text.chars().all(|ch| !ch.is_alphanumeric())
+                && !BLOCKS.contains(&name.as_str())
+            {
+                self.text(ctx, flow, " ");
             }
             return;
         }
@@ -683,6 +699,7 @@ impl<'a> Reader<'a> {
                     ..Default::default()
                 }));
             }
+            empty_columns(&mut table);
             flow.items.push(Item::Table(table));
         }
     }
@@ -824,16 +841,10 @@ impl<'a> Reader<'a> {
         if let Some(index) = self.picture_index.get(&path) {
             return *index;
         }
-        let index = self
-            .zip
-            .read(&path)
-            .ok()
-            .flatten()
-            .and_then(normalize_picture)
-            .map(|picture| {
-                self.pictures.push(picture);
-                self.pictures.len() - 1
-            });
+        let index = self.files.read(&path).and_then(normalize_picture).map(|picture| {
+            self.pictures.push(picture);
+            self.pictures.len() - 1
+        });
         self.picture_index.insert(path, index);
         index
     }
@@ -904,6 +915,98 @@ fn front_matter(body: &mut Vec<Item>, title: Option<&str>, creators: &[String]) 
         let start = at.map_or(0, |idx| idx + 1);
         for (offset, creator) in creators.iter().enumerate() {
             body.insert(start + offset, plain_para(AUTHOR_STYLE, creator));
+        }
+    }
+}
+
+/// Removes the columns of `table` whose cells are all empty (the column of
+/// the arrows to vote of Hacker News): a cell over several columns spans
+/// one less.
+fn empty_columns(table: &mut Table) {
+    let empty = |cell: &Cell| {
+        cell.body.iter().all(|item| match item {
+            Item::Para(para) => para.inlines.iter().all(|inline| match inline {
+                Inline::Text(span) => span.text.trim().is_empty(),
+                _ => false,
+            }),
+            Item::Table(_) => false,
+        })
+    };
+    let width = |row: &Row| row.cells.iter().map(|cell| cell.span.max(1)).sum::<usize>();
+    let mut column = table.rows.iter().map(width).max().unwrap_or_default();
+    while column > 0 {
+        column -= 1;
+        // The cell of each row over `column`.
+        let at = |row: &Row| {
+            let mut start = 0;
+            row.cells.iter().position(|cell| {
+                start += cell.span.max(1);
+                start > column
+            })
+        };
+        let mut single = false;
+        let removable = table.rows.iter().all(|row| match at(row) {
+            None => true,
+            Some(index) => {
+                let cell = &row.cells[index];
+                if cell.span.max(1) > 1 {
+                    return true;
+                }
+                single = true;
+                empty(cell)
+            }
+        });
+        if !removable || !single || table.rows.iter().map(width).max().unwrap_or_default() <= 1 {
+            continue;
+        }
+        for row in &mut table.rows {
+            if let Some(index) = at(row) {
+                if row.cells[index].span.max(1) > 1 {
+                    row.cells[index].span -= 1;
+                } else {
+                    row.cells.remove(index);
+                }
+            }
+        }
+    }
+}
+
+/// Fewest notes of a list of notes.
+const MIN_NOTES_OF_A_LIST: usize = 2;
+
+/// Removes the headings whose part held only a list of notes, which left
+/// the flow (`References` of a page whose citations are notes): notes
+/// left the flow right after it, and the next item is a heading of the
+/// same level or above, or there is none. Their
+/// bookmarks go to the next item.
+fn emptied_headings(body: &mut Vec<Item>, moved_notes: &[usize]) {
+    let level = |item: &Item| match item {
+        Item::Para(para) => para.outline,
+        Item::Table(_) => None,
+    };
+    let mut index = body.len();
+    while index > 0 {
+        index -= 1;
+        let Some(heading) = level(&body[index]) else {
+            continue;
+        };
+        let notes = moved_notes.iter().filter(|&&at| at == index + 1).count();
+        let emptied = notes >= MIN_NOTES_OF_A_LIST
+            && body[index + 1..]
+                .iter()
+                // The bookmarks left at the end are no part.
+                .find(|item| !matches!(item, Item::Para(para) if para.inlines.is_empty()))
+                .is_none_or(|next| level(next).is_some_and(|next| next <= heading));
+        if !emptied {
+            continue;
+        }
+        let Item::Para(para) = body.remove(index) else {
+            continue;
+        };
+        if let Some(Item::Para(next)) = body.get_mut(index) {
+            let mut bookmarks = para.bookmarks;
+            bookmarks.append(&mut next.bookmarks);
+            next.bookmarks = bookmarks;
         }
     }
 }

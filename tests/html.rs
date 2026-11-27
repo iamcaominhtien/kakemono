@@ -1,0 +1,1035 @@
+//! Web pages as input: the sample page of `tests/data/html` (written by
+//! pandoc from `tests/data/word/sample.md`, the source of the sample Word
+//! document and of the sample EPUB book), and small pages written here
+//! with the markup of the sites most read (clutter around an article, lazy
+//! pictures, Wikipedia's notes, arXiv's LaTeXML, encodings).
+
+use kakemono::html::{Origin, read_with};
+use kakemono::model::{Block, BlockKind, Document, FloatKind};
+use kakemono::{
+    Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
+    Paper, TypstOptions,
+};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// The sample page.
+const SAMPLE_HTML: &str = "html/sample.html";
+/// The same document as a Word file.
+const SAMPLE_DOCX: &str = "word/sample.docx";
+/// The same document as an EPUB book.
+const SAMPLE_EPUB: &str = "epub/sample.epub";
+
+/// The path of a file of `tests/data`.
+fn data(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(name)
+}
+
+/// Loads (from its file, its picture next to it) and analyses a file of
+/// `tests/data`.
+fn load(name: &str) -> (Paper, Analysis) {
+    let paper = Paper::from_path(data(name)).unwrap();
+    let analysis = paper.analyze();
+    (paper, analysis)
+}
+
+/// The document of the page `html` at the address `url`, its pictures
+/// fetched from `pictures` (by address) instead of the Web.
+fn page_at(html: &str, url: &str, pictures: &[(&str, &[u8])]) -> Document {
+    let pictures: HashMap<String, Vec<u8>> = pictures
+        .iter()
+        .map(|(url, data)| ((*url).to_string(), data.to_vec()))
+        .collect();
+    let fetch = move |urls: &[String]| -> HashMap<String, Vec<u8>> {
+        urls.iter()
+            .filter_map(|url| Some((url.clone(), pictures.get(url)?.clone())))
+            .collect()
+    };
+    let origin = Origin::Url { url, charset: None };
+    read_with(html.as_bytes(), origin, None, &fetch).unwrap()
+}
+
+/// The document of the page `html`, read from its bytes.
+fn page(html: &str) -> Document {
+    Paper::from_bytes(html.as_bytes().to_vec()).unwrap().analyze().doc
+}
+
+/// The texts of the blocks of `doc`.
+fn texts(doc: &Document) -> Vec<String> {
+    doc.blocks.iter().map(Block::text).collect()
+}
+
+/// The block whose text starts with `start`.
+fn block<'a>(doc: &'a Document, start: &str) -> &'a Block {
+    doc.blocks
+        .iter()
+        .find(|block| block.text().starts_with(start))
+        .unwrap_or_else(|| panic!("no block starting with {start:?} in {:#?}", texts(doc)))
+}
+
+/// Whether some block of `doc` contains `text`.
+fn has_text(doc: &Document, text: &str) -> bool {
+    doc.blocks.iter().any(|block| block.text().contains(text))
+}
+
+#[test]
+fn html_sample_reads_like_the_docx() {
+    let summary = |paper: Paper| -> Vec<String> {
+        paper
+            .analyze()
+            .doc
+            .blocks
+            .iter()
+            .filter(|block| !matches!(block.kind, BlockKind::Equation { .. }))
+            .map(|block| format!("{:?} {} {:?}", block.kind, block.text(), block.anchor))
+            .collect()
+    };
+    let html = summary(Paper::from_path(data(SAMPLE_HTML)).unwrap());
+    let docx = summary(Paper::from_bytes(std::fs::read(data(SAMPLE_DOCX)).unwrap()).unwrap());
+    let epub = summary(Paper::from_bytes(std::fs::read(data(SAMPLE_EPUB)).unwrap()).unwrap());
+    assert_eq!(html, docx);
+    assert_eq!(html, epub);
+}
+
+#[test]
+fn html_sample_has_its_structure() {
+    let (paper, analysis) = load(SAMPLE_HTML);
+    let doc = &analysis.doc;
+    assert_eq!(paper.format(), InputFormat::Html);
+    assert_eq!(paper.format().name(), "html");
+    assert!(!paper.format().has_pages());
+    assert_eq!(doc.meta.source_format.as_deref(), Some("html"));
+    assert_eq!(
+        doc.meta.title.as_deref(),
+        Some("Convergence of Gradient Descent on Smooth Functions")
+    );
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title));
+    assert!(matches!(doc.blocks[1].kind, BlockKind::Authors));
+    // The picture is read next to the page (`../word/curve.png`), at the
+    // size of its style (3 inches).
+    let figure = block(doc, "Figure 1:");
+    let BlockKind::Figure {
+        kind: FloatKind::Figure,
+        image: Some(image),
+        ..
+    } = &figure.kind
+    else {
+        panic!("the figure has a picture")
+    };
+    assert!((image.rect.width() - 216.0).abs() < 1.0, "3 inches wide");
+    assert!(doc.pictures[0].data.starts_with(b"\x89PNG"));
+    // pandoc's note: a footnote after its paragraph.
+    let note_at = doc
+        .blocks
+        .iter()
+        .position(|block| block.text().starts_with("It goes back"))
+        .unwrap();
+    assert!(matches!(&doc.blocks[note_at].kind, BlockKind::Footnote { marker } if marker == "1"));
+}
+
+#[test]
+fn from_bytes_reads_a_page_without_its_files() {
+    let bytes = std::fs::read(data(SAMPLE_HTML)).unwrap();
+    let paper = Paper::from_bytes(bytes).unwrap();
+    assert_eq!(paper.format(), InputFormat::Html);
+    let doc = paper.analyze().doc;
+    // The picture next to the file is not known: the figure keeps its
+    // caption.
+    assert!(has_text(&doc, "Figure 1: The loss along the iterations."));
+    assert!(has_text(&doc, "It goes back to Cauchy (1847)."));
+}
+
+#[test]
+fn every_output_can_be_written_from_html() {
+    let (paper, analysis) = load(SAMPLE_HTML);
+    for mode in [Mode::Hard, Mode::Hard95, Mode::Medium, Mode::Friendly] {
+        let opts = HtmlOptions {
+            mode,
+            ..Default::default()
+        };
+        let html = paper.to_html(&analysis, &opts).html;
+        assert!(html.contains("Convergence of Gradient Descent"), "{mode:?}");
+    }
+    assert!(paper.to_docx(&analysis, &DocxOptions::default()).starts_with(b"PK"));
+    let markdown = paper.to_markdown(&analysis, &MarkdownOptions::default()).markdown;
+    assert!(markdown.contains("def step(x, grad, eta):"));
+    assert!(paper.to_epub(&analysis, &EpubOptions::default()).starts_with(b"PK"));
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    assert!(json.contains(r#""format": "html""#));
+    assert!(paper.to_pdf().unwrap().starts_with(b"%PDF"));
+    // The colophons name a web page.
+    let friendly = paper.to_html(&analysis, &HtmlOptions::default()).html;
+    assert!(friendly.contains("Converted from HTML by kakemono"));
+    let latex = paper.to_latex(&analysis, &LatexOptions::default()).latex;
+    assert!(latex.contains("Converted from a web page"));
+    let typst = paper.to_typst(&analysis, &TypstOptions::default()).typst;
+    assert!(typst.contains("Converted from a web page"));
+}
+
+/// A news article as many sites write it: the article among a menu, a
+/// cookie notice, sharing buttons, a list of related stories, a sidebar and
+/// a footer, with lazy pictures.
+const NEWS: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Rivers rise after the storm | The Daily Example</title>
+<meta property="og:title" content="Rivers rise after the storm">
+<meta name="author" content="Ann Lee, Bo Chen">
+<style>.promo-box{display:none}</style>
+</head><body>
+<div id="cookie-banner"><p>We use cookies to give you the best experience on our website, please accept them all now.</p><button>Accept</button></div>
+<header class="site-header"><a href="/">The Daily Example</a><nav><ul><li><a href="/world">World</a></li><li><a href="/sport">Sport</a></li></ul></nav></header>
+<main>
+<article>
+<h1>Rivers rise after the storm</h1>
+<div class="share-tools"><a href="https://twitter.com/share">Share on X</a><span>Share this story with your friends and family today please</span></div>
+<p>Heavy rain fell across the valley overnight, and the rivers rose to their highest level in a decade, officials said on Monday morning.</p>
+<figure><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/river-small.png" data-srcset="/img/river-640.png 640w, /img/river-1920.png 1920w" width="1920" height="1080" alt="The river"><figcaption>The river at dawn.</figcaption></figure>
+<p>Residents of the lower town were asked to leave their homes before noon, and schools stayed closed for the rest of the week.<br><br>The water is expected to fall slowly over the next three days, according to the forecast of the weather service.</p>
+<img src="/img/pixel.gif" width="1" height="1" alt="">
+<p hidden>Hidden text that is not part of the article at all, never shown to readers.</p>
+<div class="related-stories"><h2>Related</h2><p>Another story about another storm that happened somewhere else last year in the hills.</p></div>
+</article>
+</main>
+<aside class="sidebar"><h2>Most read</h2><p>A story that many people read today, about something else entirely, on another page.</p></aside>
+<footer><p>Copyright The Daily Example. All rights reserved, everywhere, forever and ever.</p></footer>
+</body></html>"#;
+
+#[test]
+fn the_article_is_found_among_the_clutter() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let doc = page_at(
+        NEWS,
+        "https://news.example.org/2026/storm.html",
+        &[("https://news.example.org/img/river-1920.png", &png)],
+    );
+    assert_eq!(doc.meta.title.as_deref(), Some("Rivers rise after the storm"));
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title));
+    let authors: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Authors))
+        .map(Block::text)
+        .collect();
+    assert_eq!(authors.join(", "), "Ann Lee, Bo Chen");
+    assert!(has_text(&doc, "Heavy rain fell"));
+    // Two line breaks end a paragraph.
+    assert!(block(&doc, "Residents").text().ends_with("rest of the week."));
+    assert!(
+        block(&doc, "The water is expected")
+            .text()
+            .ends_with("weather service.")
+    );
+    for clutter in [
+        "cookies",
+        "World",
+        "Share",
+        "Related",
+        "Another story",
+        "Most read",
+        "Copyright",
+        "Hidden text",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    // The lazy picture is its best version (1920 pixels wide), fitted to
+    // the page; the tracking pixel is gone.
+    assert_eq!(doc.pictures.len(), 1);
+    let figure = block(&doc, "The river at dawn.");
+    let BlockKind::Figure { image: Some(image), .. } = &figure.kind else {
+        panic!("the figure has its picture: {:#?}", figure.kind)
+    };
+    assert!(image.rect.width() <= 6.5 * 72.0 + 1.0, "{}", image.rect.width());
+}
+
+/// A Vietnamese news page as Dân trí lays it out: its summary in an `<h2>`,
+/// the name of the site as its `author`, and after the article, teasers
+/// for other articles and tags whose headings are links, in its column.
+const NEWS_VI: &str = r#"<!doctype html><html lang="vi"><head>
+<title>Cháy nhà 4 tầng trên phố cổ | Báo Dân trí</title>
+<meta name="author" content="Dân trí"><meta property="og:site_name" content="Báo điện tử Dân trí">
+</head><body><main><div class="col">
+<section><ul><li><a href="/thoi-su.htm">Thời sự</a></li></ul><time>Thứ ba, 24/11/2026 - 16:59</time></section>
+<section><article id="articleContent"><h1>Cháy nhà 4 tầng trên phố cổ</h1>
+<div><a rel="author" href="/tac-gia/tran-thanh.htm">Trần Thanh</a></div>
+<h2 data-slot="sapo">(Dân trí) - Theo cảnh sát, diện tích đám cháy khoảng 20m2, ngôi nhà bị cháy cao 4 tầng nằm ở phố Hàng Thiếc.</h2>
+<div data-slot="content"><p>Khoảng 14h24 ngày 24/11, tại căn nhà cao 4 tầng nằm ở số 62 phố Hàng Thiếc, phường Hoàn Kiếm, xảy ra hỏa hoạn.</p>
+<p>Sau khi nhận tin báo, cảnh sát điều nhiều xe chữa cháy tới hiện trường. Tới khoảng 15h, đám cháy được khống chế hoàn toàn.</p>
+<p>Theo cảnh sát, ngôi nhà bị cháy một phần ở tầng 2 và tầng 3. Rất may vụ hỏa hoạn không gây thiệt hại về người.</p></div>
+</article></section>
+<section><article><h3><a href="/thoi-su/nu-chu-quan.htm">Nữ chủ quán bún tử vong trong đám cháy</a></h3>
+<a href="/thoi-su/nu-chu-quan.htm">Đám cháy bùng phát tại quán bún bò lúc rạng sáng.</a></article></section>
+<section><ul><li><h3>Tags:</h3></li><li><h4><a href="/tim-kiem/chay-nha.htm">cháy nhà</a></h4></li></ul></section>
+</div></main></body></html>"#;
+
+#[test]
+fn news_summary_is_a_paragraph_and_teasers_are_gone() {
+    let doc = page_at(NEWS_VI, "https://dantri.com.vn/thoi-su/chay-nha.htm", &[]);
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title));
+    // The summary is a paragraph, not a heading.
+    let summary = block(&doc, "(Dân trí) - Theo cảnh sát");
+    assert!(
+        matches!(summary.kind, BlockKind::Paragraph { .. }),
+        "{:?}",
+        summary.kind
+    );
+    // The name of the site is not an author.
+    let authors: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Authors))
+        .map(Block::text)
+        .collect();
+    assert!(!authors.iter().any(|author| author.contains("Dân trí")), "{authors:?}");
+    assert!(has_text(&doc, "Rất may vụ hỏa hoạn"));
+    for clutter in ["Thời sự", "16:59", "Nữ chủ quán bún", "Tags:", "cháy nhà"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
+/// A news page as Tuổi Trẻ, Thanh Niên and Vietnamnet lay it out: a date
+/// before the title, the author twice, the site's domain as its `author`,
+/// teasers in the body (a nested `<article>`, a box whose heading is a
+/// link, a paragraph that is a link), and after the body counts of
+/// reactions, tags and a newsletter box.
+const NEWS_WIDGETS: &str = r#"<!doctype html><html lang="vi"><head>
+<title>Truy tặng huân chương cho hai người cứu hộ - Báo Thanh Niên</title>
+<meta name="author" content="thanhnien.vn"><link rel="canonical" href="https://thanhnien.vn/truy-tang.htm">
+</head><body><main><div class="detail">
+<div class="detail-top"><time>24/11/2026 15:52 GMT+7</time></div>
+<h1>Truy tặng huân chương cho hai người cứu hộ</h1>
+<div class="info"><a href="/tac-gia/xuan-hoat.htm">XUÂN HOÁT</a> <a href="/tac-gia/xuan-hoat.htm">XUÂN HOÁT</a></div>
+<p class="sapo">Hai cán bộ cứu hộ đã hy sinh khi cứu người đuối nước ở biển Nha Trang, được truy tặng huân chương.</p>
+<div class="detail-content">
+<p>Ngày 24-11, Chủ tịch nước đã có quyết định truy tặng Huân chương Dũng cảm cho hai cán bộ của đội cứu nạn, cứu hộ.</p>
+<div class="box"><ul><li><a href="/loi-tu-biet.htm"><img src="/thumb.jpg" alt=""></a>
+<h4><a href="/loi-tu-biet.htm">Lời từ biệt lặng lẽ của người cứu hộ</a><a href="/loi-tu-biet.htm">ĐỌC NGAY</a></h4></li></ul></div>
+<p>Hai cá nhân đó là ông An và ông Sáng, cán bộ đội cứu nạn, cứu hộ thuộc ban quản lý bãi biển Nha Trang.</p>
+<article class="insert-news"><a href="/cdv-nga-mu.htm">Người dân Nha Trang tưởng nhớ hai người cứu hộ</a>
+<div>Hàng trăm người đã đến viếng.</div></article>
+<p><a href="/khanh-hoa-to-trinh.htm">Khánh Hòa có tờ trình về việc truy tặng huân chương</a></p>
+<div type="RelatedOneNews"><a href="/xom-chai.htm"><img src="/xom-chai.jpg" alt=""></a><a href="/xom-chai.htm">Xóm chài Cửa Bé tiễn biệt người cứu hộ</a>
+<p>Khoảnh khắc anh lao vào sóng dữ để cùng đồng đội đưa hai nạn nhân vào bờ.</p></div>
+<p>Trước nghĩa cử cao đẹp, không quản hiểm nguy để cứu người, lãnh đạo tỉnh đã đề nghị khen thưởng cả hai người.</p>
+<p>Anh ra đi ngay trước ngày kỷ niệm 20 năm ngày cưới, để lại vợ, mẹ già và hai con nhỏ trong căn nhà ven biển.</p>
+<p>Gia đình hai cán bộ cứu hộ đã nhận được sự hỗ trợ của chính quyền địa phương và nhiều nhà hảo tâm trong tỉnh.</p>
+</div>
+<div class="reactions"><div><span>0</span> <span>0</span> <span>0</span></div><span>Tặng sao cho bài viết hay</span></div>
+<div class="detail-tab"><h4>Khám phá thêm chủ đề</h4><a href="/cuu-nan.html">Cứu nạn</a></div>
+<div class="newsletter"><h3>Đăng ký ngay để nhận gói tin tức mới</h3><p>Chúng tôi sẽ gởi đến bạn những tin nổi bật nhất.</p></div>
+</div></main></body></html>"#;
+
+#[test]
+fn news_widgets_and_teasers_are_gone() {
+    let doc = page(NEWS_WIDGETS);
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Hai cán bộ cứu hộ đã hy sinh"));
+    assert!(has_text(&doc, "Gia đình hai cán bộ"));
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.contains("XUÂN HOÁT")).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    for clutter in [
+        "15:52",
+        "thanhnien.vn",
+        "Lời từ biệt",
+        "ĐỌC NGAY",
+        "tưởng nhớ",
+        "tờ trình",
+        "Xóm chài",
+        "sóng dữ",
+        "Tặng sao",
+        "Khám phá thêm",
+        "Đăng ký ngay",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    assert!(
+        !texts(&doc).iter().any(|text| text.trim() == "0 0 0"),
+        "{:#?}",
+        texts(&doc)
+    );
+}
+
+#[test]
+fn a_page_without_article_reads_its_description() {
+    let html = r#"<!doctype html><html><head><title>Khoảnh khắc quán lẩu phát nổ</title>
+<meta name="description" content="Camera nhà dân ghi lại khoảnh khắc quán lẩu đang sửa chữa phát nổ khiến mảnh vỡ văng khắp đoạn đường hơn 20 m.">
+</head><body><h1>Khoảnh khắc quán lẩu phát nổ</h1><div class="player"><div>Phím tắt</div>
+<ul><li>Tới video tiếp theo</li><li>Tắt âm thanh</li></ul></div></body></html>"#;
+    let doc = page(html);
+    assert!(has_text(&doc, "Camera nhà dân ghi lại"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Phím tắt"), "{:#?}", texts(&doc));
+}
+
+#[test]
+fn a_picture_that_fails_is_fetched_in_another_version() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let html = r#"<!doctype html><html><head><title>Storm</title></head><body><article><h1>Storm</h1>
+<p>The river rose through the night and reached the bridge before dawn, the highest in ten years.</p>
+<figure><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" data-src="/img/river-1020.png"
+ data-srcset="/img/river-1020.png 1x, /img/river-1360.png 2x"><figcaption>The river at dawn.</figcaption></figure>
+<p>Residents of the lower town were asked to leave their homes until the water goes down again.</p>
+</article></body></html>"#;
+    // The best version (2x) fails; the 1x one is served.
+    let doc = page_at(
+        html,
+        "https://news.example.org/storm.html",
+        &[("https://news.example.org/img/river-1020.png", &png)],
+    );
+    let figure = block(&doc, "The river at dawn.");
+    assert!(
+        matches!(&figure.kind, BlockKind::Figure { image: Some(_), .. }),
+        "{:?}",
+        figure.kind
+    );
+    assert_eq!(doc.pictures.len(), 1);
+}
+
+/// A technology news page as TechCrunch, The Verge and Ars Technica lay it
+/// out: a summary and a caption shown twice, a byline whose name is in a
+/// pop-up, a caption in a font named by a custom property, a link to the
+/// comments, an affiliate disclaimer and the box about the author after
+/// the body.
+const TECH_NEWS: &str = r#"<!doctype html><html lang="en"><head><title>Hacker sentenced</title>
+<style>.credits { font-family: var(--wp--custom--font--family--mono) }</style></head><body><main><div class="column">
+<div class="body"><h1>The hacker behind the leaks has been sentenced</h1>
+<p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
+<p>Arion Kurtaj, who hacked a game studio and leaked its videos, was released after pleading guilty.</p>
+<p>by</p><p><a href="/article#comments">43 Comments</a></p>
+<p class="byline"><a href="/author/beth/">Beth Mole</a> – Nov 23, 2026 4:58 pm <span>|</span> <a href="/article#comments">163</a></p>
+<figure><img src="data:image/png;base64,iVBORw0KGgo=" width="600" height="300"><figcaption><span class="credits"><strong>Image Credits:</strong> Rockstar Games</span></figcaption></figure>
+<div class="caption-content">Credit: NASA</div><div class="caption-content">Credit: NASA</div>
+<p>The judge said the hacker would stay in a secure hospital, where he had already spent time before his trial.</p>
+<p>Rockstar launched the game last week to positive reviews, and said the leaks had not hurt its sales at all.</p>
+<p>The studio declined to comment further on the case, which had been followed closely by players around the world.</p>
+<p>Prosecutors had argued that the hacker posed a continuing risk, as he had kept hacking while he was on bail last year.</p>
+<p>His lawyers said that he had cooperated with the investigation and that he had not profited from any of the leaks.</p>
+<p>The court heard that the leaks had cost the studio millions of dollars and thousands of hours of work by its staff.</p>
+<p>The game, the most expensive ever made, sold more copies in its first week than any game before it, the studio said.</p>
+<div class="follow"><span><strong>Follow topics and authors</strong> from this story to see more like this in your feed.</span>
+<ul><li><span role="button">Jay Peters</span></li></ul></div>
+</div>
+<p class="affiliate-disclaimer-text">When you purchase through links in our articles, we may earn a small commission.</p>
+<div class="post-authors"><a href="/author/jay-peters/">Jay Peters</a><p>Senior Reporter</p>
+<p>Jay is a senior reporter covering technology, gaming, and more. He joined the site in 2019 after two years elsewhere.</p></div>
+</div></main></body></html>"#;
+
+#[test]
+fn tech_news_repeats_bylines_and_author_boxes_are_gone() {
+    let doc = page(TECH_NEWS);
+    let summary = "Arion Kurtaj, who hacked";
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.starts_with(summary)).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert_eq!(
+        texts(&doc).iter().filter(|text| text.contains("Credit: NASA")).count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert!(has_text(&doc, "studio declined to comment"));
+    for clutter in [
+        "43 Comments",
+        "purchase through links",
+        "Senior Reporter",
+        "joined the site",
+        "Follow topics",
+        "163",
+        "pm |",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    assert!(
+        !texts(&doc).iter().any(|text| text.trim() == "by"),
+        "{:#?}",
+        texts(&doc)
+    );
+    // The caption is not code.
+    let caption = doc
+        .blocks
+        .iter()
+        .find(|block| block.text().contains("Rockstar Games"))
+        .expect("the caption");
+    assert!(
+        caption.spans.iter().all(|span| span.style & kakemono::model::MONO == 0),
+        "{:?}",
+        caption.spans
+    );
+}
+
+#[test]
+fn the_photo_above_an_article_is_its_lead_picture() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let body =
+        "The engineer is suing the company over how it handled her complaints, the lawsuit filed on Monday says. ";
+    let html = format!(
+        r#"<!doctype html><html><head><title>Lawsuit</title>
+<meta property="og:image" content="https://news.example.org/uploads/lawsuit.png?resize=1200,877"></head><body>
+<div class="hero"><figure><img src="https://news.example.org/uploads/lawsuit.png?w=1024" width="1024" height="749">
+<figcaption>Image Credits: Getty Images</figcaption></figure></div>
+<main><div class="entry-content"><h1>Engineer sues</h1><p>{body}</p><p>{body}</p><p>{body}</p></div></main></body></html>"#
+    );
+    let doc = page_at(
+        &html,
+        "https://news.example.org/lawsuit",
+        &[("https://news.example.org/uploads/lawsuit.png?w=1024", &png)],
+    );
+    let figure = block(&doc, "Image Credits");
+    assert!(
+        matches!(&figure.kind, BlockKind::Figure { image: Some(_), .. }),
+        "{:?}",
+        figure.kind
+    );
+    // After the title, before the text.
+    let at = |start: &str| {
+        doc.blocks
+            .iter()
+            .position(|block| block.text().starts_with(start))
+            .unwrap()
+    };
+    assert!(at("Engineer sues") < at("Image Credits") && at("Image Credits") < at("The engineer"));
+}
+
+#[test]
+fn links_become_absolute_or_internal() {
+    let html = r##"<html><body><article><h1>Links</h1>
+        <p>See <a href="../other.html">another page</a>, <a href="#part">the part below</a>,
+        <a href="https://news.example.org/a/page.html#part">this very part</a> and
+        <a href="javascript:void(0)">nothing</a>.</p>
+        <h2 id="part">Part</h2><p>The part of the page that the links go to, with enough text to be read.</p>
+        </article></body></html>"##;
+    let doc = page_at(html, "https://news.example.org/a/page.html", &[]);
+    let para = block(&doc, "See ");
+    let href = |text: &str| {
+        para.spans
+            .iter()
+            .find(|span| span.text.contains(text))
+            .and_then(|span| span.href.clone())
+    };
+    assert_eq!(
+        href("another page").as_deref(),
+        Some("https://news.example.org/other.html")
+    );
+    // The anchor of a heading is named as the reader names it.
+    assert_eq!(href("the part below").as_deref(), Some("#sec-part"));
+    assert_eq!(href("this very part").as_deref(), Some("#sec-part"));
+    assert_eq!(href("nothing"), None);
+}
+
+#[test]
+fn wikipedia_notes_are_footnotes() {
+    // Wikipedia's markup (Parsoid): a superscript link to an item of the
+    // list of references, which links back.
+    let html = r##"<!DOCTYPE html><html><head><title>Example - Wikipedia</title></head>
+        <body class="mediawiki"><div id="content"><h1 id="firstHeading"><span class="mw-page-title-main">Example</span></h1>
+        <div id="mw-content-text"><div class="mw-parser-output">
+        <div class="mw-heading mw-heading2"><h2 id="History">History</h2><span class="mw-editsection">[<a href="/w/edit">edit</a>]</span></div>
+        <p>The town was founded in 1820 by settlers from the coast, who built a mill on the river.<sup id="cite_ref-1" class="mw-ref reference"><a href="#cite_note-1"><span class="cite-bracket">[</span>1<span class="cite-bracket">]</span></a></sup> It grew quickly.</p>
+        <div class="navbox" role="navigation"><p>Towns of the region: one, two, three, four, five and six and more.</p></div>
+        <div class="mw-heading mw-heading2"><h2 id="References">References</h2></div>
+        <div class="mw-references-wrap"><ol class="mw-references references">
+        <li id="cite_note-1"><span class="mw-cite-backlink"><a href="#cite_ref-1">↑</a></span> <span class="reference-text">Smith, A History of the Town, 1901.</span></li>
+        </ol></div></div></div></div></body></html>"##;
+    let doc = page(html);
+    assert_eq!(doc.meta.title.as_deref(), Some("Example"));
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title));
+    let note_at = doc
+        .blocks
+        .iter()
+        .position(|block| block.text().starts_with("Smith, A History"))
+        .unwrap_or_else(|| panic!("{:#?}", texts(&doc)));
+    assert!(matches!(&doc.blocks[note_at].kind, BlockKind::Footnote { .. }));
+    assert_eq!(doc.blocks[note_at].text(), "Smith, A History of the Town, 1901.");
+    assert!(doc.blocks[note_at - 1].text().starts_with("The town was founded"));
+    assert!(!has_text(&doc, "[1]"));
+    assert!(!has_text(&doc, "edit"));
+    assert!(!has_text(&doc, "Towns of the region"));
+}
+
+#[test]
+fn latexml_notes_and_authors() {
+    // arXiv's HTML papers (LaTeXML): a note written where it is called,
+    // authors as spans with their addresses.
+    let html = r##"<!DOCTYPE html><html><head><title>A Paper</title></head><body>
+        <div class="ltx_page_main"><div class="ltx_page_content"><article class="ltx_document">
+        <h1 class="ltx_title ltx_title_document">A Paper</h1>
+        <div class="ltx_authors"><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Ada Byron<span class="ltx_note ltx_role_thanks"><sup class="ltx_note_mark">1</sup><span class="ltx_note_outer"><span class="ltx_note_content"><sup class="ltx_note_mark">1</sup><span class="ltx_note_type">thanks: </span>Equal contribution.</span></span></span></span><span class="ltx_author_notes"><span class="ltx_contact ltx_role_email"><span class="ltx_contact_name">Email: </span><a href="mailto:">ada@example.org</a></span></span></span>
+        <span class="ltx_author_before"> and </span><span class="ltx_creator ltx_role_author"><span class="ltx_personname">Alan Turing<span class="ltx_note ltx_role_footnotemark"><sup class="ltx_note_mark">1</sup><span class="ltx_note_outer"><span class="ltx_note_content"><sup class="ltx_note_mark">1</sup><span class="ltx_note_type">footnotemark: </span></span></span></span></span></span></div>
+        <div class="ltx_abstract"><h6 class="ltx_title ltx_title_abstract">Abstract</h6><p class="ltx_p">We show how a result follows from another one in few steps.</p></div>
+        <section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Introduction</h2>
+        <div class="ltx_para"><p class="ltx_p">The method is old<span class="ltx_note ltx_role_footnote"><sup class="ltx_note_mark">2</sup><span class="ltx_note_outer"><span class="ltx_note_content"><sup class="ltx_note_mark">2</sup><span class="ltx_tag ltx_tag_note">2</span>It goes back to Cauchy.</span></span></span> and simple.</p></div>
+        </section></article></div></div></body></html>"##;
+    let doc = page(html);
+    let authors: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Authors))
+        .map(Block::text)
+        .collect();
+    assert_eq!(authors.len(), 2, "{:#?}", texts(&doc));
+    assert!(authors[0].starts_with("Ada Byron"));
+    assert!(authors[1].starts_with("Alan Turing"));
+    assert!(!has_text(&doc, "thanks:") && !has_text(&doc, "footnotemark") && !has_text(&doc, "Email:"));
+    let email = doc
+        .blocks
+        .iter()
+        .flat_map(|block| &block.spans)
+        .find(|span| span.text.contains("ada@example.org"))
+        .and_then(|span| span.href.as_deref());
+    assert_eq!(email, Some("mailto:ada@example.org"));
+    let note = block(&doc, "It goes back to Cauchy.");
+    assert!(matches!(&note.kind, BlockKind::Footnote { .. }));
+    assert_eq!(
+        block(&doc, "The method is old").text(),
+        "The method is old2 and simple."
+    );
+    assert!(matches!(
+        block(&doc, "Equal contribution.").kind,
+        BlockKind::Footnote { .. }
+    ));
+    assert!(matches!(block(&doc, "Abstract").kind, BlockKind::Heading { .. }));
+}
+
+#[test]
+fn encodings_and_inline_pictures() {
+    // Windows-1252, as an old page without a declaration.
+    let mut bytes = b"<html><body><h1>Caf\xe9</h1><p>A \x93quoted\x94 word in a page that is old.</p>".to_vec();
+    // A picture inside the page, as a `data:` URL.
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let encoded = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    };
+    bytes.extend_from_slice(format!(r#"<figure><img src="data:image/png;base64,{encoded}" alt="A curve"><figcaption>Figure 1: A curve.</figcaption></figure></body></html>"#).as_bytes());
+    let paper = Paper::from_bytes(bytes).unwrap();
+    let doc = paper.analyze().doc;
+    assert_eq!(doc.meta.title.as_deref(), Some("Café"));
+    assert!(has_text(&doc, "A “quoted” word"));
+    assert_eq!(doc.pictures.len(), 1);
+    assert!(doc.pictures[0].data.starts_with(b"\x89PNG"));
+}
+
+#[test]
+fn html_outputs_match_their_snapshot() {
+    let (paper, analysis) = load(SAMPLE_HTML);
+    let html_opts = HtmlOptions {
+        embed_fonts: false,
+        ..Default::default()
+    };
+    let outputs: Vec<(&str, Vec<u8>)> = vec![
+        ("friendly", paper.to_html(&analysis, &html_opts).html.into_bytes()),
+        ("docx", paper.to_docx(&analysis, &DocxOptions::default())),
+        (
+            "markdown",
+            paper
+                .to_markdown(&analysis, &MarkdownOptions::default())
+                .markdown
+                .into_bytes(),
+        ),
+        (
+            "latex",
+            paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+        ),
+        (
+            "typst",
+            paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
+        ),
+        ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
+        (
+            "content",
+            paper.to_json(&analysis, &JsonOptions::default()).json.into_bytes(),
+        ),
+    ];
+    let mut text = String::new();
+    for (output, bytes) in outputs {
+        let bytes = String::from_utf8_lossy(&bytes)
+            .replace(env!("CARGO_PKG_VERSION"), "VERSION")
+            .into_bytes();
+        let hash: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        text.push_str(&format!("{SAMPLE_HTML} {output} {hash}\n"));
+    }
+    let file = data("snapshots/html-sample.txt");
+    if std::env::var("KAKEMONO_UPDATE_SNAPSHOTS").is_ok_and(|value| value == "1") {
+        std::fs::write(&file, &text).unwrap();
+        return;
+    }
+    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    assert_eq!(
+        old, text,
+        "the output of the HTML sample changed; if this is intended, run \
+         KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test html"
+    );
+}
+
+/// A page of a government site as GOV.UK and usa.gov lay it out: a link to
+/// skip the contents, cards that are links with a heading in a
+/// `…__header`, a hidden heading that names a tab, and a feedback form.
+const GOV_GUIDE: &str = r##"<!doctype html><html lang="en"><head><title>How VAT works - GOV.UK</title></head>
+<body><main><h1>How VAT works</h1>
+<a class="gem-c-skip-link govuk-skip-link" href="#guide-contents">Skip contents</a>
+<p>VAT (Value Added Tax) is a tax added to most products and services sold by VAT-registered businesses.
+Businesses have to register for VAT if their taxable turnover is more than the threshold.</p>
+<h2 class="fr-sr-only">In the UK</h2>
+<p>As a VAT-registered business<span role="tooltip">: titleContent</span> you must include VAT in the price of all goods and services at the correct rate.</p>
+<ul class="usa-list"><li><a href="/apply-adult-passport"><div class="usa-card__header"><h2>Apply for a new adult passport</h2></div>
+<div class="usa-card__body"><p>You need a passport to travel to most countries outside the U.S.</p></div></a></li></ul>
+<div class="gem-c-feedback"><h2>Help us improve GOV.UK</h2>
+<form><p class="govuk-visually-hidden">This field is for robots only. Please leave blank</p>
+<label>What were you doing?</label><textarea></textarea></form></div>
+</main></body></html>"##;
+
+#[test]
+fn gov_guide_keeps_card_headings_and_loses_its_feedback_form() {
+    let doc = page(GOV_GUIDE);
+    for heading in ["Apply for a new adult passport", "In the UK"] {
+        let found = block(&doc, heading);
+        assert!(matches!(found.kind, BlockKind::Heading { .. }), "{:?}", found.kind);
+    }
+    assert!(has_text(&doc, "You need a passport to travel"));
+    for clutter in [
+        "Skip contents",
+        "Help us improve",
+        "robots only",
+        "What were you doing",
+        "titleContent",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
+/// A page of chinhphu.vn: its heading in capitals out of the article, the
+/// title again in the article, and the site, which holds the copyright, as
+/// the author.
+const GOV_VI: &str = r#"<!doctype html><html lang="vi"><head><title></title>
+<meta property="og:title" content="Giới thiệu Cục Thông tin và Truyền thông Chính phủ">
+<meta name="author" content="Cổng Thông tin điện tử Chính phủ">
+<meta name="copyright" content="Cổng Thông tin điện tử Chính phủ - Cục Thông tin và Truyền thông Chính phủ">
+</head><body><div class="category"><h1>GIỚI THIỆU CỤC THÔNG TIN VÀ TRUYỀN THÔNG CHÍNH PHỦ</h1></div>
+<div class="content"><div class="title">Giới thiệu Cục Thông tin và Truyền thông Chính phủ</div>
+<p>Cục Thông tin và Truyền thông Chính phủ là tổ chức hành chính trực thuộc Văn phòng Chính phủ, có chức năng tham mưu, giúp Bộ trưởng, Chủ nhiệm Văn phòng Chính phủ quản lý nhà nước về công báo.</p>
+<p>Tên giao dịch quốc tế bằng tiếng Anh là Department of Government Information and Communications.</p></div>
+</body></html>"#;
+
+#[test]
+fn gov_page_title_is_said_once_and_the_site_is_no_author() {
+    let doc = page(GOV_VI);
+    let title = "Giới thiệu Cục Thông tin và Truyền thông Chính phủ";
+    assert_eq!(doc.meta.title.as_deref(), Some(title));
+    assert_eq!(
+        texts(&doc)
+            .iter()
+            .filter(|text| text.to_lowercase() == title.to_lowercase())
+            .count(),
+        1,
+        "{:#?}",
+        texts(&doc)
+    );
+    assert!(has_text(&doc, "Tên giao dịch quốc tế"));
+    assert!(!has_text(&doc, "Cổng Thông tin điện tử"), "{:#?}", texts(&doc));
+}
+
+/// A paper as PLOS, PMC and Nature lay it out: sections of class
+/// `toc-section`, the roles of an author in a tooltip, the links to
+/// download a figure, a numbered list of references with its own labels
+/// and the links to indexes of articles, citations that link to the
+/// references (which become notes).
+const SCIENCE: &str = r##"<!doctype html><html lang="en"><head><title>The citation advantage</title><style>.u-hide { display: none }</style></head>
+<body><main><div class="article-text">
+<h1>The citation advantage of linking publications to research data</h1>
+<ul class="author-list"><li data-js-tooltip="tooltip_trigger"><a class="author-name">Giovanni Colavizza</a>
+<div class="author-info" data-js-tooltip="tooltip_target"><p><span>Roles</span> Conceptualization, Data curation</p></div></li></ul>
+<div class="section toc-section"><h2>Introduction</h2>
+<p>More research funding agencies, institutions, journals and publishers are introducing policies that encourage or require the sharing of research data.<sup><a href="#c1">1</a></sup></p>
+<p>Journal research data policies often include requirements for researchers to provide Data Availability Statements.<sup><a href="#c2">2</a></sup></p>
+<div class="figure"><img src="fig1.png" alt="Fig 1"><div class="figure-inline-download">Download:
+<ul><li><a href="fig1-large.png">PNG larger image</a></li><li><a href="fig1.tiff">TIFF original image</a></li></ul></div>
+<p class="caption">Fig 1. Data extraction and processing steps.</p></div></div>
+<div class="section toc-section"><h2>References</h2><ol class="references">
+<li id="ref1"><span class="order">1.</span> Hodson S, Molloy L. Current Best Practice for Research Data Management Policies. 2015.
+<ul class="reflinks"><li><a href="#">View Article</a></li><li><a href="https://scholar.google.com/x">Google Scholar</a></li></ul></li>
+<li id="ref2"><span class="order">2.</span> Kelvin DJ, Rubino S. Fear of the novel coronavirus. 2020. [<a href="https://pubmed.ncbi.nlm.nih.gov/1/">PubMed</a>]</li>
+</ol></div>
+<div class="section toc-section"><h2>Notes</h2><ol>
+<li><p id="c1">A note on funding agencies.</p></li><li><p id="c2">A note on data policies.</p></li></ol></div>
+<h2>Acknowledgments</h2><p>The authors would like to thank the European Bioinformatics Institute.</p>
+<ul><li><p>Received<span class="u-hide">: </span><span>21 February 2020</span></p></li></ul>
+<section class="c-article-recommendations"><h3>Similar content being viewed by others</h3>
+<a href="/articles/other">The FAIR Guiding Principles</a></section>
+</div></main></body></html>"##;
+
+#[test]
+fn science_paper_keeps_its_sections_and_loses_its_widgets() {
+    let doc = page(SCIENCE);
+    assert!(has_text(&doc, "More research funding agencies"), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Data extraction and processing steps"));
+    // The list numbers the references: their own labels go.
+    let reference = block(&doc, "1. Hodson S");
+    assert!(
+        reference.text().starts_with("1. Hodson S, Molloy L."),
+        "{:?}",
+        reference.text()
+    );
+    let second = block(&doc, "2. Kelvin DJ");
+    assert_eq!(
+        second.text().trim_end(),
+        "2. Kelvin DJ, Rubino S. Fear of the novel coronavirus. 2020."
+    );
+    for clutter in [
+        "Conceptualization",
+        "Download",
+        "larger image",
+        "View Article",
+        "Google Scholar",
+        "PubMed",
+    ] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    // The notes left the flow: their heading goes with them.
+    assert!(!texts(&doc).iter().any(|text| text == "Notes"), "{:#?}", texts(&doc));
+    assert!(texts(&doc).iter().any(|text| text == "References"));
+    // A hidden separator leaves a space.
+    assert!(has_text(&doc, "Received 21 February 2020"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Similar content"), "{:#?}", texts(&doc));
+}
+
+#[test]
+fn the_label_of_an_unnumbered_reference_is_apart_from_it() {
+    let doc = page(
+        r#"<html><head><title>R</title></head><body><main><h1>References</h1>
+<p>A paper about coronaviruses, with a list of references that are not numbered by the list.</p>
+<ul class="ref-list"><li><span class="label">1.</span><cite>Tan W, Zhao X. A novel coronavirus genome. 2020.</cite></li></ul>
+</main></body></html>"#,
+    );
+    assert!(has_text(&doc, "1. Tan W, Zhao X."), "{:#?}", texts(&doc));
+}
+
+/// An article of Wikipedia: a hatnote, a reference whose title is in a
+/// `span` of class `id-lock-subscription` inside a `cite`, a box of a
+/// sister project, a table of succession and the list of notes last.
+const WIKI: &str = r##"<!doctype html><html lang="en"><head><title>Fourier transform - Wikipedia</title></head>
+<body><main><h1>Fourier transform</h1><div class="mw-content-ltr mw-parser-output">
+<div role="note" class="hatnote navigation-not-searchable">Pour les articles homonymes, voir Fourier (homonymie).</div>
+<p>In mathematics, the Fourier transform is an integral transform that takes a function as input and outputs another function.<sup class="reference"><a href="#cite_note-1">[1]</a></sup>
+It describes the extent to which various frequencies are present in the original function.<sup class="reference"><a href="#cite_note-2">[2]</a></sup></p>
+<div class="side-box sistersitebox"><p>Wikimedia Commons has media related to Fourier transformation.</p></div>
+<table class="wikitable succession-box"><tr><td>Preceded by Fourier series</td><td>Succeeded by Laplace transform</td></tr></table>
+<h2>References</h2><ol class="mw-references references">
+<li id="cite_note-1"><cite class="citation journal">Ablowitz, Mark J. (1974). <span class="id-lock-subscription"><a href="https://example.org/a">"The Inverse Scattering Transform"</a></span>. <i>Studies in Applied Mathematics</i>.</cite></li>
+<li id="cite_note-2"><cite class="citation book">Stein, Elias; Shakarchi, Rami (2003). <i>Fourier Analysis: An introduction</i>. Princeton University Press.</cite></li>
+</ol></div></main></body></html>"##;
+
+#[test]
+fn wiki_references_keep_their_titles_and_the_navigation_goes() {
+    let doc = page(WIKI);
+    assert!(has_text(&doc, "The Inverse Scattering Transform"), "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "takes a function as input"));
+    for clutter in ["homonymes", "Wikimedia Commons", "Preceded by"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+    // The notes are read after the paragraph that calls them, their
+    // heading goes, and a whole reference is not in italics.
+    assert!(
+        !texts(&doc).iter().any(|text| text == "References"),
+        "{:#?}",
+        texts(&doc)
+    );
+    let note = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Footnote { .. }))
+        .flat_map(|block| &block.spans)
+        .find(|span| span.text.contains("Ablowitz"))
+        .unwrap_or_else(|| panic!("no note of Ablowitz in {:#?}", texts(&doc)));
+    assert_eq!(note.style & kakemono::model::ITALIC, 0, "{note:?}");
+}
+
+/// A page that is a table (Hacker News): rows of a rank, an empty cell
+/// for the arrow to vote, the title, then a row of its points.
+const LINK_TABLE: &str = r#"<!doctype html><html lang="en"><head><title>Hacker News</title></head><body>
+<table><tr><td><a href="news"><b>Hacker News</b></a> | <a href="newest">new</a> | <a href="submit">submit</a></td></tr>
+<tr><td><table>
+<tr class="athing"><td class="title"><span class="rank">1.</span></td><td class="votelinks"><a href="vote?id=1"><div class="votearrow"></div></a></td>
+<td class="title"><a href="https://example.org/early">2035 Came Early, a long story of a future that arrived before its time</a></td></tr>
+<tr><td colspan="2"></td><td class="subtext">225 points by setheron 3 hours ago | 60 comments on this story</td></tr>
+<tr class="athing"><td class="title"><span class="rank">2.</span></td><td class="votelinks"><a href="vote?id=2"><div class="votearrow"></div></a></td>
+<td class="title"><a href="https://example.org/ladybird">Ladybird is now in alpha, the browser built from scratch by its community</a></td></tr>
+<tr><td colspan="2"></td><td class="subtext">1970 points by janvdberg 18 hours ago | 459 comments on this story</td></tr>
+</table></td></tr></table></body></html>"#;
+
+#[test]
+fn a_page_that_is_a_table_reads_as_a_table_without_its_empty_column() {
+    let doc = page(LINK_TABLE);
+    let table = doc
+        .blocks
+        .iter()
+        .find_map(|block| block.table.as_ref())
+        .unwrap_or_else(|| panic!("no table in {:#?}", texts(&doc)));
+    assert_eq!(table.n_cols, 2, "{table:#?}");
+    let cell = |row: usize, col: usize| -> String {
+        table.rows[row]
+            .iter()
+            .find(|cell| cell.col == col)
+            .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(cell(0, 0).trim(), "1.");
+    assert!(cell(0, 1).starts_with("2035 Came Early"), "{table:#?}");
+    assert!(cell(1, 1).starts_with("225 points"), "{table:#?}");
+}
+
+/// A home page: the title of its first story is an `h1` in a link.
+const HOME: &str = r#"<!doctype html><html lang="vi"><head><title></title>
+<meta property="og:title" content="Cổng Thông tin điện tử Chính phủ"></head><body><main>
+<div class="stories"><a href="https://baochinhphu.vn/khan-truong.htm"><div><h1>Khẩn trương khắc phục hậu quả vụ nổ tại Đống Đa, Hà Nội</h1></div>
+<div>(Chinhphu.vn) - Phó Thủ tướng Thường trực vừa ký Công điện về vụ nổ cửa hàng ăn uống tại phố Nguyễn Văn Tuyết.</div></a>
+<p>Thủ tướng Chính phủ yêu cầu các bộ, ngành và Ủy ban nhân dân thành phố Hà Nội khẩn trương khắc phục hậu quả, hỗ trợ người dân bị ảnh hưởng và điều tra nguyên nhân vụ việc.</p>
+</div></main></body></html>"#;
+
+#[test]
+fn the_heading_of_a_story_in_a_link_is_not_the_title_of_a_home_page() {
+    let doc = page(HOME);
+    assert_eq!(doc.meta.title.as_deref(), Some("Cổng Thông tin điện tử Chính phủ"));
+    let story = block(&doc, "Khẩn trương khắc phục");
+    assert!(matches!(story.kind, BlockKind::Heading { .. }), "{:?}", story.kind);
+    assert!(has_text(&doc, "khắc phục hậu quả, hỗ trợ người dân"));
+}
+
+#[test]
+fn the_links_to_the_stories_of_a_topic_before_the_title_are_gone() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>Inside the pressure campaign</title></head><body><main>
+<div class="topic"><h2>Nvidia spy scandal</h2><a href="/a">Trump's intervention</a> <a href="/b">Boardroom blunder</a>
+<a href="/c">Republican pushback</a> <a href="/d">Market reaction</a> <a href="/e">Inside the pressure campaign</a>
+<a href="/f">What comes next for the company and its chief executive</a></div>
+<div class="article"><h1>Inside the Trump pressure campaign that restored Jensen Huang as Nvidia's CEO</h1>
+<p>President Donald Trump had been stewing for days over the US stock market's deepening sell-off when he decided there was only one way to stop the slide.</p>
+<p>Trump's conclusion late last week sparked an unprecedented West Wing pressure campaign orchestrated by the president to convince the tech giant.</p></div>
+</main></body></html>"#,
+    );
+    assert!(has_text(&doc, "stewing for days"));
+    for clutter in ["Nvidia spy scandal", "Boardroom blunder"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
+#[test]
+fn a_drawing_of_a_symbol_of_the_sprite_of_the_page_is_an_icon() {
+    let doc = page(
+        r##"<!doctype html><html lang="en"><head><title>News</title></head><body><main><h1>News of the day</h1>
+<p><a href="https://e.vnexpress.net/"><svg class="ic"><use xlink:href="#letter-E"></use></svg>International</a></p>
+<p>The first story of the day is about a gas explosion that destroyed a restaurant and damaged the building around it.</p>
+</main></body></html>"##,
+    );
+    assert!(
+        !doc.blocks
+            .iter()
+            .any(|block| matches!(block.kind, BlockKind::Figure { .. })),
+        "{:#?}",
+        doc.blocks.iter().map(|block| &block.kind).collect::<Vec<_>>()
+    );
+    assert!(has_text(&doc, "International"));
+}
+
+/// A post of Substack: its body in `main-content-and-sidebar`, the whole
+/// post again in the data of a script, and a heading of a form at its end.
+const SUBSTACK: &str = r#"<!doctype html><html lang="en"><head><title>Software factories</title></head><body>
+<div class="main-content-and-sidebar"><div class="main-content"><div class="body markup">
+<h1>Software factories and code reviews</h1>
+<p>Harjot Gill is founder and CEO of CodeRabbit, an AI code review business, and he shipped over 5,000 pull requests last month.</p>
+<p>He posted an unconventional job ad, only inviting candidates who had shipped 1,000 pull requests in the past 30 days.</p>
+<p>CodeRabbit used to invest in fine-tuning models used in AI review, but new frontier models move faster than that.</p>
+<h2>Ready for more?</h2><form><input type="email" placeholder="Type your email"><button>Subscribe</button></form>
+</div></div></div>
+<script id="preloads-json">window._preloads = {"body": "Harjot Gill is founder and CEO of CodeRabbit, an AI code review business, and he shipped over 5,000 pull requests last month. He posted an unconventional job ad, only inviting candidates who had shipped 1,000 pull requests in the past 30 days. CodeRabbit used to invest in fine-tuning models used in AI review, but new frontier models move faster than that. Harjot Gill is founder and CEO of CodeRabbit."}</script>
+</body></html>"#;
+
+#[test]
+fn the_data_of_a_script_does_not_hide_the_post() {
+    let doc = page(SUBSTACK);
+    assert!(has_text(&doc, "unconventional job ad"), "{:#?}", texts(&doc));
+    assert!(!has_text(&doc, "Ready for more"), "{:#?}", texts(&doc));
+}
+
+#[test]
+fn a_page_of_a_video_loses_its_keys_and_its_popup() {
+    let doc = page(
+        r#"<!doctype html><html lang="vi"><head><title>Khoảnh khắc quán lẩu phát nổ</title>
+<meta name="description" content="Camera nhà dân ghi lại khoảnh khắc quán lẩu phát nổ khiến mảnh vỡ văng khắp đoạn đường hơn 20 m."></head><body>
+<main><h1>Khoảnh khắc quán lẩu phát nổ</h1><video src="v.mp4"></video>
+<div class="keyboard-action"><p>Phím tắt điều khiển</p><ul><li>Trở về video trước</li><li>Tới video tiếp theo</li></ul></div></main>
+<section class="section section-popup-kp section-feedback"><div>Đánh giá trải nghiệm VnE-GO</div>
+<p>Bạn thấy trải nghiệm của mình thế nào? Hãy cho chúng tôi biết để phục vụ bạn tốt hơn, với ý kiến và góp ý của bạn về trang này.</p></section>
+</body></html>"#,
+    );
+    assert!(has_text(&doc, "Camera nhà dân ghi lại"), "{:#?}", texts(&doc));
+    for clutter in ["Phím tắt", "Đánh giá trải nghiệm"] {
+        assert!(!has_text(&doc, clutter), "{clutter:?} in {:#?}", texts(&doc));
+    }
+}
+
+#[test]
+fn a_line_that_only_names_the_authors_is_not_said_twice() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>The Pulse</title><meta name="author" content="Gergely Orosz"></head><body><main>
+<h1>The Pulse: Is Amazon's writing culture collapsing because of AI?</h1>
+<div class="byline-wrapper"><div><a href="https://substack.com/@pragmaticengineer">Gergely Orosz</a></div></div>
+<p>By Gergely Orosz and Ivan Klaric</p>
+<p>Today's a busy day: Anthropic has gone public in the largest-ever IPO, and the GTA VI video game is out.</p>
+</main></body></html>"#,
+    );
+    let named = texts(&doc).iter().filter(|text| text.contains("Gergely Orosz")).count();
+    // The front matter, and the line that names another author too.
+    assert_eq!(named, 2, "{:#?}", texts(&doc));
+    assert!(has_text(&doc, "Ivan Klaric"));
+}
+
+#[test]
+fn the_photo_of_an_author_is_no_picture_of_the_article() {
+    let png = std::fs::read(data("word/curve.png")).unwrap();
+    let doc = page_at(
+        r#"<!doctype html><html lang="en"><head><title>Data Contracts</title></head><body><main><h1>Data Contracts</h1>
+<div class="author"><div class="photo"><a href="https://simonharrer.com/"><img alt="Photo of Simon Harrer" src="simon.jpg" width="80"></a></div>
+<address class="name"><a href="https://simonharrer.com/" rel="author">Simon Harrer</a></address></div>
+<p>Data contracts are a way to describe the contents and guarantees of datasets, as an API describes a service.</p>
+<figure><img src="contract.png" alt="A data contract"><figcaption>A data contract and its parts.</figcaption></figure>
+</main></body></html>"#,
+        "https://martinfowler.com/articles/data-contracts.html",
+        &[
+            ("https://martinfowler.com/articles/simon.jpg", &png),
+            ("https://martinfowler.com/articles/contract.png", &png),
+        ],
+    );
+    let figures = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { .. }))
+        .count();
+    assert_eq!(figures, 1, "{:#?}", texts(&doc));
+}
+
+#[test]
+fn a_table_that_lays_out_an_equation_without_number_is_an_equation() {
+    let doc = page(
+        r#"<!doctype html><html lang="en"><head><title>Scaling laws</title></head><body><main><h1>Scaling laws</h1>
+<p>We assume a power-law relation between the compute budget and the optimal number of training tokens:</p>
+<table class="ltx_equation"><tr><td></td><td><math display="block"><mi>N</mi><mo>=</mo><mi>A</mi><msup><mi>C</mi><mi>α</mi></msup></math></td><td></td></tr></table>
+<p>We then fit A and alpha using the data from the compute-optimal models of the experiments.</p>
+</main></body></html>"#,
+    );
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|block| matches!(block.kind, BlockKind::Equation { number: None, .. })),
+        "{:#?}",
+        doc.blocks.iter().map(|block| &block.kind).collect::<Vec<_>>()
+    );
+}

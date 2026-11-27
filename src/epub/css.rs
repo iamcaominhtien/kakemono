@@ -242,15 +242,23 @@ fn font_weight_is_bold(value: &str) -> Option<bool> {
     }
 }
 
-/// Whether a `font-family` names a monospaced font.
+/// Whether a `font-family` names a monospaced font. A custom property
+/// (`var(--font-family-mono)`) names none: what it holds is not known, and
+/// its name is the choice of a designer (TechCrunch sets its captions so).
 fn is_monospace(value: &str) -> bool {
-    value.contains("monospace") || value.contains("courier") || value.contains("mono")
+    !value.contains("var(") && (value.contains("monospace") || value.contains("courier") || value.contains("mono"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::Sheet;
     use crate::model::{BOLD, ITALIC};
+
+    #[test]
+    fn a_custom_property_names_no_monospaced_font() {
+        assert!(super::is_monospace("\"courier new\", monospace"));
+        assert!(!super::is_monospace("var(--wp--custom--font--family--mono)"));
+    }
 
     #[test]
     fn classes_and_inline_styles_give_flags() {

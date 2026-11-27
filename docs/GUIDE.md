@@ -619,6 +619,51 @@ cores. By size, every format, threads and memory:
 All the numbers, and leads for making it faster, are in
 [docs/IMPROVEMENTS.md](IMPROVEMENTS.md#10-benchmark-november-2026-and-leads-for-speed-and-memory).
 
+## Web pages as input
+
+A web page is an input like a book: an `.html` (`.htm`, `.xhtml`) file, or the `http(s)` address of
+a page (`kakemono convert https://en.wikipedia.org/wiki/Fourier_transform -o ft.md`). The page is
+parsed as a browser parses it (html5ever), its article is kept and written as one XHTML document,
+which is read as an EPUB book is (above): headings, lists, tables, MathML formulas, code, figures
+with their captions, notes and links come out the same way.
+
+- **The article.** Scripts, forms, navigation (`<nav>`, `<aside>`, the header and footer of the
+  page), elements with the roles of navigation, banners, dialogs and search, hidden elements
+  (`hidden`, `display: none`), and elements whose class or `id` names clutter (menus, sidebars,
+  sharing buttons, advertisements, cookie notices, newsletters, "related" lists, comments) are
+  removed, unless they hold the title or most of the text. The article is then the element where
+  the text stops being in one child, text in links not counting (as Firefox's reader view finds
+  it). `<br><br>` ends a paragraph.
+- **Title and authors.** The title is the first `<h1>` of the article, else the first of the page
+  when it is in the same `<article>` or `<main>` or is the page's `<title>`, else `og:title` or
+  the `<title>` without the name of the site. The authors come from `citation_author`,
+  `author` or `article:author`, unless the page marks its own (`class="author"`).
+- **Pictures.** The best version of each picture is taken (the smallest of a `srcset` at least
+  1600 pixels wide, a `<picture>`'s sources but AVIF, the address of a lazy picture in `data-src`
+  or in `<noscript>`), fitted to the page; icons and tracking pixels (under 48 pixels) are left
+  out. A page at an address has its pictures fetched with it (8 at a time, 300 at most); a file
+  has them read next to it; `data:` pictures are inside the page. PNG, JPEG, GIF, BMP, WebP and SVG
+  are drawn.
+- **Notes.** A short link in a superscript to an item of a list (Wikipedia's `[1]`, most blogs'
+  notes) calls a note, which follows its paragraph as a footnote, without its link back; so does
+  pandoc's `role="doc-noteref"`.
+- **Sites.** arXiv's HTML papers (LaTeXML): notes written in place, each author with their
+  addresses, the abstract. Wikipedia: its notes, edit links, maintenance boxes and navigation
+  boxes. Sphinx and mdBook: the `¶` and self-links of headings.
+- **Encoding.** The byte order mark, the `charset` of the HTTP response, then a `<meta>` near the
+  start; otherwise UTF-8, or Windows-1252 for bytes that are not UTF-8.
+
+A page saved as a file is read as at its address with `--base-url` (`kakemono convert
+saved.html --base-url https://example.org/a/page.html -o page.md`): its links point there,
+and its pictures are fetched from there.
+
+arXiv addresses (`/abs/`, `/pdf/`, `/html/`) still give the paper's PDF, which the analysis reads
+with its pages; another address of a PDF, a Word document or an EPUB book gives that document. A
+page has no pages: all four HTML modes give the `friendly` article, and `-o page.pdf` lays it out
+through a Word document. Pages built by scripts in the browser (an empty `<body>` filled by
+JavaScript) cannot be read, nor pages behind a login or a paywall; the pictures of a local file
+are not fetched from the Web.
+
 ## Limitations
 
 - Tables whose cells hold matrices, long paragraphs or irregular rows stay pictures (`medium`,
@@ -669,6 +714,22 @@ cargo test --release
   lists, merged cells, notes and pictures, and the LIGO paper goes through a round trip PDF → EPUB
   → kakemono. To make the sample again:
   `cd tests/data/word && pandoc sample.md --mathml -o ../epub/sample.epub`.
+- **Web pages** (`tests/html.rs`): `tests/data/html/sample.html`, written by pandoc from the same
+  `tests/data/word/sample.md`, reads like the Word sample and the EPUB sample and is written to
+  every format (snapshot in `tests/data/snapshots/html-sample.txt`); small pages built in the
+  test cover clutter, lazy pictures, links, Wikipedia's and LaTeXML's notes and encodings, and a
+  page at an address is read with its pictures fetched by the test. Real pages
+  (`tests/web_pages.rs`: Wikipedia in English and Vietnamese, arXiv HTML papers, a news article, a
+  research blog, documentation): `scripts/fetch-test-pages.sh` downloads those of
+  `tests/data/web-pages.tsv` (not committed); the test checks the title, text that must be there,
+  clutter that must not, and lower bounds on words and notes. To make the sample again:
+  `cd tests/data/word && pandoc -s --mathml sample.md -o ../html/sample.html`, then point its
+  picture to `../word/curve.png`.
+- **Web benchmark** ([`scripts/web-bench/`](../scripts/web-bench/README.md)): some 330 pages,
+  181 of them with a ground truth (the Scrapinghub article extraction benchmark), scored as
+  that benchmark scores article extraction and against trafilatura and readability, written
+  to every output, and gathered in review PDFs (the page on its site beside kakemono's
+  output) to look through.
 - **Word layout fidelity** (CI job "Word layout fidelity"): `scripts/fetch-word-corpus.sh`
   downloads the Word documents of `tests/data/word-corpus.tsv` with the PDF Word made of each
   (public documents: gov.uk, data.gov.uk, data.gov.au, public GitHub repositories; not committed);

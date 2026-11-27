@@ -19,7 +19,7 @@
 
 mod css;
 mod entities;
-mod html;
+pub(crate) mod html;
 mod mathml;
 
 use crate::model::Document;
@@ -45,6 +45,42 @@ const CONTENT_TYPES: [&str; 3] = ["application/xhtml+xml", "text/html", "image/s
 /// Most nodes in one XML document: no limit, as for a Word document (a
 /// long chapter is one document).
 const MAX_XML_NODES: u32 = u32::MAX;
+
+/// The files a content document refers to (style sheets, pictures): the
+/// entries of the archive of a book, or the files of a web page.
+pub(crate) trait Resources {
+    /// The bytes of the file at `path` (an entry of the archive, a path
+    /// next to the page, or a URL), or `None` when there is none. A `data:`
+    /// URL is its own content.
+    fn read(&self, path: &str) -> Option<Vec<u8>>;
+}
+
+impl Resources for ZipArchive<'_> {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        if let Some(data) = data_url(path) {
+            return Some(data);
+        }
+        ZipArchive::read(self, path).ok().flatten()
+    }
+}
+
+/// The content of a `data:` URL (base64 or percent-encoded), or `None`
+/// when `url` is not one.
+pub(crate) fn data_url(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (header, payload) = rest.split_once(',')?;
+    if header.ends_with(";base64") {
+        let clean: String = payload.chars().filter(|ch| !ch.is_whitespace()).collect();
+        let clean = percent_decode(&clean);
+        // Padding is optional: some pages leave it out.
+        base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(clean.trim_end_matches('='))
+            .ok()
+    } else {
+        Some(percent_decode_bytes(payload))
+    }
+}
 
 /// What the package document says about the book.
 #[derive(Debug, Default)]
@@ -86,7 +122,14 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     if package.spine.is_empty() {
         bail!("the EPUB has no content documents in its spine");
     }
-    let book = html::read_book(&zip, &package.spine, package.title.as_deref(), &package.creators).map_err(|err| {
+    let mut docs = Vec::with_capacity(package.spine.len());
+    for path in &package.spine {
+        let text = zip
+            .read_text(path)?
+            .with_context(|| format!("the EPUB has no content document {path}"))?;
+        docs.push((path.as_str(), text));
+    }
+    let book = html::read_documents(&zip, &docs, package.title.as_deref(), &package.creators).map_err(|err| {
         // Fonts may be obfuscated in a readable book too: the encryption
         // is named only when the text cannot be read.
         if zip.contains(ENCRYPTION) {
@@ -189,6 +232,15 @@ fn clean_text(node: &Node<'_, '_>) -> String {
 /// into a path of the archive and a fragment (empty when there is none).
 /// Percent-encoded characters are decoded; `..` and `.` are followed.
 fn resolve(base: &str, href: &str) -> (String, String) {
+    // A URL with a scheme (a picture of a web page, a `data:` URL) is
+    // already resolved.
+    if href.starts_with("data:") {
+        return (href.to_string(), String::new());
+    }
+    if href.contains("://") {
+        let (path, fragment) = href.split_once('#').unwrap_or((href, ""));
+        return (path.to_string(), percent_decode(fragment));
+    }
     let (path, fragment) = href.split_once('#').unwrap_or((href, ""));
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     if path.is_empty() {
@@ -218,6 +270,11 @@ fn resolve(base: &str, href: &str) -> (String, String) {
 /// `text` with its `%XX` escapes decoded (as UTF-8; invalid bytes are
 /// replaced).
 fn percent_decode(text: &str) -> String {
+    String::from_utf8_lossy(&percent_decode_bytes(text)).into_owned()
+}
+
+/// The bytes of `text` with its `%XX` escapes decoded.
+fn percent_decode_bytes(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -232,7 +289,7 @@ fn percent_decode(text: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 #[cfg(test)]

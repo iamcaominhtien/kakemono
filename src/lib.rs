@@ -1,6 +1,8 @@
 //! kakemono: convert scientific-paper PDFs (such as those on arXiv), Word
-//! documents (`.docx`, `.doc`) and EPUB books (`.epub`) into clean HTML,
-//! Word documents, Markdown, LaTeX, Typst or EPUB books.
+//! documents (`.docx`, `.doc`), EPUB books (`.epub`) and web pages (an
+//! `.html` file or an `http(s)` address: [`Paper::from_path`],
+//! [`Paper::from_url`]) into clean HTML, Word documents, Markdown, LaTeX,
+//! Typst or EPUB books.
 //!
 //! The pipeline is: PDF access -> layout analysis and structuring ->
 //! structured document ([`model`]) -> HTML in one of four fidelity modes
@@ -36,6 +38,8 @@ pub mod backend;
 pub mod common;
 #[doc(hidden)]
 pub mod epub;
+#[doc(hidden)]
+pub mod html;
 #[doc(hidden)]
 pub mod layout;
 #[doc(hidden)]

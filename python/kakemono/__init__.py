@@ -1,4 +1,4 @@
-"""Convert PDF papers and books, Word documents (.docx, .doc) and EPUB books (.epub) into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
+"""Convert PDF papers and books, Word documents (.docx, .doc), EPUB books (.epub) and web pages (.html files or http(s) addresses) into clean, readable HTML, Word documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval.
 
 >>> import kakemono
 >>> html = kakemono.convert("paper.pdf")                  # friendly mode
@@ -13,6 +13,7 @@
 >>> chunks = kakemono.to_chunks("paper.pdf")             # chunks for retrieval (RAG), a list of dicts
 >>> doc = kakemono.analyze("paper.pdf")                   # the document structure
 >>> md = kakemono.to_markdown("report.docx", "out/report.md")  # a Word document as input
+>>> md = kakemono.to_markdown("https://en.wikipedia.org/wiki/Fourier_transform", "out/ft.md")  # a web page
 >>> pdf = kakemono.to_pdf("report.docx", "out/report.pdf")     # a Word document laid out in pages
 >>> png = kakemono.render_svg("figure.svg", "figure.png", scale=2)  # draw an SVG
 
@@ -69,26 +70,29 @@ PngCompression = Literal["fast", "balanced", "high"]
 Equations = Literal["mathml", "image"]
 #: A path to a file, or a string.
 PathArg = Union[str, "os.PathLike[str]"]
-#: A PDF, a Word document (.docx, .doc) or an EPUB book (.epub): its bytes,
-#: a path to a file, or an arXiv id or URL. A Word document or a book has
-#: only the friendly HTML mode.
+#: A PDF, a Word document (.docx, .doc), an EPUB book (.epub) or a web page
+#: (.html): its bytes, a path to a file, an arXiv id or URL (the PDF), or the
+#: http(s) address of a web page or document (fetched with its pictures).
 Source = Union[bytes, bytearray, memoryview, PathArg]
 #: An edited JSON file (from :func:`to_json`): the parsed dict, its text, or a path to it.
 Content = Union[Dict[str, Any], PathArg]
 
 
-def _load(source: Source) -> tuple[bytes, str | None]:
-    """The bytes of `source` (PDF or Word), and the name recorded in the output."""
+def _load(source: Source) -> tuple[Dict[str, Any], str | None]:
+    """Where `source` is read from (``data``, ``path`` or ``url``, the
+    arguments of the native document), and the name recorded in the output."""
     if isinstance(source, (bytes, bytearray, memoryview)):
-        return bytes(source), None
+        return {"data": bytes(source)}, None
     path = os.fspath(source)
     if os.path.exists(path):
-        with open(path, "rb") as file:
-            return file.read(), os.path.basename(path)
+        # Read by the library: a web page has its pictures next to it.
+        return {"path": path}, os.path.basename(path)
     arxiv_id = _kakemono.parse_arxiv_id(path)
     if arxiv_id is not None:
-        return _kakemono.fetch_arxiv(arxiv_id), f"arXiv:{arxiv_id}"
-    raise FileNotFoundError(f"{path!r} is neither a file nor an arXiv id or URL")
+        return {"data": _kakemono.fetch_arxiv(arxiv_id)}, f"arXiv:{arxiv_id}"
+    if re.match(r"(?i)https?://", path.strip()):
+        return {"url": path.strip()}, path.strip()
+    raise FileNotFoundError(f"{path!r} is neither a file, an arXiv id or URL, nor an http(s) address")
 
 
 def _content(content: Optional[Content]) -> tuple[Optional[str], Optional[str]]:
@@ -167,9 +171,10 @@ class Document:
       ``UserWarning``. A relative ``replace_image`` is read from the folder
       of the JSON file (the current folder for a dict or text).
 
-    Raises ``ValueError`` when the data is not a readable PDF or Word
-    document, an option is wrong or `content` does not fit the document, and
-    ``FileNotFoundError`` when `source` names nothing.
+    Raises ``ValueError`` when the data is not a readable PDF, Word
+    document, EPUB book or web page, a page cannot be fetched, an option is
+    wrong or `content` does not fit the document, and ``FileNotFoundError``
+    when `source` names nothing.
 
     A ``Document`` can be used from several threads at once.
     """
@@ -183,10 +188,10 @@ class Document:
         png_compression: PngCompression = "balanced",
         content: Optional[Content] = None,
     ) -> None:
-        data, name = _load(source)
+        where, name = _load(source)
         text, folder = _content(content)
         self._doc = _kakemono.Document(
-            data,
+            **where,
             source=name,
             tables=tables,
             jobs=jobs,
@@ -196,8 +201,8 @@ class Document:
         )
 
     @property
-    def format(self) -> Literal["pdf", "docx", "doc"]:
-        """The input format: ``"pdf"``, ``"docx"`` or ``"doc"``."""
+    def format(self) -> Literal["pdf", "docx", "doc", "epub", "html"]:
+        """The input format: ``"pdf"``, ``"docx"``, ``"doc"``, ``"epub"`` or ``"html"``."""
         return self._doc.format
 
     @property

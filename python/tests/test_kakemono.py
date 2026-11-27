@@ -241,6 +241,26 @@ def test_epub_book_is_an_input(tmp_path):
         kakemono.convert(EPUB_SAMPLE, mode="hard")
 
 
+HTML_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "html" / "sample.html"
+
+
+def test_web_page_is_an_input(tmp_path):
+    doc = kakemono.Document(HTML_SAMPLE)
+    assert doc.format == "html"
+    assert doc.page_count == 0
+    html = doc.convert()
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from HTML by kakemono" in html
+    # The picture is read next to the page.
+    text = kakemono.to_markdown(HTML_SAMPLE, tmp_path / "sample.md")
+    assert "def step(x, grad, eta):" in text
+    assert list((tmp_path / "sample_assets").iterdir())
+    # Bytes alone: the page without its picture.
+    assert kakemono.Document(HTML_SAMPLE.read_bytes()).format == "html"
+    with pytest.raises(ValueError, match="one of data, path and url"):
+        kakemono._kakemono.Document(b"x", path=str(HTML_SAMPLE))
+
+
 def _png_size(data):
     """The (width, height) of a PNG, read from its header."""
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
