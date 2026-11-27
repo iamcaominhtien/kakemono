@@ -2044,6 +2044,7 @@ fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4], open_right
                 if run.glyphs.is_empty() {
                     continue;
                 }
+                keep_shown_text(run);
             }
             Item::Line { x1, y1, x2, y2, .. } => {
                 *x1 = x1.clamp(left, right);
@@ -2074,6 +2075,26 @@ fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4], open_right
         kept.push(item);
     }
     kept
+}
+
+/// Keeps of the text of `run`, whose glyphs were cut to those its cell
+/// shows, only what they show, and frees the rest: a cell of 32,000
+/// characters on one line shows a few dozen, and holding all of them for
+/// each cell of a page took gigabytes.
+fn keep_shown_text(run: &mut crate::layout::display::TextRun) {
+    run.glyphs.shrink_to_fit();
+    let start = run.glyphs.iter().map(|glyph| glyph.text.0).min().unwrap_or(0);
+    let end = run.glyphs.iter().map(|glyph| glyph.text.1).max().unwrap_or(0);
+    if start == 0 && end == run.text.len() {
+        return;
+    }
+    let Some(shown) = run.text.get(start..end) else {
+        return;
+    };
+    run.text = shown.to_string();
+    for glyph in &mut run.glyphs {
+        glyph.text = (glyph.text.0 - start, glyph.text.1 - start);
+    }
 }
 
 #[cfg(test)]
