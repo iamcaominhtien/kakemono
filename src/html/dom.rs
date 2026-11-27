@@ -199,6 +199,23 @@ impl Dom {
         }
     }
 
+    /// Takes `nodes` out of the tree at once: each parent's children are
+    /// walked once, however many of them go (a page of 200,000 boxes).
+    pub(crate) fn detach_all(&mut self, nodes: &[Id]) {
+        let gone: std::collections::HashSet<Id> = nodes.iter().copied().collect();
+        let mut parents: Vec<Id> = Vec::new();
+        for &node in nodes {
+            if let Some(parent) = self.nodes[node].parent.take() {
+                parents.push(parent);
+            }
+        }
+        parents.sort_unstable();
+        parents.dedup();
+        for parent in parents {
+            self.nodes[parent].children.retain(|child| !gone.contains(child));
+        }
+    }
+
     /// Replaces `node` in the tree by its children.
     pub(crate) fn unwrap(&mut self, node: Id) {
         let Some(parent) = self.nodes[node].parent else {
@@ -533,5 +550,17 @@ mod tests {
             xhtml.contains("\u{a0}\u{a9}<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi></math>"),
             "{xhtml}"
         );
+    }
+
+    #[test]
+    fn detach_all_takes_nodes_out_once_and_keeps_the_others_in_order() {
+        let mut dom = Dom::parse("<body><p>a</p><p>b</p><p>c</p><p>d</p></body>");
+        let (_, _, body) = dom.html_head_body();
+        let body = body.unwrap();
+        let paragraphs = dom.find_all(body, "p");
+        dom.detach_all(&[paragraphs[0], paragraphs[2]]);
+        assert_eq!(dom.clean_text(body), "bd");
+        assert!(!dom.attached(paragraphs[0]) && !dom.attached(paragraphs[2]));
+        assert!(dom.attached(paragraphs[1]) && dom.attached(paragraphs[3]));
     }
 }

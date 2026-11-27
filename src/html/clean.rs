@@ -843,8 +843,31 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
     let weight = text_weights(dom, body);
     let total = weight[body].max(1);
     let main_h1 = dom.find(body, "h1");
+    // What each node is in, carried down from its parent (the nodes come
+    // parent first): a walk up from every node of a page nested 50,000
+    // deep takes minutes.
+    let size = dom.nodes.len();
+    let mut holds_title = vec![false; size];
+    let mut at = main_h1;
+    while let Some(id) = at {
+        holds_title[id] = true;
+        at = dom.nodes[id].parent;
+    }
+    let mut in_heading = vec![false; size];
+    let mut in_article = vec![false; size];
+    let mut gone = vec![false; size];
+    let mut removed: Vec<Id> = Vec::new();
     for node in dom.descendants(body) {
-        if node == body || !dom.attached(node) {
+        if node == body || node >= size {
+            continue;
+        }
+        let parent = dom.nodes[node].parent.filter(|&parent| parent < size);
+        if let Some(parent) = parent {
+            gone[node] = gone[parent];
+            in_heading[node] = in_heading[parent] || dom.is_any(parent, &["h1", "h2", "h3", "h4", "h5", "h6"]);
+            in_article[node] = in_article[parent] || dom.is_any(parent, &["article", "main"]);
+        }
+        if gone[node] || (parent.is_none() && !dom.attached(node)) {
             continue;
         }
         let Kind::Element { name, space, .. } = &dom.nodes[node].kind else {
@@ -854,7 +877,8 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             // An SVG drawing hidden from screen readers is decoration.
             let decoration = dom.attr(node, "aria-hidden") == Some("true");
             if *space == Space::Svg && (is_hidden(dom, node) || decoration) {
-                dom.detach(node);
+                gone[node] = true;
+                removed.push(node);
             }
             continue;
         }
@@ -867,10 +891,8 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             dom.unwrap(node);
             continue;
         }
-        let holds_title = main_h1.is_some_and(|h1| dom.contains(node, h1));
-        let in_heading = dom
-            .ancestor(node, |id| dom.is_any(id, &["h1", "h2", "h3", "h4", "h5", "h6"]))
-            .is_some();
+        let holds_title = holds_title[node];
+        let in_heading = in_heading[node];
         let role_clutter = is_tooltip(dom, node)
             || dom.attr(node, "role").is_some_and(|role| {
                 role.split_whitespace()
@@ -883,8 +905,7 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             && is_clutter_by_name(dom, node))
             // A link to skip to the content.
             || (name == "a" && has_hidden_class(dom, node));
-        let landmark = matches!(name.as_str(), "header" | "footer")
-            && dom.ancestor(node, |id| dom.is_any(id, &["article", "main"])).is_none();
+        let landmark = matches!(name.as_str(), "header" | "footer") && !in_article[node];
         // A page that shows itself with a script hides its article until
         // then: what holds the title or most of the text is not hidden.
         let hidden = is_hidden(dom, node) && !holds_title && share <= CLUTTER_MAX_SHARE_RATIO;
@@ -895,12 +916,12 @@ fn remove_clutter(dom: &mut Dom, body: Id) {
             || ((role_clutter || named_clutter || landmark) && !holds_title)
             || (name == "footer" && !holds_title);
         if remove {
-            dom.detach(node);
+            gone[node] = true;
+            removed.push(node);
         }
     }
-    for node in calls {
-        dom.detach(node);
-    }
+    removed.extend(calls);
+    dom.detach_all(&removed);
 }
 
 /// The boxes in `body` that ask the reader to press a button (`Follow
