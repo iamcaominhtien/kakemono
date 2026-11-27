@@ -490,13 +490,21 @@ impl Builder<'_> {
     }
 
     /// Goes on in a section of portrait (or `landscape`) pages, starting
-    /// one when the orientation changes.
+    /// one when the orientation changes, with the headings that end the
+    /// section before.
     fn orientation(&mut self, landscape: bool) {
         if self.landscape == landscape {
             return;
         }
+        // The headings right before go along, so that none is left alone
+        // at the foot of the section before.
+        let mut carried = Vec::new();
+        while matches!(self.blocks.last(), Some(Block::Para(para)) if para.props.outline.is_some()) {
+            carried.extend(self.blocks.pop());
+        }
         self.close_section();
         self.landscape = landscape;
+        self.blocks.extend(carried.into_iter().rev());
     }
 
     /// Ends the section being filled, unless it has nothing.
