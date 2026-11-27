@@ -122,6 +122,7 @@ fn chart_picture(svg: String, (width, height): (f32, f32)) -> Picture {
         data: svg.into_bytes(),
         format: PictureFormat::Svg,
         png_size: fits.then_some((png_width, png_height)),
+        outline_text: false,
     }
 }
 
@@ -251,6 +252,7 @@ fn svg_picture(data: &[u8]) -> Option<Picture> {
             data: svg.into_bytes(),
             format: PictureFormat::Svg,
             png_size,
+            outline_text: true,
         },
         ReadySvg::Png(png) => Picture::bitmap(png, PictureFormat::Png),
     })

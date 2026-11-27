@@ -496,9 +496,9 @@ impl Builder<'_> {
             && !label_is_table(label.as_deref())
             && matches!(self.blocks[figure].kind, BlockKind::Figure { .. })
         {
-            for index in figure + 1..end {
-                if self.blocks[index].table.is_some() {
-                    self.blocks[index].spans.clone_from(&spans);
+            for block in &mut self.blocks[figure + 1..end] {
+                if block.table.is_some() {
+                    block.spans.clone_from(&spans);
                 }
             }
             self.caption_float(figure, spans, label, false);

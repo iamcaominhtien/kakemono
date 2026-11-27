@@ -269,6 +269,12 @@ pub struct Picture {
     /// per point, found when it was read (`None` for a bitmap, whose header
     /// gives its size, or when none would be drawn).
     pub(crate) png_size: Option<(u32, u32)>,
+    /// For an SVG: its text is drawn as paths where it is written as an
+    /// SVG, so that it looks the same without its fonts (an `<img>` loads
+    /// none): a picture of a document. kakemono's own charts keep their
+    /// text, which can be selected and does not depend on the fonts of the
+    /// machine that converts.
+    pub(crate) outline_text: bool,
 }
 
 impl Picture {
@@ -278,6 +284,7 @@ impl Picture {
             data,
             format,
             png_size: None,
+            outline_text: false,
         }
     }
 }

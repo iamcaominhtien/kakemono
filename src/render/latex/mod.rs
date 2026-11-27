@@ -1910,8 +1910,8 @@ mod tests {
                 if !cols.wrap.iter().any(|&wrap| wrap) {
                     continue;
                 }
-                for col in 0..16 {
-                    let content_pt = cols.share[col] * width_pt - 2.0 * tabcolsep_pt;
+                for (col, share) in cols.share.iter().enumerate().take(16) {
+                    let content_pt = share * width_pt - 2.0 * tabcolsep_pt;
                     assert!(
                         content_pt >= size_pt * 0.999,
                         "column {col}: {content_pt} pt at {size_pt} pt in {width_pt} pt"

@@ -233,9 +233,11 @@ impl ImageStore<'_> {
                 {
                     return svg_as_pdf(pictures, index, hint);
                 }
-                // An SVG kept as one has its text turned into paths, so that
-                // it looks the same without its fonts (an `<img>` loads none).
-                if let Some(svg) = spec.embedded.and_then(|index| pictures.stored_svg(index))
+                // An SVG of a document kept as one has its text turned into
+                // paths (`Picture::outline_text`).
+                if let Some(index) = spec.embedded
+                    && pictures.stored.get(index).is_some_and(|picture| picture.outline_text)
+                    && let Some(svg) = pictures.stored_svg(index)
                     && let Some(svg) = svg_with_paths(svg)
                 {
                     return Some((svg.into_bytes(), "image/svg+xml", "svg", hint.clone()));
@@ -658,6 +660,7 @@ mod tests {
             data: svg.into_bytes(),
             format: PictureFormat::Svg,
             png_size,
+            outline_text: true,
         };
         let doc = Document {
             meta: Meta::default(),

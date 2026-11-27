@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.20.0](https://github.com/iamcaominhtien/kakemono/compare/v0.19.0...v0.20.0) - 2026-11-27
+
+### Added
+
+- *(excel)* Show and print workbooks as Excel does, with charts and vector pictures
+
+Excel input fidelity, tuned file by file on the public corpus of `tests/data/excel-corpus.tsv` (91 workbooks: Japanese forms and statistics, project templates, financial reports, world statistics), and the charts and vector pictures shared with Word input.
+
+##### Sheet view (`-m medium`, `src/excel/view.rs`)
+- Each visible sheet as Excel shows it: column widths and row heights as the screen it was saved on drew them (MS P Gothic, Yu Gothic, Calibri...), merged cells, fonts, fills, borders, alignment (centred across the selection, distributed, stacked and turned text), overflowing text.
+- Number formats with their fill (`*x`, accounting) and colours (`[Red]`), conditional formats and data bars, the built-in styles of Excel Tables.
+- Drawn objects: preset shapes, callouts, connectors with arrow heads, groups (turned and mirrored), text boxes, pictures (TIFF too), embedded objects by their preview (also those written before Excel 2010), form controls as the VML drawing shows them, charts.
+
+##### Workbook PDF
+- Printed as Excel prints it by default (`src/layout/workbook/print.rs`): print areas, page setup, scale and fit to page, manual breaks, repeated title rows and columns, headers and footers, black-and-white sheets, row and column headings, columns as wide as the printer draws them, rows fitted to their text.
+- `--pdf-style document` lays the workbook out as a document (tables fitted to the page, landscape pages, column groups), without TeX.
+
+##### Charts and vector pictures (`src/chart/`, shared with Word)
+- Charts read from DrawingML and extended chart parts, drawn as SVG (bars, lines, areas, pies, doughnuts, radar, scatter...), with their data as a table; Excel's automatic scale (room past the data).
+- **Breaking:** SVG and metafile pictures stay vector in every output (`feat!`). The SVG of a document has its text drawn as paths where it is written as an SVG (as on main); kakemono's own charts keep their text.
+
+##### Other outputs, after a review of every output of the corpus
+- Chunks keep a table's long head instead of dropping it; empty columns left out.
+- docx: tables sized by their text, wide ones on landscape pages in smaller text.
+- LaTeX: CJK fonts and symbols, long tables broken across pages, wide workbook tables as long tables.
+- Markdown: a form's wide merged fields written once.
+- A long label that runs into the next cell of its row stays in its table.
+- Untitled files are named by their file name; charts whose references are all `#REF!` give no fake data table.
+
+##### Speed, from a stress test (long cells, large grids)
+- The page layout found the end of each glyph's cluster by scanning every cluster: quadratic, minutes for a cell of 32,000 characters. Now a binary search (231 s to 2.2 s for the Excel-style PDF of 250 such cells); Word documents with long paragraphs gain too.
+- A table row that runs over pages is split copying each item once (31 s to 18 s for the document-style PDF of the same workbook).
+- The chunks of a long sentence no longer count the tokens of its whole rest for each piece (7.6 s to 1.3 s for 500 such cells).
+- The output is the same, byte for byte, on the 91 workbooks and 523 Word documents.
+
+##### Merge of main
+- Main's EPUB and web page inputs, Typst output and notes meet the Excel input: a workbook is `source_format` `"xlsx"`, `Paper::from_path_with` reads one with its `ExcelConfig`, the Python `Document` takes `header_rows`.
+
+What is left is listed in `TODO.md` ("Excel input").
+
 ## [0.19.0](https://github.com/iamcaominhtien/kakemono/compare/v0.18.0...v0.19.0) - 2026-11-27
 
 ### Added
