@@ -614,6 +614,7 @@ mod tests {
                         kind,
                         center_continuous: false,
                         own_font: Vec::new(),
+                        overflow_pt: 0.0,
                     },
                 );
             }
@@ -951,6 +952,7 @@ mod tests {
             kind: CellKind::Text,
             center_continuous: true,
             own_font: Vec::new(),
+            overflow_pt: 0.0,
         };
         grid.cells.get_mut(&(0, 0)).unwrap().center_continuous = true;
         grid.cells.insert((0, 1), centred.clone());
@@ -1032,6 +1034,7 @@ mod tests {
                         kind: CellKind::Text,
                         center_continuous: false,
                         own_font: Vec::new(),
+                        overflow_pt: 0.0,
                     },
                 );
                 grid.merges.push(area(row, col, row, col + 1));

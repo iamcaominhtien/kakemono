@@ -480,6 +480,7 @@ mod tests {
                     kind: CellKind::Text,
                     center_continuous: false,
                     own_font: Vec::new(),
+                    overflow_pt: 0.0,
                 },
             );
         }

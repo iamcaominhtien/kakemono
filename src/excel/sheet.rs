@@ -22,11 +22,18 @@ use super::grid::{CellKind, EmbeddedObject, Grid, GridCell, HeaderFooter, Merge,
 use super::numfmt::{self, NumFmt};
 use super::pull::{Event, Reader, Tag};
 use super::strings;
-use super::styles::{Screen, Styles};
+use super::styles::{HAlign, Look, Screen, Styles};
 use super::workbook::{REL_STRICT_NS, SML_NS, SML_STRICT_NS, is_sml};
 
 /// Most embedded objects read on a sheet.
 const MAX_EMBEDDED_OBJECTS: usize = 1000;
+/// The font size of a cell whose format gives none, in points.
+const DEFAULT_FONT_PT: f32 = 11.0;
+/// The width of a narrow (Latin) letter, about, in ems.
+const NARROW_EM: f32 = 0.5;
+/// The first code point of the wide letters (CJK radicals onwards), a
+/// whole em wide.
+const WIDE_FROM: u32 = 0x2E80;
 /// Most letters of a column in a cell reference (`XFD`).
 const MAX_COLUMN_LETTERS: usize = 3;
 /// The padding of a column, in pixels, which `baseColWidth` leaves out.
@@ -880,7 +887,7 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
     } else {
         spans.iter().map(|(_, own)| *own).collect()
     };
-    let spans = spans
+    let spans: Vec<Span> = spans
         .into_iter()
         .map(|(mut span, own)| {
             if own == 0 && span.style == 0 {
@@ -889,12 +896,32 @@ fn read_cell(raw: RawCell, ctx: &SheetContext<'_>) -> Option<GridCell> {
             span
         })
         .collect();
+    let overflow_pt = overflow_pt(&spans, kind, ctx.styles.look(raw.style), ctx.styles.look(0));
     Some(GridCell {
         spans,
         kind,
         center_continuous: xf.center_continuous,
         own_font,
+        overflow_pt,
     })
+}
+
+/// How wide, about, a text cell's text `spans` is in points when it runs
+/// over the empty cells to its right (not wrapped, aligned left or by
+/// default), in the font size of its look `look` (else of the Normal
+/// style's, `normal`): half an em a letter, a whole em a wide (Japanese,
+/// Chinese) one. 0 for a number or a text that does not run over.
+fn overflow_pt(spans: &[Span], kind: CellKind, look: &Look, normal: &Look) -> f32 {
+    if kind != CellKind::Text || look.wraps() || !matches!(look.h_align, HAlign::General | HAlign::Left) {
+        return 0.0;
+    }
+    let size = look.font.size_pt.or(normal.font.size_pt).unwrap_or(DEFAULT_FONT_PT);
+    let ems: f32 = spans
+        .iter()
+        .flat_map(|span| span.text.chars())
+        .map(|ch| if u32::from(ch) >= WIDE_FROM { 1.0 } else { NARROW_EM })
+        .sum();
+    ems * size
 }
 
 /// An ISO date and time (`t="d"`, `2024-01-31T14:05:09.5Z`) written as the

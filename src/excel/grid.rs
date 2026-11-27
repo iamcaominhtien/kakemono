@@ -281,6 +281,15 @@ pub(crate) const DEFAULT_COL_PT: f32 = 48.0;
 const DEFAULT_ROW_PT: f32 = 15.0;
 
 impl Sizes {
+    /// The width of the column `col` in points (hidden or not).
+    pub(crate) fn col_pt(&self, col: u32) -> f32 {
+        self.cols
+            .iter()
+            .rev()
+            .find(|(first, last, _)| (*first..=*last).contains(&col))
+            .map_or(self.default_col_pt.unwrap_or(DEFAULT_COL_PT), |(_, _, width)| *width)
+    }
+
     /// The width and height in points of the box from `from` to `to`;
     /// hidden rows and columns (`hidden_rows`, `hidden_cols`) take no room,
     /// and an offset larger than its cell ends at the cell's edge.
@@ -296,11 +305,7 @@ impl Sizes {
             if hidden_cols.contains(&col) {
                 return 0.0;
             }
-            self.cols
-                .iter()
-                .rev()
-                .find(|(first, last, _)| (*first..=*last).contains(&col))
-                .map_or(self.default_col_pt.unwrap_or(DEFAULT_COL_PT), |(_, _, width)| *width)
+            self.col_pt(col)
         };
         let default_row = self.default_row_pt.unwrap_or(DEFAULT_ROW_PT);
         // The rows: the default height for all, corrected by the rows
@@ -355,6 +360,10 @@ pub(crate) struct GridCell {
     /// [`OWN_STYLE`](super::strings::OWN_STYLE),
     /// [`OWN_COLOR`](super::strings::OWN_COLOR)); empty when none does.
     pub(crate) own_font: Vec<u8>,
+    /// How wide its text is, about, in points, when it runs over the empty
+    /// cells to its right (a text not wrapped, aligned left or as numbers
+    /// and text are by default); 0 when it does not.
+    pub(crate) overflow_pt: f32,
 }
 
 /// What a rich run of a cell sets of its own font rather than take the

@@ -7,12 +7,17 @@ use super::grid::{Grid, Merge};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
+/// The most empty columns a text is taken to run over.
+const MAX_OVERFLOW_COLS: u32 = 64;
+
 /// The regions of `grid`, as bounding boxes sorted by (top, left).
 ///
 /// Only visible cells count: two cells are in the same region when their
 /// rows, counted without the hidden ones, differ by at most
 /// `region_gap_rows` and their columns by at most `region_gap_cols`; a
-/// merge connects its whole area. Regions whose boxes overlap are one
+/// merge connects its whole area, and a text that runs over the empty
+/// cells to its right the cell it runs up to. Regions whose boxes overlap
+/// are one
 /// region.
 pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
     let rows = Visible::new(&grid.hidden_rows);
@@ -26,6 +31,9 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
     // The last cell of a text centred across the selection, in visible
     // places: a blank centred cell right after it is part of the text.
     let mut centred: Option<(u32, u32)> = None;
+    // The texts that run over empty cells up to another cell of their
+    // row: (item, that cell).
+    let mut reaches: Vec<(usize, (u32, u32))> = Vec::new();
     for (&(row, col), cell) in &grid.cells {
         if !visible((row, col)) {
             continue;
@@ -49,6 +57,16 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
             right: col,
         });
         at.insert(place, item);
+        // A text that runs over the empty cells to its right up to the
+        // next cell of its row is next to that cell, as on the sheet.
+        if let Some(reached) = runs_up_to(grid, (row, col), cell.overflow_pt) {
+            reaches.push((item, (row, reached)));
+        }
+    }
+    for (item, (row, col)) in reaches {
+        if let Some(&other) = at.get(&(rows.rank(row), cols.rank(col))) {
+            sets.union(item, other);
+        }
     }
     for merge in &grid.merges {
         if !visible((merge.top, merge.left)) || !grid.cells.contains_key(&(merge.top, merge.left)) {
@@ -88,6 +106,24 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
     let mut regions: Vec<Merge> = regions.into_values().collect();
     regions.sort_by_key(|region| (region.top, region.left));
     join_overlapping(regions)
+}
+
+/// The column of the cell of its row that the text of the cell at
+/// `(row, col)`, `overflow_pt` wide, runs up to over the empty cells to its
+/// right; `None` when it ends before one.
+fn runs_up_to(grid: &Grid, (row, col): (u32, u32), overflow_pt: f32) -> Option<u32> {
+    let mut room = overflow_pt - grid.sizes.col_pt(col);
+    let mut next = col + 1;
+    while room > 0.0 && next - col <= MAX_OVERFLOW_COLS {
+        if grid.cells.contains_key(&(row, next)) {
+            return Some(next);
+        }
+        if !grid.hidden_cols.contains(&next) {
+            room -= grid.sizes.col_pt(next);
+        }
+        next += 1;
+    }
+    None
 }
 
 /// Puts together the items of the places `at` (visible row and column →
@@ -295,7 +331,7 @@ impl Sets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::excel::grid::{CellKind, GridCell};
+    use crate::excel::grid::{CellKind, DEFAULT_COL_PT, GridCell};
     use crate::model::Span;
 
     /// A grid with a text cell at each of `cells`.
@@ -309,6 +345,7 @@ mod tests {
                     kind: CellKind::Text,
                     center_continuous: false,
                     own_font: Vec::new(),
+                    overflow_pt: 0.0,
                 },
             );
         }
@@ -352,6 +389,21 @@ mod tests {
         let mut grid = grid(&[(0, 0), (1, 0), (1, 3)]);
         grid.merges.push(area(0, 0, 0, 3));
         assert_eq!(split(&grid, &ExcelConfig::default()), [area(0, 0, 1, 3)]);
+    }
+
+    #[test]
+    fn a_long_text_reaches_the_cell_it_runs_up_to() {
+        // A long text in A runs over the empty B and C up to D: the rows
+        // are one table, as on the sheet.
+        let cells: Vec<_> = (0..3).flat_map(|row| [(row, 0), (row, 3), (row, 4)]).collect();
+        let mut grid = grid(&cells);
+        for row in 0..3 {
+            grid.cells.get_mut(&(row, 0)).unwrap().overflow_pt = 3.5 * DEFAULT_COL_PT;
+        }
+        assert_eq!(split(&grid, &ExcelConfig::default()), [area(0, 0, 2, 4)]);
+        // A short one stays apart.
+        let grid = super::tests::grid(&cells);
+        assert_eq!(split(&grid, &ExcelConfig::default()).len(), 2);
     }
 
     #[test]
@@ -407,6 +459,7 @@ mod tests {
                 kind: CellKind::Text,
                 center_continuous: true,
                 own_font: Vec::new(),
+                overflow_pt: 0.0,
             },
         );
         grid
