@@ -1160,7 +1160,9 @@ pub(crate) mod tests {
         assert!(broken.has_data && broken.broken_refs);
         // One good reference is enough.
         let good = val.replace("S!#REF!", "S!B2");
-        let series = format!(r#"<c:ser><c:idx val="0"/><c:order val="0"/>{val}</c:ser><c:ser><c:idx val="1"/><c:order val="1"/>{good}</c:ser>"#);
+        let series = format!(
+            r#"<c:ser><c:idx val="0"/><c:order val="0"/>{val}</c:ser><c:ser><c:idx val="1"/><c:order val="1"/>{good}</c:ser>"#
+        );
         let fine = chart(&space("", &format!("<c:barChart>{series}</c:barChart>")));
         assert!(!fine.broken_refs);
     }

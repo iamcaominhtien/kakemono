@@ -16,9 +16,11 @@
 
 pub(crate) mod apply;
 pub(crate) mod citation;
+pub(crate) mod figure_lines;
 pub(crate) mod front;
 pub(crate) mod markup;
 pub(crate) mod plain_text;
+pub(crate) mod replace;
 
 use super::latex::math::latex;
 use super::{Equations, HtmlOptions, ImageStore, Mode, PageImage, float_class, math_html, plain};
@@ -188,6 +190,10 @@ struct BlockOut {
     /// Text found inside a figure (axis labels, legends), as plain text.
     #[serde(skip_serializing_if = "Option::is_none")]
     figure_text: Option<String>,
+    /// The text inside a figure as runs, each editable (see
+    /// [`figure_lines`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    figure_lines: Option<Vec<figure_lines::RunOut>>,
     /// The text of a formula as the PDF gives it (alt text).
     #[serde(skip_serializing_if = "Option::is_none")]
     alt: Option<String>,
@@ -289,7 +295,7 @@ pub(crate) fn render_json(
             .iter()
             .map(|page| [round(page.width), round(page.height)])
             .collect(),
-        blocks: blocks_out(doc, opts, &mut images),
+        blocks: blocks_out(doc, &analysis.rotated, opts, &mut images),
     };
     let json = serde_json::to_string_pretty(&file).expect("the JSON output serialises");
     // serde_json writes the placeholder marks of the pictures as escapes;
@@ -306,12 +312,22 @@ pub(crate) fn render_json(
 const MARK_ESCAPED: &str = "\\u0001";
 
 /// The blocks of `doc` as JSON, with the section each one is in.
-fn blocks_out(doc: &Document, opts: &JsonOptions, images: &mut ImageStore<'_>) -> Vec<BlockOut> {
+fn blocks_out(
+    doc: &Document,
+    rotated: &[Vec<crate::model::RotatedRun>],
+    opts: &JsonOptions,
+    images: &mut ImageStore<'_>,
+) -> Vec<BlockOut> {
     // The headings open above the current block: (level, id).
     let mut headings: Vec<(u8, usize)> = Vec::new();
     let mut out = Vec::with_capacity(doc.blocks.len());
     for block in &doc.blocks {
         let mut json = block_out(block, opts, images);
+        // The text inside a figure's picture, rotated text included (which
+        // the analysis keeps by page).
+        if matches!(block.kind, BlockKind::Figure { .. }) && json.image.is_some() {
+            json.figure_lines = figure_lines::runs_out(block, &figure_lines::rotated_in(rotated, block));
+        }
         if let BlockKind::Heading { level } = block.kind {
             while headings.last().is_some_and(|&(open, _)| open >= level) {
                 headings.pop();
@@ -334,7 +350,7 @@ fn block_out(block: &Block, opts: &JsonOptions, images: &mut ImageStore<'_>) -> 
         anchor: block.anchor.clone(),
         layout: Some(LayoutOut {
             page: block.page,
-            bbox: bbox(&block.bbox),
+            bbox: bbox(&page_bbox(block)),
         }),
         plain: plain_text::block_plain(block),
         ..Default::default()
@@ -477,6 +493,23 @@ fn float_name(kind: FloatKind) -> &'static str {
         FloatKind::Algorithm => "algorithm",
         FloatKind::Graphic => "graphic",
     }
+}
+
+/// The box of a block on its page: for a paragraph that goes on onto the
+/// next page or column of another page, the box of its lines on the first
+/// page only (the block's box covers the lines of every page, in the
+/// coordinates of each).
+fn page_bbox(block: &Block) -> Rect {
+    if block.lines.iter().all(|line| line.page == block.page) {
+        return block.bbox;
+    }
+    block
+        .lines
+        .iter()
+        .filter(|line| line.page == block.page)
+        .map(|line| line.bbox)
+        .reduce(|a, b| a.union(&b))
+        .unwrap_or(block.bbox)
 }
 
 /// A box as `[x0, y0, x1, y1]`, rounded.

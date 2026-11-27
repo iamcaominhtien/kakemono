@@ -1,6 +1,7 @@
 //! HTML output in four fidelity modes (see [`Mode`]), Word output
 //! ([`render_docx`]), Markdown output ([`render_markdown`]), LaTeX output
-//! ([`render_latex`]), EPUB output ([`render_epub`]) and JSON output
+//! ([`render_latex`]), Typst output ([`render_typst`]), EPUB output
+//! ([`render_epub`]) and JSON output
 //! (`render_json`), which can also be edited and applied back
 //! (`apply_content`), and chunks for retrieval ([`render_chunks`]).
 
@@ -11,6 +12,7 @@ mod docx;
 mod epub;
 pub(crate) mod escape;
 mod flow;
+mod formula;
 mod friendly;
 mod hard;
 mod hard95;
@@ -20,8 +22,12 @@ mod latex;
 mod markdown;
 pub(crate) mod mathml;
 mod medium;
+mod notes;
 mod options;
+mod runs;
+mod sequence;
 mod table;
+mod typst;
 pub(crate) mod zip;
 
 #[cfg(test)]
@@ -37,6 +43,7 @@ pub(crate) use escape::*;
 pub(crate) use flow::*;
 pub use json::apply::ContentReport;
 pub(crate) use json::apply::apply_content;
+pub(crate) use json::figure_lines::figure_svg;
 pub use json::{JsonOptions, JsonOutput};
 pub(crate) use json::{SourceInfo, render_json};
 pub use latex::{LatexOptions, LatexOutput, render_latex};
@@ -45,18 +52,18 @@ pub(crate) use mathml::math_css;
 pub use mathml::math_html;
 pub use options::{Equations, HtmlOptions, HtmlOutput, Mode, PageImage};
 pub(crate) use table::*;
+pub use typst::{TypstLayout, TypstOptions, TypstOutput, render_typst};
 
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::*;
-pub(crate) use crate::paper::InputFormat;
 
 /// One output mode: turns an analysed document into a complete HTML page.
 pub(crate) trait Renderer {
     /// Writes the HTML. Pictures (page backgrounds, figures, equations) are
     /// requested from `images`, which returns their `src` and draws them
     /// afterwards.
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, input: InputFormat) -> String;
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String;
 }
 
 /// One `@font-face` rule with the font `data` (woff2) embedded as a base64
@@ -81,17 +88,19 @@ fn renderer_for(mode: Mode) -> &'static dyn Renderer {
 }
 
 /// Renders an analysed document as HTML in the mode chosen in `opts`.
+/// Added notes are numbered in reading order across the document.
 ///
 /// The HTML is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and either
 /// inlined as data URIs or returned in [`HtmlOutput::files`].
-pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputFormat, opts: &HtmlOptions) -> HtmlOutput {
+pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) -> HtmlOutput {
     let mut images = ImageStore {
         opts,
         jobs: Vec::new(),
         svg_as_pdf: false,
     };
-    let html = renderer_for(opts.mode).render(analysis, &mut images, input);
+    let numbered = notes::numbered_analysis(analysis);
+    let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish(Pictures::new(pdf, &analysis.doc), html)
 }
 
@@ -106,7 +115,6 @@ pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputFormat, op
 pub fn render_to(
     analysis: &Analysis,
     pdf: Option<&PdfFile>,
-    input: InputFormat,
     opts: &HtmlOptions,
     out: &mut dyn std::io::Write,
     file: &mut dyn FnMut(String, Vec<u8>) -> std::io::Result<()>,
@@ -116,6 +124,7 @@ pub fn render_to(
         jobs: Vec::new(),
         svg_as_pdf: false,
     };
-    let html = renderer_for(opts.mode).render(analysis, &mut images, input);
+    let numbered = notes::numbered_analysis(analysis);
+    let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
     images.finish_into(Pictures::new(pdf, &analysis.doc), &html, out, file)
 }

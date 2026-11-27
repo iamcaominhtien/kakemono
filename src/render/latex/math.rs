@@ -6,7 +6,9 @@
 //! (MathJax), which the preamble of the LaTeX output defines.
 
 use crate::model::MathNode;
-use unicode_normalization::UnicodeNormalization;
+use crate::render::formula::{
+    Accent, FUNCTIONS, MatrixKind, accent_of, accented_letter, is_big_operator, is_delimiter, matrix, primes,
+};
 
 /// Symbols written as a LaTeX command (or escaped) rather than as the
 /// character itself: Greek letters, operators, relations, arrows,
@@ -209,42 +211,6 @@ const SYMBOLS: &[(char, &str)] = &[
     ('^', "\\hat{}"),
 ];
 
-/// Function names that LaTeX sets upright with a command of their own.
-const FUNCTIONS: &[&str] = &[
-    "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim", "exp", "gcd", "inf",
-    "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min", "Pr", "sec", "sin", "sinh", "sup", "tan",
-    "tanh",
-];
-
-/// Accents above a base, by the character the analysis reads for them.
-const ACCENTS: &[(char, &str)] = &[
-    ('^', "\\hat"),
-    ('ˆ', "\\hat"),
-    ('\u{302}', "\\hat"),
-    ('\u{300}', "\\grave"),
-    ('\u{301}', "\\acute"),
-    ('\u{306}', "\\breve"),
-    ('\u{30C}', "\\check"),
-    ('~', "\\tilde"),
-    ('˜', "\\tilde"),
-    ('\u{303}', "\\tilde"),
-    ('¯', "\\bar"),
-    ('\u{304}', "\\bar"),
-    ('‾', "\\overline"),
-    ('―', "\\overline"),
-    ('—', "\\overline"),
-    ('−', "\\overline"),
-    ('˙', "\\dot"),
-    ('·', "\\dot"),
-    ('\u{307}', "\\dot"),
-    ('¨', "\\ddot"),
-    ('\u{308}', "\\ddot"),
-    ('→', "\\vec"),
-    ('⃗', "\\vec"),
-    ('ˇ', "\\check"),
-    ('˘', "\\breve"),
-];
-
 /// The math alphabets of Unicode (block "Mathematical Alphanumeric
 /// Symbols"): first code point of the capital A, and the LaTeX command of
 /// the alphabet (empty for math italic, the default for letters).
@@ -301,6 +267,38 @@ const LETTERLIKE: &[(char, char, &str)] = &[
     ('ℤ', 'Z', "\\mathbb"),
 ];
 
+/// The Greek math alphabets of Unicode: first code point (the capital
+/// Alpha), and the LaTeX command of the alphabet (empty for italic).
+const GREEK_ALPHABETS: &[(u32, &str)] = &[
+    (0x1D6A8, "\\boldsymbol"),
+    (0x1D6E2, ""),
+    (0x1D71C, "\\boldsymbol"),
+    (0x1D756, "\\boldsymbol"),
+    (0x1D790, "\\boldsymbol"),
+];
+/// The letters of a Greek math alphabet, in order: 25 capitals (with
+/// `ϴ`), nabla, 25 small letters, the partial sign and 6 variants.
+const GREEK_LETTERS: &str = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ";
+/// Greek letters that LaTeX has no command for, as the Latin letters
+/// they are drawn as.
+const GREEK_AS_LATIN: &[(char, char)] = &[
+    ('Α', 'A'),
+    ('Β', 'B'),
+    ('Ε', 'E'),
+    ('Ζ', 'Z'),
+    ('Η', 'H'),
+    ('Ι', 'I'),
+    ('Κ', 'K'),
+    ('Μ', 'M'),
+    ('Ν', 'N'),
+    ('Ο', 'O'),
+    ('Ρ', 'P'),
+    ('Τ', 'T'),
+    ('Χ', 'X'),
+    ('ο', 'o'),
+    ('ϴ', 'Θ'),
+    ('ϰ', 'κ'),
+];
 /// Letters in each math alphabet: 26 capitals, then 26 small letters.
 const ALPHABET_LETTERS: u32 = 52;
 /// Digits in each math digit alphabet.
@@ -328,6 +326,17 @@ pub(crate) fn latex(node: &MathNode) -> String {
 /// `\alpha`), or `None` when the character is written as it is. The LaTeX
 /// output writes such characters of running text in math mode.
 pub(crate) fn math_char(ch: char) -> Option<String> {
+    if let Some((letter, command)) = math_greek(ch) {
+        let letter = GREEK_AS_LATIN
+            .iter()
+            .find(|(greek, _)| *greek == letter)
+            .map_or(letter, |(_, latin)| *latin);
+        let inner = math_char(letter).unwrap_or_else(|| letter.to_string());
+        return Some(match command {
+            "" => inner,
+            command => format!("{command}{{{inner}}}"),
+        });
+    }
     if let Some((letter, command)) = math_alphanumeric(ch) {
         return Some(match command {
             "" => letter.to_string(),
@@ -341,13 +350,14 @@ pub(crate) fn math_char(ch: char) -> Option<String> {
 }
 
 /// Appends `piece` to `out`, with a space between a command name and a
-/// letter that follows it (`\alpha x`, not `\alphax`).
+/// letter that follows it (`\alpha x`, not `\alphax`); XeTeX and LuaTeX
+/// read any Unicode letter as part of a command name (`\pi𝝃`).
 fn push(out: &mut String, piece: &str) {
     let ends_with_command = {
         let letters = out.len() - out.trim_end_matches(|ch: char| ch.is_ascii_alphabetic()).len();
         letters > 0 && out[..out.len() - letters].ends_with('\\')
     };
-    if ends_with_command && piece.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+    if ends_with_command && piece.starts_with(char::is_alphabetic) {
         out.push(' ');
     }
     out.push_str(piece);
@@ -383,7 +393,7 @@ fn write_node(node: &MathNode, out: &mut String) {
             }
             if let Some(sup) = sup {
                 match primes(sup) {
-                    Some(primes) => push(out, &primes),
+                    Some(count) => push(out, &"'".repeat(count)),
                     None => push(out, &format!("^{{{}}}", group(sup))),
                 }
             }
@@ -417,21 +427,6 @@ fn script_base(base: &MathNode) -> String {
     }
 }
 
-/// A superscript made only of primes, as TeX writes it (`'`, `''`).
-fn primes(sup: &MathNode) -> Option<String> {
-    let MathNode::Operator { text, .. } = sup else {
-        return None;
-    };
-    let count = text.chars().map(|ch| match ch {
-        '′' | '\'' => Some(1),
-        '″' => Some(2),
-        '‴' => Some(3),
-        _ => None,
-    });
-    let total: Option<usize> = count.sum();
-    total.filter(|&n| n > 0).map(|n| "'".repeat(n))
-}
-
 /// Limits or an accent above and below `base`: an accent command, a big
 /// operator or `\lim` with its limits, or `\underset`/`\overset` for
 /// anything else.
@@ -439,8 +434,9 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     if accent
         && under.is_none()
         && let Some(MathNode::Operator { text, .. }) = over
-        && let Some(command) = accent_command(text)
+        && let Some(found) = accent_of(text)
     {
+        let command = accent_command(found);
         return format!("{command}{{{}}}", group(base));
     }
     let limits = |base: String| {
@@ -469,29 +465,24 @@ fn under_over(base: &MathNode, under: Option<&MathNode>, over: Option<&MathNode>
     }
 }
 
-/// The LaTeX accent command for the accent character `text`.
-fn accent_command(text: &str) -> Option<&'static str> {
-    let mut chars = text.chars();
-    let (Some(ch), None) = (chars.next(), chars.next()) else {
-        return None;
-    };
-    ACCENTS
-        .iter()
-        .find(|(accent, _)| *accent == ch)
-        .map(|(_, command)| *command)
-}
+/// The LaTeX commands of the accents, in the order of [`Accent`].
+const ACCENT_COMMANDS: [&str; 11] = [
+    "\\hat",
+    "\\grave",
+    "\\acute",
+    "\\breve",
+    "\\check",
+    "\\tilde",
+    "\\bar",
+    "\\overline",
+    "\\dot",
+    "\\ddot",
+    "\\vec",
+];
 
-/// Whether `text` is a big operator (∑, ∫, ⋃, …) that takes limits.
-fn is_big_operator(text: &str) -> bool {
-    matches!(text, "∑" | "∏" | "∐" | "∫" | "∬" | "∭" | "∮" | "⋃" | "⋂" | "⨁" | "⨂")
-}
-
-/// Whether `text` is a delimiter that a size command (`\big`) can enlarge.
-fn is_delimiter(text: &str) -> bool {
-    matches!(
-        text,
-        "(" | ")" | "[" | "]" | "{" | "}" | "|" | "‖" | "⟨" | "⟩" | "⌊" | "⌋" | "⌈" | "⌉" | "/"
-    )
+/// The LaTeX command of an accent.
+fn accent_command(accent: Accent) -> &'static str {
+    ACCENT_COMMANDS[accent as usize]
 }
 
 /// Writes the nodes of a row. A table between two tall delimiters is a
@@ -500,48 +491,27 @@ fn is_delimiter(text: &str) -> bool {
 fn write_row(nodes: &[MathNode], out: &mut String) {
     let mut i = 0;
     while i < nodes.len() {
-        if let Some((env, used)) = matrix(&nodes[i..]) {
-            push(out, &env);
-            i += used;
+        if let Some(found) = matrix(&nodes[i..]) {
+            let env = match found.kind {
+                MatrixKind::Paren => "pmatrix",
+                MatrixKind::Bracket => "bmatrix",
+                MatrixKind::Brace => "Bmatrix",
+                MatrixKind::Bar => "vmatrix",
+                MatrixKind::DoubleBar => "Vmatrix",
+                MatrixKind::Cases => "cases",
+            };
+            let body: Vec<String> = found
+                .rows
+                .iter()
+                .map(|row| row.iter().map(group).collect::<Vec<_>>().join(" & "))
+                .collect();
+            push(out, &format!("\\begin{{{env}}} {} \\end{{{env}}}", body.join(" \\\\ ")));
+            i += found.used;
         } else {
             write_node(&nodes[i], out);
             i += 1;
         }
     }
-}
-
-/// The matrix or `cases` environment that starts `nodes` (a tall opening
-/// delimiter, a table and, for a matrix, the matching tall closing one),
-/// and how many nodes it takes; `None` when `nodes` starts otherwise.
-fn matrix(nodes: &[MathNode]) -> Option<(String, usize)> {
-    fn tall(node: &MathNode) -> Option<&str> {
-        match node {
-            MathNode::Operator {
-                text,
-                height_em: Some(_),
-            } => Some(text.as_str()),
-            _ => None,
-        }
-    }
-    let open = tall(nodes.first()?)?;
-    let MathNode::Table { rows, .. } = nodes.get(1)? else {
-        return None;
-    };
-    let close = nodes.get(2).and_then(tall);
-    let (env, used) = match (open, close) {
-        ("(", Some(")")) => ("pmatrix", 3),
-        ("[", Some("]")) => ("bmatrix", 3),
-        ("{", Some("}")) => ("Bmatrix", 3),
-        ("|", Some("|")) => ("vmatrix", 3),
-        ("‖", Some("‖")) => ("Vmatrix", 3),
-        ("{", None) => ("cases", 2),
-        _ => return None,
-    };
-    let body: Vec<String> = rows
-        .iter()
-        .map(|row| row.iter().map(group).collect::<Vec<_>>().join(" & "))
-        .collect();
-    Some((format!("\\begin{{{env}}} {} \\end{{{env}}}", body.join(" \\\\ ")), used))
 }
 
 /// A multi-line display as an `array`, with its column alignments.
@@ -604,8 +574,11 @@ fn symbols(text: &str) -> String {
             }
         } else if let Some((_, command)) = SYMBOLS.iter().find(|(symbol, _)| *symbol == ch) {
             push(&mut out, command);
-        } else if let Some(accented) = accented_letter(ch) {
-            push(&mut out, &accented);
+        } else if let Some((base, accent)) = accented_letter(ch) {
+            push(
+                &mut out,
+                &format!("{}{{{}}}", accent_command(accent), symbols(&base.to_string())),
+            );
         } else {
             push(&mut out, ch.encode_utf8(&mut [0; 4]));
         }
@@ -613,16 +586,16 @@ fn symbols(text: &str) -> String {
     out
 }
 
-/// A letter with an accent written as one character (`ã`, `ĝ`) as an accent
-/// command over the letter (`\tilde{a}`), or `None` when `ch` is no such
-/// letter.
-fn accented_letter(ch: char) -> Option<String> {
-    let mut parts = std::iter::once(ch).nfd();
-    let (Some(base), Some(mark), None) = (parts.next(), parts.next(), parts.next()) else {
-        return None;
-    };
-    let (_, command) = ACCENTS.iter().find(|(accent, _)| *accent == mark)?;
-    Some(format!("{command}{{{}}}", symbols(&base.to_string())))
+/// The plain Greek letter and the alphabet command of a character of the
+/// Greek math alphabets (`𝝃` → `ξ`, `\boldsymbol`).
+fn math_greek(ch: char) -> Option<(char, &'static str)> {
+    let code = u32::from(ch);
+    let count = GREEK_LETTERS.chars().count() as u32;
+    GREEK_ALPHABETS.iter().find_map(|(start, command)| {
+        let offset = code.checked_sub(*start).filter(|&offset| offset < count)?;
+        let letter = GREEK_LETTERS.chars().nth(offset as usize)?;
+        Some((letter, *command))
+    })
 }
 
 /// The plain letter or digit and the alphabet command of a character of
@@ -708,6 +681,17 @@ mod tests {
     fn command_is_spaced_from_a_letter() {
         let node = MathNode::Row(vec![op("∑"), ident("x"), ident("sin"), ident("θ")]);
         assert_eq!(latex(&node), "\\sum x\\sin\\theta");
+        // XeTeX reads a Unicode letter as part of a command name.
+        let node = MathNode::Row(vec![op("π"), ident("ж")]);
+        assert_eq!(latex(&node), "\\pi ж");
+    }
+
+    #[test]
+    fn greek_math_alphabets_are_commands() {
+        // As Wikipedia writes them: bold italic xi, italic capital alpha.
+        assert_eq!(math_char('𝝃').as_deref(), Some("\\boldsymbol{\\xi}"));
+        assert_eq!(math_char('𝛢').as_deref(), Some("A"));
+        assert_eq!(math_char('𝛁').as_deref(), Some("\\boldsymbol{\\nabla}"));
     }
 
     #[test]

@@ -42,6 +42,40 @@ pub(crate) const CONTENT_TYPES: &str = "<Types xmlns=\"http://schemas.openxmlfor
 <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>\
 </Types>";
 
+/// The content type of the footnotes part, added to `[Content_Types].xml`
+/// when the document has added notes.
+pub(crate) const FOOTNOTES_TYPE: &str = "<Override PartName=\"/word/footnotes.xml\" \
+ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>";
+
+/// The relationship of the main document to its footnotes part, added
+/// when the document has added notes.
+pub(crate) const FOOTNOTES_REL: &str = "<Relationship Id=\"rIdFootnotes\" \
+Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes\" Target=\"footnotes.xml\"/>";
+
+/// `word/footnotes.xml`: the separator and continuation separator that
+/// Word expects (ids -1 and 0), then one footnote per item of `notes` (its
+/// runs), with ids from 1, in the `FootnoteText` style with its raised
+/// number first.
+pub(crate) fn footnotes_xml(notes: &[String]) -> String {
+    let mut out = format!(
+        "{XML_DECL}<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
+xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\
+<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>\
+<w:r><w:separator/></w:r></w:p></w:footnote>\
+<w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr>\
+<w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"
+    );
+    for (i, runs) in notes.iter().enumerate() {
+        out.push_str(&format!(
+            "<w:footnote w:id=\"{}\"><w:p><w:pPr><w:pStyle w:val=\"FootnoteText\"/></w:pPr>\
+<w:r><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space=\"preserve\"> </w:t></w:r>{runs}</w:p></w:footnote>",
+            i + 1
+        ));
+    }
+    out.push_str("</w:footnotes>");
+    out
+}
+
 /// `_rels/.rels`: the main document and the property parts.
 pub(crate) const PACKAGE_RELS: &str = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
 <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>\

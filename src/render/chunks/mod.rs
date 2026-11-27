@@ -700,14 +700,22 @@ mod tests {
         // each chunk of rows starts with its start and the header row.
         let caption = format!("Table 1: {}", vec!["word"; 80].join(" "));
         let chunks = render_chunks(&doc(vec![table_block(&caption, 1, 200)]), &opts(64));
-        assert!(chunks.iter().any(|chunk| chunk.text.contains("word word word word word word word word word word")));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| chunk.text.contains("word word word word word word word word word word"))
+        );
         let with_rows: Vec<_> = chunks
             .iter()
             .filter(|chunk| chunk.text.lines().any(|line| line.starts_with("20")))
             .collect();
         assert!(!with_rows.is_empty());
         for chunk in with_rows {
-            assert!(chunk.text.contains("Table 1:") && chunk.text.contains("Year | Price"), "{}", chunk.text);
+            assert!(
+                chunk.text.contains("Table 1:") && chunk.text.contains("Year | Price"),
+                "{}",
+                chunk.text
+            );
             assert!(chunk.tokens <= 64, "{}", chunk.text);
         }
     }

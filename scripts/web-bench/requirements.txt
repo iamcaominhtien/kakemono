@@ -1,0 +1,4 @@
+# The references of scripts/web-bench/evaluate.py (in their own venv).
+trafilatura==2.4.0
+readability-lxml
+lxml_html_clean

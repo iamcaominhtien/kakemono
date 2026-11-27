@@ -6,6 +6,392 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.19.0](https://github.com/iamcaominhtien/kakemono/compare/v0.18.0...v0.19.0) - 2026-11-27
+
+### Added
+
+- Read web pages (HTML files and http(s) addresses) as input
+
+kakemono now reads web pages. You can give it a saved `.html` file or an `http(s)` address, and convert it to any output: the four HTML modes, Word, Markdown, LaTeX, Typst, EPUB, JSON and chunks. It finds the article in the page, leaves out what is around it, and fetches its pictures.
+
+```bash
+kakemono convert https://example.org/post -o post.md
+kakemono convert saved.html --base-url https://example.org/post -o post.docx
+```
+
+#### Reading a page
+
+- The page is parsed with html5ever. The article is the part of the page that holds most of its text outside links.
+- Around and inside the article, kakemono leaves out what a site puts there:
+  - navigation, headers and footers, ads, cookie banners and pop-ups;
+  - share buttons, newsletter and feedback forms, tooltips;
+  - lists of related or recommended articles, teasers, tags;
+  - author boxes and author photos, comment links, view counts;
+  - the icons of the site, and drawings that only point to the site's sprite.
+- The article keeps its title, authors, summary, headings, lists, tables, code, formulas (MathML) and pictures.
+  - A picture that fails to download is retried, then fetched in another size.
+  - When an article has no picture of its own, the photo shown above it (`og:image`) is kept.
+- Notes and citations that link to a list become footnotes. The heading of a list that is left empty this way goes too.
+- Some sites get their own handling:
+  - Wikipedia: notes, hatnotes, portals, sister projects and succession tables.
+  - arXiv (LaTeXML): authors, notes and equations.
+  - Journals (PLOS, PMC, Nature): references without their links to Google Scholar or PubMed, and without a number written twice.
+- A page that is a table (Hacker News) reads as a table without its empty columns. A home page takes its title from its metadata, not from its first story. A page with no article (a video) reads its description.
+- `--base-url` reads a saved page as if it were at its address, so its links and pictures resolve.
+
+#### Web benchmark
+
+`scripts/web-bench/` scores kakemono on about 330 pages, the way the Scrapinghub article extraction benchmark does: F1 of 4-word shingles. 181 of the pages have a ground truth. The others are, by category:
+
+- Vietnamese and international news;
+- tech news, blogs and documentation;
+- Wikipedia in seven languages;
+- science, government sites, and pages that are not articles.
+
+It also writes every page to every output to find crashes. For each category it makes a review PDF and a zip of the conversions.
+
+| Category | Pages | F1 |
+| --- | --- | --- |
+| Ground truth (Scrapinghub) | 181 | 0.928 |
+| Government | 13 | 0.970 |
+| Blogs | 21 | 0.956 |
+| Documentation | 19 | 0.956 |
+| International news | 20 | 0.913 |
+| Science | 7 | 0.905 |
+| Vietnamese news | 31 | 0.900 |
+| Tech news | 12 | 0.866 |
+| Wikipedia | 15 | 0.849 |
+| Not articles | 9 | 0.803 |
+| All | 328 | 0.920 |
+
+On the pages with a ground truth, trafilatura and readability-lxml are scored as well. Outside the ground truth, the reference is trafilatura's own extraction, so its mistakes count against kakemono. For example:
+
+- trafilatura leaves out formulas and image captions;
+- Chinese and Japanese paragraphs are one shingle each, so a different note number fails the whole paragraph.
+
+#### Other fixes
+
+- The friendly view lets the article take the whole width when it has no table of contents.
+- The LaTeX output writes the Greek math alphabets as commands.
+- A table that only lays out an equation without a number (from Word, a book or a web page) reads as a displayed equation.
+
+#### Performance
+
+The 330 pages of the benchmark convert to Markdown in 10 ms each (median), 310 ms for the slowest (arXiv's Llama 3 paper), with 55 MB of memory at most. On 4 cores that is about 200 pages a second.
+
+Larger generated pages convert too:
+
+| Page | Size | Time | Memory |
+| --- | --- | --- | --- |
+| 130,000 paragraphs | 48 MB | 2.0 s | 460 MB |
+| 200,000 boxes of clutter | 12 MB | 0.8 s | 390 MB |
+| A single 20 MB line | 20 MB | 0.8 s | 175 MB |
+| A table of 5,000 rows | 1.7 MB | 0.4 s | 150 MB |
+| Elements nested 20,000 deep | 0.2 MB | 1.5 s | 21 MB |
+
+The clutter is removed in linear time. Elements nested 50,000 deep take 11 s, most of it in html5ever's building of so deep a tree.
+
+## [0.18.0](https://github.com/iamcaominhtien/kakemono/compare/v0.17.1...v0.18.0) - 2026-11-24
+
+### Added
+
+- *(typst)* Add Typst output with a printed-book layout ([#34](https://github.com/iamcaominhtien/kakemono/pull/34))
+
+Closes #19.
+
+#### What
+
+A new output format, `-f typst` (or `-o x.typ`): a Typst document that compiles with `typst compile`, with no TeX installation. Typst breaks each paragraph as a whole (no wide gaps in justified lines) and keeps every footnote on the page of its call, which is what a translated book needs.
+
+- **The file** starts with its settings (layout, page size, fonts, language, cover), then the template (the `kakemono-…` functions that lay the document out), then the text. A reader changes the page size or the fonts there, so the CLI gains only `--layout`.
+- **Two layouts**, chosen from the document (`--layout auto`, the default) or forced with `--layout book|article`:
+  - `book`, for a document with chapters and no abstract, references or arXiv id: A5, a title page, chapters that open on a right-hand page and number their notes from 1, mirrored margins, running heads (book title on the left, chapter on the right, none on chapter openings or blank pages), opening words in small capitals (not in Vietnamese);
+  - `article`: A4, the title block at the top, page numbers at the foot.
+- **Content**:
+  - headings, lists with the document's markers, and tables as `table`s with spanning cells and booktabs-like rules;
+  - formulas as Typst math, built from the same `MathNode` structure as LaTeX and MathML;
+  - footnotes and added notes (`<note>`) as `#footnote` (see below);
+  - links, and pictures as files;
+  - a table of contents becomes Typst's `outline`, with the new page numbers.
+- **Language**: `lang` is found from the text (Vietnamese), for hyphenation and quotes. The default font, Libertinus Serif, ships with Typst and has the Vietnamese letters.
+- **Library**: `Paper::to_typst`, `TypstOptions`, `TypstLayout`. **Python**: `to_typst`.
+- **EPUB books** (now an input, #35) go to Typst too: a novel gets the book layout, with its title page and chapters.
+- Compiling to PDF inside kakemono (the optional point 3 of the issue) is left out: the `typst` crate would add a large dependency to the published crate, and the `typst` CLI is a single binary.
+
+#### Fixed: line breaks in every output
+
+A `<br>` of an EPUB book, or a manual line break of a Word document, is a `\n` in the text, and every output wrote it as a space, so the lines of a poem ran together (*The Divine Comedy* came out as prose). Each line of a run is now styled on its own, and the lines are joined by the format's line break: `<br>` in HTML, EPUB and Markdown, `\newline{}` in LaTeX (a space inside a table), `#linebreak()` in Typst. Word already wrote `<w:br/>`. The PDF papers have line breaks only in code, which is written apart, so their outputs are unchanged.
+
+#### Footnotes at the foot of the page (Word, LaTeX, Typst)
+
+A footnote reached the outputs as a block after its paragraph, linked from a raised mark: Word, LaTeX and Typst wrote it as a small paragraph there, not as a footnote. The EPUB books do the same: their notes, which e-readers show in a popup, are moved after the paragraph that calls them by the EPUB reader.
+
+These three outputs now attach each footnote to its call (`render/notes.rs`, `footnotes_attached`), so that it becomes a Word footnote, a `\footnote` or a `#footnote`, at the foot of the page of its call. A note is attached when its mark is called once, from a paragraph or a list item, and the note follows the call (after only other notes, or on the same page of the PDF or the next). Endnotes of Word, notes called from a heading, a caption, a table or the authors, and notes called from more than one place stay as they were. The document model, the JSON and the other outputs do not change.
+
+- *The Divine Comedy*: 2,089 of its 2,103 notes become footnotes (the other 14 are also referred to by other notes); *War and Peace*: all 137.
+- The PDF papers: 69 of their 94 footnotes (the rest are author notes or affiliations).
+- The Word corpus: 1,666 footnotes in 148 documents.
+
+#### Fixed: SonarCloud security rating of `main`
+
+The quality gate of `main` is red since #32: SonarCloud reports a command argument injection (`pythonsecurity:S8705`) in `scripts/ci_changes.py`, whose `BASE` and `HEAD` went from the command line to `git`, which would take an argument starting with `-` for an option. Each is now a commit hash or a branch or tag name, resolved with `git rev-parse --verify --end-of-options`, and only the full hash it prints is used; anything else exits with code 2. The workflows pass the SHAs of the pull request, so CI is unchanged.
+
+## [0.17.1](https://github.com/iamcaominhtien/kakemono/compare/v0.17.0...v0.17.1) - 2026-11-24
+
+### Performance
+
+- *(layout)* Draw each line's text of one font as one text object
+
+The PDF that the page layout writes (Word and EPUB input laid out as a PDF, and the `hard` and `hard-95` modes of Word input, which read that PDF) draws the text of a line in one font as one text object, instead of one per word and one per space. The PDF is faster to write and smaller, and looks the same.
+
+Before, every text run was its own text object with its own text matrix, font and colour, and a run in a stand-in face (a metric-compatible font standing in for an Office font) was also wrapped in a transformation for its horizontal scale, even when that scale was 1 to within rounding (1.0000001). Now consecutive runs of one face, size, colour and faked styles on one baseline are drawn as one, each glyph still at its own position, and a scale within 1e-4 of 1 is none.
+
+| Document | Instructions to write the PDF (callgrind) | PDF size |
+| --- | --- | --- |
+| Ulysses (EPUB, 4,485 pages) | 23.8 → 19.1 billion (−20%) | 9.7 → 7.8 MB (−19%) |
+| A government report (Word, 48 pages) | 2.07 → 1.78 billion (−14%) | 516 → 324 KB (−37%) |
+| Another one (Word, 33 pages) | 1.36 → 1.14 billion (−16%) | 380 → 238 KB (−38%) |
+| Moby-Dick (EPUB, 323 pages) | | 4.9 → 3.2 MB (−35%) |
+| The Mahabharata, 150 chapters (EPUB, Devanagari) | 7.46 → 7.37 billion (−1%) | 3.52 → 3.60 MB (+2%) |
+
+A book in Devanagari gains nothing: its words are set in a fallback face and the spaces between them in the run's own font, so no two neighbouring runs share a face.
+
+## [0.17.0](https://github.com/iamcaominhtien/kakemono/compare/v0.16.1...v0.17.0) - 2026-11-23
+
+### Added
+
+- [**breaking**] Read EPUB books as input
+
+An EPUB book (`.epub`) is now an input like a PDF or a Word document, for every output: HTML, Word, Markdown, LaTeX, EPUB, editable JSON, chunks for retrieval, and PDF (the book is laid out in pages through a Word document, as for Word input).
+
+```bash
+kakemono convert book.epub -o book.md
+```
+
+The content documents of the book (XHTML), in the order of its spine, are read without layout analysis into the same intermediate form as a Word document, so the same rules give each paragraph its kind:
+
+- headings (raised together so that the highest is of level 1, since many books keep `<h1>` for the title); the title and authors from the title page, or else from the book's metadata (`dc:title`, `dc:creator`); `<pre>` as code; `<figcaption>` and a table's `<caption>` as captions; ordered and bullet lists with their markers (`start`, `type`, `value`) and nesting;
+- MathML formulas keep their structure (MathML, LaTeX and Office Math in the outputs, in running text too);
+- tables with `colspan`, `rowspan` and header rows; pictures (`<img>`, an `<svg>` that shows one, or an SVG drawing) at the size the book gives them; SVG pages of the spine (comics, picture books) as figures;
+- a note called by an `epub:type="noteref"` (or `role="doc-noteref"`) link follows the paragraph that calls it, without its link back; links between the documents of the book keep working;
+- bold, italics, monospace, scripts and small capitals from the elements and from simple style sheet rules (`.italic { font-style: italic }`); `display: none`, page break markers and the navigation document are left out; HTML named entities (`&nbsp;`) are understood.
+
+A book has no pages: all four HTML modes give the `friendly` article. Books protected by DRM cannot be read (the error says so). The outputs name the source in their colophon ("Converted from EPUB by kakemono").
+
+The Python package reads EPUB books too (`kakemono.Document("book.epub")`).
+
+Reading is fast: on 172 public books (141 from Standard Ebooks, the 31 IDPF EPUB 3 samples; 294 MB), a book is written as Markdown in 0.03 s (median; 0.11 s at the 95th percentile) with 28 MB of memory, about 1,300 books a minute in one process and 5,300 on 4 cores.
+
+##### Performance
+
+- The page layout (PDF output of Word and EPUB input, and the `hard` and `hard-95` modes of Word input) is faster, with the same PDF:
+  - each font is read once, instead of once per new piece of text (rustybuzz parses the font's substitution and positioning tables each time it reads it);
+  - a shaping plan is made once per font, script and direction, instead of once per piece of text;
+  - the font of a run is resolved once per piece of text, instead of once per character.
+
+  A book in Devanagari (the Mahabharata sample, 3,767 pages) is laid out in about 16 s instead of 35 s; measured in instructions, the layout of its first 150 chapters takes 35% fewer after the font fix. Word documents are 4–30% faster.
+
+##### Fixed
+
+- Code listings of Word documents came out empty in every output (HTML, Word, Markdown, LaTeX, EPUB): a listing was rebuilt only from the lines of PDF pages, which a Word document does not have.
+
+##### Breaking changes
+
+- `InputFormat` has a new variant, `Epub`, and is now `#[non_exhaustive]`: a `match` on it needs a `_` arm.
+- `Meta` has a new public field, `source_format` (`Some("epub")` for a book). It is left out of the `--json` output when empty, so the output for PDF and Word input is unchanged.
+
+## [0.16.1](https://github.com/iamcaominhtien/kakemono/compare/v0.16.0...v0.16.1) - 2026-11-23
+
+### Documentation
+
+- Streamline README and skip CI for documentation-only PRs ([#32](https://github.com/iamcaominhtien/kakemono/pull/32))
+
+- Shorten the README and preserve detailed documentation in a linked guide.
+- Clarify how edited JSON applies to Word page-layout outputs.
+- Update crate and Python package descriptions and PyPI keywords to reflect supported formats. Published package metadata will update with the next release.
+- Skip the builds and tests on pull requests that only change the documentation. `scripts/ci_changes.py` decides it: Markdown at the root, `docs/`, `python/README.md` or `LICENSE`, plus the release such a pull request carries (the version and metadata of `Cargo.toml` and `python/pyproject.toml`, the kakemono version in `Cargo.lock`). Lint, tests, Word fidelity, SonarQube and the Python tests and wheels are then skipped; the title and version check still runs.
+
+## [0.16.0](https://github.com/iamcaominhtien/kakemono/compare/v0.15.3...v0.16.0) - 2026-11-23
+
+### Added
+
+- *(python)* Add Document, render_svg, read_formula and to_pdf ([#31](https://github.com/iamcaominhtien/kakemono/pull/31))
+
+The Python package can now do everything the command line does, and it writes several outputs of one document up to twice as fast. Closes #30.
+
+##### `render_svg`: draw an SVG as a PNG
+
+`kakemono.render_svg(svg, path=None, *, scale=1.0, resources_dir=None)` does what `kakemono render-svg` does, with the same renderer and fonts (the system's and those of `KAKEMONO_FONT_DIRS`). `svg` is a path, or the SVG as text or bytes. The function returns the PNG's bytes, and also writes them to `path` when it is given. Pictures named by relative paths are read from the SVG's folder, or from `resources_dir`. An SVG it cannot draw raises a `ValueError` that says what is wrong (`cannot draw the SVG: ...`). The fonts are loaded once per process, so drawing many previews from Python costs less than running the program each time.
+
+##### `to_pdf` and `read_formula`
+
+- `kakemono.to_pdf("report.docx", "report.pdf")` lays out a Word document in pages as Word does, like `convert -o x.pdf`. With `content`, it lays out the edited document.
+- `kakemono.read_formula(image)` reads a picture of a formula (PNG or JPEG, black on white, as LaTeX renders it) and returns its MathML, like `kakemono formula`. It returns `None` when the formula cannot be read with confidence.
+
+##### `Document`: analyse once, write every format
+
+Each module function reads and analyses its input again. Translating a paper this way (`to_json`, then six outputs with `content`) analyses it seven times. A `Document` is analysed once, and its methods (`convert`, `convert_all`, `to_docx`, `to_markdown`, `to_json`, `to_latex`, `to_epub`, `to_chunks`, `to_pdf`, `analyze`) all reuse that analysis. They take the same options as the functions, except the options of the analysis (`tables`, `jobs`, `png_compression`, `content`), which are given when the document is opened:
+
+```python
+doc = kakemono.Document("paper.pdf")
+content = doc.to_json("paper.json")
+### ... translate content ...
+vi = kakemono.Document("paper.pdf", content=content)
+vi.convert("hard-95"); vi.to_docx("paper.vi.docx"); vi.to_epub("paper.vi.epub")
+```
+
+Six outputs (friendly, hard-95, Word, Markdown, LaTeX, EPUB) with edited content, measured on 4 cores:
+
+| Paper | One function per output | One `Document` |
+| --- | --- | --- |
+| LIGO (16 pages) | 2.07 s | 1.07 s |
+| Attention (15 pages) | 2.48 s | 1.79 s |
+| GPT-4 (100 pages) | 6.66 s | 3.37 s |
+
+The module functions are unchanged and give the same output: each one now opens a `Document` and writes one output from it. A `Document` can be used from several threads at once, and the GIL is released while it works.
+
+##### `replace_image` next to the edited JSON
+
+When `content` is a path, a figure's `replace_image` given as a relative path is now read from the folder of that JSON file, as `--content` does on the command line. Before, the picture was not replaced, and a warning said so. When `content` is a dict or JSON text, relative paths are read from the current folder.
+
+## [0.15.3](https://github.com/iamcaominhtien/kakemono/compare/v0.15.2...v0.15.3) - 2026-11-23
+
+### Build and CI
+
+- Speed up the SonarQube coverage job
+
+The SonarQube job took about 16 minutes: 10 for the Rust coverage, 4 for the Python coverage. Two causes, both fixed here.
+
+##### Each real paper is analysed once
+
+Each test of `tests/real_papers.rs` loaded and analysed its paper again: the LIGO paper 12 times, Adam 6, GPT-4 at least 4. Under `cargo llvm-cov` the analysis is about 7 times slower than in `cargo test`, so this one file took 7 minutes of the job (419 s, against 62 s in the CI test job).
+
+The papers are now loaded and analysed once (a `OnceLock` per paper) and shared by every test; different papers are still analysed in parallel, and a test that changes the analysis works on a copy. Measured on 4 cores:
+
+| `tests/real_papers.rs` | Before | After |
+| --- | --- | --- |
+| with coverage (`cargo llvm-cov`) | 589 s | 85 s |
+| without (`cargo test`) | 63 s | 56 s |
+
+The coverage is the same (21 917 of 40 666 lines) and the snapshots are unchanged.
+
+##### The Python binding's build is cached
+
+`python/` is a separate crate with its own target directory, which `rust-cache` did not keep: the binding and all its dependencies were built from scratch on every run (4 min). `python/target` is now cached too; with the dependencies cached the release build takes about 1 minute. (A debug build was tried and is slower: 442 s from scratch and 82 s cached, against 238 s and 56 s, because of its debug info.) The first run after this change fills the new cache, so the gain shows from the second run.
+
+## [0.15.2](https://github.com/iamcaominhtien/kakemono/compare/v0.15.1...v0.15.2) - 2026-11-23
+
+### Fixed
+
+- *(hard-95)* Fit every page before printing ([#28](https://github.com/iamcaominhtien/kakemono/pull/28))
+
+A hard-95 page fits its text when it comes near the screen, so printing or saving as PDF from the browser laid out every page that had never been scrolled to without fitting it. Edited or translated text longer than the original then wrapped onto extra lines (headings above all) and overlapped the text below.
+
+The page now fits every page just before printing (`beforeprint`), so Ctrl+P / "Save as PDF" gives the same pages as the screen. An HTML file written by an earlier version can be fixed the same way by running `kakemonoFitAll()` in the browser console before printing.
+
+#### Release script
+
+`scripts/release.py` now checks what it is given: the PR number must be a positive integer, and `--body-file` must be a file in the repository or in a temporary directory (or `-` for the standard input). SonarCloud counted both as vulnerabilities (3 issues), which failed the quality gate of `main`. The SonarQube job now also runs the tests of the release script, which it measured at 0% coverage.
+
+## [0.15.1](https://github.com/iamcaominhtien/kakemono/compare/v0.15.0...v0.15.1) - 2026-11-22
+
+### Fixed
+
+- Keep a novel's chapters, drop caps and paragraphs whole
+
+Novels, as calibre and Word make them, now keep their chapters and their paragraphs. On the two books of the issues, every chapter is found and the paragraphs are no longer cut into lines.
+
+##### Paragraphs (#26)
+
+- **Paragraphs separated by space.** In a document that sets its paragraphs apart with a blank line (and often ragged right, with no first-line indent), prose set close together is one paragraph: a line that ends early no longer ends it. The document is recognised by the regular spacing of its paragraphs, which the varied gaps of a paper do not have.
+- **Across a page break**, an unfinished sentence that goes on in lowercase is one paragraph, even after a short last line.
+- **A stray blank line inside a sentence** ("… his class put" / "together, but …") no longer cuts it, when the part before it stops on a bare word; a line of verse ending in a comma, or a short item of a list, stays apart.
+- **Shouted lines in capitals** ("YOU WON'T BELIEVE / WHAT IT'S DOING!") stay one paragraph.
+- **JSON:** `layout.bbox` of a paragraph that goes on onto the next page is now the box of its lines on its first page, as documented, instead of a union of boxes from two pages.
+
+On *Harry Potter and the Sorcerer's Stone* (250 pages, made in Word), the paragraphs cut mid-sentence drop from 374 to 6, all of them items of a list or lines of a song; the paragraphs cut line by line on a page from 399 to 1.
+
+##### Chapter headings (#25)
+
+- **A chapter headed by its number alone** ("2" between "1 ROGER" and "3 ANDOVER") is a level-1 heading when it is styled like the numbered chapters and in sequence with them. A number out of sequence (a page number, a label) stays text.
+- **Chapter labels in words** ("CHAPTER TWO", "Chapter Twenty-One", "PART THREE") are level-1 headings, with the short line in capitals under them as their title. On the first page, such a label is no longer taken for the authors' names.
+- **A prologue headed like the chapters without a number**, marked by the chapter ornament under it, is a heading.
+- **The ornament under a chapter heading** ("◄○►", "* * *", "❦") joins the heading instead of being a paragraph.
+
+##### Drop caps (#25)
+
+- A drop cap set beside a single line, as calibre sets them, opens its paragraph: the rest of the line no longer comes out as a superscript (`<b>T</b><sup>rong…</sup>`), the paragraph is no longer cut where the lines beside the cap end, and a line of dialogue opening with a drop cap is no longer a heading.
+- No stray space after a drop cap ("T he letter").
+
+On *Những vụ án mạng ABC* (126 pages, calibre), all 35 chapters (8 of them headed by their number alone) and the prologue are level-1 headings, against 27 before; on *Harry Potter*, all 17 chapters, against none, and the book has no authors any more.
+
+Fixes #25
+Fixes #26
+
+## [0.15.0](https://github.com/iamcaominhtien/kakemono/compare/v0.14.0...v0.15.0) - 2026-11-22
+
+### Added
+
+- Replace a figure's picture and edit the text inside figures with --content
+
+Lets a tool that edits kakemono's JSON (utsushi, for translation) change what a figure shows, not only the text around it:
+
+- **`replace_image`** on a figure block in `--content`: a PNG, JPEG or SVG replaces the figure's picture in every output, fitted into its box; hard-95 draws it over the figure's box without its old text layer.
+- **`figure_lines`**: the runs of text inside a figure (labels, rotated runs), editable in `--content`; the figure is redrawn with the new text in place.
+- **`kakemono render-svg`**: rasterizes an SVG as kakemono does.
+- Stored SVG pictures are drawn as vectors where the format allows.
+- Fix: a Word document converted to PDF ignored `--content`.
+
+## [0.14.0](https://github.com/iamcaominhtien/kakemono/compare/v0.13.2...v0.14.0) - 2026-11-22
+
+### Added
+
+- [**breaking**] Added notes in the editable JSON and every output ([#23](https://github.com/iamcaominhtien/kakemono/pull/23))
+
+A `<note>…</note>` tag in the text of the editable JSON is a note added to the text when it is edited: a translator's note, an editor's or a reviewer's, for example. `--content` carries these added notes into every output that shows edited text, numbered in reading order:
+
+- **friendly and medium**: a raised number links to the note. The notes are listed in a small aside after their block (after the next block, for a heading), each with a link back.
+- **hard-95**: the raised number opens the note in a popup, and hovering shows it as a tooltip.
+- **Word**: real footnotes, in `word/footnotes.xml`.
+- **LaTeX**: `\footnote`, or `\footnotemark` with `\footnotetext` inside tables.
+- **Markdown**: `[^n1]` footnotes after the block.
+- **EPUB**: noteref links, and EPUB 3 popup footnotes at the end of each chapter, numbered again in each chapter.
+
+What a note may contain:
+
+- It may hold style tags and links, but no formula and no other note. An unclosed `<note>`, a formula or a note inside a note is read with warnings.
+- Its text is printed exactly as given.
+
+The tag is unrelated to a block of type `note`. The JSON written back gives the `<note>` tag again. `plain` and the chunks leave the notes out. Outputs without added notes are unchanged: the style and script for notes are added only to pages that have notes.
+
+**Breaking change:** `model::Span` has a new public field, `note: Option<Vec<Span>>`, which holds the content of an added note; the span itself is the note's call. Code that builds a `Span` with a struct literal must set it.
+
+## [0.13.2](https://github.com/iamcaominhtien/kakemono/compare/v0.13.1...v0.13.2) - 2026-11-22
+
+### Fixed
+
+- *(book)* No page under the cover while the book opens or closes ([#21](https://github.com/iamcaominhtien/kakemono/pull/21))
+
+Fixes #20.
+
+In the book view with two pages per spread, turning the cover showed the destination's left page at once, while the cover was still lying on the right. Now the left side shows only the desk until the leaf lands, both when the book opens and when it closes.
+
+- `begin()` changes in two ways when a turn starts from the closed cover:
+  - it hides the destination's `.verso`;
+  - it clips `.bk-window` to the right of the spine, measured from the `.recto` box so the right page's first letters are not cut.
+- `end()` clears the clip.
+
+##### Releases: the merged commit of a PR is the release
+
+Until now, the Release workflow committed `chore: release vX.Y.Z` to `main` after each merge and tagged that commit, so a GitHub release pointed at a bot commit, not at the merged PR. Now each PR carries its own version (`Cargo.toml`, `Cargo.lock`) and its own `CHANGELOG.md` entry.
+
+- **`scripts/release.py bump --pr <N>`** writes both:
+  - the version comes from the last tag and the PR title: `feat` gives a minor release, a breaking change a major one (minor while 0.x), and anything else a patch;
+  - the entry is the title followed by the description, cleaned as `release-plz.toml` cleaned it.
+- **`.github/workflows/pr.yml`** (new) checks the title, the version and the entry.
+- **On merge,** the Release workflow tags the pushed commit and creates the release from that entry. It no longer commits to `main`.
+- `release-plz.toml` is removed.
+
 ## [0.13.1](https://github.com/iamcaominhtien/kakemono/compare/v0.13.0...v0.13.1) - 2026-11-20
 
 ### Added

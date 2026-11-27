@@ -111,7 +111,8 @@ const DEFAULT_CONFIG: LinesConfig = LinesConfig {
     ruby_over_kanji_min_ratio: 0.8,
     fraction_bar_slack_em: 0.3,
     drop_cap_min_size_ratio: 2.0,
-    drop_cap_min_lines_count: 2,
+    drop_cap_min_lines_count: 1,
+    drop_cap_line_min_glyphs_count: 8,
     drop_cap_max_gap_em: 0.5,
     drop_cap_baseline_slack_em: 0.2,
     fraction_raised_min_rise_em: 0.4,
@@ -372,8 +373,16 @@ pub struct LinesConfig {
     /// A drop cap is at least this many times as large as the text beside
     /// it ...
     pub drop_cap_min_size_ratio: f32,
-    /// ... with at least this many lines of that text beside it ...
+    /// ... with at least this many lines of that text beside it (a cap
+    /// beside a single line, as in e-books made by calibre, must be a
+    /// capital reaching below that line's baseline, have nothing just left
+    /// of it, and the
+    /// line must hold [`LinesConfig::drop_cap_line_min_glyphs_count`]
+    /// glyphs) ...
     pub drop_cap_min_lines_count: usize,
+    /// Fewest glyphs of the single line beside a drop cap: a line of text,
+    /// not the scripts of a letter in a formula.
+    pub drop_cap_line_min_glyphs_count: usize,
     /// ... starting at most this many of its font sizes right of it.
     pub drop_cap_max_gap_em: f32,
     /// Baselines (and sizes, and the place of a quote before the letter)
@@ -813,7 +822,32 @@ fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig)
             .collect();
         beside.sort_by(|a, b| a.0.total_cmp(&b.0));
         beside.dedup_by(|a, b| (a.0 - b.0).abs() <= cfg.drop_cap_baseline_slack_em * b.1);
-        if beside.len() >= cfg.drop_cap_min_lines_count {
+        // A cap beside a single line is a capital that reaches below it
+        // (one standing on the line's baseline is merely a large first
+        // letter of that line), that line is a line of text, and nothing
+        // stands just left of the cap: it opens a paragraph, where a letter
+        // in a formula over its scripts ("∈ R", "√v̂") does not.
+        let drops = beside.len() >= 2
+            || beside.first().is_some_and(|&(y, size)| {
+                let slack = cfg.drop_cap_baseline_slack_em * size;
+                let on_line = glyphs
+                    .iter()
+                    .filter(|glyph| (glyph.y - y).abs() <= slack && glyph.x0 >= cap.x0)
+                    .count();
+                // The opening quote of the cap ("“G") is part of it.
+                let left = glyphs.iter().any(|glyph| {
+                    !is_cap_quote(glyph, cap, cfg)
+                        && glyph.x1 <= cap.x0
+                        && cap.x0 - glyph.x1 <= cap.size
+                        && glyph.y > cap.ink.y0
+                        && glyph.ink.y0 < cap.y
+                });
+                cap.y > y + slack
+                    && cap.text.chars().all(char::is_uppercase)
+                    && on_line >= cfg.drop_cap_line_min_glyphs_count
+                    && !left
+            });
+        if beside.len() >= cfg.drop_cap_min_lines_count && drops {
             found.push((idx, beside[0].0));
         }
     }
@@ -821,12 +855,7 @@ fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig)
     let mut taken: Vec<(usize, f32)> = Vec::new();
     for &(idx, baseline) in &found {
         let cap = &glyphs[idx];
-        let quote = glyphs.iter().position(|glyph| {
-            (glyph.size - cap.size).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
-                && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
-                && (cap.x0 - glyph.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
-                && glyph.text.chars().all(|ch| "\"'\u{2018}\u{201C}\u{AB}".contains(ch))
-        });
+        let quote = glyphs.iter().position(|glyph| is_cap_quote(glyph, cap, cfg));
         if let Some(quote) = quote {
             taken.push((quote, baseline));
         }
@@ -837,7 +866,10 @@ fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig)
     taken.dedup_by_key(|&mut (idx, _)| idx);
     let spaced = |cap: &LineGlyph| {
         raw.glyphs.iter().any(|glyph| {
+            // Drawn in the cap's own size: not a word space of the line
+            // under the cap, which may start right where the cap ends.
             glyph.text == " "
+                && (glyph.size - cap.size).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
                 && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
                 && (glyph.x - cap.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
         })
@@ -852,6 +884,15 @@ fn take_drop_caps(raw: &RawPage, glyphs: &mut Vec<LineGlyph>, cfg: &LinesConfig)
         .collect();
     caps.sort_by(|a, b| b.0.x0.total_cmp(&a.0.x0));
     caps
+}
+
+/// Whether `glyph` is an opening quote set right before the drop cap
+/// `cap`, in its size and on its baseline ("“G").
+fn is_cap_quote(glyph: &LineGlyph, cap: &LineGlyph, cfg: &LinesConfig) -> bool {
+    (glyph.size - cap.size).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+        && (glyph.y - cap.y).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+        && (cap.x0 - glyph.x1).abs() <= cfg.drop_cap_baseline_slack_em * cap.size
+        && glyph.text.chars().all(|ch| "\"'\u{2018}\u{201C}\u{AB}".contains(ch))
 }
 
 /// Puts a drop cap taken out by [`take_drop_caps`] at the start of the line
@@ -2685,6 +2726,49 @@ mod tests {
                 .iter()
                 .all(|line| line.glyphs.iter().all(|glyph| glyph.script == 0))
         );
+    }
+
+    #[test]
+    fn drop_cap_reaching_under_a_single_line_starts_it() {
+        // As calibre sets it: a 24 pt "T" whose baseline is 6 pt under the
+        // only line beside it; the next line runs under the cap.
+        let mut glyphs = vec![sized("T", 10.0, 106.0, 24.0)];
+        glyphs.extend(words("he letter came on a grey morning", 22.0, 100.0, 10.0));
+        glyphs.extend(words("unsurprisingly it was addressed to me", 10.0, 114.0, 10.0));
+        let (lines, _) = build_lines(&page(glyphs), &LinesConfig::default());
+        let texts: Vec<String> = lines.iter().map(Line::text).collect();
+        assert_eq!(
+            texts,
+            [
+                "The letter came on a grey morning",
+                "unsurprisingly it was addressed to me"
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.glyphs.iter().all(|glyph| glyph.script == 0))
+        );
+    }
+
+    #[test]
+    fn letter_of_a_formula_over_its_scripts_is_no_drop_cap() {
+        // "∈ R" with tiny scripts beside the "R", and a lowercase "v" over
+        // the scripts of a fraction: neither opens a paragraph, so the
+        // small glyphs stay its scripts.
+        let mut glyphs = words("x \u{2208}", 10.0, 106.0, 12.0);
+        glyphs.push(sized("R", 32.0, 106.0, 12.0));
+        glyphs.extend(words("model dk model dv", 38.0, 102.0, 5.0));
+        let mut fraction = vec![sized("v", 10.0, 106.0, 12.0)];
+        fraction.extend(words("t,i beta one t", 16.0, 102.0, 5.0));
+        for glyphs in [glyphs, fraction] {
+            let (lines, _) = build_lines(&page(glyphs), &LinesConfig::default());
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.glyphs.iter().any(|glyph| glyph.script != 0))
+            );
+        }
     }
 
     #[test]

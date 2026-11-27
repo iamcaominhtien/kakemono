@@ -245,7 +245,9 @@ const WIDE_FROM: u32 = 0x2E80;
 fn content_widths_pt(table: &Table) -> Vec<f32> {
     let mut letters = vec![MIN_COL_LETTERS; table.n_cols];
     for cell in table.rows.iter().flatten().filter(|cell| cell.colspan <= 1) {
-        let Some(width) = letters.get_mut(cell.col) else { continue };
+        let Some(width) = letters.get_mut(cell.col) else {
+            continue;
+        };
         let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
         let longest = text
             .lines()

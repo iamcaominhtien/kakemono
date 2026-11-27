@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF, a Word document or an Excel workbook into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF, a Word document, an Excel workbook, an EPUB book or a web page into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -13,10 +13,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
 use kakemono::config::{ExcelConfig, WorkbookPdfConfig, WorkbookPdfStyle};
 use kakemono::model::{Block, BlockKind, Loc};
-use kakemono::source::arxiv;
+use kakemono::source::{arxiv, web};
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
-    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter,
+    MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -67,7 +67,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv) and Word documents and Excel workbooks into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
+    about = "Convert scientific-paper PDFs (arXiv), Word documents, Excel workbooks and EPUB books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -79,7 +79,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (a local file, an arXiv id or an arXiv URL), a Word document (.docx, .doc) or an Excel workbook (.xlsx) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an Excel workbook (.xlsx), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -91,7 +91,7 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF, Word (.docx, .doc) or Excel (.xlsx) file, arXiv id or arXiv URL
+        /// Local PDF, Word (.docx, .doc), Excel (.xlsx) or EPUB file, arXiv id or arXiv URL
         input: String,
         /// Header rows of every table of a workbook (default: found from the cells); only for .xlsx
         #[arg(long, value_name = "N")]
@@ -115,6 +115,18 @@ enum Command {
         /// before its MathML, and give every reading whatever its confidence
         #[arg(long, hide = true)]
         scores: bool,
+    },
+    /// Draw an SVG as a PNG, the way kakemono draws the SVG pictures it is
+    /// given (fonts, pictures named relative to the SVG).
+    RenderSvg {
+        /// The SVG file
+        input: PathBuf,
+        /// The PNG file to write
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Pixels per SVG unit
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
     },
 }
 
@@ -156,13 +168,16 @@ enum FormatArg {
     /// LaTeX (.tex) for pdfLaTeX, XeLaTeX or LuaLaTeX: tables, LaTeX formulas, pictures in an image folder
     #[value(name = "tex", alias = "latex")]
     Latex,
+    /// Typst (.typ): an article, or a printed book (chapters on right-hand pages, running heads, footnotes); compile it with `typst compile`
+    #[value(name = "typst", alias = "typ")]
+    Typst,
     /// An EPUB 3 book (.epub) for e-readers: reflowing text, MathML formulas, tables, contents
     Epub,
     /// The content as JSON (.json): blocks in reading order, text with markup, LaTeX formulas, pictures in an image folder; can be edited and applied back with --content
     Json,
     /// Chunks for retrieval (.jsonl): pieces of at most --chunk-tokens tokens that follow the sections, each headed by its section path, one JSON object per line
     Chunks,
-    /// A PDF (.pdf): a Word document laid out in pages as Word lays it out, or a workbook laid out as a document
+    /// A PDF (.pdf): a Word document or an EPUB book laid out in pages as Word lays it out, or a workbook printed as Excel prints it
     Pdf,
 }
 
@@ -173,6 +188,17 @@ enum ImagesArg {
     Inline,
     /// Write images to a folder next to the output file (Word documents keep them embedded too; always for LaTeX)
     Files,
+}
+
+/// Values of `--layout`; the doc comments are the help texts.
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum LayoutArg {
+    /// A book when the document has chapters and nothing of a paper (abstract, references), an article otherwise
+    Auto,
+    /// One column on A4 pages
+    Article,
+    /// A printed book on A5 pages: a title page, chapters on right-hand pages, mirrored margins, running heads
+    Book,
 }
 
 /// Values of `--fonts`; the doc comments are the help texts.
@@ -268,7 +294,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF, Word (.docx, .doc) or Excel (.xlsx) file, arXiv id (1706.03762) or arXiv URL
+    /// Local PDF, Word (.docx, .doc), Excel (.xlsx), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
     input: String,
     /// Header rows of every table of a workbook, 0 for none (default: found from the cells); only for .xlsx, ignored for other inputs
     #[arg(long, value_name = "N")]
@@ -279,13 +305,13 @@ struct ConvertArgs {
     /// Produce all four modes
     #[arg(long, conflicts_with = "mode")]
     all: bool,
-    /// Output format (default: from the extension of --output, .docx, .md, .tex, .epub, .json or .jsonl; html otherwise); --mode applies to html and md only
+    /// Output format (default: from the extension of --output, .docx, .md, .tex, .typ, .epub, .json or .jsonl; html otherwise); --mode applies to html and md only
     #[arg(short, long, value_enum)]
     format: Option<FormatArg>,
-    /// Output HTML, .docx, .md, .tex, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
+    /// Output HTML, .docx, .md, .tex, .typ, .epub, .json or .jsonl file, or a directory (required to be a directory with --all)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX and JSON; EPUB books always hold theirs]
+    /// How images are stored [default: inline for HTML and Word, files for Markdown, LaTeX, Typst and JSON; EPUB books always hold theirs]
     #[arg(long, value_enum)]
     images: Option<ImagesArg>,
     /// Folder of the image files, relative to the output file [default: <name>_assets]; with --all, one subfolder per mode
@@ -306,10 +332,13 @@ struct ConvertArgs {
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
+    /// Layout of the Typst output (it can also be changed at the top of the .typ file)
+    #[arg(long, value_enum, default_value = "auto")]
+    layout: LayoutArg,
     /// Fonts of friendly mode, and of the formulas of medium and friendly modes
     #[arg(long, value_enum, default_value = "embed")]
     fonts: FontsArg,
-    /// How medium and friendly modes (and Word, Markdown, LaTeX and EPUB documents) show displayed formulas
+    /// How medium and friendly modes (and Word, Markdown, LaTeX, Typst and EPUB documents) show displayed formulas
     #[arg(long, value_enum, default_value = "mathml")]
     equations: EquationsArg,
     /// Also write the structured document as JSON, with every field of the analysis (to edit the text and apply it back, use --format json)
@@ -327,6 +356,9 @@ struct ConvertArgs {
     /// Number of worker threads: 0 = one per CPU core, 1 = no parallelism
     #[arg(short, long, default_value_t = 0, value_name = "N")]
     jobs: usize,
+    /// Read a saved web page (an .html file) as the page at this address: its links point there, and its pictures are fetched from there
+    #[arg(long, value_name = "URL")]
+    base_url: Option<String>,
 }
 
 /// Where the files of one `convert` run go.
@@ -416,15 +448,30 @@ fn run() -> Result<()> {
             }
         }
         Command::Formula { images, scores } => formula(&images, scores),
+        Command::RenderSvg { input, output, scale } => render_svg(&input, &output, scale),
     }
 }
 
-/// Loads the PDF, Word document or workbook named by `input` (an existing file, else an arXiv id or
-/// URL) and returns it with the stem for output file names.
+/// Draws the SVG file `input` as the PNG file `output` at `scale` pixels
+/// per SVG unit.
 ///
 /// # Errors
-/// When the file cannot be read, the download fails, the data is not a PDF,
-/// or `input` is neither a file nor an arXiv id.
+/// When `input` cannot be read or drawn, or `output` cannot be written.
+fn render_svg(input: &Path, output: &Path, scale: f32) -> Result<()> {
+    let svg = std::fs::read_to_string(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let png = kakemono::backend::svg_to_png_in(&svg, scale, input.parent())
+        .map_err(|why| anyhow::anyhow!("cannot read {} as SVG: {why}", input.display()))?;
+    std::fs::write(output, png).with_context(|| format!("writing {}", output.display()))
+}
+
+/// Loads the document named by `input` (an existing file, else an arXiv
+/// id or URL, else the address of a web page or document) and returns it
+/// with the stem for output file names.
+///
+/// # Errors
+/// When the file cannot be read, the download fails, the data is not a
+/// document that can be read, or `input` is neither a file, an arXiv id
+/// nor an address.
 fn load(input: &str, header_rows: Option<usize>) -> Result<(Paper, String)> {
     let excel = ExcelConfig {
         header_rows,
@@ -432,10 +479,9 @@ fn load(input: &str, header_rows: Option<usize>) -> Result<(Paper, String)> {
     };
     let path = Path::new(input);
     if path.is_file() {
-        let data = std::fs::read(path).with_context(|| format!("reading {input}"))?;
         let stem = path
             .file_stem()
-            .and_then(|stem| stem.to_str())
+            .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("paper")
             .to_string();
         let name = path
@@ -443,7 +489,7 @@ fn load(input: &str, header_rows: Option<usize>) -> Result<(Paper, String)> {
             .and_then(|name| name.to_str())
             .unwrap_or(input)
             .to_string();
-        return Ok((Paper::from_bytes_with(data, &excel)?.with_source(name), stem));
+        return Ok((Paper::from_path_with(path, &excel)?.with_source(name), stem));
     }
     if let Some(id) = arxiv::parse_id(input) {
         eprintln!("fetching arXiv:{id} ...");
@@ -454,7 +500,92 @@ fn load(input: &str, header_rows: Option<usize>) -> Result<(Paper, String)> {
             stem,
         ));
     }
-    bail!("'{input}' is neither an existing file nor an arXiv id/URL")
+    if web::is_url(input) {
+        eprintln!("fetching {input} ...");
+        return Ok((Paper::from_url(input)?, url_stem(input)));
+    }
+    bail!("'{input}' is neither an existing file, an arXiv id/URL nor an http(s) address")
+}
+
+/// Loads the saved web page `input` as the page at the address `url`, with
+/// the stem for output file names.
+///
+/// # Errors
+/// When the file cannot be read, is not a web page, or `url` is not an
+/// http(s) address.
+fn load_saved_page(input: &str, url: &str) -> Result<(Paper, String)> {
+    if !web::is_url(url) {
+        bail!("--base-url: '{url}' is not an http(s) address");
+    }
+    let path = Path::new(input);
+    let data = std::fs::read(path).with_context(|| format!("reading {input}"))?;
+    if !kakemono::html::is_html(&data) {
+        bail!("--base-url applies to a web page; {input} is not one");
+    }
+    let stem = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("page")
+        .to_string();
+    Ok((Paper::from_page_at(&data, url)?, stem))
+}
+
+/// The stem of output file names for the address `url`: its last path
+/// segment without its extension (`Rust_(programming_language)` →
+/// `Rust_programming_language`), else its host.
+fn url_stem(url: &str) -> String {
+    let parsed = url::Url::parse(url.trim()).ok();
+    let segment = parsed
+        .as_ref()
+        .and_then(|url| {
+            url.path_segments()?
+                .rev()
+                .find(|segment| !segment.is_empty())
+                .map(str::to_string)
+        })
+        .map(|segment| {
+            let decoded = percent_decode(&segment);
+            match decoded.rsplit_once('.') {
+                Some((stem, ext)) if !stem.is_empty() && ext.len() <= 5 => stem.to_string(),
+                _ => decoded,
+            }
+        });
+    let name = segment
+        .or_else(|| parsed.as_ref().and_then(|url| url.host_str().map(str::to_string)))
+        .unwrap_or_default();
+    let mut stem = String::new();
+    for ch in name.chars() {
+        let ch = if ch.is_alphanumeric() || matches!(ch, '-' | '.') {
+            ch
+        } else {
+            '_'
+        };
+        if !(ch == '_' && stem.ends_with('_')) {
+            stem.push(ch);
+        }
+    }
+    let stem = stem.trim_matches(['_', '.']).to_string();
+    if stem.is_empty() { "page".to_string() } else { stem }
+}
+
+/// `text` with its `%XX` escapes decoded (as UTF-8, invalid bytes
+/// replaced).
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(byte) = text.get(i + 1..i + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        {
+            out.push(byte);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Writes `data` to `path`, creating the parent directories first.
@@ -497,6 +628,12 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     if format == FormatArg::Latex && args.images == Some(ImagesArg::Inline) {
         bail!("LaTeX cannot embed pictures: --images inline cannot be used with --format tex");
     }
+    if format == FormatArg::Typst && args.images == Some(ImagesArg::Inline) {
+        bail!("Typst cannot embed pictures in its source: --images inline cannot be used with --format typst");
+    }
+    if format != FormatArg::Typst && args.layout != LayoutArg::Auto {
+        bail!("--layout chooses the layout of the Typst output: it needs --format typst (or a .typ output)");
+    }
     if format == FormatArg::Epub && (args.images == Some(ImagesArg::Files) || args.image_dir.is_some()) {
         bail!("an EPUB book holds its pictures: --images files and --image-dir cannot be used with --format epub");
     }
@@ -508,17 +645,29 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     Ok(format)
 }
 
-/// Writes a Word document or a workbook laid out in pages as a PDF.
+/// Writes a Word document laid out in pages as a PDF, or a workbook printed
+/// as Excel prints it (or laid out as a document), with the text and
+/// pictures of `--content` when it is given.
 ///
 /// # Errors
 /// When the input is a PDF, or the file cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
-    let data = paper.to_pdf_with(&WorkbookPdfConfig {
-        style: args.pdf_style.into(),
-        ..WorkbookPdfConfig::default()
-    })?;
+    let data = match &args.content {
+        // The layout engine reads a Word file: the edited text and pictures
+        // go into a Word document first, which is then laid out.
+        Some(content) => {
+            let mut analysis = paper.analyze();
+            apply_content(paper, &mut analysis, content)?;
+            let docx = paper.to_docx(&analysis, &kakemono::DocxOptions::default());
+            Paper::from_bytes(docx)?.to_pdf()?
+        }
+        None => paper.to_pdf_with(&WorkbookPdfConfig {
+            style: args.pdf_style.into(),
+            ..WorkbookPdfConfig::default()
+        })?,
+    };
     write_file(&file, &data)?;
     eprintln!(
         "{:<8} -> {} ({:.1} MB, {:.2}s)",
@@ -539,7 +688,10 @@ fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
 /// LaTeX, the input cannot be loaded or an output file cannot be written.
 fn convert(args: ConvertArgs) -> Result<()> {
     let format = check_args(&args)?;
-    let (paper, stem) = load(&args.input, args.header_rows)?;
+    let (paper, stem) = match &args.base_url {
+        Some(url) => load_saved_page(&args.input, url)?,
+        None => load(&args.input, args.header_rows)?,
+    };
     let paper = paper.with_png_compression(args.png_compression.into());
     if format == FormatArg::Pdf {
         return write_pdf(&paper, &args, &stem);
@@ -575,6 +727,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         FormatArg::Docx => write_docx(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "docx"))?,
         FormatArg::Markdown => write_markdown(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "md"))?,
         FormatArg::Latex => write_latex(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "tex"))?,
+        FormatArg::Typst => write_typst(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "typ"))?,
         FormatArg::Epub => write_epub(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "epub"))?,
         FormatArg::Json => write_json(&paper, &analysis, &args, jobs, &paths.single_file(&stem, "json"))?,
         FormatArg::Chunks => write_chunks(&paper, &analysis, &args, &paths.single_file(&stem, "chunks.jsonl"))?,
@@ -593,7 +746,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
 
 /// The output format: `--format`, or Word when `--output` names a `.docx`
 /// file, Markdown when it names a `.md` file, LaTeX when it names a `.tex`
-/// file, EPUB when it names an `.epub` file, JSON when it names a `.json`
+/// file, Typst when it names a `.typ` file, EPUB when it names an `.epub` file, JSON when it names a `.json`
 /// file, HTML otherwise.
 fn output_format(args: &ConvertArgs) -> FormatArg {
     args.format.unwrap_or_else(|| {
@@ -608,6 +761,7 @@ fn output_format(args: &ConvertArgs) -> FormatArg {
             "docx" => FormatArg::Docx,
             "md" | "markdown" => FormatArg::Markdown,
             "tex" | "latex" => FormatArg::Latex,
+            "typ" => FormatArg::Typst,
             "epub" => FormatArg::Epub,
             "json" => FormatArg::Json,
             "jsonl" => FormatArg::Chunks,
@@ -765,6 +919,37 @@ fn write_latex(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usi
     Ok(())
 }
 
+/// Writes `analysis` as Typst to `file`, with the image files next to it,
+/// and reports the result on stderr.
+///
+/// # Errors
+/// When a file cannot be written.
+fn write_typst(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, jobs: usize, file: &Path) -> Result<()> {
+    let opts = TypstOptions {
+        asset_dir: image_dir(args, file, None),
+        scale: args.scale,
+        jobs,
+        equations: equations(args.equations),
+        layout: match args.layout {
+            LayoutArg::Auto => None,
+            LayoutArg::Article => Some(TypstLayout::Article),
+            LayoutArg::Book => Some(TypstLayout::Book),
+        },
+    };
+    let started = Instant::now();
+    let out = paper.to_typst(analysis, &opts);
+    write_file(file, out.typst.as_bytes())?;
+    let report = write_images(file, &out.files)?;
+    eprintln!(
+        "{:<8} -> {} ({:.1} MB{report}, {:.2}s)",
+        "typst",
+        file.display(),
+        out.typst.len() as f64 / BYTES_PER_MB,
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
 /// Writes `analysis` as JSON to `file`, with the image files next to it
 /// unless `--images inline`, and reports the result on stderr.
 ///
@@ -830,8 +1015,9 @@ fn write_chunks(paper: &Paper, analysis: &Analysis, args: &ConvertArgs, file: &P
 /// [`Paper::apply_content`]).
 fn apply_content(paper: &Paper, analysis: &mut Analysis, path: &Path) -> Result<()> {
     let json = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let base = path.parent().unwrap_or(Path::new("."));
     let report = paper
-        .apply_content(analysis, &json)
+        .apply_content_in(analysis, &json, base)
         .with_context(|| format!("applying {}", path.display()))?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
@@ -1152,8 +1338,23 @@ fn zone_label(loc: &Loc) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::utc_timestamp;
+    use super::{url_stem, utc_timestamp};
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn addresses_give_file_names() {
+        assert_eq!(
+            url_stem("https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            "Rust_programming_language"
+        );
+        assert_eq!(url_stem("https://vi.wikipedia.org/wiki/H%C3%A0_N%E1%BB%99i"), "Hà_Nội");
+        assert_eq!(
+            url_stem("https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html"),
+            "ch04-01-what-is-ownership"
+        );
+        assert_eq!(url_stem("https://example.org/"), "example.org");
+        assert_eq!(url_stem("https://example.org/a/b/?q=1"), "b");
+    }
 
     #[test]
     fn timestamps_are_utc_dates() {

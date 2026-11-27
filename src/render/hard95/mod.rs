@@ -32,6 +32,12 @@ use std::collections::HashSet;
 const CSS: &str = include_str!("hard95.css");
 /// Script of the mode (zoom, line widths, reflow), embedded in the page.
 const JS: &str = include_str!("hard95.js");
+/// Style of the calls of added notes and of their popup, embedded
+/// only in a page that has notes.
+const NOTES_CSS: &str = include_str!("notes.css");
+/// Script that shows an added note in a popup when its call is
+/// tapped, embedded only in a page that has notes.
+const NOTES_JS: &str = include_str!("notes.js");
 
 /// Latin Modern, the fonts of LaTeX, for papers set in Computer Modern:
 /// the text in the page then has the letter shapes and almost exactly the
@@ -319,7 +325,9 @@ impl PageLayer<'_> {
     /// Adds the content of a float that starts on this page: a table, or
     /// its text placed line by line.
     fn float_content(&mut self, block: &Block) {
-        if !block.inner_lines.first().is_some_and(|line| line.page == self.page_idx) {
+        if !block.inner_lines.first().is_some_and(|line| line.page == self.page_idx)
+            || replaced_picture(block).is_some()
+        {
             return;
         }
         match block.table.as_ref().filter(|table| table_fits(table)) {
@@ -369,10 +377,20 @@ impl PageLayer<'_> {
     /// drawn as visible text.
     fn rotated(&mut self, doc: &Document, rotated: &[RotatedRun]) {
         let figures = figure_regions(doc, self.page_idx);
+        let replaced: Vec<Rect> = doc
+            .blocks
+            .iter()
+            .filter_map(replaced_picture)
+            .filter(|spec| spec.page == self.page_idx)
+            .map(|spec| spec.rect)
+            .collect();
         let mut visible = String::new();
         let mut in_figure = String::new();
         for run in rotated {
             let html = rotated_run_html(run, self.units);
+            if replaced.iter().any(|rect| run_in_region(run, rect)) {
+                continue;
+            }
             if figures.iter().any(|rect| run_in_region(run, rect)) {
                 in_figure.push_str(&html);
             } else {
@@ -395,6 +413,28 @@ impl PageLayer<'_> {
     }
 }
 
+/// The picture of a figure of the PDF replaced with `replace_image` (a
+/// stored picture in place of its region of the page), if `block` is one.
+fn replaced_picture(block: &Block) -> Option<&ImageSpec> {
+    match &block.kind {
+        BlockKind::Figure { image: Some(spec), .. } if spec.embedded.is_some() => Some(spec),
+        _ => None,
+    }
+}
+
+/// A replaced figure's picture, in a white box over its region of the page
+/// (which still shows the original figure), fitted without stretching.
+fn replaced_figure(id: usize, spec: &ImageSpec, images: &mut ImageStore<'_>, units: &Units) -> String {
+    format!(
+        "<div class=\"b\" data-kind=\"figure-picture\" data-block=\"{id}\" style=\"position:absolute;left:{};top:{};width:{};height:{};background:#fff\"><img src=\"{}\" alt=\"\" style=\"display:block;width:100%;height:100%;object-fit:contain\"></div>\n",
+        units.x(spec.rect.x0),
+        units.y(spec.rect.y0),
+        units.x(spec.rect.width()),
+        units.y(spec.rect.height()),
+        images.region(spec, "fig"),
+    )
+}
+
 /// The picture regions of the figures on page `page_idx` (tables are not
 /// included: their text is drawn as HTML).
 fn figure_regions(doc: &Document, page_idx: usize) -> Vec<Rect> {
@@ -410,7 +450,7 @@ fn figure_regions(doc: &Document, page_idx: usize) -> Vec<Rect> {
 
 /// Whether the middle of a rotated run lies inside `rect` (grown by
 /// [`FIGURE_REGION_MARGIN_PT`]).
-fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
+pub(crate) fn run_in_region(run: &RotatedRun, rect: &Rect) -> bool {
     let (sin, cos) = run.angle.to_radians().sin_cos();
     let half = run.length * 0.5;
     // The middle of the baseline, moved up by about the height of the
@@ -429,6 +469,7 @@ fn rotated_run_html(run: &RotatedRun, units: &Units) -> String {
         href: None,
         color: run.color,
         math: None,
+        note: None,
     };
     format!(
         "<span class=\"rt\" style=\"left:{};top:{};font-size:{};transform:rotate({:.2}deg)\" data-w=\"{}\">{}</span>",
@@ -445,7 +486,7 @@ fn rotated_run_html(run: &RotatedRun, units: &Units) -> String {
 pub(crate) struct Hard95;
 
 impl Renderer for Hard95 {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, _input: InputFormat) -> String {
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
         render(analysis, images)
     }
 }
@@ -480,6 +521,11 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
     } else {
         String::new()
     };
+    let (notes_css, notes_js) = if pages.contains("<sup class=\"an\"") {
+        (NOTES_CSS, format!("<script>\n{NOTES_JS}</script>\n"))
+    } else {
+        ("", String::new())
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -489,7 +535,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 <meta name="generator" content="kakemono (hard-95)">
 <title>{title}</title>
 <style>
-{fonts}{CSS}</style>
+{fonts}{CSS}{notes_css}</style>
 </head>
 <body class="hard95 fit{cm}{tm}">
 <div class="topbar"><span class="t">{title}</span>{source}<span>{n} pages</span><button id="zout" type="button" aria-label="Zoom out">−</button><button id="zfit" type="button">Fit</button><button id="zin" type="button" aria-label="Zoom in">+</button></div>
@@ -497,7 +543,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 {pages}</main>
 <script>
 {JS}</script>
-</body>
+{notes_js}</body>
 </html>
 "#,
         title = esc(&title),
@@ -530,7 +576,14 @@ fn page_html(analysis: &Analysis, page_idx: usize, page: &PageInfo, images: &mut
     if let Some(rotated) = analysis.rotated.get(page_idx) {
         layer.rotated(doc, rotated);
     }
-    let PageLayer { html: layer, drawn, .. } = layer;
+    let PageLayer {
+        html: mut layer, drawn, ..
+    } = layer;
+    for block in &doc.blocks {
+        if let Some(spec) = replaced_picture(block).filter(|spec| spec.page == page_idx) {
+            layer.push_str(&replaced_figure(block.id, spec, images, &units));
+        }
+    }
 
     let bg = format!(
         "<img class=\"bg\" src=\"{}\" alt=\"\" width=\"{}\" height=\"{}\" loading=\"lazy\" decoding=\"async\">",
@@ -595,6 +648,9 @@ fn span_html(span: &Span, text: &str, gaps: &mut std::slice::Iter<'_, f32>) -> S
 /// The HTML `inner` of a span's text wrapped in the elements of its style,
 /// colour and link.
 fn wrap_span(span: &Span, inner: String) -> String {
+    if let Some(note) = &span.note {
+        return note_call(span, note);
+    }
     let mut out = inner;
     let mut classes: Vec<&str> = Vec::new();
     if span.style & MONO != 0 {
@@ -731,6 +787,20 @@ fn flow_block(doc: &Document, block: &Block, page_idx: usize, units: &Units) -> 
         flow_lines(block, &frags, size, &placement.shifts, style.align == "justify", units)
     };
     fragment_boxes(block, &frags, page_idx, &style, &placement.extra, &inner, edited, units)
+}
+
+/// The call of an added note: its number (the text of the numbered
+/// call), raised, with the note as its tooltip and, hidden, as the content
+/// of the popup that `notes.js` opens when the call is tapped. The page has
+/// no room for the note itself.
+fn note_call(call: &Span, note: &[Span]) -> String {
+    let plain: String = note.iter().map(|span| span.text.as_str()).collect();
+    let content: String = note.iter().map(|span| wrap_span(span, esc(&span.text))).collect();
+    format!(
+        "<sup class=\"an\" tabindex=\"0\" role=\"button\" title=\"{}\">{}<span class=\"an-c\" hidden>{content}</span></sup>",
+        esc(plain.trim()),
+        esc(&call.text)
+    )
 }
 
 /// Whether the text of `block` was edited after the analysis (see
@@ -1092,6 +1162,7 @@ fn equation(block: &Block, units: &Units) -> String {
             href: None,
             color: run.color,
             math: None,
+            note: None,
         };
         let mut html = span_html(&span, &run.text, &mut [].iter());
         // A tall glyph (a big delimiter, an integral sign) stays in the page

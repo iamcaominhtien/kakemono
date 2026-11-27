@@ -19,7 +19,7 @@ const LINE_BASELINE_EM: f32 = 0.8;
 pub(crate) struct Hard;
 
 impl Renderer for Hard {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, _input: InputFormat) -> String {
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
         render(analysis, images)
     }
 }

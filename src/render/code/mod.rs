@@ -79,7 +79,17 @@ pub(crate) fn is_code_paragraph(block: &Block) -> bool {
 /// the next) is indented column by column, each part from its own left
 /// edge: a part starts where a line lies wholly right (or left) of all the
 /// lines of the part before it.
+///
+/// A listing of a document without pages (Word, EPUB) has no lines: its
+/// rows are its lines, with their own indentation.
 pub(crate) fn listing_lines(blocks: &[&Block]) -> Vec<String> {
+    if blocks.iter().all(|block| block.lines.is_empty()) {
+        return blocks
+            .iter()
+            .flat_map(|block| &block.rows)
+            .map(|row| row.iter().map(|span| span.text.as_str()).collect())
+            .collect();
+    }
     let pitch = line_pitch(blocks);
     let mut parts: Vec<Vec<(&Line, &HLine)>> = Vec::new();
     // The left and right ends of the current part's lines on their page.

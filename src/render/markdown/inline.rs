@@ -6,6 +6,8 @@ use crate::model::{BOLD, ITALIC, MONO, SUB, SUP, Span};
 use crate::render::esc;
 use crate::render::inline_math::{Piece, has_math, split};
 use crate::render::latex::math::latex;
+use crate::render::notes::{Segment, segments};
+use crate::render::runs::trim_breaks;
 use std::collections::HashSet;
 
 /// Characters escaped with a backslash anywhere in running text: those that
@@ -47,7 +49,7 @@ impl Inline<'_> {
     /// formulas as `\vert`.
     fn write(&self, spans: &[Span], in_table: bool) -> String {
         if !self.math || !has_math(spans) {
-            return self.text(spans).trim().to_string();
+            return trim_breaks(&self.text(spans), LINE_BREAK).to_string();
         }
         let mut out = String::new();
         for piece in split(spans) {
@@ -62,16 +64,36 @@ impl Inline<'_> {
                 }
             }
         }
-        out.trim().to_string()
+        trim_breaks(&out, LINE_BREAK).to_string()
     }
 
-    /// Text spans as inline Markdown (not trimmed). Neighbouring spans of
-    /// the same style and link are joined first, so that emphasis is not
-    /// closed and opened again inside a word.
+    /// Text spans as inline Markdown (not trimmed), the call of a numbered
+    /// added note as a footnote reference (`[^n1]`).
     fn text(&self, spans: &[Span]) -> String {
         let mut out = String::new();
-        for (text, style, href) in merge(spans) {
-            let body = styled(&text, style);
+        for segment in segments(spans) {
+            match segment {
+                Segment::Text(spans) => out.push_str(&self.runs(spans)),
+                Segment::Note(call) if !call.text.is_empty() => out.push_str(&format!("[^{}]", note_label(call))),
+                Segment::Note(_) => {}
+            }
+        }
+        out
+    }
+
+    /// Text spans without notes as inline Markdown (not trimmed).
+    /// Neighbouring spans of the same style and link are joined first, so
+    /// that emphasis is not closed and opened again inside a word.
+    fn runs(&self, spans: &[Span]) -> String {
+        let mut out = String::new();
+        for (text, style, href) in merge_runs(spans, true) {
+            // Each line is styled on its own, so that no emphasis is left
+            // open across a line break.
+            let body = text
+                .split('\n')
+                .map(|line| styled(line, style))
+                .collect::<Vec<_>>()
+                .join(LINE_BREAK);
             match href.as_deref().filter(|href| self.is_link(href)) {
                 Some(href) if !body.trim().is_empty() => {
                     // The spaces around the text stay outside the link.
@@ -95,13 +117,29 @@ impl Inline<'_> {
     }
 }
 
+/// The label of the footnote of a numbered added note (`n1`).
+pub(crate) fn note_label(call: &Span) -> String {
+    format!("n{}", call.text)
+}
+
+/// A line break of the text (the lines of a poem, of an address): HTML,
+/// which CommonMark, GitHub, Pandoc and the other readers read inside a
+/// paragraph, a heading and a table cell alike.
+const LINE_BREAK: &str = "<br>";
+
 /// Neighbouring spans with the same Markdown style and link, joined:
 /// (text, style, link).
-pub(crate) fn merge(spans: &[Span]) -> Vec<(String, u8, Option<String>)> {
+/// Line breaks (`\n`) stay in the text when `keep_breaks`, for a format
+/// that sets them; they are spaces otherwise.
+pub(crate) fn merge_runs(spans: &[Span], keep_breaks: bool) -> Vec<(String, u8, Option<String>)> {
     let mut runs: Vec<(String, u8, Option<String>)> = Vec::new();
     for span in spans {
         let style = span.style & MARKDOWN_STYLE;
-        let text = span.text.replace(['\n', '\r', '\t'], " ");
+        let text = if keep_breaks {
+            span.text.replace(['\r', '\t'], " ")
+        } else {
+            span.text.replace(['\n', '\r', '\t'], " ")
+        };
         match runs.last_mut() {
             Some((last, last_style, last_href)) if *last_style == style && *last_href == span.href => {
                 last.push_str(&text);
@@ -212,10 +250,24 @@ fn destination(href: &str) -> String {
 }
 
 /// Spans as HTML for the cells of a table written as HTML (Markdown is not
-/// read inside them by every reader).
+/// read inside them by every reader). The call of a numbered added
+/// note is its raised number: footnote references are not read in HTML.
 pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
     let mut out = String::new();
-    for (text, style, href) in merge(spans) {
+    for segment in segments(spans) {
+        match segment {
+            Segment::Text(spans) => out.push_str(&runs_html(spans, anchors)),
+            Segment::Note(call) if !call.text.is_empty() => out.push_str(&format!("<sup>{}</sup>", esc(&call.text))),
+            Segment::Note(_) => {}
+        }
+    }
+    trim_breaks(&out, LINE_BREAK).to_string()
+}
+
+/// Spans without notes as HTML (see [`spans_html`]), not trimmed.
+fn runs_html(spans: &[Span], anchors: &HashSet<String>) -> String {
+    let mut out = String::new();
+    for (text, style, href) in merge_runs(spans, true) {
         let inner = text.trim_matches(' ');
         let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
         let trail = if inner.is_empty() {
@@ -223,7 +275,7 @@ pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
         } else {
             &text[text.trim_end_matches(' ').len()..]
         };
-        let mut body = esc(if inner.is_empty() { &text } else { inner });
+        let mut body = esc(if inner.is_empty() { &text } else { inner }).replace('\n', LINE_BREAK);
         for (bit, tag) in [
             (MONO, "code"),
             (ITALIC, "em"),
@@ -242,7 +294,7 @@ pub(crate) fn spans_html(spans: &[Span], anchors: &HashSet<String>) -> String {
         };
         out.push_str(&format!("{lead}{body}{trail}"));
     }
-    out.trim().to_string()
+    out
 }
 
 #[cfg(test)]

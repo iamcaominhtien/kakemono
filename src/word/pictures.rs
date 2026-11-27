@@ -1,7 +1,8 @@
 //! The picture files of a Word document, made ready for every output:
-//! PNG and JPEG as they are, other bitmaps turned into PNG, SVG drawings
-//! and Windows metafiles (EMF, WMF, through SVG) kept as vector: SVG
-//! written again by usvg (`backend::sanitize_svg`).
+//! PNG and JPEG as they are, other bitmaps (GIF, BMP, TIFF, and WebP, the
+//! format of many pictures of the Web) turned into PNG, SVG drawings and
+//! Windows metafiles (EMF, WMF, through SVG) kept as vector: SVG written
+//! again by usvg (`backend::sanitize_svg`).
 
 use crate::backend::render::MAX_SVG_BYTES;
 use crate::backend::svg::{ReadySvg, SVG_PNG_SCALE};
@@ -44,6 +45,11 @@ const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 const MAX_RECENT_VECTOR_BYTES: usize = 64 * 1024 * 1024;
 /// Pixels per point of an SVG's size, as usvg reads `pt` lengths.
 const PX_PER_SVG_PT: f32 = 4.0 / 3.0;
+/// Signature of a RIFF file, and the form of a WebP picture in it (at
+/// byte 8).
+const RIFF_MAGIC: &[u8] = b"RIFF";
+/// The form of a WebP picture in a RIFF file.
+const WEBP_FORM: &[u8] = b"WEBP";
 /// How far into a file the start of an SVG document is looked for.
 const SVG_SNIFF_BYTES: usize = 512;
 
@@ -173,8 +179,10 @@ pub(crate) fn normalize(data: Vec<u8>) -> Option<Picture> {
     if data.starts_with(JPEG_MAGIC) {
         return Some(Picture::bitmap(data, PictureFormat::Jpeg));
     }
+    let webp = data.starts_with(RIFF_MAGIC) && data.get(8..12) == Some(WEBP_FORM);
     if data.starts_with(GIF_MAGIC)
         || data.starts_with(BMP_MAGIC)
+        || webp
         || TIFF_MAGICS.iter().any(|magic| data.starts_with(magic))
     {
         return to_png(&data);

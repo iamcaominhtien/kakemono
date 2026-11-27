@@ -15,16 +15,17 @@ mod text;
 mod vietnamese;
 
 use super::markdown::{linked_anchors, strip_label};
+use super::sequence::{AuthorMarkup, Step, author_lines, linked_anchor, push_line, steps, title_spans, write_authors};
 use super::{
-    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, code_run, doc_title,
-    equation_math, float_class, heading_tag, is_abstract_text, is_scene_break, plain, stray_equation_number,
+    CAP_LABEL, Equations, HtmlOptions, ImageStore, Mode, PageImage, caption_first, code, doc_title, equation_math,
+    float_class, heading_tag, is_scene_break,
 };
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MONO, Span, Table, TableCell};
-use crate::paper::InputFormat;
 use crate::render::Pictures;
 use math::latex;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use text::{LAST_LATIN, LATIN_GAPS, Text, escape, label};
 
@@ -121,8 +122,8 @@ fn too_wide_to_box(table: &Table) -> bool {
     let readable = &LONG_TABLE_SIZES[..LONG_TABLE_SIZES.len() - 1];
     table.geom.col_bounds.is_empty()
         && !readable
-        .iter()
-        .any(|size| Columns::fitted(table, size.2, size.3, TEXT_WIDTH_PT).fits())
+            .iter()
+            .any(|size| Columns::fitted(table, size.2, size.3, TEXT_WIDTH_PT).fits())
 }
 
 /// The height of the text in pt: letter paper with the 2.5 cm margins of
@@ -202,9 +203,6 @@ const REFERENCE_INDENT: &str = "1.5em";
 /// Share of the characters of a paragraph that are monospaced from which
 /// it is set ragged right.
 const RAGGED_MONO_RATIO: f32 = 0.5;
-/// Longest line (in characters) of an author group set as a card beside
-/// the others; a group with a longer line is a paragraph of its own.
-const AUTHOR_CARD_MAX_CHARS: usize = 60;
 /// Space between the author cards that stand side by side.
 const AUTHOR_GAP: &str = "2em";
 /// Spaces that a tab stands for in a code listing (`verbatim` writes a tab
@@ -256,12 +254,10 @@ pub struct LatexOutput {
 /// The text is written first, with placeholders for the pictures; the
 /// pictures are then drawn from `pdf` (on `opts.jobs` threads) and returned
 /// in [`LatexOutput::files`].
-pub fn render_latex(
-    analysis: &Analysis,
-    pdf: Option<&PdfFile>,
-    input: InputFormat,
-    opts: &LatexOptions,
-) -> LatexOutput {
+pub fn render_latex(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &LatexOptions) -> LatexOutput {
+    // The footnotes go to the foot of the page of their calls.
+    let attached = crate::render::notes::footnotes_attached(analysis);
+    let analysis = attached.as_ref().unwrap_or(analysis);
     let html_opts = HtmlOptions {
         mode: Mode::Friendly,
         inline_images: false,
@@ -284,6 +280,7 @@ pub fn render_latex(
         text: Text {
             anchors: &anchors,
             math: opts.equations == Equations::MathMl,
+            table_notes: RefCell::default(),
         },
         images: &mut images,
         out: String::new(),
@@ -296,16 +293,16 @@ pub fn render_latex(
     let body = writer.out.trim_end().to_string();
     let out = images.finish(Pictures::new(pdf, &analysis.doc), body);
     LatexOutput {
-        latex: document(doc, &out.html, input),
+        latex: document(doc, &out.html),
         files: out.files,
     }
 }
 
-/// The whole `.tex` file: the preamble (naming the format `input` the
-/// document was read from, with the CJK fonts of XeLaTeX and LuaLaTeX when
+/// The whole `.tex` file: the preamble (naming the format the document
+/// was read from, with the CJK fonts of XeLaTeX and LuaLaTeX when
 /// the text has CJK characters), the characters that pdfLaTeX has no glyph
 /// for, the title of the PDF, and `body`.
-fn document(doc: &Document, body: &str, input: InputFormat) -> String {
+fn document(doc: &Document, body: &str) -> String {
     let title = escape(&doc_title(doc));
     let cjk = title.chars().chain(body.chars()).any(is_cjk);
     // The symbols of CJK text written as math are characters of the CJK
@@ -336,7 +333,11 @@ fn document(doc: &Document, body: &str, input: InputFormat) -> String {
         // T1 stays the main encoding (the last one loaded).
         PREAMBLE.replacen(T1_FONTENC, T5_FONTENC, 1)
     };
-    out = out.replacen("Converted from a PDF", &format!("Converted from {}", input.phrase()), 1);
+    out = out.replacen(
+        "Converted from a PDF",
+        &format!("Converted from {}", crate::render::source_phrase(doc)),
+        1,
+    );
     if body.contains("\\begin{longtable}") {
         let landscape = if body.contains("\\begin{landscape}") {
             LANDSCAPE_PACKAGE
@@ -493,62 +494,47 @@ struct Writer<'a, 'r> {
 }
 
 impl Writer<'_, '_> {
-    /// Writes every block of `doc`. Runs of code paragraphs become one
-    /// listing, the title blocks one title, and the heading of the abstract
-    /// is left to the `abstract` environment.
+    /// Writes every block of `doc`, in the steps of [`steps`]. The heading
+    /// of the abstract is left to the `abstract` environment.
     fn write(&mut self, doc: &Document) {
         let blocks: Vec<&Block> = doc.blocks.iter().collect();
-        let mut idx = 0;
-        let mut after_front = false;
-        while idx < blocks.len() {
-            let block = blocks[idx];
-            if !after_front && !matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note) {
-                self.arxiv_link(doc);
-                after_front = true;
-            }
-            if let Some(end) = code_run(&blocks, idx) {
-                self.set_group(Group::None);
-                self.anchor(block);
-                self.verbatim(&code::listing_lines(&blocks[idx..end]));
-                idx = end;
-                continue;
-            }
-            self.set_group(Group::of(block, self.group));
-            match &block.kind {
-                BlockKind::Title => {
-                    idx = self.title(doc, &blocks, idx);
-                    continue;
+        for step in steps(&blocks, doc.meta.arxiv_id.is_some()) {
+            match step {
+                Step::Source => self.arxiv_link(doc),
+                Step::Code(run) => {
+                    self.set_group(Group::None);
+                    self.anchor(run[0]);
+                    self.verbatim(&code::listing_lines(run));
                 }
-                BlockKind::Authors => {
-                    idx = self.authors(&blocks, idx);
-                    continue;
+                Step::Title(run) => {
+                    self.set_group(Group::of(run[0], self.group));
+                    self.title(doc, run);
                 }
-                BlockKind::Heading { .. }
-                    if is_abstract_text(&block.spans)
-                        && blocks
-                            .get(idx + 1)
-                            .is_some_and(|next| matches!(next.kind, BlockKind::Paragraph { in_abstract: true })) =>
-                {
+                Step::Authors(run) => {
+                    self.set_group(Group::of(run[0], self.group));
+                    write_authors(self, run);
+                }
+                Step::AbstractHeading(block) => {
+                    self.set_group(Group::of(block, self.group));
                     self.anchor(block);
-                    idx += 1;
-                    continue;
                 }
-                // An equation whose number was read as a paragraph of its
-                // own takes it back.
-                BlockKind::Equation { image, number: None } => {
-                    if let Some(number) = blocks.get(idx + 1).and_then(|next| stray_equation_number(next)) {
+                Step::NumberedEquation(block, number) => {
+                    self.set_group(Group::of(block, self.group));
+                    if let BlockKind::Equation { image, .. } = &block.kind {
                         self.equation(block, image.as_ref(), Some(&number));
-                        idx += 2;
-                        continue;
                     }
                 }
-                _ => {}
+                Step::Contents(run) => {
+                    for block in run {
+                        self.set_group(Group::of(block, self.group));
+                        self.block(block);
+                    }
+                }
+                Step::Block(block) => {
+                    self.set_group(Group::of(block, self.group));
+                    self.block(block);
+                }
             }
-            self.block(block);
-            idx += 1;
-        }
-        if !after_front {
-            self.arxiv_link(doc);
         }
         self.set_group(Group::None);
     }
@@ -580,9 +566,7 @@ impl Writer<'_, '_> {
         }
         match &block.kind {
             BlockKind::Title => self.title_text(&self.text.spans(&block.spans)),
-            BlockKind::Authors => {
-                self.authors(std::slice::from_ref(&block), 0);
-            }
+            BlockKind::Authors => write_authors(self, std::slice::from_ref(&block)),
             BlockKind::Note => self.text_paragraph(&block.spans),
             BlockKind::Heading { level } => self.heading(block, *level),
             BlockKind::Paragraph { .. } if is_scene_break(&block.spans) => {
@@ -640,10 +624,7 @@ impl Writer<'_, '_> {
     /// The `\label` that marks the place of a block that some text links
     /// to, or nothing.
     fn anchor_label(&self, block: &Block) -> String {
-        block
-            .anchor
-            .as_deref()
-            .filter(|anchor| self.text.anchors.contains(*anchor))
+        linked_anchor(block, self.text.anchors)
             .map(|anchor| format!("\\phantomsection\\label{{{}}}", label(anchor)))
             .unwrap_or_default()
     }
@@ -652,10 +633,7 @@ impl Writer<'_, '_> {
     /// of its own.
     fn anchor(&mut self, block: &Block) {
         let label = self.anchor_label(block);
-        if !label.is_empty() {
-            self.out.push_str(&label);
-            self.out.push('\n');
-        }
+        push_line(&mut self.out, &label);
     }
 
     /// Writes a link to the arXiv page of the paper, after the front matter.
@@ -666,29 +644,17 @@ impl Writer<'_, '_> {
         }
     }
 
-    /// Writes the title blocks that start at `blocks[start]` as one title
-    /// and returns the index of the block after them.
-    fn title(&mut self, doc: &Document, blocks: &[&Block], start: usize) -> usize {
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Title))
-                .count();
-        let mut spans: Vec<Span> = Vec::new();
-        for block in &blocks[start..end] {
+    /// Writes a run of title blocks as one title.
+    fn title(&mut self, doc: &Document, run: &[&Block]) {
+        for block in run {
             self.anchor(block);
-            if !spans.is_empty() {
-                spans.push(Span::plain(" "));
-            }
-            spans.extend(block.spans.iter().cloned());
         }
-        let text = self.text.spans(&spans);
+        let text = self.text.spans(&title_spans(run));
         if text.is_empty() {
             self.title_text(&escape(&doc_title(doc)));
         } else {
             self.title_text(&text);
         }
-        end
     }
 
     /// Writes the title of the document, centred.
@@ -696,69 +662,6 @@ impl Writer<'_, '_> {
         self.paragraph(&format!(
             "\\begin{{center}}\n{{\\LARGE\\bfseries {text}\\par}}\n\\end{{center}}"
         ));
-    }
-
-    /// Writes the author groups that start at `blocks[start]`, centred, and
-    /// returns the index of the block after them. Each group (the name in
-    /// bold, then the affiliation lines) is a card, and the cards stand
-    /// side by side as far as the width allows; a group with a line too
-    /// long for a card (a list of many authors) is a centred paragraph.
-    fn authors(&mut self, blocks: &[&Block], start: usize) -> usize {
-        let end = start
-            + blocks[start..]
-                .iter()
-                .take_while(|block| matches!(block.kind, BlockKind::Authors))
-                .count();
-        let mut cards: Vec<String> = Vec::new();
-        for block in &blocks[start..end] {
-            self.anchor(block);
-            let lines = self.author_lines(block);
-            if lines.is_empty() {
-                continue;
-            }
-            if author_rows(block)
-                .iter()
-                .all(|row| plain(row).chars().count() <= AUTHOR_CARD_MAX_CHARS)
-            {
-                cards.push(format!(
-                    "\\begin{{tabular}}[t]{{@{{}}c@{{}}}}\n{}\n\\end{{tabular}}",
-                    lines.join("\\\\\n")
-                ));
-            } else {
-                self.author_cards(&mut cards);
-                self.paragraph(&format!("\\begin{{center}}\n{}\n\\end{{center}}", lines.join("\\\\\n")));
-            }
-        }
-        self.author_cards(&mut cards);
-        end
-    }
-
-    /// Writes the author cards collected so far, side by side, and empties
-    /// `cards`.
-    fn author_cards(&mut self, cards: &mut Vec<String>) {
-        if !cards.is_empty() {
-            let row = cards.join(&format!("\n\\hspace{{{AUTHOR_GAP}}}\n"));
-            self.paragraph(&format!("\\begin{{center}}\n{row}\n\\end{{center}}"));
-            cards.clear();
-        }
-    }
-
-    /// The lines of an author group: the name in bold, then the
-    /// affiliation lines.
-    fn author_lines(&self, block: &Block) -> Vec<String> {
-        author_rows(block)
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let text = self.text.spans(row);
-                if i == 0 && !text.is_empty() && !text.starts_with("\\textbf{") {
-                    format!("\\textbf{{{text}}}")
-                } else {
-                    protect_start(&text)
-                }
-            })
-            .filter(|text| !text.is_empty())
-            .collect()
     }
 
     /// Writes a heading as a starred section (the number, if any, is part
@@ -922,13 +825,19 @@ impl Writer<'_, '_> {
         let caption_first = caption_first(block, image);
         let content = if let Some(table) = block.table.as_ref().filter(|table| !table.rows.is_empty()) {
             Some(
-                if table.rows.len().saturating_sub(table.header_rows) > MAX_BOXED_TABLE_BODY_ROWS || too_wide_to_box(table)
+                if table.rows.len().saturating_sub(table.header_rows) > MAX_BOXED_TABLE_BODY_ROWS
+                    || too_wide_to_box(table)
                 {
                     return self.paragraph(&self.longtable(table, caption.as_deref(), caption_first));
                 } else {
+                    // Footnotes are lost inside a table: its cells get the
+                    // marks, and the notes follow the table.
+                    *self.text.table_notes.borrow_mut() = Some(Vec::new());
+                    let tabular = self.tabular(table);
+                    let notes = self.text.table_notes.borrow_mut().take().unwrap_or_default();
                     format!(
-                        "\\begin{{center}}\n\\begin{{kakemonotable}}\n{}\n\\end{{kakemonotable}}\n\\end{{center}}",
-                        self.tabular(table)
+                        "\\begin{{center}}\n\\begin{{kakemonotable}}\n{tabular}\n\\end{{kakemonotable}}\n\\end{{center}}{}",
+                        footnote_texts(&notes)
                     )
                 },
             )
@@ -1614,6 +1523,40 @@ fn text_em(text: &str) -> f32 {
         .sum()
 }
 
+/// The author groups, centred: each card a `tabular` (the name in bold,
+/// then the affiliation lines), the cards side by side.
+impl AuthorMarkup for Writer<'_, '_> {
+    fn anchor(&mut self, block: &Block) {
+        Writer::anchor(self, block);
+    }
+
+    fn lines(&self, block: &Block) -> Vec<String> {
+        author_lines(
+            block,
+            |row| self.text.spans(row),
+            "\\textbf{",
+            |name| format!("\\textbf{{{name}}}"),
+            |line| protect_start(&line),
+        )
+    }
+
+    fn card(&self, lines: &[String]) -> String {
+        format!(
+            "\\begin{{tabular}}[t]{{@{{}}c@{{}}}}\n{}\n\\end{{tabular}}",
+            lines.join("\\\\\n")
+        )
+    }
+
+    fn cards(&mut self, cards: &[String]) {
+        let row = cards.join(&format!("\n\\hspace{{{AUTHOR_GAP}}}\n"));
+        self.paragraph(&format!("\\begin{{center}}\n{row}\n\\end{{center}}"));
+    }
+
+    fn byline(&mut self, lines: &[String]) {
+        self.paragraph(&format!("\\begin{{center}}\n{}\n\\end{{center}}", lines.join("\\\\\n")));
+    }
+}
+
 /// The share of the characters of `spans` (spaces apart) that are
 /// monospaced.
 fn mono_ratio(spans: &[Span]) -> f32 {
@@ -1629,15 +1572,6 @@ fn mono_ratio(spans: &[Span]) -> f32 {
         return 0.0;
     }
     count(true) as f32 / total as f32
-}
-
-/// The rows of an author group: its lines, or its text as one line.
-fn author_rows(block: &Block) -> &[Vec<Span>] {
-    if block.rows.is_empty() {
-        std::slice::from_ref(&block.spans)
-    } else {
-        &block.rows[..]
-    }
 }
 
 /// The alignment letter (`l`, `c`, `r`) of column `col` of `table`.
@@ -1667,6 +1601,20 @@ fn protect_start(text: &str) -> String {
     } else {
         text.to_string()
     }
+}
+
+/// The texts of the notes whose marks are in a table (`\footnotemark`),
+/// numbered as their marks: the counter goes back by their number, then
+/// steps once per note. Empty without notes.
+fn footnote_texts(notes: &[String]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let texts: String = notes
+        .iter()
+        .map(|note| format!("\\stepcounter{{footnote}}\\footnotetext{{{note}}}"))
+        .collect();
+    format!("\n\\addtocounter{{footnote}}{{-{}}}{texts}", notes.len())
 }
 
 #[cfg(test)]
@@ -1707,7 +1655,7 @@ mod tests {
     #[test]
     fn cjk_text_gets_cjk_fonts_for_lualatex_and_xelatex() {
         for text in ["一貫性のある操作", "ひらがな", "カタカナ", "한국어", "全角，"] {
-            let tex = document(&doc_of(text), text, InputFormat::Xlsx);
+            let tex = document(&doc_of(text), text);
             assert!(tex.contains("\\usepackage[match]{luatexja-fontspec}"), "{text}: {tex}");
             assert!(tex.contains("\\usepackage{xeCJK}"), "{text}");
             assert!(tex.contains("\\setCJKmainfont"), "{text}");
@@ -1717,7 +1665,7 @@ mod tests {
 
     #[test]
     fn xelatex_sets_the_symbols_of_cjk_text_in_the_cjk_font() {
-        let tex = document(&doc_of("①②の手順 ≦ ― ●"), "①②の手順 ≦ ― ●", InputFormat::Xlsx);
+        let tex = document(&doc_of("①②の手順 ≦ ― ●"), "①②の手順 ≦ ― ●");
         let declared = tex
             .lines()
             .skip_while(|line| !line.contains("\\xeCJKDeclareCharClass{CJK}"))
@@ -1733,7 +1681,7 @@ mod tests {
     #[test]
     fn symbols_of_cjk_text_are_characters_under_lualatex_and_xelatex() {
         let body = escape("△11 523 □ 〈注〉");
-        let tex = document(&doc_of("人口 △11 523"), &body, InputFormat::Xlsx);
+        let tex = document(&doc_of("人口 △11 523"), &body);
         for (symbol, command) in [
             ("△", "\\triangle"),
             ("□", "\\square"),
@@ -1746,15 +1694,17 @@ mod tests {
             );
         }
         // Without CJK text, the math symbol stays.
-        let latin = document(&doc_of("x"), &escape("△ x"), InputFormat::Pdf);
+        let latin = document(&doc_of("x"), &escape("△ x"));
         assert!(latin.contains("\\ensuremath{\\triangle}") && !latin.contains("kakemonotext"));
     }
 
     #[test]
     fn text_without_cjk_keeps_the_plain_preamble() {
         let text = "Erdős café ž";
-        let tex = document(&doc_of(text), text, InputFormat::Pdf);
-        assert!(tex.starts_with(PREAMBLE), "{tex}");
+        let tex = document(&doc_of(text), text);
+        // A document without pages is a Word document's.
+        let plain = PREAMBLE.replacen("Converted from a PDF", "Converted from a Word document", 1);
+        assert!(tex.starts_with(&plain), "{tex}");
         assert!(!tex.contains("luatexja") && !tex.contains("xeCJK"));
     }
 
@@ -1813,6 +1763,7 @@ mod tests {
             text: Text {
                 anchors: &anchors,
                 math: true,
+                table_notes: std::cell::RefCell::default(),
             },
             images: &mut images,
             out: String::new(),
@@ -2085,7 +2036,7 @@ mod tests {
             .collect();
         prices.rows[2] = vec![span(1, 13, 1, "Wood products for energy production 1 2015 = 100")];
         let body = format!("{}\n\n{}", table_latex(form), table_latex(prices));
-        let tex = document(&doc_of("x"), &body, InputFormat::Pdf);
+        let tex = document(&doc_of("x"), &body);
         let Some(overfull) = first_run_overfull_alignments("long-table-heads", &tex) else {
             return;
         };
@@ -2117,7 +2068,7 @@ mod tests {
         // The table starts `room` pt above the bottom of the first page.
         for room in (10..=90).step_by(8) {
             let body = format!("\\noindent\\rule{{1pt}}{{\\dimexpr\\textheight-{room}pt\\relax}}\n\n{table}");
-            let tex = document(&doc_of("x"), &body, InputFormat::Pdf);
+            let tex = document(&doc_of("x"), &body);
             let Some(pages) = compiled_pages(&format!("caption-{room}"), &tex) else {
                 return;
             };
@@ -2168,7 +2119,7 @@ mod tests {
         );
         assert!(first.contains("\\multirow{3}{=}"), "{first}");
         let second = table_latex(table_of(20, 31, number));
-        let tex = document(&doc_of("x"), &format!("{first}\n\n{second}"), InputFormat::Pdf);
+        let tex = document(&doc_of("x"), &format!("{first}\n\n{second}"));
         let Some(pages) = compiled_pages("long-tables", &tex) else {
             return;
         };
@@ -2238,9 +2189,9 @@ mod tests {
     #[test]
     fn long_tables_load_their_packages() {
         let text = "\\begin{longtable}{ll}\na & b \\\\\n\\end{longtable}";
-        let tex = document(&doc_of("x"), text, InputFormat::Pdf);
+        let tex = document(&doc_of("x"), text);
         assert!(tex.contains("\\usepackage{longtable}") && tex.contains("\\usepackage{array}"));
-        assert!(!document(&doc_of("x"), "x", InputFormat::Pdf).contains("longtable"));
+        assert!(!document(&doc_of("x"), "x").contains("longtable"));
     }
 
     #[test]
@@ -2284,6 +2235,7 @@ mod tests {
             text: Text {
                 anchors: &anchors,
                 math: true,
+                table_notes: RefCell::default(),
             },
             images: &mut images,
             out: String::new(),

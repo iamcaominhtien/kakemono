@@ -8,7 +8,7 @@
 use kakemono::model::{Block, BlockKind, Document, FloatKind, PictureFormat, Span};
 use kakemono::{
     Analysis, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions, Mode,
-    Paper,
+    Paper, TypstOptions,
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -302,6 +302,9 @@ fn every_output_can_be_written_from_word() {
         let latex = paper.to_latex(&analysis, &LatexOptions::default());
         assert!(latex.latex.contains("Converted from a Word document"));
         assert!(latex.latex.contains("\\begin{tabular}"));
+        let typst = paper.to_typst(&analysis, &TypstOptions::default());
+        assert!(typst.typst.contains("Converted from a Word document"));
+        assert!(typst.typst.contains("#kakemono-table("));
         let epub = paper.to_epub(&analysis, &EpubOptions::default());
         assert!(epub.starts_with(b"PK"));
         let content = paper.to_json(&analysis, &JsonOptions::default());
@@ -345,6 +348,10 @@ fn word_outputs_match_their_snapshot() {
             (
                 "latex",
                 paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+            ),
+            (
+                "typst",
+                paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
             ),
             ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
             (
@@ -552,4 +559,97 @@ fn charts_are_figures_with_their_data_in_every_output() {
     assert_eq!(pdf_bitmaps(&pdf), 1);
     let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
     assert_eq!(html.matches("<img src=\"data:image/svg+xml;base64,").count(), 2);
+}
+
+/// A Word document's picture, already a stored picture, is replaced by a
+/// `replace_image` given as a data URI, like a PDF's figure.
+#[test]
+fn replace_image_works_on_a_word_picture() {
+    use base64::Engine;
+    let (paper, mut analysis) = load(SAMPLE_DOCX);
+    let json = paper.to_json(&analysis, &JsonOptions::default()).json;
+    let mut content: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(30, 20, image::Rgb([200, 30, 30]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png = png.into_inner();
+    let uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png)
+    );
+    let figure = content["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["type"] == "figure" && block.get("image").is_some())
+        .expect("the sample has a picture");
+    figure["replace_image"] = uri.into();
+    let report = paper.apply_content(&mut analysis, &content.to_string()).unwrap();
+    assert_eq!(report.edited_blocks, 1, "{:?}", report.warnings);
+    let out = paper.to_json(&analysis, &JsonOptions::default());
+    // The new picture is written (fitted into the figure's box, as an SVG
+    // when its shape differs): drawn, its red is in the middle.
+    let red = out.files.iter().any(|(_, data)| {
+        let png = match std::str::from_utf8(data) {
+            Ok(svg) => kakemono::backend::svg_to_png(svg, 1.0),
+            Err(_) => Some(data.clone()),
+        };
+        png.and_then(|png| image::load_from_memory(&png).ok())
+            .map(|picture| picture.to_rgb8())
+            .is_some_and(|picture| picture.get_pixel(picture.width() / 2, picture.height() / 2).0 == [200, 30, 30])
+    });
+    assert!(red, "the new picture is written");
+}
+
+/// The number of text objects (`BT` operators) in the content streams of
+/// `pdf`, the streams decompressed.
+fn text_objects(pdf: &[u8]) -> usize {
+    use std::io::Read;
+    let mut count = 0;
+    let mut rest = pdf;
+    while let Some(start) = rest.windows(7).position(|window| window == b"stream\n") {
+        let body = &rest[start + 7..];
+        let end = body
+            .windows(9)
+            .position(|window| window == b"endstream")
+            .unwrap_or(body.len());
+        let mut content = Vec::new();
+        if flate2::read::ZlibDecoder::new(&body[..end])
+            .read_to_end(&mut content)
+            .is_ok()
+        {
+            count += content
+                .split(|byte| byte.is_ascii_whitespace())
+                .filter(|token| *token == b"BT")
+                .count();
+        }
+        rest = &body[end..];
+    }
+    count
+}
+
+/// The page layout draws the words of a line set in one font as one text
+/// object, not one per word and per space: a few per line, the same text.
+#[test]
+fn word_pdf_draws_a_line_of_one_font_as_one_text_object() {
+    let pdf = Paper::from_bytes(std::fs::read(data(SAMPLE_DOCX)).unwrap())
+        .unwrap()
+        .to_pdf()
+        .unwrap();
+    let (lines, _) = kakemono::layout::lines::pdf_lines(pdf.clone()).unwrap();
+    let words: usize = lines.iter().map(|line| line.text.split_whitespace().count()).sum();
+    let objects = text_objects(&pdf);
+    assert!(lines.len() > 20 && words > 120, "{} lines, {words} words", lines.len());
+    assert!(
+        objects <= 2 * lines.len(),
+        "{objects} text objects for {} lines and {words} words",
+        lines.len()
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.text.starts_with("We study the convergence of gradient descent")),
+        "a line keeps its words"
+    );
 }

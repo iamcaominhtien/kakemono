@@ -17,13 +17,14 @@ mod xml;
 
 use super::assets::MARK;
 use super::zip::{Compression, ZipWriter};
-use super::{Equations, InputFormat, doc_title};
+use super::{Equations, doc_title};
 use crate::analysis::pipeline::Analysis;
 use crate::backend::PdfFile;
 use crate::model::{ImageSpec, PictureFormat};
 use crate::render::Pictures;
 use parts::{
-    APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, PACKAGE_RELS, SETTINGS, STYLES, XML_DECL, core_props, document_rels,
+    APP_PROPS, CONTENT_TYPES, DOCUMENT_NAMESPACES, FOOTNOTES_REL, FOOTNOTES_TYPE, PACKAGE_RELS, SETTINGS, STYLES,
+    XML_DECL, core_props, document_rels, footnotes_xml,
 };
 
 /// Everything that controls how a document is written as a Word file.
@@ -120,8 +121,8 @@ impl Media {
 /// The pictures are drawn from `pdf` on `opts.jobs` threads; one that
 /// cannot be drawn is left out. The same document always gives the same
 /// bytes.
-pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputFormat, opts: &DocxOptions) -> Vec<u8> {
-    write_package(analysis, pdf, input, opts).0
+pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> Vec<u8> {
+    write_package(analysis, pdf, opts).0
 }
 
 /// Writes an analysed document as a `.docx` file, like [`render_docx`], and
@@ -131,11 +132,10 @@ pub fn render_docx(analysis: &Analysis, pdf: Option<&PdfFile>, input: InputForma
 pub fn render_docx_with_images(
     analysis: &Analysis,
     pdf: Option<&PdfFile>,
-    input: InputFormat,
     opts: &DocxOptions,
     image_dir: &str,
 ) -> DocxOutput {
-    let (docx, mut media) = write_package(analysis, pdf, input, opts);
+    let (docx, mut media) = write_package(analysis, pdf, opts);
     let files = media
         .shown
         .iter()
@@ -153,14 +153,11 @@ pub fn render_docx_with_images(
     DocxOutput { docx, files }
 }
 
-/// Writes the `.docx` package of a document read from a file of the format
-/// `input`, and returns its bytes with the pictures in it.
-fn write_package(
-    analysis: &Analysis,
-    pdf: Option<&PdfFile>,
-    input: InputFormat,
-    opts: &DocxOptions,
-) -> (Vec<u8>, Media) {
+/// Writes the `.docx` package and returns its bytes with the pictures in it.
+fn write_package(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &DocxOptions) -> (Vec<u8>, Media) {
+    // The footnotes go to the foot of the page of their calls.
+    let attached = crate::render::notes::footnotes_attached(analysis);
+    let analysis = attached.as_ref().unwrap_or(analysis);
     let doc = &analysis.doc;
     let mut body = body::Body::new(doc, opts);
     body.write(doc);
@@ -187,29 +184,37 @@ fn write_package(
         .collect();
 
     let document = format!("{XML_DECL}<w:document {DOCUMENT_NAMESPACES}><w:body>{content}</w:body></w:document>");
+    // A document with added notes has a footnotes part too.
+    let mut content_types = format!("{XML_DECL}{CONTENT_TYPES}");
+    let mut rels = document_rels(&media.rels, &links);
+    if !body.notes.is_empty() {
+        content_types = content_types.replace("</Types>", &format!("{FOOTNOTES_TYPE}</Types>"));
+        rels = rels.replace("</Relationships>", &format!("{FOOTNOTES_REL}</Relationships>"));
+    }
     let mut zip = ZipWriter::default();
     let mut text = |name: &str, data: &str| zip.add(name, data.as_bytes(), Compression::Deflated);
-    let content_types = if media.has_svg() {
+    if media.has_svg() {
         // SVG pictures are rare: the other documents keep the bytes they had.
-        CONTENT_TYPES.replacen(
+        content_types = content_types.replacen(
             "<Override",
             "<Default Extension=\"svg\" ContentType=\"image/svg+xml\"/><Override",
             1,
-        )
-    } else {
-        CONTENT_TYPES.to_string()
-    };
-    text("[Content_Types].xml", &format!("{XML_DECL}{content_types}"));
+        );
+    }
+    text("[Content_Types].xml", &content_types);
     text("_rels/.rels", &format!("{XML_DECL}{PACKAGE_RELS}"));
     text(
         "docProps/core.xml",
-        &core_props(&doc_title(doc), &doc.meta, input.label()),
+        &core_props(&doc_title(doc), &doc.meta, crate::render::source_label(doc)),
     );
     text("docProps/app.xml", &format!("{XML_DECL}{APP_PROPS}"));
     text("word/document.xml", &document);
     text("word/styles.xml", &format!("{XML_DECL}{STYLES}"));
     text("word/settings.xml", &format!("{XML_DECL}{SETTINGS}"));
-    text("word/_rels/document.xml.rels", &document_rels(&media.rels, &links));
+    text("word/_rels/document.xml.rels", &rels);
+    if !body.notes.is_empty() {
+        text("word/footnotes.xml", &footnotes_xml(&body.notes));
+    }
     for (name, data) in &media.files {
         zip.add(name, data, Compression::Stored);
     }

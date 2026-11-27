@@ -36,6 +36,14 @@ pub struct Span {
     /// their styles.
     #[serde(skip)]
     pub math: Option<Box<MathNode>>,
+    /// An added note attached at this point of the text (the `<note>`
+    /// tag of the editable JSON): the span is the note's call, and the
+    /// note's content is these spans (styled text, without formulas or
+    /// other notes). The call's `text` is its mark: empty in the document,
+    /// filled with the note's number only by the outputs that number the
+    /// notes themselves. `None` for every other span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<Vec<Span>>,
 }
 
 impl Span {
@@ -52,6 +60,7 @@ impl Span {
             href: None,
             color: [0; 3],
             math: None,
+            note: None,
         }
     }
 }
@@ -229,7 +238,9 @@ pub struct ImageSpec {
     /// Render on a transparent background (equations).
     pub transparent: bool,
     /// Index of the stored picture in [`Document::pictures`]; `None` for an
-    /// area of a page.
+    /// area of a page. A figure of a PDF whose picture was replaced (with
+    /// `replace_image` in an edited JSON) has one too: `page` and `rect`
+    /// still give its place on the page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedded: Option<usize>,
 }
@@ -493,6 +504,11 @@ pub struct Meta {
     pub arxiv_stamp: Option<String>,
     /// Where the PDF came from (file name, arXiv id, ...).
     pub source: Option<String>,
+    /// The format of the file, for a document read without pages from a
+    /// format other than Word (`epub`, `html`); `None` for a PDF or a Word
+    /// document. The outputs name it in their colophon.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_format: Option<String>,
 }
 
 /// The structured content of a whole paper.
@@ -515,8 +531,9 @@ pub struct Document {
     pub math_font: String,
     /// All content, in reading order.
     pub blocks: Vec<Block>,
-    /// The pictures stored in the document (those of a Word document),
-    /// which [`ImageSpec::embedded`] refers to; empty for a PDF.
+    /// The pictures stored in the document (those of a Word document, and
+    /// the replacements of an edited JSON), which [`ImageSpec::embedded`]
+    /// refers to; empty for a PDF otherwise.
     #[serde(skip)]
     pub pictures: Vec<Picture>,
 }

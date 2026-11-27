@@ -80,6 +80,10 @@ pub(crate) struct FlowCtx {
     /// Write the formulas inside running text as MathML (see
     /// [`inline_math`](super::inline_math)); otherwise as styled text.
     pub math: bool,
+    /// List the added notes of each block in an aside right after
+    /// it; otherwise the mode writes them elsewhere (EPUB: at the end of
+    /// the chapter).
+    pub note_asides: bool,
 }
 
 /// A picture at most this share of its page wide can stand beside text.
@@ -215,6 +219,8 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
     let mut out = String::new();
     let mut group = Group::None;
     let mut block_idx = 0;
+    // The notes of headings, held back until the block after them.
+    let mut held_notes = String::new();
     while block_idx < blocks.len() {
         let block = blocks[block_idx];
         if ctx.offprint
@@ -258,16 +264,17 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
             && group_of(next, group) == Group::None
         {
             out.push_str("<div class=\"beside\">");
-            block_html(block, images, ctx, &mut out);
-            block_html(next, images, ctx, &mut out);
+            block_with_notes(block, images, ctx, &mut out, &mut held_notes);
+            block_with_notes(next, images, ctx, &mut out, &mut held_notes);
             out.push_str("</div>\n");
             block_idx += 2;
             continue;
         }
-        block_html(block, images, ctx, &mut out);
+        block_with_notes(block, images, ctx, &mut out, &mut held_notes);
         block_idx += 1;
     }
     close_group(group, &mut out);
+    out.push_str(&held_notes);
     out
 }
 
@@ -388,6 +395,31 @@ pub(crate) fn is_scene_break(spans: &[Span]) -> bool {
     let text = plain(spans);
     let marks: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
     !marks.is_empty() && marks.len() <= 5 && marks.iter().all(|ch| matches!(ch, '#' | '*' | '\u{2042}'))
+}
+
+/// Writes one block, like [`block_html`], followed by the aside of its
+/// added notes when the mode wants one there: inside the item for a
+/// list item or a reference, after the block otherwise. The notes of a
+/// heading are added to `held` instead, and come after the next block that
+/// is not a heading (a heading stays with its text).
+fn block_with_notes(block: &Block, images: &mut ImageStore<'_>, ctx: &FlowCtx, out: &mut String, held: &mut String) {
+    let start = out.len();
+    block_html(block, images, ctx, out);
+    if !ctx.note_asides {
+        return;
+    }
+    held.push_str(&super::notes::aside_html(&[block], ctx.math));
+    if matches!(block.kind, BlockKind::Heading { .. }) || held.is_empty() {
+        return;
+    }
+    let aside = std::mem::take(held);
+    match out[start..].strip_suffix("</li>\n") {
+        Some(item) => {
+            let end = start + item.len();
+            out.insert_str(end, aside.trim_end());
+        }
+        None => out.push_str(&aside),
+    }
 }
 
 /// Writes one block. Titles and author blocks are written by the modes

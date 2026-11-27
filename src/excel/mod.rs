@@ -724,6 +724,7 @@ fn build(
         meta: Meta {
             title: workbook.title.clone(),
             source,
+            source_format: Some("xlsx".to_string()),
             ..Default::default()
         },
         pages: Vec::new(),

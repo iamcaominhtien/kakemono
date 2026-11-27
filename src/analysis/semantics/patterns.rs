@@ -7,10 +7,60 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// The label of a chapter or part set as a heading of its own above the
-/// chapter's title: "Chapter 1", "PART II", "CHAPTER 3:", "Appendix A".
+/// chapter's title: "Chapter 1", "PART II", "CHAPTER 3:", "Appendix A",
+/// "CHAPTER TWO", "Chapter Twenty-One"; the number is captured as `num`.
 pub(crate) static CHAPTER_LABEL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?i:chapter|part|appendix|lesson|unit)\s+(?:\d{1,3}|[IVXLC]{1,6}|[A-Z])[.:]?(?:\s|$)").unwrap()
+    Regex::new(&format!(
+        r"^(?i:chapter|part|appendix|lesson|unit)\s+(?P<num>\d{{1,3}}|[IVXLC]{{1,6}}|[A-Z]|(?i:(?:{TENS})(?:[-\s](?:{UNITS}))?|{TEENS}|{UNITS}))[.:]?(?:\s|$)"
+    ))
+    .unwrap()
 });
+
+/// The number words from one to nine, in the order of their values.
+const UNITS: &str = "one|two|three|four|five|six|seven|eight|nine";
+/// The number words from ten to nineteen, in the order of their values.
+const TEENS: &str = "ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen";
+/// The tens from twenty to ninety, in the order of their values.
+const TENS: &str = "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety";
+
+/// The value of an English number word from one to ninety-nine ("Two",
+/// "SEVENTEEN", "Twenty-One"), or `None`.
+pub(crate) fn number_word_value(word: &str) -> Option<u32> {
+    let word = word.to_lowercase();
+    let value_in = |list: &str, word: &str| list.split('|').position(|item| item == word).map(|pos| pos as u32);
+    let mut parts = word.split(['-', ' ']).filter(|part| !part.is_empty());
+    let first = parts.next()?;
+    let second = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+    if let Some(tens) = value_in(TENS, first) {
+        let units = match second {
+            Some(unit) => value_in(UNITS, unit)? + 1,
+            None => 0,
+        };
+        return Some(20 + 10 * tens + units);
+    }
+    if second.is_some() {
+        return None;
+    }
+    value_in(TEENS, first)
+        .map(|teen| 10 + teen)
+        .or_else(|| value_in(UNITS, first).map(|unit| unit + 1))
+}
+
+/// The number of a block that is a chapter label and nothing else
+/// ("CHAPTER TWO", "Chapter 3:"), in figures when it is written in words
+/// ("2"), else as printed ("3", "IV", "A").
+pub(crate) fn whole_chapter_label_number(text: &str) -> Option<String> {
+    let text = text.trim();
+    let captures = CHAPTER_LABEL.captures(text)?;
+    if captures.get(0)?.end() < text.len() {
+        return None;
+    }
+    let num = &captures["num"];
+    Some(number_word_value(num).map_or_else(|| num.to_string(), |value| value.to_string()))
+}
 
 /// A line of dialogue in a language course: a speaker letter and a colon,
 /// after an optional example label ("Ａ：すみません。", "［例］▶ Ｂ：はい").
@@ -21,6 +71,8 @@ pub(crate) static DIALOGUE_LINE: LazyLock<Regex> =
 /// title (up to four levels of at most two digits each).
 pub(crate) static HEADING_NUM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?P<num>\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(?P<rest>\S.*)$").unwrap());
+/// A chapter number set alone: figures ("12") or Roman numerals ("IV").
+pub(crate) static BARE_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\d{1,3}|[IVXLC]{1,7})$").unwrap());
 /// A section number of several parts at the start of a heading ("2.1.",
 /// "3.5.1", "A.1"), which items of a list do not have.
 pub(crate) static DOTTED_SECTION: LazyLock<Regex> =
@@ -102,6 +154,22 @@ mod tests {
         assert!(KNOWN_HEADINGS.is_match("Mục lục"));
         assert!(!REF_HEADING.is_match("References to prior work"));
         assert!(ABSTRACT_INLINE.is_match("Abstract—We propose"));
+    }
+
+    #[test]
+    fn chapter_labels_in_words() {
+        assert_eq!(whole_chapter_label_number("CHAPTER TWO").as_deref(), Some("2"));
+        assert_eq!(whole_chapter_label_number("CHAPTER SEVENTEEN").as_deref(), Some("17"));
+        assert_eq!(whole_chapter_label_number("Chapter Twenty-One").as_deref(), Some("21"));
+        assert_eq!(whole_chapter_label_number("PART THREE").as_deref(), Some("3"));
+        assert_eq!(whole_chapter_label_number("Chapter 4:").as_deref(), Some("4"));
+        assert_eq!(whole_chapter_label_number("PART II").as_deref(), Some("II"));
+        assert_eq!(whole_chapter_label_number("Chapter one of the book"), None);
+        assert_eq!(whole_chapter_label_number("Chapter Twentyone"), None);
+        assert!(CHAPTER_LABEL.is_match("CHAPTER SEVEN THE MIRROR"));
+        assert_eq!(number_word_value("ninety-nine"), Some(99));
+        assert_eq!(number_word_value("ten"), Some(10));
+        assert_eq!(number_word_value("one two"), None);
     }
 
     #[test]

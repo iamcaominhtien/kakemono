@@ -288,8 +288,9 @@ fn is_abstract_start(trimmed: &str) -> bool {
     trimmed.eq_ignore_ascii_case("abstract") || ABSTRACT_INLINE.is_match(trimmed)
 }
 
-/// A numbered section heading ("1 Introduction", "I. INTRODUCTION") or an
-/// unnumbered "Introduction" that is bold, larger than the body text or in
+/// A numbered section heading ("1 Introduction", "I. INTRODUCTION"), an
+/// unnumbered "Introduction" or a chapter label set alone ("CHAPTER ONE",
+/// never an author's name) that is bold, larger than the body text or in
 /// capitals, and short.
 fn is_section_start(
     block: &TextBlock,
@@ -300,7 +301,10 @@ fn is_section_start(
 ) -> bool {
     let front = &cfg.front_matter;
     let bold = frac(&block.lines, fonts, |font| font.bold) >= front.section_bold_min_ratio;
-    (HEADING_NUM.is_match(trimmed) || HEADING_ROMAN.is_match(trimmed) || INTRO_HEADING.is_match(trimmed))
+    (HEADING_NUM.is_match(trimmed)
+        || HEADING_ROMAN.is_match(trimmed)
+        || INTRO_HEADING.is_match(trimmed)
+        || whole_chapter_label_number(trimmed).is_some())
         && (bold
             || block_size(&block.lines) > stats.body_size + front.section_min_size_above_body_pt
             || upper_ratio(trimmed, cfg) > front.section_min_upper_ratio)

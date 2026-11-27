@@ -70,6 +70,16 @@ pub(crate) struct ImageStore<'r> {
     pub(crate) svg_as_pdf: bool,
 }
 
+/// The data of a picture, by kind.
+pub(crate) enum PictureData {
+    /// A PNG file.
+    Png(Vec<u8>),
+    /// A JPEG file.
+    Jpeg(Vec<u8>),
+    /// An SVG document.
+    Svg(String),
+}
+
 /// A drawn picture: (data, mime type, file extension, name hint).
 type DrawnImage = (Vec<u8>, &'static str, &'static str, String);
 
@@ -222,6 +232,13 @@ impl ImageStore<'_> {
                     && pictures.stored_svg(index).is_some()
                 {
                     return svg_as_pdf(pictures, index, hint);
+                }
+                // An SVG kept as one has its text turned into paths, so that
+                // it looks the same without its fonts (an `<img>` loads none).
+                if let Some(svg) = spec.embedded.and_then(|index| pictures.stored_svg(index))
+                    && let Some(svg) = svg_with_paths(svg)
+                {
+                    return Some((svg.into_bytes(), "image/svg+xml", "svg", hint.clone()));
                 }
                 let (data, format) = pictures.region(renderer, spec, self.opts.scale)?;
                 Some((data, format.mime(), format.extension(), hint.clone()))
@@ -521,6 +538,17 @@ fn pixel_fill(payload: &str) -> Option<String> {
     Some(format!("fill=\"rgb({red},{green},{blue})\"{opacity}"))
 }
 
+/// The SVG `svg` written again by usvg with its text drawn as paths, in
+/// the fonts kakemono draws SVG text with.
+fn svg_with_paths(svg: &str) -> Option<String> {
+    let options = resvg::usvg::Options {
+        fontdb: crate::backend::render::svg_fonts(),
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_str(svg, &options).ok()?;
+    Some(tree.to_string(&resvg::usvg::WriteOptions::default()))
+}
+
 /// The key of a glyph origin (`x`, `y` in PDF points) in the sets of glyphs
 /// drawn as HTML: the origin rounded to the nearest quarter point.
 pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
@@ -532,7 +560,57 @@ pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MARK, next_placeholder, placeholders_in_order};
+    use super::{DrawnImage, HtmlOptions, ImageJob, ImageSpec, ImageStore, MARK, Pictures};
+    use super::{next_placeholder, placeholders_in_order};
+    use crate::common::geom::Rect;
+
+    /// Draws a stored picture of `data` as a figure, for a format that
+    /// takes SVG (`vector`) or not (LaTeX, which takes PDF).
+    fn draw_stored(data: &[u8], vector: bool) -> Option<DrawnImage> {
+        let stored = [crate::word::pictures::normalize(data.to_vec())?];
+        let pictures = Pictures {
+            pdf: None,
+            stored: &stored,
+            renditions: std::sync::Arc::new(super::Renditions {
+                png: vec![std::sync::OnceLock::new()],
+                pdf: vec![std::sync::OnceLock::new()],
+            }),
+        };
+        let opts = HtmlOptions::default();
+        let store = ImageStore {
+            opts: &opts,
+            jobs: Vec::new(),
+            svg_as_pdf: !vector,
+        };
+        let spec = ImageSpec {
+            page: 0,
+            rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+            transparent: false,
+            embedded: Some(0),
+        };
+        store.draw(&pictures, None, &ImageJob::Region(spec, "fig".into()))
+    }
+
+    /// An SVG picture stays an SVG where the format takes one, its text
+    /// turned into paths so that it looks the same without its fonts.
+    #[test]
+    fn a_stored_svg_stays_vector_with_its_text_as_paths() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="2" y="15" font-size="12">Hồi quy</text></svg>"#;
+        let (data, mime, ext, _) = draw_stored(svg.as_bytes(), true).unwrap();
+        assert_eq!((mime, ext), ("image/svg+xml", "svg"));
+        let out = String::from_utf8(data).unwrap();
+        assert!(!out.contains("<text"), "text must be paths: {out}");
+        assert!(out.contains("<path"), "{out}");
+    }
+
+    /// Where the format takes no SVG (LaTeX), it is written as a PDF.
+    #[test]
+    fn a_stored_svg_is_a_pdf_where_the_format_takes_no_svg() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
+        let (data, mime, _, _) = draw_stored(svg.as_bytes(), false).unwrap();
+        assert_eq!(mime, "application/pdf");
+        assert!(data.starts_with(b"%PDF"));
+    }
 
     fn placeholder(index: usize) -> String {
         format!("{MARK}{index}{MARK}")

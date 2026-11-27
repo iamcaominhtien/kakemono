@@ -3,6 +3,7 @@ paper committed to the repository."""
 
 import io
 import json
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -91,6 +92,19 @@ def test_to_markdown_mode_chooses_how_tables_are_written():
     assert "| Primary black hole mass | " in friendly
     with pytest.raises(ValueError, match="friendly"):
         kakemono.to_markdown(LIGO, mode="hard")
+
+
+def test_to_typst_writes_source_and_pictures(tmp_path):
+    out = tmp_path / "typ" / "ligo.typ"
+    text = kakemono.to_typst(LIGO, out, scale=1.0)
+    assert out.read_text(encoding="utf-8") == text
+    assert text.startswith("// Converted from a PDF by kakemono.")
+    assert '#let doc-layout = "article"' in text
+    assert '"ligo_assets/001-fig.png"' in text
+    assert (tmp_path / "typ" / "ligo_assets" / "001-fig.png").is_file()
+    assert '#let doc-layout = "book"' in kakemono.to_typst(LIGO, layout="book", scale=1.0)
+    with pytest.raises(ValueError):
+        kakemono.to_typst(LIGO, layout="poster")
 
 
 def test_to_latex_writes_source_and_pictures(tmp_path):
@@ -210,6 +224,159 @@ def test_word_document_is_an_input(tmp_path):
         kakemono.convert(WORD_SAMPLE, mode="hard")
 
 
+EPUB_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "epub" / "sample.epub"
+
+
+def test_epub_book_is_an_input(tmp_path):
+    doc = kakemono.Document(EPUB_SAMPLE)
+    assert doc.format == "epub"
+    assert doc.page_count == 0
+    html = doc.convert()
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from EPUB by kakemono" in html
+    text = kakemono.to_markdown(EPUB_SAMPLE, tmp_path / "sample.md")
+    assert "$$" in text
+    assert "def step(x, grad, eta):" in text
+    with pytest.raises(ValueError, match="no pages"):
+        kakemono.convert(EPUB_SAMPLE, mode="hard")
+
+
+HTML_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "html" / "sample.html"
+
+
+def test_web_page_is_an_input(tmp_path):
+    doc = kakemono.Document(HTML_SAMPLE)
+    assert doc.format == "html"
+    assert doc.page_count == 0
+    html = doc.convert()
+    assert "Convergence of Gradient Descent" in html
+    assert "Converted from HTML by kakemono" in html
+    # The picture is read next to the page.
+    text = kakemono.to_markdown(HTML_SAMPLE, tmp_path / "sample.md")
+    assert "def step(x, grad, eta):" in text
+    assert list((tmp_path / "sample_assets").iterdir())
+    # Bytes alone: the page without its picture.
+    assert kakemono.Document(HTML_SAMPLE.read_bytes()).format == "html"
+    with pytest.raises(ValueError, match="one of data, path and url"):
+        kakemono._kakemono.Document(b"x", path=str(HTML_SAMPLE))
+
+
+def _png_size(data):
+    """The (width, height) of a PNG, read from its header."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def test_document_analyses_once_for_every_output(tmp_path):
+    doc = kakemono.Document(LIGO)
+    assert doc.format == "pdf"
+    assert doc.page_count == 16
+    assert repr(doc) == "<kakemono.Document pdf, 16 pages>"
+    # The same outputs as the module functions, which analyse again.
+    assert doc.to_markdown(scale=1.0) == kakemono.to_markdown(LIGO, scale=1.0)
+    assert doc.to_json(scale=1.0) == kakemono.to_json(LIGO, scale=1.0)
+    assert doc.convert("medium", scale=1.0, embed_fonts=False) == kakemono.convert(
+        LIGO, "medium", scale=1.0, embed_fonts=False
+    )
+    assert doc.analyze() == kakemono.analyze(LIGO)
+    assert len(doc.to_chunks(tmp_path / "ligo.jsonl")) == len(kakemono.to_chunks(LIGO))
+    with pytest.raises(ValueError, match="already a PDF"):
+        doc.to_pdf()
+
+
+def test_document_shows_edited_content_in_every_output():
+    content = kakemono.to_json(LIGO, scale=1.0)
+    title = next(block for block in content["blocks"] if block["type"] == "title")
+    title["text"] = "Quan sát sóng hấp dẫn"
+    doc = kakemono.Document(LIGO, content=content)
+    assert "Quan sát sóng hấp dẫn" in doc.convert("hard-95", scale=1.0, embed_fonts=False)
+    assert "Quan sát sóng hấp dẫn" in doc.to_latex()
+    with zipfile.ZipFile(io.BytesIO(doc.to_epub(scale=1.0, modified="2026-01-31T12:00:00Z"))) as book:
+        assert "Quan sát sóng hấp dẫn" in book.read("EPUB/package.opf").decode()
+    with pytest.raises(ValueError, match="hard mode"):
+        doc.convert("hard")
+
+
+def test_replace_image_is_read_next_to_the_edited_json(tmp_path, monkeypatch):
+    content = kakemono.to_json(LIGO, tmp_path / "ligo.json", scale=1.0)
+    figure = next(block for block in content["blocks"] if block["type"] == "figure")
+    width, height = _png_size((tmp_path / figure["image"]).read_bytes())
+    (tmp_path / "vi").mkdir()
+    (tmp_path / "vi" / "fig.svg").write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
+        f'<rect width="{width}" height="{height}" fill="#eef"/></svg>'
+    )
+    figure["replace_image"] = "vi/fig.svg"
+    edited = tmp_path / "ligo.vi.json"
+    edited.write_text(json.dumps(content), encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        # A path: from the JSON's folder, wherever Python runs.
+        assert "](data:image/svg+xml" in kakemono.to_markdown(LIGO, content=edited)
+        # A dict: from the current folder.
+        monkeypatch.chdir(tmp_path)
+        assert "](data:image/svg+xml" in kakemono.Document(LIGO, content=content).to_markdown()
+
+
+def test_to_pdf_lays_out_a_word_document(tmp_path):
+    out = tmp_path / "sample.pdf"
+    data = kakemono.to_pdf(WORD_SAMPLE, out)
+    assert data.startswith(b"%PDF-")
+    assert out.read_bytes() == data
+    # The PDF is a document kakemono reads back.
+    assert kakemono.Document(data).page_count >= 1
+    doc = kakemono.Document(WORD_SAMPLE)
+    assert (doc.format, doc.page_count) == ("docx", 0)
+    content = doc.to_json()
+    heading = next(block for block in content["blocks"] if block["type"] == "heading")
+    heading["text"] = "Hội tụ"
+    edited = kakemono.to_pdf(WORD_SAMPLE, content=content)
+    assert "Hội tụ" in kakemono.to_markdown(edited).replace("*", "")
+    with pytest.raises(ValueError, match="already a PDF"):
+        kakemono.to_pdf(LIGO)
+
+
+def test_render_svg_draws_a_png_of_the_scaled_size(tmp_path):
+    square = kakemono.render_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="#0080ff"/></svg>'
+    )
+    assert _png_size(square) == (20, 20)
+    (tmp_path / "square.png").write_bytes(square)
+    svg = tmp_path / "a.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+        '<image href="square.png" width="20" height="20"/><text x="22" y="15">Hình</text></svg>',
+        encoding="utf-8",
+    )
+    # A path: the pictures it names are read from its folder.
+    out = tmp_path / "out" / "a.png"
+    png = kakemono.render_svg(svg, out, scale=2)
+    assert out.read_bytes() == png
+    assert _png_size(png) == (80, 40)
+    assert png != kakemono.render_svg(svg.read_text(encoding="utf-8"), scale=2)  # text: no square.png here
+    # Text or bytes, with the folder given.
+    assert kakemono.render_svg(svg.read_bytes(), scale=2, resources_dir=tmp_path) == png
+    with pytest.raises(ValueError, match="cannot draw the SVG"):
+        kakemono.render_svg("<svg")
+    with pytest.raises(ValueError, match="scale"):
+        kakemono.render_svg(svg, scale=0)
+    with pytest.raises(FileNotFoundError):
+        kakemono.render_svg(tmp_path / "missing.svg")
+
+
+def test_read_formula_gives_none_for_a_picture_without_one(tmp_path):
+    blank = kakemono.render_svg('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"/>')
+    assert kakemono.read_formula(blank) is None
+    path = tmp_path / "blank.png"
+    path.write_bytes(blank)
+    assert kakemono.read_formula(path) is None
+    with pytest.raises(ValueError, match="cannot read the picture"):
+        kakemono.read_formula(b"not a picture")
+
+
 EXCEL_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "excel" / "sample.xlsx"
 
 
@@ -218,6 +385,7 @@ def test_excel_workbook_converts_to_markdown_tables():
     assert "## Prices" in text
     assert "| **Year** | **Date** | **Price** | **Change** |" in text
     assert "| 1995 | 1995-01-01 |" in text
+    assert kakemono.Document(EXCEL_SAMPLE).format == "xlsx"
 
 
 def _prices_header_rows(**options):

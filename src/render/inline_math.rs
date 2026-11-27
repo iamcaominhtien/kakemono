@@ -77,19 +77,25 @@ struct Token {
 /// The pieces of `spans`: text, and the formulas found in it. The text of
 /// the pieces, put together, is the text of the spans. A span that carries
 /// its formula ([`Span::math`], from a Word document) is that formula as it
-/// is.
+/// is. The call of an added note ([`Span::note`]) is a text piece of
+/// its own, which no formula reaches over.
 pub(crate) fn split(spans: &[Span]) -> Vec<Piece> {
-    if spans.iter().all(|span| span.math.is_none()) {
+    if spans.iter().all(|span| span.math.is_none() && span.note.is_none()) {
         return find_formulas(spans);
     }
     let mut pieces = Vec::new();
     let mut start = 0;
     for (idx, span) in spans.iter().enumerate() {
-        let Some(node) = &span.math else { continue };
+        if span.math.is_none() && span.note.is_none() {
+            continue;
+        }
         if start < idx {
             pieces.extend(find_formulas(&spans[start..idx]));
         }
-        pieces.push(Piece::Math((**node).clone(), span.text.clone(), vec![span.clone()]));
+        match &span.math {
+            Some(node) => pieces.push(Piece::Math((**node).clone(), span.text.clone(), vec![span.clone()])),
+            None => pieces.push(Piece::Text(vec![span.clone()])),
+        }
         start = idx + 1;
     }
     if start < spans.len() {

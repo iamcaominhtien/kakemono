@@ -10,7 +10,7 @@ mod build;
 pub(crate) mod doc;
 pub(crate) mod docx;
 pub mod fmt;
-mod ir;
+pub(crate) mod ir;
 pub(crate) mod metafile;
 pub(crate) mod mtef;
 pub(crate) mod omml;
@@ -22,6 +22,9 @@ pub(crate) mod zip;
 
 use crate::model::Document;
 use anyhow::Result;
+
+pub(crate) use build::{pixel_size, roman_lower};
+pub(crate) use pictures::normalize as normalize_picture;
 
 /// The kinds of Word files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,12 @@ pub fn read(data: &[u8], format: WordFormat, source: Option<String>) -> Result<D
         WordFormat::Doc => doc::read(data)?,
     };
     Ok(build::build(word, source))
+}
+
+/// Builds the document of the intermediate form `word`, which the Word
+/// readers fill in, and the EPUB reader too.
+pub(crate) fn build_document(word: ir::WordDoc, source: Option<String>) -> Document {
+    build::build(word, source)
 }
 
 /// The `Equation Native` stream of an embedded OLE object (a compound

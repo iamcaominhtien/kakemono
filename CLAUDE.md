@@ -2,9 +2,12 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF; and Excel workbooks, `.xlsx`, read by `src/excel/`) to HTML, in 4 modes, to a
+writes them as a PDF; Excel workbooks, `.xlsx`, read by `src/excel/`; EPUB books, `.epub`, read by
+`src/epub/` into the form of `src/word/`; and web pages, an `.html` file or an `http(s)` address,
+whose article `src/html/` finds and hands to the reader of `src/epub/`) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
-LaTeX (`.tex`, `src/render/latex/`), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
+LaTeX (`.tex`, `src/render/latex/`), to Typst (`.typ`, `src/render/typst/`, an article or a
+printed book), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
 retrieval (`.jsonl`, `src/render/chunks/`) or to editable JSON (`.json`, `src/render/json/`), which `--content` applies back so that any output shows the
 edited (for example translated) text:
 
@@ -27,6 +30,7 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> -o out/x.docx                    # Word document (or -f docx)
 ./target/release/kakemono convert <file.pdf> -o out/x.md --image-dir images   # Markdown + images/ (or -f md; -m medium keeps HTML tables)
 ./target/release/kakemono convert <file.pdf> -o out/x.tex                     # LaTeX + x_assets/ (or -f tex)
+./target/release/kakemono convert <file.pdf> -o out/x.typ                     # Typst + x_assets/ (or -f typst; --layout book|article)
 ./target/release/kakemono convert <file.pdf> -o out/x.epub                    # EPUB 3 book (or -f epub)
 ./target/release/kakemono convert <file.pdf> -o out/x.json                    # editable JSON + x_assets/ (or -f json)
 ./target/release/kakemono convert <file.pdf> -o out/x.jsonl                   # chunks for RAG (or -f chunks; --tokenizer tokenizer.json)
@@ -34,12 +38,17 @@ cargo build --release
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
 ./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (every output)
-./target/release/kakemono convert <file.xlsx> -o out/x.pdf                   # a workbook laid out as a document (src/layout/workbook/)
+./target/release/kakemono convert <file.xlsx> -o out/x.pdf                   # a workbook printed as Excel prints it (--pdf-style document: as a document)
 ./target/release/kakemono convert <file.xlsx> --header-rows 1 -o out/x.md    # header rows of every table, given instead of found
+./target/release/kakemono convert <file.epub> -o out/x.md                    # an EPUB book as input (any output)
+./target/release/kakemono convert <https://... | file.html> -o out/x.md      # a web page as input (any output)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
 scripts/fetch-test-pdfs.sh                            # download the 7 test papers (once)
+scripts/fetch-test-pages.sh                           # download the test web pages (once; tests/web_pages.rs)
+python3 scripts/web-bench/fetch.py && /root/.venvs/web-bench/bin/python scripts/web-bench/evaluate.py   # web benchmark (~330 pages)
+/root/.venvs/web-bench/bin/python scripts/web-bench/report.py   # its review PDFs (out/web-bench/review/)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test excel   # when output changes ON PURPOSE
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test excel --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
@@ -54,6 +63,35 @@ scripts/fetch-excel-corpus.sh 8                                      # the publi
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
 `playwright install`.
+
+## Tools
+
+Besides Rust and Node, the tests and scripts need:
+
+- Typst: `typst` (0.15), to compile the Typst output (`tests/cli.rs` runs it when it is installed).
+- TeX: `pdflatex`, `xelatex`, `lualatex`, with `vntex` (T5, Vietnamese), `fontspec`,
+  `multirow`, `booktabs`, `mathtools`, `lmodern`.
+- The CI fonts for `word-fidelity.py`: Liberation, Carlito, Caladea, DejaVu, FreeFont.
+- Python: `maturin`, `pytest`, `pytest-cov` (pinned in `python/requirements-dev.txt`, installed
+  in a venv), and `fonttools`, `pypdf` for `scripts/`; `pipx` for `pipx run pytest scripts/tests`.
+- `eval/qasper/`: torch (CPU), sentence-transformers, transformers, docling, `unstructured[pdf]`,
+  anthropic, numpy. Install torch and torchvision together from the same index, or docling's
+  torchvision does not match torch and transformers fails to import.
+
+A missing tool is installed, not a reason to skip a step (for example compiling the LaTeX
+output):
+
+```bash
+sudo apt-get install --no-install-recommends texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex texlive-lang-other lmodern fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fonts-freefont-ttf pipx   # Debian/Ubuntu
+brew install --cask mactex-no-gui && brew install pipx typst   # macOS
+cargo install --locked typst-cli   # Typst, anywhere
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # eval, in its own venv, then the rest
+```
+
+In the cloud environment `kakemono` the setup script installs all of these, fetches the test
+papers and builds the release binary. Its venvs are `/root/.venvs/kakemono-py` (the Python
+package: `maturin develop` there) and `/root/.venvs/kakemono-eval` (`eval/qasper/`). In
+another environment (for example `Default`) none of this is installed: check, then install.
 
 ## Automatic hooks (`.claude/settings.json`)
 
@@ -92,6 +130,11 @@ committing.
 - The LaTeX output must compile: after a change to `src/render/latex/`, compile a few papers with
   `pdflatex` (and `xelatex` or `lualatex`) when TeX is installed; `tests/cli.rs` compiles the LIGO
   paper when `pdflatex` is on the `PATH`.
+- The Typst output must compile too: after a change to `src/render/typst/`, compile the 8 papers,
+  a book (both layouts) and some of the Word corpus with `typst compile`; `tests/cli.rs` compiles
+  the LIGO paper (and a Vietnamese edit with a note) when `typst` is on the `PATH`. Its settings
+  (`#let doc-layout`, `paper`, `fonts`, ...) and the names of the template's functions
+  (`kakemono-…`) are what users edit: keep them stable.
   - Changing the renderer's CSS, JS or assets also changes the snapshots, because they are
     embedded with `include_str!`.
   - Update the snapshots only when the output change is intended, and commit them with the code.
@@ -148,6 +191,31 @@ committing.
   table, paragraphs), before and after the change, then `diff` the two reports.
   `table_min_fill_ratio` stays 0 because no value separates forms from sparse financial tables there.
 
+## EPUB input (`src/epub`)
+
+- The book's XHTML is read into `word::ir` with Word style names, so `word/build.rs` decides what
+  each paragraph is, as for Word: a rule about block kinds goes there, a rule about markup in
+  `src/epub/html.rs`.
+- The test sample is `tests/data/epub/sample.epub` (pandoc, from `tests/data/word/sample.md`): it
+  must read like `sample.docx` (`epub_sample_reads_like_the_docx`); a change to the reading shows
+  in `tests/data/snapshots/epub-sample.txt`.
+
+## Web pages as input (`src/html`)
+
+- A page is parsed by html5ever, cleaned (`clean.rs`: clutter, the article, title, pictures,
+  links; `notes.rs`: notes and the markup of LaTeXML and MediaWiki), and written as XHTML for
+  `epub/html.rs`: a rule about block kinds goes in `word/build.rs`, a rule about markup that a
+  book can have too in `epub/html.rs`, a rule about web pages only in `src/html/`.
+- A rule that cleans one site easily removes the article of another: after a change, compare the
+  output of the sample, of the pages of `tests/data/web-pages.tsv` (`scripts/fetch-test-pages.sh`;
+  `tests/web_pages.rs` holds their bounds) and the web benchmark (`scripts/web-bench/`: compare
+  its F1 per category before and after).
+  The thresholds are documented constants of `clean.rs`, their names ending with their unit.
+- The test sample is `tests/data/html/sample.html` (pandoc, from `tests/data/word/sample.md`): it
+  must read like `sample.docx` and `sample.epub` (`html_sample_reads_like_the_docx`); a change to
+  the reading shows in `tests/data/snapshots/html-sample.txt`. Tests of pages at an address use
+  `html::read_with` with their own pictures, not the network.
+
 ## Public API and packages
 
 - The crate is published on crates.io and the Python package (`python/`) on PyPI, both by the
@@ -196,6 +264,10 @@ committing.
   A PR that mixes kinds gets every label that applies. If a PR fits none of these (for example
   CI only, or refactoring only), create a short, lowercase label that names it (`ci`,
   `refactor`, `tests`) rather than leaving the PR unlabelled.
+- **Version:** every PR carries its release. After creating it, run
+  `python3 scripts/release.py bump --pr <N>` (or `--title ... --body-file ...` when `gh` cannot
+  read the PR), commit `chore(release): vX.Y.Z` and push; again after changing the title or the
+  description. Never tag or edit the version by hand (CONTRIBUTING.md, "Releases").
 - **SonarQube Cloud issues:** after the PR's checks finish, read the new issues SonarQube Cloud
   reports on it and fix them all in the PR, without waiting to be asked. They are public:
   `curl -s "https://sonarcloud.io/api/issues/search?componentKeys=iamcaominhtien_rust-pdf-parser&pullRequest=<N>&resolved=false"`.

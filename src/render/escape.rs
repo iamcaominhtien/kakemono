@@ -12,6 +12,31 @@ const FIGURE_ALT_MAX_CHARS: usize = 240;
 
 pub(crate) use crate::common::patterns::CAP_LABEL;
 
+/// What the document was converted from, as the colophons say it: `PDF`,
+/// `EPUB` for a book, `HTML` for a web page, `Excel` for a workbook, or
+/// `Word` for another document without pages.
+pub(crate) fn source_label(doc: &Document) -> &'static str {
+    match doc.meta.source_format.as_deref() {
+        Some("epub") => "EPUB",
+        Some("html") => "HTML",
+        Some("xlsx") => "Excel",
+        _ if doc.pages.is_empty() => "Word",
+        _ => "PDF",
+    }
+}
+
+/// [`source_label`] as a phrase: `a PDF`, `an EPUB book`, `a web page`, `a
+/// Word document`, `an Excel workbook`.
+pub(crate) fn source_phrase(doc: &Document) -> &'static str {
+    match source_label(doc) {
+        "EPUB" => "an EPUB book",
+        "HTML" => "a web page",
+        "Word" => "a Word document",
+        "Excel" => "an Excel workbook",
+        _ => "a PDF",
+    }
+}
+
 /// Escapes `text` for use in HTML text and in double-quoted attribute
 /// values (`&`, `<`, `>` and `"`).
 pub(crate) fn esc(text: &str) -> String {
@@ -30,10 +55,15 @@ pub(crate) fn esc(text: &str) -> String {
 
 /// Styled spans as semantic HTML (`<code>`, `<strong>`, `<em>`, `<sup>`,
 /// `<sub>`), with links: internal ones (`#anchor`) get the `xref` class,
-/// external ones open in a new tab.
+/// external ones open in a new tab. The call of a numbered added
+/// note is a raised link to the note.
 pub(crate) fn spans_html(spans: &[Span]) -> String {
     let mut out = String::new();
     for span in spans {
+        if span.note.is_some() {
+            out.push_str(&super::notes::call_html(span));
+            continue;
+        }
         let mut open = String::new();
         let mut close = String::new();
         let mut tag = |name: &str| {
@@ -59,7 +89,7 @@ pub(crate) fn spans_html(spans: &[Span]) -> String {
         // otherwise show inside its shaded box.
         let text = span.text.as_str();
         let body = if span.style & MONO == 0 {
-            format!("{open}{}{close}", esc(text))
+            format!("{open}{}{close}", esc(text).replace('\n', "<br>"))
         } else {
             let inner = text.trim_matches(' ');
             let lead = &text[..text.len() - text.trim_start_matches(' ').len()];
@@ -108,10 +138,12 @@ fn looks_like_address(text: &str) -> bool {
     !text.contains(' ') && (text.contains("://") || text.contains("www.") || text.contains('/') || text.contains('@'))
 }
 
-/// The text of `spans` without styling, trimmed.
+/// The text of `spans` without styling and without the calls of notes,
+/// trimmed.
 pub(crate) fn plain(spans: &[Span]) -> String {
     spans
         .iter()
+        .filter(|span| span.note.is_none())
         .map(|span| span.text.as_str())
         .collect::<String>()
         .trim()

@@ -1,5 +1,6 @@
-//! High-level entry points: PDF, Word or Excel bytes in, structured document and
-//! HTML (or Word, Markdown, LaTeX or EPUB) out.
+//! High-level entry points: PDF, Word, Excel, EPUB or HTML bytes (or a
+//! file, or an address of the Web) in, structured document and HTML (or
+//! Word, Markdown, LaTeX, Typst or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
@@ -8,16 +9,17 @@ use crate::excel;
 use crate::model::{Document, Meta};
 use crate::render::{
     Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions,
-    JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, SourceInfo, apply_content, render,
-    render_chunks, render_docx, render_docx_with_images, render_epub, render_json, render_latex, render_markdown,
-    render_to,
+    JsonOutput, LatexOptions, LatexOutput, MarkdownOptions, MarkdownOutput, Mode, SourceInfo, TypstOptions,
+    TypstOutput, apply_content, render, render_chunks, render_docx, render_docx_with_images, render_epub, render_json,
+    render_latex, render_markdown, render_to, render_typst,
 };
 use crate::word::{self, WordFormat};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 /// The format of the file a [`Paper`] was loaded from. More formats may
-/// be read in a later version: a `match` on it needs a `_` arm.
+/// be added: a `match` on it needs a `_` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum InputFormat {
@@ -29,10 +31,14 @@ pub enum InputFormat {
     Doc,
     /// An Excel workbook in Office Open XML (`.xlsx`).
     Xlsx,
+    /// An EPUB book (`.epub`).
+    Epub,
+    /// A web page (`.html`, or an address of the Web).
+    Html,
 }
 
 impl InputFormat {
-    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`), also the name of the
+    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`, `epub`, `html`), also the name of the
     /// format in the JSON output.
     pub fn name(self) -> &'static str {
         match self {
@@ -40,26 +46,8 @@ impl InputFormat {
             InputFormat::Docx => "docx",
             InputFormat::Doc => "doc",
             InputFormat::Xlsx => "xlsx",
-        }
-    }
-
-    /// What a document of this format is called where an output says what
-    /// it was converted from: `PDF`, `Word` or `Excel`.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            InputFormat::Pdf => "PDF",
-            InputFormat::Docx | InputFormat::Doc => "Word",
-            InputFormat::Xlsx => "Excel",
-        }
-    }
-
-    /// [`InputFormat::label`] as a phrase: `a PDF`, `a Word document`, `an
-    /// Excel workbook`.
-    pub(crate) fn phrase(self) -> &'static str {
-        match self {
-            InputFormat::Pdf => "a PDF",
-            InputFormat::Docx | InputFormat::Doc => "a Word document",
-            InputFormat::Xlsx => "an Excel workbook",
+            InputFormat::Epub => "epub",
+            InputFormat::Html => "html",
         }
     }
 
@@ -83,10 +71,13 @@ enum Source {
     /// with the look of every cell for the sheet view) and the thresholds
     /// it was read with.
     Sheet(Box<Document>, Option<(f32, f32)>, Vec<u8>, ExcelConfig),
+    /// An EPUB book or a web page (the format), read into its structure
+    /// when loaded.
+    Book(Box<Document>, InputFormat),
 }
 
-/// A loaded PDF, Word document or Excel workbook, ready to be analysed and
-/// rendered.
+/// A loaded PDF, Word document, Excel workbook, EPUB book or web page,
+/// ready to be analysed and rendered.
 ///
 /// Typical use: [`Paper::from_bytes`], [`Paper::analyze`], then
 /// [`Paper::to_html`] once per output mode (the analysis does not depend on
@@ -116,12 +107,16 @@ struct Laid {
 }
 
 impl Paper {
-    /// Loads a PDF, a Word document (`.docx`, `.doc`) or an Excel workbook
-    /// (`.xlsx`) from its bytes; the format is recognised from the bytes.
+    /// Loads a PDF, a Word document (`.docx`, `.doc`), an Excel workbook
+    /// (`.xlsx`), an EPUB book (`.epub`) or a web page (HTML) from its
+    /// bytes; the format is recognised from the bytes. The pictures of a
+    /// web page loaded so are only those inside it (`data:` URLs):
+    /// [`Paper::from_path`] reads them next to its file, [`Paper::from_url`]
+    /// fetches them.
     ///
     /// # Errors
-    /// When the data is not a readable PDF, Word document or workbook, or
-    /// the PDF has no pages.
+    /// When the data is not a readable PDF, Word document, workbook, EPUB
+    /// book or web page, or the PDF has no pages.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         Self::from_bytes_with(data, &ExcelConfig::default())
     }
@@ -132,8 +127,16 @@ impl Paper {
     /// # Errors
     /// As [`Paper::from_bytes`].
     pub fn from_bytes_with(data: Vec<u8>, excel: &ExcelConfig) -> Result<Self> {
-        let sha256 = Sha256::digest(&data).iter().map(|byte| format!("{byte:02x}")).collect();
-        // Both are ZIP packages: each looks for its own main part.
+        if crate::html::is_html(&data) {
+            return Self::from_html(&data, crate::html::Origin::Bytes);
+        }
+        let sha256 = sha256_hex(&data);
+        if crate::epub::is_epub(&data) {
+            let doc = crate::epub::read(&data, None)?;
+            return Ok(Self::loaded(Source::Book(Box::new(doc), InputFormat::Epub), sha256));
+        }
+        // A workbook, a Word document and an EPUB book are ZIP packages:
+        // each looks for its own main part.
         if excel::detect(&data) {
             let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
             return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper, data, *excel), sha256));
@@ -162,12 +165,82 @@ impl Paper {
         }
     }
 
+    /// Loads the file at `path`, as [`Paper::from_bytes`] does; the
+    /// pictures and style sheets of a web page are read next to it.
+    ///
+    /// # Errors
+    /// When the file cannot be read, or [`Paper::from_bytes`] fails.
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_path_with(path, &ExcelConfig::default())
+    }
+
+    /// Loads the file at `path` like [`Paper::from_path`], reading a
+    /// workbook with the thresholds `excel`.
+    ///
+    /// # Errors
+    /// As [`Paper::from_path`].
+    pub fn from_path_with(path: impl AsRef<Path>, excel: &ExcelConfig) -> Result<Self> {
+        let path = path.as_ref();
+        let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        if crate::html::is_html(&data) {
+            return Self::from_html(&data, crate::html::Origin::File(path));
+        }
+        Self::from_bytes_with(data, excel)
+    }
+
+    /// Fetches the document at the `http(s)` address `url` and loads it, as
+    /// [`Paper::from_bytes`] does: a web page with its pictures (fetched
+    /// too), or a PDF, a Word document or an EPUB book. Its source
+    /// ([`Meta::source`]) is the address.
+    ///
+    /// # Errors
+    /// When the document cannot be fetched (see
+    /// [`source::web::fetch`](crate::source::web::fetch)) or read.
+    pub fn from_url(url: &str) -> Result<Self> {
+        let fetched = crate::source::web::fetch(url)?;
+        let paper = if fetched.is_html() || crate::html::is_html(&fetched.data) {
+            let origin = crate::html::Origin::Url {
+                url: &fetched.url,
+                charset: fetched.charset(),
+            };
+            Self::from_html(&fetched.data, origin)?
+        } else {
+            Self::from_bytes(fetched.data)?
+        };
+        Ok(paper.with_source(url.trim()))
+    }
+
+    /// Loads the web page `data` saved from the `http(s)` address `url`: its
+    /// links and pictures are read as at that address, and its pictures are
+    /// fetched. Its source ([`Meta::source`]) is the address.
+    ///
+    /// # Errors
+    /// When `url` is not a URL.
+    pub fn from_page_at(data: &[u8], url: &str) -> Result<Self> {
+        let origin = crate::html::Origin::Url {
+            url: url.trim(),
+            charset: None,
+        };
+        Ok(Self::from_html(data, origin)?.with_source(url.trim()))
+    }
+
+    /// Loads the web page `data` from `origin`.
+    fn from_html(data: &[u8], origin: crate::html::Origin<'_>) -> Result<Self> {
+        Ok(Self {
+            file: Source::Book(Box::new(crate::html::read(data, origin, None)?), InputFormat::Html),
+            source: None,
+            sha256: sha256_hex(data),
+            laid: std::sync::OnceLock::new(),
+        })
+    }
+
     /// The format of the file.
     pub fn format(&self) -> InputFormat {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
             Source::Word(_, format, _) => *format,
             Source::Sheet(..) => InputFormat::Xlsx,
+            Source::Book(_, format) => *format,
         }
     }
 
@@ -175,14 +248,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) | Source::Sheet(..) => None,
+            Source::Word(..) | Source::Sheet(..) | Source::Book(..) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) | Source::Sheet(..) => None,
+            Source::Pdf(_) | Source::Sheet(..) | Source::Book(..) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -234,7 +307,7 @@ impl Paper {
             }
             Mode::Hard | Mode::Hard95 => {
                 let laid = self.laid()?;
-                Some(render(&laid.analysis, Some(&laid.pdf), self.format(), opts))
+                Some(render(&laid.analysis, Some(&laid.pdf), opts))
             }
         }
     }
@@ -243,8 +316,9 @@ impl Paper {
     /// lays it out; a workbook printed as Excel prints it (each sheet's
     /// print area cut into pages by its print settings, with the look of
     /// every cell), as [`WorkbookPdfConfig::default`] does; with
-    /// [`WorkbookPdfStyle::Document`], laid out as a document instead. A
-    /// PDF already has its pages.
+    /// [`WorkbookPdfStyle::Document`], laid out as a document instead; an
+    /// EPUB book or a web page written as a Word document first, which is
+    /// laid out. A PDF already has its pages.
     ///
     /// # Errors
     /// When the paper is a PDF, or the layout cannot be written.
@@ -275,6 +349,10 @@ impl Paper {
                     crate::layout::workbook::print::to_pdf(&book, config, file)
                 }
             },
+            Source::Book(..) => {
+                let docx = self.to_docx(&self.analyze(), &DocxOptions::default());
+                Paper::from_bytes(docx)?.to_pdf()
+            }
             Source::Word(_, format, data) => {
                 let format = match format {
                     InputFormat::Doc => WordFormat::Doc,
@@ -306,8 +384,8 @@ impl Paper {
         self
     }
 
-    /// Number of pages; 0 for a Word document or a workbook, which have
-    /// none.
+    /// Number of pages; 0 for a Word document, a workbook or a book, which
+    /// have none.
     pub fn page_count(&self) -> usize {
         self.pdf().map_or(0, PdfFile::page_count)
     }
@@ -321,12 +399,12 @@ impl Paper {
     ///
     /// Pages are read, and their lines built, on `opts.jobs` threads; the
     /// result does not depend on the number of threads.
-    /// A Word document or a workbook needs no analysis: its structure, read
+    /// A Word document, a workbook or a book needs no analysis: its structure, read
     /// when it was loaded, is returned (`opts` does not apply to it).
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Sheet(doc, ..) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 // A file with no title of its own is called by its name.
@@ -373,7 +451,7 @@ impl Paper {
         if let Some(output) = self.word_layout_html(opts) {
             return output;
         }
-        render(analysis, self.pdf(), self.format(), &self.html_options(opts))
+        render(analysis, self.pdf(), &self.html_options(opts))
     }
 
     /// `opts`, with the friendly mode for a document without pages.
@@ -409,20 +487,14 @@ impl Paper {
                     return out.write_all(output.html.as_bytes());
                 }
             } else if let Some(laid) = self.laid() {
-                return render_to(
-                    &laid.analysis,
-                    Some(&laid.pdf),
-                    self.format(),
-                    opts,
-                    out,
-                    &mut |name, data| file(&name, &data),
-                );
+                return render_to(&laid.analysis, Some(&laid.pdf), opts, out, &mut |name, data| {
+                    file(&name, &data)
+                });
             }
         }
         render_to(
             analysis,
             self.pdf(),
-            self.format(),
             &self.html_options(opts),
             out,
             &mut |name, data| file(&name, &data),
@@ -433,7 +505,7 @@ impl Paper {
     /// bytes of the file. `analysis` must come from this paper, since the
     /// pictures are drawn from its PDF.
     pub fn to_docx(&self, analysis: &Analysis, opts: &DocxOptions) -> Vec<u8> {
-        render_docx(analysis, self.pdf(), self.format(), opts)
+        render_docx(analysis, self.pdf(), opts)
     }
 
     /// Writes an analysis as a Word document, like [`Paper::to_docx`], and
@@ -441,7 +513,7 @@ impl Paper {
     /// `image_dir` (a relative path, such as `images`): the pictures stay
     /// embedded in the document too.
     pub fn to_docx_with_images(&self, analysis: &Analysis, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
-        render_docx_with_images(analysis, self.pdf(), self.format(), opts, image_dir)
+        render_docx_with_images(analysis, self.pdf(), opts, image_dir)
     }
 
     /// Writes an analysis as Markdown. `analysis` must come from this paper,
@@ -454,7 +526,14 @@ impl Paper {
     /// files. `analysis` must come from this paper, since the pictures are
     /// drawn from its PDF.
     pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
-        render_latex(analysis, self.pdf(), self.format(), opts)
+        render_latex(analysis, self.pdf(), opts)
+    }
+
+    /// Writes an analysis as a Typst document (`.typ`) with its picture
+    /// files, in the layout of an article or of a printed book. `analysis`
+    /// must come from this paper, since the pictures are drawn from its PDF.
+    pub fn to_typst(&self, analysis: &Analysis, opts: &TypstOptions) -> TypstOutput {
+        render_typst(analysis, self.pdf(), opts)
     }
 
     /// Writes an analysis as an EPUB book (`.epub`) and returns the bytes of
@@ -494,7 +573,62 @@ impl Paper {
     /// text of single blocks are not errors: those blocks keep their text,
     /// and [`ContentReport::warnings`] says why.
     pub fn apply_content(&self, analysis: &mut Analysis, json: &str) -> Result<ContentReport> {
-        apply_content(analysis, json, &self.source_info())
+        self.apply_content_from(analysis, json, None)
+    }
+
+    /// [`Paper::apply_content`] for a JSON file in the folder `base`: a
+    /// figure's `replace_image` that is a relative path is read from there.
+    ///
+    /// # Errors
+    /// As [`Paper::apply_content`].
+    pub fn apply_content_in(&self, analysis: &mut Analysis, json: &str, base: &Path) -> Result<ContentReport> {
+        self.apply_content_from(analysis, json, Some(base))
+    }
+
+    /// Applies `json` (relative `replace_image` paths read from `base`),
+    /// then draws again the figures whose text was edited
+    /// (`figure_lines`): their new picture replaces the old one.
+    fn apply_content_from(&self, analysis: &mut Analysis, json: &str, base: Option<&Path>) -> Result<ContentReport> {
+        let (mut report, edits) = apply_content(analysis, json, &self.source_info(), base)?;
+        let Some(renderer) = self.renderer() else {
+            return Ok(report);
+        };
+        for edit in edits {
+            let block = &analysis.doc.blocks[edit.block_idx];
+            let Some(svg) = crate::render::figure_svg(&renderer, block, &edit, &mut report.warnings) else {
+                report.warnings.push(format!(
+                    "block {}: the figure could not be drawn again with its edited text",
+                    block.id
+                ));
+                continue;
+            };
+            // Made ready (its caps checked, its PNG size found), but its own
+            // SVG kept: kakemono wrote it, and its edited text stays text,
+            // which the SVG written again by usvg would draw as paths.
+            let ready =
+                crate::word::pictures::normalize(svg.clone().into_bytes()).map(|picture| match picture.format {
+                    crate::model::PictureFormat::Svg => crate::model::Picture {
+                        data: svg.into_bytes(),
+                        ..picture
+                    },
+                    _ => picture,
+                });
+            let Some(picture) = ready else {
+                report.warnings.push(format!(
+                    "block {}: the figure drawn again with its edited text is too large to keep",
+                    block.id
+                ));
+                continue;
+            };
+            analysis.doc.pictures.push(picture);
+            let index = analysis.doc.pictures.len() - 1;
+            if let crate::model::BlockKind::Figure { image: Some(spec), .. } =
+                &mut analysis.doc.blocks[edit.block_idx].kind
+            {
+                spec.embedded = Some(index);
+            }
+        }
+        Ok(report)
     }
 
     /// The source as the JSON output names it.
@@ -505,6 +639,11 @@ impl Paper {
             sha256: self.sha256.clone(),
         }
     }
+}
+
+/// The SHA-256 of `data`, in hexadecimal.
+fn sha256_hex(data: &[u8]) -> String {
+    Sha256::digest(data).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// One-shot conversion: loads the PDF, analyses it and renders it.
@@ -543,4 +682,3 @@ mod tests {
         assert!(core.contains("Converted from Excel by kakemono"), "{core}");
     }
 }
-

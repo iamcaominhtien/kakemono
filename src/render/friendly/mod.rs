@@ -2,6 +2,7 @@
 //! (themes Paper, White and Dark, a contents column that can be hidden, a
 //! running head, embedded reading fonts).
 
+use super::notes::{NOTES_CSS, aside_html};
 use super::*;
 use base64::Engine;
 use std::collections::HashMap;
@@ -79,15 +80,15 @@ static MONO_FACES: LazyLock<String> = LazyLock::new(|| {
 pub(crate) struct Friendly;
 
 impl Renderer for Friendly {
-    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>, input: InputFormat) -> String {
-        render(&analysis.doc, images, input)
+    fn render(&self, analysis: &Analysis, images: &mut ImageStore<'_>) -> String {
+        render(&analysis.doc, images)
     }
 }
 
 /// Writes the whole document in friendly mode, read from a file of the
 /// format `input`. Pictures are requested from `images` in reading order
 /// (front matter first).
-pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>, input: InputFormat) -> String {
+pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>) -> String {
     let title = doc_title(doc);
     let all: Vec<&Block> = doc.blocks.iter().collect();
 
@@ -116,6 +117,7 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>, input: InputFo
         sides: side_figures(doc, &doc.blocks.iter().collect::<Vec<_>>()),
 
         math: images.opts.equations == Equations::MathMl,
+        note_asides: true,
     };
     let mut content = render_flow(&front_rest, images, &ctx);
     content.push_str(&render_flow(body, images, &ctx));
@@ -130,7 +132,13 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>, input: InputFo
     } else {
         String::new()
     };
+    let notes = if content.contains("<aside class=\"an\"") || head.contains("<aside class=\"an\"") {
+        NOTES_CSS
+    } else {
+        ""
+    };
     let page = Page {
+        notes,
         title: &title,
         topbar: &topbar(doc, &title),
         toc: &toc_html(body),
@@ -138,13 +146,15 @@ pub(crate) fn render(doc: &Document, images: &mut ImageStore<'_>, input: InputFo
         content: &content,
         fonts: &fonts,
         math: &math,
-        source: input.label(),
+        source: source_label(doc),
     };
     page.html()
 }
 
 /// The parts of the page, put together by [`Page::html`].
 struct Page<'a> {
+    /// Style of the added notes (empty when the paper has none).
+    notes: &'a str,
     /// Title of the paper (plain text).
     title: &'a str,
     /// The running head.
@@ -196,10 +206,10 @@ impl Page<'_> {
 <title>{title}</title>
 <script>{HEAD_JS}</script>
 <style>
-{fonts}{math}{CSS}</style>
+{fonts}{math}{CSS}{notes}</style>
 </head>
 <body class="friendly">
-{topbar}<div class="{layout}">
+{topbar}<div class="layout{layout_class}">
 {toc}<article class="article" id="article">
 <header class="paper-head">
 {head}</header>
@@ -222,10 +232,11 @@ impl Page<'_> {
             sound = PAGE_SOUND_JS.as_str(),
             fonts = self.fonts,
             math = self.math,
+            notes = self.notes,
             topbar = self.topbar,
             toc = self.toc,
-            // Without a contents column, the article takes the text column.
-            layout = if self.toc.is_empty() { "layout no-toc" } else { "layout" },
+            // Without contents, the article takes the column they leave.
+            layout_class = if self.toc.is_empty() { " no-toc" } else { "" },
             head = self.head,
             content = self.content,
         )
@@ -335,6 +346,12 @@ fn paper_head(doc: &Document, title: &str, front: &[&Block]) -> String {
     for block in front.iter().filter(|block| matches!(block.kind, BlockKind::Note)) {
         head.push_str(&format!("<p class=\"note\">{}</p>\n", spans_html(&block.spans)));
     }
+    let front_text: Vec<&Block> = front
+        .iter()
+        .copied()
+        .filter(|block| matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note))
+        .collect();
+    head.push_str(&aside_html(&front_text, false));
     head
 }
 
@@ -386,6 +403,7 @@ fn toc_html(body: &[&Block]) -> String {
         block
             .spans
             .iter()
+            .filter(|span| span.note.is_none())
             .filter(|span| !(span.style & SUP != 0 && span.href.as_deref().is_some_and(|href| href.starts_with("#fn"))))
             .map(|span| span.text.as_str())
             .collect::<String>()
@@ -472,7 +490,7 @@ mod tests {
             jobs: Vec::new(),
             svg_as_pdf: false,
         };
-        render(&doc, &mut images, InputFormat::Docx)
+        render(&doc, &mut images)
     }
 
     fn block(id: usize, kind: BlockKind, text: &str, anchor: Option<&str>) -> Block {

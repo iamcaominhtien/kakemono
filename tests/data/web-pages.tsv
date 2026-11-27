@@ -1,0 +1,15 @@
+# Web pages for tests/web_pages.rs, downloaded by scripts/fetch-test-pages.sh
+# into tests/data/web/ (not committed: the pages belong to their sites, and
+# change). name<TAB>address
+anthropic-tools	https://www.anthropic.com/research/writing-tools-for-agents
+cnn-huang	https://edition.cnn.com/2026/11/23/politics/trump-administration-jensen-huang-reinstated
+wiki-fourier	https://en.wikipedia.org/wiki/Fourier_transform
+wiki-gravitational-wave	https://en.wikipedia.org/wiki/Gravitational_wave
+wiki-rust	https://en.wikipedia.org/wiki/Rust_(programming_language)
+wiki-vi-hanoi	https://vi.wikipedia.org/wiki/H%C3%A0_N%E1%BB%99i
+arxiv-attention	https://arxiv.org/html/1706.03762v7
+arxiv-mistral	https://arxiv.org/html/2310.06825v1
+rust-book-ownership	https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html
+python-classes	https://docs.python.org/3/tutorial/classes.html
+pg-great-work	https://paulgraham.com/greatwork.html
+willison-llms-2024	https://simonwillison.net/2024/Dec/31/llms-in-2024/

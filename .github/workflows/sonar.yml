@@ -16,8 +16,36 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Skipped for a pull request that only changes the documentation
+  # (scripts/ci_changes.py).
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/ci_changes.py "$BASE" "$HEAD"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   sonar:
     name: SonarQube Cloud
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Skipped until the SONAR_TOKEN secret exists, and on pull requests from forks
@@ -39,6 +67,12 @@ jobs:
         if: env.SONAR_TOKEN != ''
         with:
           shared-key: sonar
+          # The Python package (python/) is a separate crate with its own
+          # target directory: cache it too, or the binding and all its
+          # dependencies are built from scratch on every run.
+          workspaces: |
+            . -> target
+            python -> target
       - uses: taiki-e/install-action@3f7c3597aa4e6da3f315e128de702ce61e7b2877 # cargo-llvm-cov
         if: env.SONAR_TOKEN != ''
 
@@ -81,7 +115,7 @@ jobs:
           . .venv/bin/activate
           pip install --only-binary :all: --require-hashes -r python/requirements-dev.txt
           maturin develop --release -m python/Cargo.toml
-          pytest python/tests --cov=python/kakemono --cov=scripts --cov-report=xml:coverage-python.xml
+          pytest python/tests scripts/tests --cov=python/kakemono --cov=scripts --cov-report=xml:coverage-python.xml
 
       - name: SonarQube scan
         if: env.SONAR_TOKEN != ''
