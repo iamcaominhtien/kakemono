@@ -39,6 +39,9 @@ const JOIN_SLACK_TOKENS: usize = 1;
 
 /// Separator between the cells of a table row.
 const CELL_SEPARATOR: &str = " | ";
+/// A table's caption and last header row, repeated on each piece when the
+/// whole head is too long, are each cut to this share (1 / n) of a chunk.
+const HEAD_PART_SHARE: usize = 4;
 
 /// Everything that controls how a document is cut into chunks.
 #[derive(Debug, Clone)]
@@ -157,8 +160,10 @@ fn table_rows(table: &Table) -> Vec<String> {
 }
 
 /// Cuts the text of a rebuilt table into pieces of at most `room` tokens,
-/// between rows, each piece starting with the caption and the header rows
-/// (dropped when they take more than half of `room`). A row that does not
+/// between rows, each piece starting with the caption and the header rows;
+/// when they take more than half of `room`, they are pieces of their own
+/// first, and each piece starts with the caption's start and the last
+/// header row, each cut to a quarter of `room`. A row that does not
 /// fit even alone is cut between words, the head repeated on each part; a
 /// part with nothing but the separators of empty cells is left out.
 /// `None` when `block` has no rebuilt table, or no row to cut at.
@@ -170,8 +175,23 @@ fn table_pieces(block: &Block, room: usize, counter: &TokenCounter) -> Option<Ve
     head_lines.extend(header.iter().cloned());
     head_lines.retain(|line| !line.trim().is_empty());
     let mut head = head_lines.join("\n");
+    let mut pieces = Vec::new();
     if counter.count(&head) * 2 > room {
-        head.clear();
+        // A head too long to repeat is a piece (or pieces) of its own,
+        // and the rows go on under its caption's start and last header
+        // row, each cut to a quarter of the room.
+        pieces.extend(split_long(&head, room.max(1), counter));
+        let budget = (room / HEAD_PART_SHARE).max(1);
+        let caption = plain_of(&block.spans);
+        let short: Vec<String> = [caption.as_str(), header.last().map_or("", String::as_str)]
+            .iter()
+            .filter(|part| !part.trim().is_empty())
+            .filter_map(|part| split_long(part, budget, counter).into_iter().next())
+            .collect();
+        head = short.join("\n");
+        if counter.count(&head) * 2 > room {
+            head.clear();
+        }
     }
     let with_head = |text: &str| {
         if head.is_empty() {
@@ -180,7 +200,6 @@ fn table_pieces(block: &Block, room: usize, counter: &TokenCounter) -> Option<Ve
             format!("{head}\n{text}")
         }
     };
-    let mut pieces = Vec::new();
     // The body rows of the piece being built.
     let mut current: Vec<&str> = Vec::new();
     for row in body.iter().filter(|row| !row.trim().is_empty()) {
@@ -657,6 +676,24 @@ mod tests {
             .map(|chunk| chunk.text.lines().filter(|line| line.starts_with('2')).count())
             .sum();
         assert_eq!(rows, 200);
+    }
+
+    #[test]
+    fn a_head_too_long_to_repeat_is_kept_and_shortened() {
+        // A caption longer than half a chunk: it is a chunk of its own, and
+        // each chunk of rows starts with its start and the header row.
+        let caption = format!("Table 1: {}", vec!["word"; 80].join(" "));
+        let chunks = render_chunks(&doc(vec![table_block(&caption, 1, 200)]), &opts(64));
+        assert!(chunks.iter().any(|chunk| chunk.text.contains("word word word word word word word word word word")));
+        let with_rows: Vec<_> = chunks
+            .iter()
+            .filter(|chunk| chunk.text.lines().any(|line| line.starts_with("20")))
+            .collect();
+        assert!(!with_rows.is_empty());
+        for chunk in with_rows {
+            assert!(chunk.text.contains("Table 1:") && chunk.text.contains("Year | Price"), "{}", chunk.text);
+            assert!(chunk.tokens <= 64, "{}", chunk.text);
+        }
     }
 
     #[test]
