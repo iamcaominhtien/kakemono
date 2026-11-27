@@ -699,6 +699,7 @@ impl<'a> Reader<'a> {
                     ..Default::default()
                 }));
             }
+            empty_columns(&mut table);
             flow.items.push(Item::Table(table));
         }
     }
@@ -914,6 +915,58 @@ fn front_matter(body: &mut Vec<Item>, title: Option<&str>, creators: &[String]) 
         let start = at.map_or(0, |idx| idx + 1);
         for (offset, creator) in creators.iter().enumerate() {
             body.insert(start + offset, plain_para(AUTHOR_STYLE, creator));
+        }
+    }
+}
+
+/// Removes the columns of `table` whose cells are all empty (the column of
+/// the arrows to vote of Hacker News): a cell over several columns spans
+/// one less.
+fn empty_columns(table: &mut Table) {
+    let empty = |cell: &Cell| {
+        cell.body.iter().all(|item| match item {
+            Item::Para(para) => para.inlines.iter().all(|inline| match inline {
+                Inline::Text(span) => span.text.trim().is_empty(),
+                _ => false,
+            }),
+            Item::Table(_) => false,
+        })
+    };
+    let width = |row: &Row| row.cells.iter().map(|cell| cell.span.max(1)).sum::<usize>();
+    let mut column = table.rows.iter().map(width).max().unwrap_or_default();
+    while column > 0 {
+        column -= 1;
+        // The cell of each row over `column`.
+        let at = |row: &Row| {
+            let mut start = 0;
+            row.cells.iter().position(|cell| {
+                start += cell.span.max(1);
+                start > column
+            })
+        };
+        let mut single = false;
+        let removable = table.rows.iter().all(|row| match at(row) {
+            None => true,
+            Some(index) => {
+                let cell = &row.cells[index];
+                if cell.span.max(1) > 1 {
+                    return true;
+                }
+                single = true;
+                empty(cell)
+            }
+        });
+        if !removable || !single || table.rows.iter().map(width).max().unwrap_or_default() <= 1 {
+            continue;
+        }
+        for row in &mut table.rows {
+            if let Some(index) = at(row) {
+                if row.cells[index].span.max(1) > 1 {
+                    row.cells[index].span -= 1;
+                } else {
+                    row.cells.remove(index);
+                }
+            }
         }
     }
 }
