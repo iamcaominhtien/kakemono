@@ -8,6 +8,7 @@ Usage: python scripts/make-aio-stub.py [--check]
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import sys
 from pathlib import Path
@@ -54,7 +55,7 @@ def params(signature: inspect.Signature, extra: str = "", skip_self: bool = Fals
 def stub() -> str:
     lines = [
         "# Written by scripts/make-aio-stub.py from the signatures of kakemono: do not edit.",
-        "from typing import Any, Dict, List, Literal, Optional, Sequence, Union",
+        "from typing import Any, AsyncIterator, Dict, Iterable, List, Literal, Optional, Sequence, Union",
         "",
         "from . import (",
         "    CancelToken,",
@@ -71,9 +72,17 @@ def stub() -> str:
         "",
         "class ProcessError(RuntimeError): ...",
         "",
+        "class ConvertResult:",
+        *(f"    {field.name}: {field.type}" for field in dataclasses.fields(aio.ConvertResult)),
+        "    @property",
+        "    def ok(self) -> bool: ...",
+        "",
+        f"def convert_many({params(inspect.signature(aio.convert_many))}) -> "
+        f"{inspect.signature(aio.convert_many).return_annotation}: ...",
+        "",
     ]
     for name in aio.__all__:
-        if name in ("Document", "ProcessError"):
+        if name in ("Document", "ProcessError", "ConvertResult", "convert_many"):
             continue
         sync = inspect.signature(getattr(kakemono, name))
         ret = sync.return_annotation

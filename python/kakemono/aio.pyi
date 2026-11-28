@@ -1,5 +1,5 @@
 # Written by scripts/make-aio-stub.py from the signatures of kakemono: do not edit.
-from typing import Any, Dict, List, Literal, Optional, Sequence, Union
+from typing import Any, AsyncIterator, Dict, Iterable, List, Literal, Optional, Sequence, Union
 
 from . import (
     CancelToken,
@@ -15,6 +15,18 @@ from . import (
 __all__: List[str]
 
 class ProcessError(RuntimeError): ...
+
+class ConvertResult:
+    index: int
+    source: Any
+    outputs: Dict[str, str]
+    errors: Dict[str, BaseException]
+    error: Optional[BaseException]
+    seconds: float
+    @property
+    def ok(self) -> bool: ...
+
+def convert_many(sources: Iterable[Any], out_dir: PathArg, formats: Sequence[str] = ('md',), *, limit: Optional[int] = None, isolate: bool = False, timeout: Optional[float] = None, jobs: Optional[int] = None, options: Optional[Dict[str, Dict[str, Any]]] = None, cancel: Optional[CancelToken] = None) -> AsyncIterator[ConvertResult]: ...
 
 async def analyze(source: Source, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None, cancel: Optional[CancelToken] = None, timeout: Optional[float] = None, isolate: bool = False) -> Dict[str, Any]: ...
 async def convert(source: Source, mode: Mode = 'friendly', *, isolate: bool = False, **options: Any) -> str: ...

@@ -18,6 +18,9 @@ To write several outputs of one document, open it once:
 >>> doc = await aio.Document.open("paper.pdf")
 >>> await doc.to_docx("out/paper.docx"); await doc.to_epub("out/paper.epub")
 
+To convert many documents into several formats, ``limit`` at a time, each
+with its own time limit, use :func:`convert_many`.
+
 Cancelling the task stops the conversion: it stops at its next stopping
 point, normally within a page, and the cancellation is raised once it has
 stopped, so it writes no file afterwards (a download it was waiting for may
@@ -25,9 +28,14 @@ hold its connection until the download's own time limit, writing nothing).
 A conversion still waiting for a thread of the executor is dropped at once.
 ``timeout`` (seconds, counted from the call) raises ``TimeoutError`` in the
 same way; ``asyncio.wait_for`` (and ``asyncio.timeout`` from Python 3.11)
-work too, and raise ``asyncio.TimeoutError``. The number of conversions at
-once is that of the loop's default executor (``loop.set_default_executor``),
-or of an ``asyncio.Semaphore`` of your own.
+work too, and raise ``asyncio.TimeoutError``.
+
+The conversions run in the loop's default executor, which has at most
+``min(32, os.cpu_count() + 4)`` threads: more conversions at once wait for a
+thread. To run more, give the loop a larger executor
+(``loop.set_default_executor(ThreadPoolExecutor(max_workers=50))``) and each
+conversion fewer threads of its own (``jobs=1``); :func:`convert_many` sets
+up its threads itself.
 
 With ``isolate=True``, a function runs in a process of its own, which a
 cancellation or ``timeout`` kills at once: for documents that are not
@@ -44,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import functools
 import inspect
 import os
@@ -51,7 +60,9 @@ import pickle
 import sys
 import threading
 import warnings
-from typing import Any, Callable, Dict, List, Literal, Optional
+import time
+from concurrent.futures import Executor, ThreadPoolExecutor
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Literal, Optional, Sequence
 
 from . import (
     CancelToken,
@@ -77,11 +88,13 @@ from . import (
 )
 
 __all__ = [
+    "ConvertResult",
     "Document",
     "ProcessError",
     "analyze",
     "convert",
     "convert_all",
+    "convert_many",
     "fetch_arxiv",
     "read_formula",
     "render_svg",
@@ -106,12 +119,14 @@ async def _stopped(
     *args: Any,
     cancel: Optional[CancelToken] = None,
     timeout: Optional[float] = None,
+    _executor: Optional[Executor] = None,
     **kwargs: Any,
 ) -> Any:
-    """`function(*args, **kwargs)` run in a worker thread with a token of its
-    own (a child of `cancel`, timing out `timeout` seconds from now), which a
-    cancellation of the awaiting task cancels; the cancellation is raised
-    once the work has stopped, or at once when it has not started."""
+    """`function(*args, **kwargs)` run in a worker thread (of `_executor`, by
+    default the loop's) with a token of its own (a child of `cancel`, timing
+    out `timeout` seconds from now), which a cancellation of the awaiting
+    task cancels; the cancellation is raised once the work has stopped, or at
+    once when it has not started."""
     token = cancel.child(timeout=timeout) if cancel is not None else CancelToken(timeout=timeout)
     started = threading.Event()
     context = contextvars.copy_context()  # the caller's, as asyncio.to_thread gives it
@@ -120,7 +135,7 @@ async def _stopped(
         started.set()
         return context.run(function, *args, cancel=token, **kwargs)
 
-    work = asyncio.get_running_loop().run_in_executor(None, call)
+    work = asyncio.get_running_loop().run_in_executor(_executor, call)
     try:
         return await asyncio.shield(work)
     except asyncio.CancelledError:
@@ -381,3 +396,130 @@ class Document:
     async def analyze(self, **kwargs: Any) -> Dict[str, Any]:
         """:meth:`kakemono.Document.analyze`, awaited."""
         return await _stopped(self.sync.analyze, **kwargs)
+
+
+@dataclasses.dataclass
+class ConvertResult:
+    """What :func:`convert_many` did with one document."""
+
+    #: Its place in the `sources` given (from 0).
+    index: int
+    #: The source, as given.
+    source: Any
+    #: The file written for each format, by format.
+    outputs: Dict[str, str]
+    #: The error of each format that could not be written (a PDF has no
+    #: ``pdf`` output, for example): the other formats are written.
+    errors: Dict[str, BaseException]
+    #: The error that stopped the whole document: it could not be read, or
+    #: it ran out of time (``TimeoutError``) or was cancelled
+    #: (``kakemono.Cancelled``); the formats written before it are kept
+    #: (with ``isolate=True``, they are not known: `outputs` is empty).
+    error: Optional[BaseException]
+    #: How long the document took, in seconds.
+    seconds: float
+
+    @property
+    def ok(self) -> bool:
+        """Whether every format was written."""
+        return self.error is None and not self.errors
+
+
+async def convert_many(
+    sources: Iterable[Any],
+    out_dir: PathArg,
+    formats: Sequence[str] = ("md",),
+    *,
+    limit: Optional[int] = None,
+    isolate: bool = False,
+    timeout: Optional[float] = None,
+    jobs: Optional[int] = None,
+    options: Optional[Dict[str, Dict[str, Any]]] = None,
+    cancel: Optional[CancelToken] = None,
+) -> AsyncIterator[ConvertResult]:
+    """Convert many documents, `limit` at a time, each into every one of
+    `formats`, and yield a :class:`ConvertResult` for each one as soon as it
+    is done (not in the order given: sort them by ``index`` for that).
+
+    >>> async for result in aio.convert_many(paths, "out", ["docx", "md", "pdf"], limit=50, timeout=120):
+    ...     print(result.source, "ok" if result.ok else result.error or result.errors)
+
+    - `sources`: paths, arXiv ids, web addresses or bytes, as for
+      :class:`kakemono.Document`; a ``(name, source)`` pair names its files.
+    - `out_dir`: where the files go, ``<name>.<ext>`` as ``kakemono convert``
+      writes them, with the pictures in ``<name>_assets``
+      (``<name>_<format>_assets`` when several formats write pictures). A
+      name is the file's name without its extension, an arXiv id, the last
+      part of a web address, or ``document-<n>`` for bytes; a name already
+      taken gets ``-2``, ``-3``, ...
+    - `formats`: any of ``html`` (the friendly mode), ``friendly``,
+      ``medium``, ``hard``, ``hard-95`` (``<name>.<mode>.html``), ``docx``,
+      ``md``, ``tex``, ``typ``, ``epub``, ``json``, ``jsonl`` (chunks) and
+      ``pdf`` (a Word document, workbook, book or web page laid out in
+      pages). Each document is read and analysed once for all of them.
+    - `limit`: how many documents at once; by default one per core. The
+      threads are set up for it: there is no need to change the loop's
+      executor.
+    - `isolate`: each document in a Python process of its own, killed when
+      it runs out of time or is cancelled (see the module's documentation).
+      `limit` processes run at once: mind the memory.
+    - `timeout`: the time limit of each document, in seconds, from when it
+      starts (waiting for its turn does not count; with `isolate`, the start
+      of its process does).
+    - `jobs`: the threads of each document; by default the cores shared out
+      among the `limit` documents (one each when there are as many
+      documents as cores).
+    - `options`: the options of each format by name, and those of
+      :class:`kakemono.Document` under ``"document"``, for example
+      ``{"document": {"tables": False}, "md": {"mode": "medium"}}``.
+    - `cancel`: a :data:`kakemono.CancelToken` that stops them all.
+
+    A document that fails does not stop the others: its error is in its
+    result. Cancelling the task that iterates stops every document; so does
+    leaving the loop early, once the iterator is closed (at the end of
+    ``asyncio.run``, or at once with ``contextlib.aclosing`` on Python 3.10+).
+    """
+    from . import _batch
+
+    formats = _batch.check_formats(formats)
+    named = _batch.output_names(list(sources))
+    cores = os.cpu_count() or 1
+    limit = limit if limit is not None else cores
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    jobs = jobs if jobs is not None else max(1, cores // limit)
+    folder = os.fspath(out_dir)
+    executor = None if isolate else ThreadPoolExecutor(max_workers=limit, thread_name_prefix="kakemono")
+    gate = asyncio.Semaphore(limit)
+
+    async def one(index: int) -> ConvertResult:
+        name, source = named[index]
+        call = dict(source=source, out_dir=folder, name=name, formats=formats, jobs=jobs, options=options)
+        async with gate:
+            start = time.perf_counter()
+            try:
+                if isolate:
+                    outcome = await _isolated(
+                        "kakemono._batch:convert_one", (), {**call, "cancel": cancel, "timeout": timeout}
+                    )
+                else:
+                    outcome = await _stopped(
+                        _batch.convert_one, cancel=cancel, timeout=timeout, _executor=executor, **call
+                    )
+                written, failed, error = outcome
+            except asyncio.CancelledError:
+                raise
+            except Exception as stopped:  # killed by its time limit, crashed, ...
+                written, failed, error = {}, {}, stopped
+            return ConvertResult(index, source, written, failed, error, time.perf_counter() - start)
+
+    tasks = [asyncio.ensure_future(one(index)) for index in range(len(named))]
+    try:
+        for done in asyncio.as_completed(tasks):
+            yield await done
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if executor is not None:
+            executor.shutdown(wait=False)

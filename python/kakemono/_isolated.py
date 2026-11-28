@@ -1,6 +1,7 @@
 """The process of an isolated conversion (``isolate=True`` in
 :mod:`kakemono.aio`): reads ``(name, args, kwargs)`` pickled on its standard
-input, runs ``kakemono.<name>(*args, **kwargs)`` and writes ``(status, value,
+input, runs ``kakemono.<name>(*args, **kwargs)`` (or, for a name
+``module:function``, that function) and writes ``(status, value,
 warnings)`` pickled on its standard output, where status is ``"ok"`` (value
 is the result) or ``"error"`` (value is the exception)."""
 
@@ -20,12 +21,18 @@ def main() -> None:
     result = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
+    import importlib
+
     import kakemono
+
+    # `name` is a function of kakemono, or `module:function`.
+    module, _, function = name.rpartition(":")
+    target = getattr(importlib.import_module(module) if module else kakemono, function)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
-            outcome = ("ok", getattr(kakemono, name)(*args, **kwargs))
+            outcome = ("ok", target(*args, **kwargs))
         except Exception as error:  # handed to the parent, which raises it
             outcome = ("error", error)
     shown = [(str(warning.message), warning.category) for warning in caught]

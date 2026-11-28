@@ -1,6 +1,7 @@
 """Tests of kakemono.aio, the awaited functions, on the LIGO paper."""
 
 import asyncio
+import os
 import inspect
 import subprocess
 import sys
@@ -128,7 +129,7 @@ def test_errors_are_raised_where_awaited():
 
 def test_the_functions_keep_their_signature_and_docs():
     for name in aio.__all__:
-        if name in ("Document", "ProcessError"):
+        if name in ("Document", "ProcessError", "ConvertResult", "convert_many"):
             continue
         function, sync = getattr(aio, name), getattr(kakemono, name)
         assert inspect.iscoroutinefunction(function), name
@@ -372,3 +373,80 @@ def test_cancelled_is_a_kakemono_exception_that_pickles():
     stopped = kakemono.CancelToken()
     stopped.cancel()
     assert stopped.cancelled and not stopped.timed_out
+
+
+# --- convert_many -------------------------------------------------------------
+
+DOCX = Path(__file__).resolve().parents[2] / "tests" / "data" / "word" / "sample.docx"
+XLSX = Path(__file__).resolve().parents[2] / "tests" / "data" / "excel" / "sample.xlsx"
+
+
+def _many(*args, **kwargs):
+    async def main():
+        return [result async for result in aio.convert_many(*args, **kwargs)]
+
+    return sorted(asyncio.run(main()), key=lambda result: result.index)
+
+
+@pytest.mark.parametrize("isolate", [False, True])
+def test_convert_many_writes_every_format_of_every_document(tmp_path, isolate):
+    sources = [LIGO, DOCX, XLSX, b"not a document", ("named", DOCX.read_bytes())]
+    results = _many(sources, tmp_path, ["md", "docx", "pdf", "medium"], limit=2, isolate=isolate)
+    assert [result.index for result in results] == [0, 1, 2, 3, 4]
+    ligo, docx, xlsx, broken, named = results
+    # The PDF has no pdf output: only that format fails.
+    assert set(ligo.outputs) == {"md", "docx", "medium"} and set(ligo.errors) == {"pdf"}
+    assert Path(ligo.outputs["md"]).read_text() == kakemono.to_markdown(LIGO, tmp_path / "again" / "1602.03837v1.md")
+    assert Path(ligo.outputs["medium"]).name == "1602.03837v1.medium.html"
+    # A Word document has no pages: no medium mode, but a PDF.
+    assert set(docx.errors) == {"medium"} and Path(docx.outputs["pdf"]).read_bytes().startswith(b"%PDF-")
+    assert set(xlsx.outputs) == {"md", "docx", "pdf"} and set(xlsx.errors) == {"medium"}  # no pages
+    assert isinstance(broken.error, ValueError) and broken.outputs == {}
+    assert Path(named.outputs["md"]).name == "named.md"
+    assert (tmp_path / "1602.03837v1_assets").is_dir()
+
+
+def test_convert_many_gives_names_once():
+    from kakemono import _batch
+
+    names = [name for name, _ in _batch.output_names(["a/x.pdf", "b/x.pdf", b"..", "https://example.org/wiki/Rust", "1706.03762"])]
+    assert names == ["x", "x-2", "document-3", "Rust", "1706.03762"]
+    with pytest.raises(ValueError):
+        _batch.check_formats(["md", "doc"])
+
+
+@pytest.mark.parametrize("isolate", [False, True])
+def test_convert_many_times_each_document_out(tmp_path, isolate):
+    results = _many([LIGO] * 4 + [DOCX], tmp_path, ["epub", "md"], limit=5, timeout=0.05 if not isolate else 0.3, isolate=isolate)
+    assert all(isinstance(result.error, TimeoutError) for result in results[:4])
+
+
+def test_convert_many_runs_limit_documents_at_once(tmp_path):
+    def running_most(limit):
+        start = time.perf_counter()
+        _many([LIGO] * 8, tmp_path / str(limit), ["md"], limit=limit, jobs=1)
+        return time.perf_counter() - start
+
+    # Eight documents one at a time take about four times as long as four
+    # at a time (on at least four cores).
+    if (os.cpu_count() or 1) >= 4:
+        assert running_most(4) < running_most(1) * 0.6
+
+
+def test_convert_many_stops_every_document_when_cancelled(tmp_path):
+    async def main():
+        task = asyncio.create_task(_drain(aio.convert_many([LIGO] * 6, tmp_path, ["epub"], limit=3)))
+        await asyncio.sleep(0.05)
+        start = time.perf_counter()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return time.perf_counter() - start
+
+    assert asyncio.run(main()) < 0.5
+    time.sleep(0.5)
+    assert not list(tmp_path.glob("*.epub")), "no document goes on after the cancellation"
+
+
+async def _drain(results):
+    return [result async for result in results]
