@@ -114,10 +114,12 @@ public final class Document implements AutoCloseable {
     /** Runs an open {@code call} with the token and time limit of {@code options}. */
     private static Document opened(OpenOptions options, Opener call) {
         String json = json(options);
+        // Read once: the fence must keep the token whose handle is given alive.
+        CancelToken token = Options.token(options);
         try {
-            return new Document(call.open(json, Options.cancelHandle(options), Options.timeoutMillis(options)));
+            return new Document(call.open(json, token == null ? 0 : token.handle(), Options.timeoutMillis(options)));
         } finally {
-            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+            Reference.reachabilityFence(token);
         }
     }
 
@@ -184,12 +186,13 @@ public final class Document implements AutoCloseable {
     /** Renders the document as {@code target}: {@code { text, data, paths, files }}. */
     private Object[] render(String target, Options<?> options) {
         String json = json(options);
-        long cancel = Options.cancelHandle(options);
+        CancelToken token = Options.token(options);
+        long cancel = token == null ? 0 : token.handle();
         double timeout = Options.timeoutMillis(options);
         try {
             return call(handle -> Native.render(handle, target, json, cancel, timeout));
         } finally {
-            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+            Reference.reachabilityFence(token);
         }
     }
 
@@ -304,13 +307,14 @@ public final class Document implements AutoCloseable {
     /** Chunks for retrieval (RAG), cut at sentence ends and headed by their section. */
     public List<Chunk> toChunks(ChunkOptions options) {
         String json = json(options);
-        long cancel = Options.cancelHandle(options);
+        CancelToken token = Options.token(options);
+        long cancel = token == null ? 0 : token.handle();
         double timeout = Options.timeoutMillis(options);
         Object[] items;
         try {
             items = call(handle -> Native.chunks(handle, json, cancel, timeout));
         } finally {
-            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+            Reference.reachabilityFence(token);
         }
         List<Chunk> chunks = new ArrayList<>(items.length);
         for (Object item : items) {

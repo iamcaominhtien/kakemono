@@ -17,7 +17,8 @@ use std::sync::Arc;
 /// An error of kakemono as a JavaScript error, its `code` saying its kind:
 /// `InvalidArg` for a wrong argument or option, `GenericFailure` for a
 /// document that cannot be read, fetched or written so, `Unknown` for a bug
-/// of kakemono.
+/// of kakemono (`Cancelled` for a stopped call, which [`rejection`] gives as
+/// an `AbortError` or a `TimeoutError` instead).
 fn js_error(err: core::Error) -> Error {
     let status = match err.kind() {
         core::ErrorKind::InvalidArgument => Status::InvalidArg,
@@ -57,6 +58,9 @@ pub struct Signal {
     listener: Option<sys::napi_ref>,
     /// Cancelled when the signal is aborted.
     token: CancelToken,
+    /// The JavaScript thread of `env`: the only one the references may be
+    /// used on.
+    thread: std::thread::ThreadId,
 }
 
 /// `addEventListener` or `removeEventListener` of an event target, called
@@ -93,6 +97,7 @@ impl FromNapiValue for Signal {
             signal: signal_ref,
             listener: None,
             token,
+            thread: std::thread::current().id(),
         };
         if aborted {
             this.token.cancel();
@@ -133,11 +138,17 @@ impl Signal {
 
 impl Drop for Signal {
     fn drop(&mut self) {
+        // napi drops the callback that owns this on another thread when the
+        // environment went away first (a terminated worker): the references
+        // went with it, and must not be touched.
+        if std::thread::current().id() != self.thread {
+            return;
+        }
         // Errors are left: the signal may already be collected.
         if let Some(listener) = self.listener.take() {
             let mut function = std::ptr::null_mut();
-            // SAFETY: the references are of `env`, used on its thread (a
-            // `Signal` never leaves it: it is not `Send`).
+            // SAFETY: the references are of `env`, used on its thread
+            // (checked above).
             unsafe {
                 if check(sys::napi_get_reference_value(self.env, listener, &mut function)).is_ok()
                     && let Some(signal) = self.object()

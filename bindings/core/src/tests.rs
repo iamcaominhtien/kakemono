@@ -260,3 +260,24 @@ fn a_time_limit_stops_opening_and_rendering() {
         );
     }
 }
+
+#[test]
+fn an_error_of_work_stopped_by_its_token_is_the_token_s() {
+    // As a download does: it sees the token stopped and fails before unwinding.
+    let token = CancelToken::new();
+    let err = super::guarded_with(Some(&token), || -> super::Result<()> {
+        token.cancel();
+        Err(super::Error::new(
+            ErrorKind::Document,
+            "reading: the conversion was cancelled",
+        ))
+    })
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Cancelled);
+    // Without a stopped token, the error stays as it is.
+    let err = super::guarded_with(Some(&CancelToken::new()), || -> super::Result<()> {
+        Err(super::Error::invalid("no"))
+    })
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+}

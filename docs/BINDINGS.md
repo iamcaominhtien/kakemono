@@ -57,7 +57,9 @@ there first (`RenderOptions`, `Target::options`), then into each binding's typed
   call stops soon after (normally within a page; a download within its next chunk) with an error
   of its own kind (`AbortError`/`TimeoutError`, `CANCELLED`/`TIMED_OUT`,
   `OperationCanceledException`, `KK_ERROR_CANCELLED`/`KK_ERROR_TIMED_OUT`), and the document stays
-  usable. Not in WebAssembly: its work is synchronous, and stopping would abort the module.
+  usable. Not in WebAssembly: its work is synchronous, and stopping would abort the module. A
+  call that waits for another call's page layout of the same Word document (its hard and medium
+  modes, its PDF) stops only once that layout ends.
 
 ## Performance
 

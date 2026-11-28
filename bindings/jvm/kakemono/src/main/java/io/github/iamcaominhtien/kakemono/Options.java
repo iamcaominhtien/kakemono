@@ -46,14 +46,12 @@ public abstract class Options<S extends Options<S>> {
         return limit.getSeconds() * 1000.0 + limit.getNano() / 1e6;
     }
 
-    /** The token of the call, or null. */
-    final CancelToken cancelToken() {
-        return cancel;
-    }
-
-    /** The native token of the call, or 0. */
-    static long cancelHandle(Options<?> options) {
-        return options == null || options.cancel == null ? 0 : options.cancel.handle();
+    /**
+     * The token of the call, or null: read it once, then take its handle and fence it, since
+     * another thread may change the options meanwhile.
+     */
+    static CancelToken token(Options<?> options) {
+        return options == null ? null : options.cancel;
     }
 
     /** The time limit of the call in milliseconds, or 0. */

@@ -178,7 +178,12 @@ pub fn guarded<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
 /// already stopped).
 pub fn guarded_with<T: Send>(stop: Option<&CancelToken>, work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
     guarded(|| match stop {
-        Some(token) => token.run(work)?,
+        // A stopped download can end in an error of its own before the
+        // token unwinds: the error is then the token's.
+        Some(token) => token.run(work)?.map_err(|err| match token.state() {
+            Some(stopped) => stopped.into(),
+            None => err,
+        }),
         None => work(),
     })
 }

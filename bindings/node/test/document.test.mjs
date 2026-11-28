@@ -140,3 +140,24 @@ test('many calls with one long-lived signal leave no listeners behind', async ()
   assert.deepEqual(warnings.filter((w) => /listener/i.test(w.message)), [])
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
 })
+
+test('a worker terminated while its signalled calls run does not crash the process', async () => {
+  const { Worker } = await import('node:worker_threads')
+  const code = `
+const { Document } = require(${JSON.stringify(new URL('../index.js', import.meta.url).pathname)})
+const { parentPort } = require('node:worker_threads')
+;(async () => {
+  const doc = await Document.fromFile(${JSON.stringify(data('1602.03837v1.pdf'))}, { jobs: 1 })
+  const controller = new AbortController()
+  for (let i = 0; i < 4; i++) doc.toHtml({ mode: 'hard', signal: controller.signal }).catch(() => {})
+  parentPort.postMessage('started')
+})()
+`
+  for (let round = 0; round < 2; round++) {
+    const worker = new Worker(code, { eval: true })
+    await new Promise((resolve) => worker.once('message', resolve))
+    await worker.terminate()
+    // The calls end on the blocking pool after the worker's environment is gone.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+})
