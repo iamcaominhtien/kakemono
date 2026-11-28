@@ -33,10 +33,14 @@ fn a_token_that_is_not_cancelled_changes_nothing() {
 
 #[test]
 fn a_cancelled_conversion_stops_soon_at_any_point() {
-    let start = Instant::now();
-    let _ = markdown(LIGO, 4);
-    let full = start.elapsed();
     for jobs in [1, 4] {
+        let start = Instant::now();
+        let _ = markdown(LIGO, jobs);
+        let full = start.elapsed();
+        // The longest step (drawing one figure) is a share of the whole
+        // run, whatever the speed of the build (a debug build with coverage
+        // is tens of times slower than a release build).
+        let limit = Duration::from_millis(200) + full / 4;
         for tenth in 1..10 {
             let token = CancelToken::new();
             let stopper = token.clone();
@@ -49,13 +53,13 @@ fn a_cancelled_conversion_stops_soon_at_any_point() {
             let outcome = token.run(|| markdown(LIGO, jobs));
             let took = start.elapsed();
             timer.join().unwrap();
-            // A run on one thread takes longer: the cancellation can come
-            // before its end. Either way it does not go on long after it.
+            // The run can end before the cancellation comes; otherwise it
+            // does not go on long after it.
             if outcome.is_err() {
                 assert_eq!(outcome, Err(Cancelled::Requested));
                 assert!(
-                    took < at + Duration::from_millis(500),
-                    "jobs {jobs}, cancelled at {at:?}, stopped after {took:?}"
+                    took < at + limit,
+                    "jobs {jobs}, run of {full:?}, cancelled at {at:?}, stopped after {took:?}"
                 );
             }
         }
@@ -64,10 +68,13 @@ fn a_cancelled_conversion_stops_soon_at_any_point() {
 
 #[test]
 fn a_time_limit_stops_the_conversion() {
-    let token = CancelToken::with_timeout(Duration::from_millis(30));
+    let start = Instant::now();
+    let _ = markdown(LIGO, 4);
+    let full = start.elapsed();
+    let token = CancelToken::with_timeout(full / 10);
     let start = Instant::now();
     assert_eq!(token.run(|| markdown(LIGO, 4)), Err(Cancelled::TimedOut));
-    assert!(start.elapsed() < Duration::from_millis(600));
+    assert!(start.elapsed() < full / 10 + Duration::from_millis(200) + full / 4);
 }
 
 #[test]
