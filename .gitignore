@@ -34,9 +34,10 @@ benchmark-results/
 /tests/data/word-corpus/
 # Public Excel workbooks (tests/data/excel-corpus.tsv)
 /tests/data/excel-corpus/
+# Public PowerPoint decks (tests/data/powerpoint-corpus.tsv)
+/tests/data/powerpoint-corpus/
 
 # Web pages (scripts/fetch-test-pages.sh)
 /tests/data/web/
 /tests/data/web-bench/
 /target-*/
-tests/data/powerpoint-corpus/
