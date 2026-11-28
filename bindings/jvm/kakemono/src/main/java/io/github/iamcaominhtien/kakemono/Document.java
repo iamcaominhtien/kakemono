@@ -1,6 +1,7 @@
 package io.github.iamcaominhtien.kakemono;
 
 import java.lang.ref.Cleaner;
+import java.lang.ref.Reference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,7 +25,9 @@ import java.util.function.LongFunction;
  * }</pre>
  *
  * <p>A document can be written from several threads at once. The work runs on a thread of
- * kakemono's own with a large stack, so any thread may call it. Close it to free its memory at
+ * kakemono's own with a large stack, so any thread may call it; the calling thread waits, and a
+ * virtual thread stays pinned to its carrier meanwhile (a native call), so run conversions on
+ * platform threads (a bounded pool) when there are many at once. Close it to free its memory at
  * once (a document left open is freed once it is unreachable). Methods throw {@link
  * KakemonoException} on error, and {@link IllegalStateException} once the document is closed.
  */
@@ -81,6 +84,19 @@ public final class Document implements AutoCloseable {
         format = state.with(Native::format);
     }
 
+    /**
+     * Runs {@code call} with the handle. The fence keeps this document reachable until the
+     * call returns: otherwise, in {@code Document.open(data).toMarkdown()}, the garbage collector
+     * could clean it while the call runs.
+     */
+    private <T> T call(LongFunction<T> call) {
+        try {
+            return state.with(call);
+        } finally {
+            Reference.reachabilityFence(this);
+        }
+    }
+
     /** The JSON of {@code options}, or null. */
     private static String json(Options<?> options) {
         return options == null ? null : options.toJson();
@@ -126,17 +142,17 @@ public final class Document implements AutoCloseable {
 
     /** The number of pages of a PDF (0 for the formats that have none). */
     public int pageCount() {
-        return state.with(Native::pageCount);
+        return call(Native::pageCount);
     }
 
     /** The title of the document, when it has one. */
     public Optional<String> title() {
-        return Optional.ofNullable(state.with(Native::title)).map(Document::utf8);
+        return Optional.ofNullable(call(Native::title)).map(Document::utf8);
     }
 
     /** The warnings of applying the edited content: blocks that kept their own text. */
     public List<String> warnings() {
-        return List.of(state.with(Native::warnings));
+        return List.of(call(Native::warnings));
     }
 
     /** UTF-8 text. */
@@ -147,7 +163,7 @@ public final class Document implements AutoCloseable {
     /** Renders the document as {@code target}: {@code { text, data, paths, files }}. */
     private Object[] render(String target, Options<?> options) {
         String json = json(options);
-        return state.with(handle -> Native.render(handle, target, json));
+        return call(handle -> Native.render(handle, target, json));
     }
 
     /** The picture files of a rendered output. */
@@ -203,9 +219,19 @@ public final class Document implements AutoCloseable {
         return text("json", options);
     }
 
+    /** LaTeX source and its picture files (in {@code images/}). */
+    public TextOutput toLatex() {
+        return toLatex(null);
+    }
+
     /** LaTeX source and its picture files. */
     public TextOutput toLatex(LatexOptions options) {
         return text("latex", options);
+    }
+
+    /** Typst source and its picture files (in {@code images/}). */
+    public TextOutput toTypst() {
+        return toTypst(null);
     }
 
     /** Typst source and its picture files. */
@@ -221,6 +247,11 @@ public final class Document implements AutoCloseable {
     /** A Word document; its pictures are files too when {@code imageDir} is given. */
     public BinaryOutput toDocx(DocxOptions options) {
         return binary("docx", options);
+    }
+
+    /** An EPUB 3 book. */
+    public BinaryOutput toEpub() {
+        return toEpub(null);
     }
 
     /** An EPUB 3 book. */
@@ -241,7 +272,7 @@ public final class Document implements AutoCloseable {
     /** Chunks for retrieval (RAG), cut at sentence ends and headed by their section. */
     public List<Chunk> toChunks(ChunkOptions options) {
         String json = json(options);
-        Object[] items = state.with(handle -> Native.chunks(handle, json));
+        Object[] items = call(handle -> Native.chunks(handle, json));
         List<Chunk> chunks = new ArrayList<>(items.length);
         for (Object item : items) {
             Object[] fields = (Object[]) item;

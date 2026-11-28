@@ -9,6 +9,8 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <!-- Trimming and NativeAOT: the analyzers refuse reflection (warnings are errors). -->
+    <IsAotCompatible Condition="'$(TargetFramework)' == 'net8.0'">true</IsAotCompatible>
     <RootNamespace>Kakemono</RootNamespace>
     <PackageId>Kakemono</PackageId>
     <Version>0.20.0</Version>

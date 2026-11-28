@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using System.Text.Json.Serialization;
 
 namespace Kakemono
 {
@@ -95,31 +94,71 @@ namespace Kakemono
     public sealed class Chunk
     {
         /// <summary>Number of the chunk, in reading order, from 0.</summary>
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
+        public int Id { get; private set; }
 
         /// <summary>The text to embed: the section path, a blank line, then the text.</summary>
-        [JsonPropertyName("text")]
-        public string Text { get; set; } = "";
+        public string Text { get; private set; } = "";
 
         /// <summary>Its size in tokens.</summary>
-        [JsonPropertyName("tokens")]
-        public int Tokens { get; set; }
+        public int Tokens { get; private set; }
 
         /// <summary>The title of the document.</summary>
-        [JsonPropertyName("title")]
-        public string? Title { get; set; }
+        public string? Title { get; private set; }
 
         /// <summary>The headings of the section it is in, from the outermost.</summary>
-        [JsonPropertyName("section")]
-        public IReadOnlyList<string> Section { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<string> Section { get; private set; } = Array.Empty<string>();
 
         /// <summary>The blocks of the document it holds (their numbers).</summary>
-        [JsonPropertyName("blocks")]
-        public IReadOnlyList<int> Blocks { get; set; } = Array.Empty<int>();
+        public IReadOnlyList<int> Blocks { get; private set; } = Array.Empty<int>();
 
         /// <summary>The pages it comes from, from 0 (<c>[0]</c> for documents without pages).</summary>
-        [JsonPropertyName("pages")]
-        public IReadOnlyList<int> Pages { get; set; } = Array.Empty<int>();
+        public IReadOnlyList<int> Pages { get; private set; } = Array.Empty<int>();
+
+        /// <summary>A chunk from one line of kakemono's JSON Lines (no reflection).</summary>
+        internal static Chunk Read(string line)
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(line);
+            var root = json.RootElement;
+            var chunk = new Chunk
+            {
+                Id = root.GetProperty("id").GetInt32(),
+                Text = root.GetProperty("text").GetString() ?? "",
+                Tokens = root.GetProperty("tokens").GetInt32(),
+                Section = Strings(root, "section"),
+                Blocks = Numbers(root, "blocks"),
+                Pages = Numbers(root, "pages"),
+            };
+            if (root.TryGetProperty("title", out var title) && title.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                chunk.Title = title.GetString();
+            }
+            return chunk;
+        }
+
+        private static IReadOnlyList<string> Strings(System.Text.Json.JsonElement root, string name)
+        {
+            var items = new List<string>();
+            if (root.TryGetProperty(name, out var array))
+            {
+                foreach (var item in array.EnumerateArray())
+                {
+                    items.Add(item.GetString() ?? "");
+                }
+            }
+            return items;
+        }
+
+        private static IReadOnlyList<int> Numbers(System.Text.Json.JsonElement root, string name)
+        {
+            var items = new List<int>();
+            if (root.TryGetProperty(name, out var array))
+            {
+                foreach (var item in array.EnumerateArray())
+                {
+                    items.Add(item.GetInt32());
+                }
+            }
+            return items;
+        }
     }
 }

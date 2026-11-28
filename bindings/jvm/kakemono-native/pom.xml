@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The JNI library of each platform, a jar per classifier, built by the
+     Bindings release workflow from ${natives.dir}/<platform>/, which holds
+     io/github/iamcaominhtien/kakemono/native/<platform>/<library>. Built in
+     the `release` profile only. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.github.iamcaominhtien</groupId>
+    <artifactId>kakemono-parent</artifactId>
+    <version>0.20.0</version>
+  </parent>
+  <artifactId>kakemono-native</artifactId>
+  <name>kakemono native libraries</name>
+  <description>The JNI libraries of kakemono, one jar per platform (classifier)</description>
+
+  <properties>
+    <natives.dir>${project.basedir}/natives</natives.dir>
+  </properties>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <!-- Maven Central needs a javadoc jar: this artifact has no code. -->
+          <execution>
+            <id>javadoc</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>javadoc</classifier>
+              <classesDirectory>${project.basedir}/src/main/javadoc</classesDirectory>
+            </configuration>
+          </execution>
+          <execution>
+            <id>linux-x86_64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>linux-x86_64</classifier>
+              <classesDirectory>${natives.dir}/linux-x86_64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>linux-aarch64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>linux-aarch64</classifier>
+              <classesDirectory>${natives.dir}/linux-aarch64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>linux-musl-x86_64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>linux-musl-x86_64</classifier>
+              <classesDirectory>${natives.dir}/linux-musl-x86_64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>linux-musl-aarch64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>linux-musl-aarch64</classifier>
+              <classesDirectory>${natives.dir}/linux-musl-aarch64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>macos-x86_64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>macos-x86_64</classifier>
+              <classesDirectory>${natives.dir}/macos-x86_64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>macos-aarch64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>macos-aarch64</classifier>
+              <classesDirectory>${natives.dir}/macos-aarch64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>windows-x86_64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>windows-x86_64</classifier>
+              <classesDirectory>${natives.dir}/windows-x86_64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+          <execution>
+            <id>windows-aarch64</id>
+            <goals><goal>jar</goal></goals>
+            <configuration>
+              <classifier>windows-aarch64</classifier>
+              <classesDirectory>${natives.dir}/windows-aarch64</classesDirectory>
+              <skipIfEmpty>true</skipIfEmpty>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

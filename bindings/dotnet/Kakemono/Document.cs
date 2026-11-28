@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +19,7 @@ namespace Kakemono
     /// <remarks>
     /// A document can be written from several threads at once. The work runs on a thread of
     /// kakemono's own with a large stack, so any thread may call it; the <c>Async</c> methods run
-    /// it on the thread pool (it cannot be cancelled once started). Dispose it to free its memory
+    /// it on a thread of their own (it cannot be cancelled once started). Dispose it to free its memory
     /// at once: calls running then finish first. Methods throw <see cref="KakemonoException"/> on
     /// error, and <see cref="ObjectDisposedException"/> once the document is disposed.
     /// </remarks>
@@ -28,7 +27,19 @@ namespace Kakemono
     {
         private static readonly Lazy<bool> Loaded = new Lazy<bool>(() =>
         {
-            uint abi = Native.kk_abi_version();
+            uint abi;
+            try
+            {
+                abi = Native.kk_abi_version();
+            }
+            catch (DllNotFoundException e)
+            {
+                throw new DllNotFoundException(
+                    "kakemono's native library (kakemono_ffi) was not found for this platform: the Kakemono "
+                        + "package has it for linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64, osx-x64, "
+                        + "osx-arm64, win-x64 and win-arm64 (in runtimes/<rid>/native); .NET Framework is not supported",
+                    e);
+            }
             if (abi != Native.AbiVersion)
             {
                 throw new InvalidOperationException(
@@ -86,7 +97,7 @@ namespace Kakemono
 
         /// <summary>Reads and analyses the file at <paramref name="path"/> on the thread pool.</summary>
         public static Task<Document> OpenAsync(string path, OpenOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.Run(() => Open(path, options), cancellationToken);
+            Run(() => Open(path, options), cancellationToken);
 
         /// <summary>The input format: <c>pdf</c>, <c>docx</c>, <c>doc</c>, <c>xlsx</c>, <c>epub</c> or <c>html</c>.</summary>
         public string Format { get; }
@@ -191,8 +202,7 @@ namespace Kakemono
             {
                 if (line.Length > 0)
                 {
-                    chunks.Add(JsonSerializer.Deserialize<Chunk>(line)
-                        ?? throw new KakemonoException("a chunk could not be read", KakemonoErrorKind.Internal));
+                    chunks.Add(Chunk.Read(line));
                 }
             }
             return chunks;
@@ -201,21 +211,49 @@ namespace Kakemono
         /// <summary>The structure of the document (its blocks in reading order) as JSON text.</summary>
         public string Analyze() => Text("structure", null).Text;
 
-        /// <summary><see cref="ToMarkdown"/> on the thread pool.</summary>
-        public Task<TextOutput> ToMarkdownAsync(MarkdownOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.Run(() => ToMarkdown(options), cancellationToken);
+        /// <summary>
+        /// Runs <paramref name="work"/> on a thread of its own (a conversion takes seconds: it
+        /// would hold a thread of the pool). <paramref name="cancellationToken"/> only cancels it
+        /// before it starts: a conversion cannot be stopped.
+        /// </summary>
+        private static Task<T> Run<T>(Func<T> work, CancellationToken cancellationToken) =>
+            Task.Factory.StartNew(work, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        /// <summary><see cref="ToHtml"/> on the thread pool.</summary>
+        /// <summary><see cref="ToHtml"/> on a thread of its own.</summary>
         public Task<TextOutput> ToHtmlAsync(HtmlOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.Run(() => ToHtml(options), cancellationToken);
+            Run(() => ToHtml(options), cancellationToken);
 
-        /// <summary><see cref="ToDocx"/> on the thread pool.</summary>
+        /// <summary><see cref="ToMarkdown"/> on a thread of its own.</summary>
+        public Task<TextOutput> ToMarkdownAsync(MarkdownOptions? options = null, CancellationToken cancellationToken = default) =>
+            Run(() => ToMarkdown(options), cancellationToken);
+
+        /// <summary><see cref="ToJson"/> on a thread of its own.</summary>
+        public Task<TextOutput> ToJsonAsync(JsonOptions? options = null, CancellationToken cancellationToken = default) =>
+            Run(() => ToJson(options), cancellationToken);
+
+        /// <summary><see cref="ToLatex"/> on a thread of its own.</summary>
+        public Task<TextOutput> ToLatexAsync(LatexOptions? options = null, CancellationToken cancellationToken = default) =>
+            Run(() => ToLatex(options), cancellationToken);
+
+        /// <summary><see cref="ToTypst"/> on a thread of its own.</summary>
+        public Task<TextOutput> ToTypstAsync(TypstOptions? options = null, CancellationToken cancellationToken = default) =>
+            Run(() => ToTypst(options), cancellationToken);
+
+        /// <summary><see cref="ToDocx"/> on a thread of its own.</summary>
         public Task<BinaryOutput> ToDocxAsync(DocxOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.Run(() => ToDocx(options), cancellationToken);
+            Run(() => ToDocx(options), cancellationToken);
 
-        /// <summary><see cref="ToChunks"/> on the thread pool.</summary>
+        /// <summary><see cref="ToEpub"/> on a thread of its own.</summary>
+        public Task<BinaryOutput> ToEpubAsync(EpubOptions? options = null, CancellationToken cancellationToken = default) =>
+            Run(() => ToEpub(options), cancellationToken);
+
+        /// <summary><see cref="ToChunks"/> on a thread of its own.</summary>
         public Task<IReadOnlyList<Chunk>> ToChunksAsync(ChunkOptions? options = null, CancellationToken cancellationToken = default) =>
-            Task.Run(() => ToChunks(options), cancellationToken);
+            Run(() => ToChunks(options), cancellationToken);
+
+        /// <summary><see cref="ToPdf"/> on a thread of its own.</summary>
+        public Task<BinaryOutput> ToPdfAsync(CancellationToken cancellationToken = default) =>
+            Run(ToPdf, cancellationToken);
 
         /// <summary>Frees the document's memory, once the calls running on it have returned.</summary>
         public void Dispose() => handle.Dispose();

@@ -21,6 +21,8 @@
       <groupId>dev.langchain4j</groupId>
       <artifactId>langchain4j-core</artifactId>
       <version>${langchain4j.version}</version>
+      <!-- The application's own LangChain4j, whatever its version. -->
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

@@ -39,7 +39,9 @@ Document.open(Path.of("paper.pdf")).use { doc ->
 ```
 
 A `Document` is read and analysed once; it can be written from several threads at once, and
-`close()` waits for the calls running on it. Errors are `KakemonoException`s with a `kind()`
+`close()` waits for the calls running on it. A conversion blocks its thread (a native call: a
+virtual thread stays pinned to its carrier), so run many at once on a bounded pool of platform
+threads. Errors are `KakemonoException`s with a `kind()`
 (`INVALID_ARGUMENT`, `DOCUMENT`, `INTERNAL`). `jobs` (default: one thread per core) is per
 document: a server converting several documents at once should set `new OpenOptions().jobs(1)`.
 

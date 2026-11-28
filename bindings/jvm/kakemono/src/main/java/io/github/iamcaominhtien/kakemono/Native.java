@@ -7,6 +7,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
 
 /**
@@ -17,9 +20,9 @@ import java.util.Locale;
  *   <li>at the path of the system property {@code kakemono.library.path};
  *   <li>on the class path, at {@code /io/github/iamcaominhtien/kakemono/native/<platform>/<file>}
  *       (the artifact {@code io.github.iamcaominhtien:kakemono-native} with the platform as its
- *       classifier holds it), copied once to a cache
- *       folder ({@code kakemono.cache.dir}, by default {@code java.io.tmpdir}), since a library
- *       cannot be loaded from inside a JAR;
+ *       classifier holds it), copied once to a cache folder named by its content
+ *       ({@code kakemono.cache.dir}, by default the user's cache), since a library cannot be
+ *       loaded from inside a JAR;
  *   <li>by {@link System#loadLibrary} ({@code kakemono_jni} on {@code java.library.path}).
  * </ol>
  * The platform is {@code linux-x86_64}, {@code linux-aarch64}, {@code linux-musl-x86_64},
@@ -65,10 +68,14 @@ final class Native {
         return os.replace(' ', '_') + "-" + cpu;
     }
 
-    /** Whether this Linux uses musl (Alpine), whose libraries differ from glibc's. */
+    /**
+     * Whether this JVM runs on musl (Alpine): its own libraries are mapped from musl's loader.
+     * (A file {@code /lib/ld-musl-*} alone is not enough: Debian can install musl beside glibc.)
+     */
     private static boolean isMusl() {
-        try (var files = Files.list(Paths.get("/lib"))) {
-            return files.anyMatch(file -> file.getFileName().toString().startsWith("ld-musl-"));
+        try {
+            String maps = Files.readString(Paths.get("/proc/self/maps"));
+            return maps.contains("/ld-musl-") || maps.contains("/libc.musl-");
         } catch (IOException | RuntimeException e) {
             return false;
         }
@@ -122,32 +129,84 @@ final class Native {
     }
 
     /**
-     * Copies the library to {@code <cache>/kakemono-<version>/<platform>/<file>}, once: a copy
+     * Copies the library to {@code <cache>/kakemono-<sha256>/<platform>/<file>}, named by its
+     * content: a file already there is loaded only when its bytes are the same, and the folder
+     * is the user's own ({@code rwx------} where the file system has POSIX permissions). A copy
      * is written next to it, then renamed into place, so that processes starting together never
-     * load a half-written file.
+     * load a half-written file; when the rename fails (Windows, a library another process has
+     * loaded), the copy itself is loaded.
      */
     private static Path extract(InputStream in, String platform, String file) throws IOException {
-        String version = Native.class.getPackage().getImplementationVersion();
-        Path base = Paths.get(System.getProperty("kakemono.cache.dir", System.getProperty("java.io.tmpdir")));
-        Path dir = base.resolve("kakemono-" + (version == null ? "dev" : version)).resolve(platform);
-        Path target = dir.resolve(file);
         byte[] data = in.readAllBytes();
-        if (Files.isRegularFile(target) && Files.size(target) == data.length) {
+        String digest = sha256(data);
+        Path dir = cacheDir().resolve("kakemono-" + digest.substring(0, 32)).resolve(platform);
+        Path target = dir.resolve(file);
+        if (Files.isRegularFile(target) && sha256(Files.readAllBytes(target)).equals(digest)) {
             return target;
         }
-        Files.createDirectories(dir);
+        createPrivateDirectories(dir);
         Path partial = Files.createTempFile(dir, file, ".part");
+        Files.write(partial, data);
         try {
-            Files.write(partial, data);
             try {
                 Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException e) {
                 Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING);
             }
-        } finally {
-            Files.deleteIfExists(partial);
+        } catch (IOException e) {
+            return partial;
         }
         return target;
+    }
+
+    /**
+     * The cache folder: {@code kakemono.cache.dir}, else the user's cache ({@code
+     * $XDG_CACHE_HOME}, {@code ~/.cache}, {@code %LOCALAPPDATA%}), else the temporary folder.
+     */
+    private static Path cacheDir() {
+        String dir = System.getProperty("kakemono.cache.dir", "");
+        if (!dir.isEmpty()) {
+            return Paths.get(dir);
+        }
+        String xdg = System.getenv("XDG_CACHE_HOME");
+        if (xdg != null && !xdg.isEmpty()) {
+            return Paths.get(xdg);
+        }
+        String local = System.getenv("LOCALAPPDATA");
+        if (local != null && !local.isEmpty()) {
+            return Paths.get(local);
+        }
+        String home = System.getProperty("user.home", "");
+        if (!home.isEmpty() && Files.isDirectory(Paths.get(home))) {
+            return Paths.get(home, ".cache");
+        }
+        return Paths.get(System.getProperty("java.io.tmpdir"));
+    }
+
+    /** Makes {@code dir} and its parents, readable and writable by this user only. */
+    private static void createPrivateDirectories(Path dir) throws IOException {
+        if (Files.isDirectory(dir)) {
+            return;
+        }
+        try {
+            Files.createDirectories(dir, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        } catch (UnsupportedOperationException e) {
+            Files.createDirectories(dir);
+        }
+    }
+
+    /** The SHA-256 of {@code data}, in hexadecimal. */
+    private static String sha256(byte[] data) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(data);
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hash) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     static native int abiVersion();

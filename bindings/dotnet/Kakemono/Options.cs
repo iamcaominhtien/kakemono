@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Text.Json;
 
 namespace Kakemono
@@ -16,7 +17,10 @@ namespace Kakemono
         /// <summary>Adds the set options to <paramref name="values"/>.</summary>
         internal abstract void Fill(Dictionary<string, object> values);
 
-        /// <summary>The options as JSON text for the C ABI (UTF-8, then a NUL), or null.</summary>
+        /// <summary>
+        /// The options as JSON text for the C ABI (UTF-8, then a NUL), or null. Written by hand,
+        /// without reflection, so that it works when trimmed or compiled ahead of time.
+        /// </summary>
         internal static byte[]? ToJson(Options? options)
         {
             if (options is null)
@@ -25,7 +29,36 @@ namespace Kakemono
             }
             var values = new Dictionary<string, object>();
             options.Fill(values);
-            return Native.Utf8(JsonSerializer.Serialize(values));
+            using var buffer = new MemoryStream();
+            using (var json = new Utf8JsonWriter(buffer))
+            {
+                json.WriteStartObject();
+                foreach (KeyValuePair<string, object> entry in values)
+                {
+                    switch (entry.Value)
+                    {
+                        case string text:
+                            json.WriteString(entry.Key, text);
+                            break;
+                        case bool flag:
+                            json.WriteBoolean(entry.Key, flag);
+                            break;
+                        case int count:
+                            json.WriteNumber(entry.Key, count);
+                            break;
+                        case double number:
+                            if (double.IsNaN(number) || double.IsInfinity(number))
+                            {
+                                throw new KakemonoException($"{entry.Key} must be a finite number", KakemonoErrorKind.InvalidArgument);
+                            }
+                            json.WriteNumber(entry.Key, number);
+                            break;
+                    }
+                }
+                json.WriteEndObject();
+            }
+            buffer.WriteByte(0);
+            return buffer.ToArray();
         }
     }
 }

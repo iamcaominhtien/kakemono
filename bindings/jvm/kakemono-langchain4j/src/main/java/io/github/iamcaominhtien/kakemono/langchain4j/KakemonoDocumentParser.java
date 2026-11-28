@@ -51,10 +51,11 @@ public class KakemonoDocumentParser implements DocumentParser {
             throw new UncheckedIOException(e);
         }
         try (Document doc = Document.open(data, openOptions)) {
-            String text = doc.toMarkdown(new MarkdownOptions().inlineImages(true)).text();
-            if (!pictures) {
-                text = withoutPictures(text);
-            }
+            // Without pictures, they are not even encoded: their files are left out and
+            // so are the links to them.
+            String text = pictures
+                    ? doc.toMarkdown(new MarkdownOptions().inlineImages(true)).text()
+                    : withoutPictures(doc.toMarkdown(new MarkdownOptions().imageDir(PICTURES)).text());
             if (text.isBlank()) {
                 throw new BlankDocumentException();
             }
@@ -73,8 +74,11 @@ public class KakemonoDocumentParser implements DocumentParser {
         return metadata;
     }
 
-    /** Markdown without its pictures ({@code ![alt](data:...)}). */
+    /** The folder of the pictures, whose links are left out. */
+    private static final String PICTURES = "kakemono-pictures";
+
+    /** Markdown without the links to its pictures ({@code ![alt](kakemono-pictures/...)}). */
     static String withoutPictures(String markdown) {
-        return markdown.replaceAll("!\\[[^\\]]*]\\(data:[^)]*\\)", "");
+        return markdown.replaceAll("!\\[[^\\]]*]\\(" + PICTURES + "/[^)]*\\)", "");
     }
 }

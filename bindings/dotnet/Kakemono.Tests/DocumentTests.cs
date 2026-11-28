@@ -82,6 +82,8 @@ namespace Kakemono.Tests
             Assert.Equal(KakemonoErrorKind.InvalidArgument, scale.Kind);
             Assert.Contains("scale must be between", scale.Message);
             Assert.Throws<KakemonoException>(() => doc.ToMarkdown(new MarkdownOptions { ImageDir = "../up" }));
+            var nan = Assert.Throws<KakemonoException>(() => doc.ToMarkdown(new MarkdownOptions { Scale = double.NaN }));
+            Assert.Equal(KakemonoErrorKind.InvalidArgument, nan.Kind);
             var missing = Assert.Throws<KakemonoException>(() => Document.Open("/no/such.pdf"));
             Assert.Contains("/no/such.pdf", missing.Message);
             Assert.Throws<KakemonoException>(() => Document.AddFont(new byte[] { 1, 2, 3 }));
@@ -111,6 +113,7 @@ namespace Kakemono.Tests
                 done++;
             }
             Assert.True((await chunks).Count > 10);
+            Assert.Equal("%PDF", System.Text.Encoding.ASCII.GetString((await (await Document.OpenAsync(Docx)).ToPdfAsync()).Data, 0, 4));
             // Disposing while a render runs frees the document after it.
             var running = doc.ToHtmlAsync();
             doc.Dispose();
