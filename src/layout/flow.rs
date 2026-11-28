@@ -14,6 +14,12 @@ use crate::word::fmt::model::{
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+/// A document with this many bytes of text or more is laid out handing each
+/// page on as soon as it is drawn, not holding them all (a laid-out page
+/// takes about 40 bytes per character); a shorter one is laid out once,
+/// with its pages held, even when its headers show the page count or its
+/// links point to later pages, which the handing on lays out twice for.
+pub const STREAM_MIN_CHARS: usize = 2_000_000;
 /// Space Word puts before and after a paragraph with automatic spacing.
 const AUTO_SPACING_PT: f32 = 14.0;
 /// Length of the line that separates footnotes from the text.
@@ -52,19 +58,110 @@ pub struct Layout {
     pub page_refs: HashMap<String, String>,
 }
 
+/// The page counts a pass finds, for `NUMPAGES` and `SECTIONPAGES` in the
+/// headers and footers of a later pass that hands each page on as soon as
+/// it is drawn.
+#[derive(Debug, Clone, Default)]
+pub struct PageCounts {
+    /// Pages of the document.
+    pub total: u32,
+    /// Pages of each section, by section.
+    pub by_section: Vec<u32>,
+}
+
+/// Where the pages of a pass go, one by one, as soon as each is drawn (a
+/// long document's pages are then not all held at once).
+pub trait PageSink {
+    /// Takes a drawn page, whose glyphs are faces of `book`.
+    fn page(&mut self, page: &Page, book: &FontBook);
+    /// The document will be laid out again: the pages still to come need
+    /// not be drawn.
+    fn abandon(&mut self) {}
+}
+
+/// A sink that drops every page: a pass that only counts the pages and
+/// finds the bookmarks.
+pub struct Discard;
+
+impl PageSink for Discard {
+    fn page(&mut self, _: &Page, _: &FontBook) {}
+}
+
+/// A pass whose pages went to a [`PageSink`].
+pub struct Streamed {
+    /// Where the bookmarks land.
+    pub destinations: Vec<Destination>,
+    /// The page number shown on each bookmark's page, by bookmark.
+    pub page_refs: HashMap<String, String>,
+    /// The pages of the document and of each section.
+    pub counts: PageCounts,
+    /// A header or footer showed the page count, which the pass did not
+    /// know: its pages are to be laid out again with `counts`.
+    pub missed_counts: bool,
+}
+
 /// Lays out a whole document: once, then again with the page numbers of
 /// its bookmarks when it refers to them.
 pub fn layout(doc: &FDoc, book: &mut FontBook) -> Layout {
-    let first = layout_pass(doc, book, None);
+    let first = layout_pass(doc, book, None, None).0;
     if !refers_to_pages(doc) {
         return first;
     }
     let refs = first.page_refs.clone();
-    layout_pass(doc, book, Some(&refs))
+    layout_pass(doc, book, Some(&refs), None).0
+}
+
+/// Lays out a whole document once, with the page numbers of bookmarks
+/// from an earlier pass, and hands each page to `sink` as soon as it is
+/// drawn. Its headers and footers show `counts` when given; without them,
+/// one that shows a page count has the pass ask `sink` to abandon (and
+/// [`Streamed::missed_counts`] says so).
+pub fn layout_into(
+    doc: &FDoc,
+    book: &mut FontBook,
+    page_refs: Option<&HashMap<String, String>>,
+    counts: Option<&PageCounts>,
+    sink: &mut dyn PageSink,
+) -> Streamed {
+    let (laid, streamed) = layout_pass(doc, book, page_refs, Some((sink, counts)));
+    let (counts, missed_counts) = streamed.unwrap_or_default();
+    Streamed {
+        destinations: laid.destinations,
+        page_refs: laid.page_refs,
+        counts,
+        missed_counts,
+    }
+}
+
+/// Whether the document has so much text that its laid-out pages are
+/// better handed on one by one than held until the end
+/// ([`STREAM_MIN_CHARS`], or `KAKEMONO_STREAM_PAGES` set, to check that
+/// both ways give the same PDF).
+#[must_use]
+pub fn is_long(doc: &FDoc) -> bool {
+    if std::env::var_os("KAKEMONO_STREAM_PAGES").is_some() {
+        return true;
+    }
+    let mut chars = 0usize;
+    let mut count = |blocks: &[Block]| {
+        walk_inlines(blocks, &mut |inline| {
+            if let Inline::Text { text, .. } = inline {
+                chars += text.len();
+            }
+        });
+    };
+    for section in &doc.sections {
+        count(&section.blocks);
+    }
+    for (_, blocks) in doc.footnotes.iter().chain(&doc.endnotes) {
+        count(blocks);
+    }
+    chars >= STREAM_MIN_CHARS
 }
 
 /// Whether the document has a `PAGEREF` field.
-fn refers_to_pages(doc: &FDoc) -> bool {
+#[must_use]
+pub fn refers_to_pages(doc: &FDoc) -> bool {
     let mut found = false;
     for section in &doc.sections {
         walk_inlines(&section.blocks, &mut |inline| {
@@ -80,9 +177,38 @@ fn refers_to_pages(doc: &FDoc) -> bool {
     found
 }
 
+/// Whether `blocks` (a header or footer) show the page count of the
+/// document or of the section.
+fn shows_page_counts(blocks: &[Block]) -> bool {
+    let mut found = false;
+    walk_inlines(blocks, &mut |inline| {
+        found |= matches!(
+            inline,
+            Inline::Field {
+                kind: crate::word::fmt::model::FieldKind::NumPages | crate::word::fmt::model::FieldKind::SectionPages,
+                ..
+            }
+        );
+    });
+    found
+}
+
+/// Where a pass hands its pages on, with the page counts when an earlier
+/// pass found them.
+type Handing<'s> = (&'s mut (dyn PageSink + 's), Option<&'s PageCounts>);
+
 /// Lays out a whole document once, with the page numbers of bookmarks
-/// from an earlier pass.
-fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<String, String>>) -> Layout {
+/// from an earlier pass. With `handing`, each page goes to its sink once
+/// drawn, and the pass also gives the page counts it found and whether a
+/// header or footer missed them.
+fn layout_pass(
+    doc: &FDoc,
+    book: &mut FontBook,
+    page_refs: Option<&HashMap<String, String>>,
+    handing: Option<Handing<'_>>,
+) -> (Layout, Option<(PageCounts, bool)>) {
+    let streaming = handing.is_some();
+    let (sink, counts) = handing.map_or((None, None), |(sink, counts)| (Some(sink), counts));
     let notes = number_notes(doc);
     let mut shaper = Shaper::default();
     let mut coverage = HashMap::new();
@@ -98,14 +224,23 @@ fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<Strin
         destinations: Vec::new(),
         behind: HashMap::new(),
         state: State::default(),
+        sink,
+        counts,
+        handed: 0,
+        header_destinations: Vec::new(),
+        missed_counts: false,
     };
     for (at, section) in doc.sections.iter().enumerate() {
         flow.section(at, section);
     }
     flow.endnotes();
     flow.finish_page();
-    flow.headers_and_footers();
-    flow.metafile_texts();
+    flow.hand_on(flow.pages.len());
+    // The bookmarks of the headers and footers come after those of the
+    // body, as when they are all drawn at the end.
+    let header_destinations = std::mem::take(&mut flow.header_destinations);
+    flow.destinations.extend(header_destinations);
+    let found = streaming.then(|| (flow.page_counts(), flow.missed_counts));
     let mut refs = HashMap::new();
     for destination in &flow.destinations {
         if let Some(info) = flow.page_info.get(destination.page) {
@@ -114,11 +249,12 @@ fn layout_pass(doc: &FDoc, book: &mut FontBook, page_refs: Option<&HashMap<Strin
                 .or_insert_with(|| crate::word::fmt::model::format_page(info.number, format));
         }
     }
-    Layout {
-        pages: flow.pages,
+    let layout = Layout {
+        pages: if streaming { Vec::new() } else { flow.pages },
         destinations: flow.destinations,
         page_refs: refs,
-    }
+    };
+    (layout, found)
 }
 
 /// The numbers of the notes, in the order the text refers to them.
@@ -241,7 +377,7 @@ struct State {
 }
 
 /// The layout of the body.
-struct Flow<'a> {
+struct Flow<'a, 's> {
     doc: &'a FDoc,
     book: &'a mut FontBook,
     shaper: &'a mut Shaper,
@@ -255,9 +391,21 @@ struct Flow<'a> {
     /// by page.
     behind: HashMap<usize, usize>,
     state: State,
+    /// Where each page goes once drawn (`None`: the pages are held until
+    /// the end).
+    sink: Option<&'s mut (dyn PageSink + 's)>,
+    /// The page counts an earlier pass found.
+    counts: Option<&'s PageCounts>,
+    /// The pages before this one have been handed on (their items are
+    /// gone).
+    handed: usize,
+    /// The bookmarks of the headers and footers drawn so far.
+    header_destinations: Vec<Destination>,
+    /// A header or footer showed a page count not known yet.
+    missed_counts: bool,
 }
 
-impl Flow<'_> {
+impl Flow<'_, '_> {
     /// The layout context.
     fn ctx(&mut self) -> Ctx<'_> {
         let origin = self.column_left();
@@ -372,8 +520,11 @@ impl Flow<'_> {
 
     /// Opens a new page of section `at`, numbered `number`.
     fn start_page(&mut self, at: usize, section: &Section, number: u32, first_of_section: bool) {
-        // The page before is drawn: what its vectors hold spare goes.
-        if let Some(last) = self.pages.last_mut() {
+        // The page before is drawn: it is handed on, or what its vectors
+        // hold spare goes.
+        if self.sink.is_some() {
+            self.hand_on(self.pages.len());
+        } else if let Some(last) = self.pages.last_mut() {
             last.compact();
         }
         let page = &section.page;
@@ -496,11 +647,11 @@ impl Flow<'_> {
         (header_bottom, footer_top)
     }
 
-    /// Draws the lines of text of the metafile pictures placed on every
-    /// page as text over them, as Word's PDFs do (the picture drawn is
+    /// Draws the lines of text of the metafile pictures placed on page `at`
+    /// as text over them, as Word's PDFs do (the picture drawn is
     /// the one without them).
-    fn metafile_texts(&mut self) {
-        for at in 0..self.pages.len() {
+    fn metafile_texts(&mut self, at: usize) {
+        {
             let placed: Vec<(usize, [f32; 4], [f32; 4])> = self.pages[at]
                 .items
                 .iter()
@@ -594,29 +745,74 @@ impl Flow<'_> {
         sub.y
     }
 
-    /// Draws the headers and footers of every page, now that the page
-    /// count is known.
-    fn headers_and_footers(&mut self) {
-        let count = self.pages.len() as u32;
-        for at in 0..self.pages.len() {
+    /// The pages of the document and of each section laid out so far.
+    fn page_counts(&self) -> PageCounts {
+        let mut by_section = vec![0u32; self.doc.sections.len()];
+        for info in &self.page_info {
+            if let Some(count) = by_section.get_mut(info.section) {
+                *count += 1;
+            }
+        }
+        PageCounts {
+            total: self.pages.len() as u32,
+            by_section,
+        }
+    }
+
+    /// Hands on the pages from the last one handed on to `end`: draws their
+    /// headers, footers and the text of their metafiles, then gives them to
+    /// the sink, if any (held pages are drawn once all are laid out, when
+    /// the page count is known).
+    fn hand_on(&mut self, end: usize) {
+        let actual = self.sink.is_none().then(|| self.page_counts());
+        for at in self.handed..end {
+            let section = self.page_info[at].section;
+            let counts = actual
+                .as_ref()
+                .or(self.counts)
+                .map(|counts| (counts.total, counts.by_section.get(section).copied().unwrap_or(0)));
+            let mark = self.destinations.len();
+            self.headers_and_footers(at, counts);
+            let drawn = self.destinations.split_off(mark);
+            self.header_destinations.extend(drawn);
+            self.metafile_texts(at);
+            if let Some(sink) = self.sink.as_deref_mut() {
+                let page = &mut self.pages[at];
+                let drawn = Page {
+                    width: page.width,
+                    height: page.height,
+                    items: std::mem::take(&mut page.items),
+                };
+                self.behind.remove(&at);
+                sink.page(&drawn, self.book);
+            }
+        }
+        self.handed = self.handed.max(end);
+    }
+
+    /// Draws the headers and footers of page `at`, with the page counts of
+    /// the document and of its section when they are known.
+    fn headers_and_footers(&mut self, at: usize, counts: Option<(u32, u32)>) {
+        {
             let info = self.page_info[at].clone();
             let sect = &self.doc.sections[info.section];
             let page = sect.page;
             let left = page.left + page.gutter;
             let width = (page.width - page.left - page.right - page.gutter).max(1.0);
-            let section_pages = self
-                .page_info
-                .iter()
-                .filter(|other| other.section == info.section)
-                .count() as u32;
             let format = sect.page_number_format.clone();
             for header in [true, false] {
                 let Some(part) = self.header_part(info.section, info.number, info.first_of_section, header) else {
                     continue;
                 };
+                if counts.is_none() && !self.missed_counts && shows_page_counts(&self.doc.parts[part]) {
+                    self.missed_counts = true;
+                    if let Some(sink) = self.sink.as_deref_mut() {
+                        sink.abandon();
+                    }
+                }
                 let mut sub = SubFlow::new(width);
-                sub.page_count = Some(count);
-                sub.section_pages = Some(section_pages);
+                sub.page_count = counts.map(|(total, _)| total);
+                sub.section_pages = counts.map(|(_, section)| section);
                 sub.format = format.clone();
                 let blocks = &self.doc.parts[part];
                 self.sub_blocks(&mut sub, blocks, Some(info.number), None);
@@ -1548,14 +1744,21 @@ impl Flow<'_> {
             self.state.y += anchor.vertical.offset.max(0.0);
         }
         let width = self.column_width();
-        let mut laid = self.lay_table(table, width);
-        let header_rows: Vec<usize> = (0..laid.rows.len()).take_while(|&at| table.rows[at].header).collect();
+        let mut laying = self.start_table(table, width);
+        let header_rows: Vec<usize> = (0..table.rows.len()).take_while(|&at| table.rows[at].header).collect();
+        while laying.laid.rows.len() < header_rows.len() {
+            self.lay_rows(table, &mut laying);
+        }
         let mut at = 0;
         // Right after a page break (and the repeated header rows), a row is
         // placed even when it does not fit.
         let mut forced = false;
         let mut rest: Option<LaidRow> = None;
-        while at < laid.rows.len() {
+        while at < table.rows.len() {
+            while rest.is_none() && laying.laid.rows.len() <= at {
+                self.lay_rows(table, &mut laying);
+            }
+            let laid = &mut laying.laid;
             // A row below the header is drawn once: it is taken, not copied
             // (a long table is not held twice).
             let row = rest.take().unwrap_or_else(|| {
@@ -1579,7 +1782,7 @@ impl Flow<'_> {
                 {
                     self.draw_row(&first);
                     rest = Some(second);
-                    self.page_break_in_table(&laid, &header_rows, at);
+                    self.page_break_in_table(&laying.laid, &header_rows, at);
                     forced = true;
                     continue;
                 }
@@ -1597,7 +1800,7 @@ impl Flow<'_> {
             } else {
                 rest = Some(row);
             }
-            self.page_break_in_table(&laid, &header_rows, at);
+            self.page_break_in_table(&laying.laid, &header_rows, at);
             forced = true;
         }
         if let Some(anchor) = below_text {
@@ -1707,12 +1910,40 @@ impl Flow<'_> {
     /// Lays out a table at a column width: column positions, row heights and
     /// cell content.
     fn lay_table(&mut self, table: &Table, width: f32) -> LaidTable {
+        let mut laying = self.start_table(table, width);
+        while laying.laid.rows.len() < table.rows.len() {
+            self.lay_rows(table, &mut laying);
+        }
+        laying.laid
+    }
+
+    /// A table at a column width, none of its rows laid out yet.
+    fn start_table(&self, table: &Table, width: f32) -> TableLaying {
         let grid = table_grid(table, width);
         let left = self.table_left(table, width, &grid);
-        let mut rows: Vec<LaidRow> = Vec::new();
-        // Merged cells: the row where each column's merge started.
-        let mut merge_start: HashMap<usize, (usize, usize)> = HashMap::new();
-        for (row_at, row) in table.rows.iter().enumerate() {
+        TableLaying {
+            grid,
+            left,
+            laid: LaidTable { rows: Vec::new() },
+            merge_start: HashMap::new(),
+            column: self.state.column,
+            number: self.state.number,
+        }
+    }
+
+    /// Lays out the next rows of a table: up to a row after which no
+    /// vertical merge goes on, so that the rows laid so far are final.
+    /// They are laid out as at the start of the table (its column and page
+    /// number), as when the whole table is laid out at once.
+    fn lay_rows(&mut self, table: &Table, laying: &mut TableLaying) {
+        let (column_now, number_now) = (self.state.column, self.state.number);
+        self.state.column = laying.column;
+        self.state.number = laying.number;
+        let first = laying.laid.rows.len();
+        for (row_at, row) in table.rows.iter().enumerate().skip(first) {
+            let rows = &mut laying.laid.rows;
+            let merge_start = &mut laying.merge_start;
+            let (grid, left) = (&laying.grid, laying.left);
             let mut column = row.grid_before;
             let mut cells = Vec::new();
             for cell in &row.cells {
@@ -1751,9 +1982,14 @@ impl Flow<'_> {
                 }
             }
             rows.push(LaidRow { height, cells });
+            if merge_start.is_empty() {
+                break;
+            }
         }
-        grow_merged_rows(&mut rows);
-        LaidTable { rows }
+        // No merge reaches past these rows: they grow for their merges.
+        grow_merged_rows(&mut laying.laid.rows[first..]);
+        self.state.column = column_now;
+        self.state.number = number_now;
     }
 
     /// The left edge of a table in a column of `width`, from its alignment
@@ -2040,6 +2276,23 @@ impl Flow<'_> {
 #[derive(Debug, Clone)]
 struct LaidTable {
     rows: Vec<LaidRow>,
+}
+
+/// A table laid out a few rows at a time, as it is placed (a long table's
+/// rows are not all held at once).
+struct TableLaying {
+    /// The widths of its grid columns.
+    grid: Vec<f32>,
+    /// Its left edge.
+    left: f32,
+    /// The rows laid out so far, by row (those placed are taken: empty).
+    laid: LaidTable,
+    /// Merged cells: the row and cell where each column's merge started.
+    merge_start: HashMap<usize, (usize, usize)>,
+    /// The column the table starts in.
+    column: usize,
+    /// The number of the page it starts on.
+    number: u32,
 }
 
 /// A laid-out row.

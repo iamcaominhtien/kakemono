@@ -27,11 +27,9 @@ const FAKE_BOLD_STROKE_RATIO: f32 = 0.02;
 /// a difference no one can see.
 pub(super) const SCALE_TOLERANCE: f32 = 1e-4;
 
-/// The fonts and pictures the items draw from, and those already loaded
-/// into the PDF, so that each is loaded once.
+/// The pictures the items draw from, and the fonts and pictures already
+/// loaded into the PDF, so that each is loaded once.
 struct Loaded<'a> {
-    /// The fonts that text runs name.
-    book: &'a FontBook,
     /// The document's pictures.
     images: &'a [FImage],
     /// Fonts loaded so far, by face.
@@ -70,19 +68,77 @@ pub fn write(
     images: &[FImage],
     title: Option<&str>,
 ) -> Result<Vec<u8>> {
-    let mut document = Document::new();
-    let mut loaded = Loaded {
-        book,
-        images,
-        fonts: HashMap::new(),
-        pictures: HashMap::new(),
-    };
-    let bookmarks: HashMap<&str, &Destination> = destinations.iter().map(|dest| (dest.name.as_str(), dest)).collect();
+    let mut writer = Writer::new(images, destinations);
     for page in pages {
+        writer.add_page(&page, book);
+    }
+    writer.finish(title)
+}
+
+/// A PDF written page by page.
+pub struct Writer<'a> {
+    document: Document,
+    loaded: Loaded<'a>,
+    /// Where each bookmark lands: its page and the top of its line.
+    bookmarks: HashMap<String, (usize, f32)>,
+    /// A page had a link to a bookmark.
+    linked_inside: bool,
+    /// The document will be written again: pages are no longer drawn.
+    abandoned: bool,
+    /// The bookmarks are not known yet: a link to one abandons the PDF.
+    bookmarks_unknown: bool,
+}
+
+impl<'a> Writer<'a> {
+    /// A PDF of no pages yet, whose pages draw pictures from `images` and
+    /// link to `destinations` (the last of a name counts).
+    #[must_use]
+    pub fn new(images: &'a [FImage], destinations: &[Destination]) -> Self {
+        Self {
+            document: Document::new(),
+            loaded: Loaded {
+                images,
+                fonts: HashMap::new(),
+                pictures: HashMap::new(),
+            },
+            bookmarks: destinations
+                .iter()
+                .map(|dest| (dest.name.clone(), (dest.page, dest.y)))
+                .collect(),
+            linked_inside: false,
+            abandoned: false,
+            bookmarks_unknown: false,
+        }
+    }
+
+    /// A PDF of no pages yet, written before the bookmarks are known: the
+    /// first link to one abandons it, since the document is then to be
+    /// written again with them.
+    #[must_use]
+    pub fn before_bookmarks(images: &'a [FImage]) -> Self {
+        Self {
+            bookmarks_unknown: true,
+            ..Self::new(images, &[])
+        }
+    }
+
+    /// Whether a page has had a link to a bookmark (one to a later page
+    /// needs the bookmarks before the pages are written).
+    #[must_use]
+    pub fn linked_inside(&self) -> bool {
+        self.linked_inside
+    }
+
+    /// Draws `page`, whose glyphs are faces of `book`, after the others.
+    pub fn add_page(&mut self, page: &Page, book: &FontBook) {
+        if self.abandoned {
+            return;
+        }
         let Some(settings) = PageSettings::from_wh(page.width.max(1.0), page.height.max(1.0)) else {
-            continue;
+            return;
         };
-        let mut pdf_page = document.start_page_with(settings);
+        let loaded = &mut self.loaded;
+        let mut pdf_page = self.document.start_page_with(settings);
         let mut links = Vec::new();
         {
             let mut surface = pdf_page.surface();
@@ -99,38 +155,68 @@ pub fn write(
                         width,
                         height,
                         target,
-                    } => links.push((*x, *y, *width, *height, target.clone())),
+                    } => links.push(([*x, *y, *width, *height], target.as_str())),
                     Item::Text(run) if run.glyphs.is_empty() || run.size <= 0.0 => {}
                     Item::Text(run) => {
                         if group.last().is_some_and(|last| !continues(last, run)) {
-                            draw_runs(&mut surface, &group, &mut loaded);
+                            draw_runs(&mut surface, &group, loaded, book);
                             group.clear();
                         }
                         group.push(run);
                     }
                     _ => {
-                        draw_runs(&mut surface, &group, &mut loaded);
+                        draw_runs(&mut surface, &group, loaded, book);
                         group.clear();
-                        draw_item(&mut surface, item, &mut loaded);
+                        draw_item(&mut surface, item, loaded);
                     }
                 }
             }
-            draw_runs(&mut surface, &group, &mut loaded);
+            draw_runs(&mut surface, &group, loaded, book);
             surface.finish();
         }
-        for (x, y, width, height, target) in links {
-            add_link(&mut pdf_page, [x, y, width, height], &target, &bookmarks);
+        for (area, target) in links {
+            self.linked_inside |= target.starts_with('#');
+            add_link(&mut pdf_page, area, target, &self.bookmarks);
         }
         pdf_page.finish();
+        if self.linked_inside && self.bookmarks_unknown {
+            self.abandoned = true;
+        }
     }
-    let mut metadata = Metadata::new().creator("kakemono".to_string());
-    if let Some(title) = title {
-        metadata = metadata.title(title.to_string());
+
+    /// The document will be written again: the pages still to come are not
+    /// drawn.
+    pub fn abandon(&mut self) {
+        self.abandoned = true;
     }
-    document.set_metadata(metadata);
-    let mut bytes = document.finish().map_err(|err| anyhow!("writing the PDF: {err:?}"))?;
-    clear_small_caps(&mut bytes);
-    Ok(bytes)
+
+    /// The PDF, with `title` as its title.
+    ///
+    /// # Errors
+    /// When krilla cannot write the document (a damaged font or picture).
+    pub fn finish(mut self, title: Option<&str>) -> Result<Vec<u8>> {
+        let mut metadata = Metadata::new().creator("kakemono".to_string());
+        if let Some(title) = title {
+            metadata = metadata.title(title.to_string());
+        }
+        self.document.set_metadata(metadata);
+        let mut bytes = self
+            .document
+            .finish()
+            .map_err(|err| anyhow!("writing the PDF: {err:?}"))?;
+        clear_small_caps(&mut bytes);
+        Ok(bytes)
+    }
+}
+
+impl super::flow::PageSink for Writer<'_> {
+    fn page(&mut self, page: &Page, book: &FontBook) {
+        self.add_page(page, book);
+    }
+
+    fn abandon(&mut self) {
+        Writer::abandon(self);
+    }
 }
 
 /// Whether the run `next` continues the run `run` drawn just before it:
@@ -148,9 +234,8 @@ fn continues(run: &TextRun, next: &TextRun) -> bool {
 
 /// Draws a group of runs that continue one another (none when `runs` is
 /// empty), in the face of the first.
-fn draw_runs(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], loaded: &mut Loaded<'_>) {
+fn draw_runs(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], loaded: &mut Loaded<'_>, book: &FontBook) {
     let Some(first) = runs.first() else { return };
-    let book = loaded.book;
     let font = loaded.fonts.entry(first.face).or_insert_with(|| {
         let face = book.get(first.face);
         Font::new(face.data.clone().into(), face.index).expect("a font that was shaped loads")
@@ -230,18 +315,15 @@ fn add_link(
     pdf_page: &mut krilla::page::Page<'_>,
     area: [f32; 4],
     target: &str,
-    bookmarks: &HashMap<&str, &Destination>,
+    bookmarks: &HashMap<String, (usize, f32)>,
 ) {
     let [x, y, width, height] = area;
     let Some(rect) = Rect::from_xywh(x, y, width.max(0.1), height.max(0.1)) else {
         return;
     };
     let target = if let Some(name) = target.strip_prefix('#') {
-        let Some(dest) = bookmarks.get(name) else { return };
-        Target::Destination(PdfDestination::Xyz(XyzDestination::new(
-            dest.page,
-            Point::from_xy(0.0, dest.y),
-        )))
+        let Some(&(page, y)) = bookmarks.get(name) else { return };
+        Target::Destination(PdfDestination::Xyz(XyzDestination::new(page, Point::from_xy(0.0, y))))
     } else {
         Target::Action(LinkAction::new(target.to_string()).into())
     };
