@@ -56,6 +56,7 @@ node tests/browser/check-friendly.js out/*.friendly.html             # browser c
 node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
+cd bindings && cargo test --release -p kakemono-bindings -p kakemono-c   # bindings: façade + C ABI (docs/BINDINGS.md has the rest)
 scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layout vs Word's own PDFs (CI minimums in ci.yml)
 python3 scripts/word-crash-test.py DIR...                            # every output of every Word file and Excel workbook: panics, timeouts
 python3 -I scripts/excel-report.py DIR... [--out FILE]               # per sheet: tables, header rows, paragraphs (to compare rules)
@@ -216,6 +217,19 @@ committing.
   must read like `sample.docx` and `sample.epub` (`html_sample_reads_like_the_docx`); a change to
   the reading shows in `tests/data/snapshots/html-sample.txt`. Tests of pages at an address use
   `html::read_with` with their own pictures, not the network.
+
+## Bindings (`bindings/`)
+
+- Node.js, WebAssembly, the JVM and .NET share the façade of `bindings/core`: an option, a check
+  or a default goes there (`RenderOptions`, `Target::options`), then into each binding's typed
+  options (Node `#[napi(object)]` structs, the wasm TypeScript section, the Java and C# option
+  classes). Keep the names camelCase and the same everywhere.
+- After changing the C ABI (`bindings/c/src/lib.rs`), regenerate `include/kakemono.h` with
+  cbindgen; after changing the Node binding, commit the `index.js` and `index.d.ts` that
+  `napi build` writes (CI checks both).
+- A change to the library's public API that the bindings use can break them: build and test
+  them (docs/BINDINGS.md, "Building and testing"); the `Bindings` workflow runs them on every pull
+  request.
 
 ## Public API and packages
 

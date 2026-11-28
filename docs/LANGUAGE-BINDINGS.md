@@ -2,6 +2,12 @@
 
 Ngày: 2026-11-28.
 
+> **Trạng thái (2026-11-28):** đã làm xong bốn binding theo kế hoạch dưới đây: Node.js
+> (`bindings/node`), WebAssembly (`bindings/wasm`, thử nghiệm), JVM (`bindings/jvm`, kèm
+> LangChain4j) và .NET (`bindings/dotnet`), cùng C ABI (`bindings/c`). Cách dùng, build và phát
+> hành: [BINDINGS.md](BINDINGS.md). Kiến trúc thực tế khác bản nháp ở mục 4: JVM gọi JNI trực
+> tiếp (không qua C ABI), .NET gọi C ABI.
+
 ## 1. Quyết định
 
 | Ngôn ngữ | Trạng thái | Cách làm |
