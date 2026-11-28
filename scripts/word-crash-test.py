@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Converts every Word file (.doc, .docx) and every Excel workbook (.xlsx,
-.xlsm) under the given directories to every output (the 4 HTML modes, PDF,
-Word, Markdown, LaTeX, EPUB, JSON, chunks) and reports the files that make kakemono
-crash (a panic, a signal) or hang (a timeout). A workbook's PDF is laid out
-as a document.
+"""Converts every Word file (.doc, .docx), every Excel workbook (.xlsx,
+.xlsm) and every PowerPoint deck (.pptx, .pptm, .ppsx, .ppsm, .potx) under
+the given directories to every output (the 4 HTML modes, PDF, Word,
+Markdown, LaTeX, EPUB, JSON, chunks) and reports the files that make
+kakemono crash (a panic, a signal) or hang (a timeout). A workbook's PDF is
+laid out as a document.
 
 A clean error (a damaged or password-protected file) is not a crash: it is
 counted apart.
@@ -41,6 +42,7 @@ OUTPUTS = [
     ('chunks', ['-o', '{out}/x.jsonl']),
 ]
 WORKBOOKS = ('.xlsx', '.xlsm')
+DECKS = ('.pptx', '.pptm', '.ppsx', '.ppsm', '.potx')
 timings = {}  # path -> seconds over all its outputs
 
 
@@ -48,7 +50,7 @@ def files():
     for root_dir in args.dirs:
         for root, _, names in os.walk(root_dir):
             for name in sorted(names):
-                if name.lower().endswith(('.doc', '.docx') + WORKBOOKS):
+                if name.lower().endswith(('.doc', '.docx') + WORKBOOKS + DECKS):
                     yield os.path.join(root, name)
 
 
