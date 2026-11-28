@@ -106,7 +106,12 @@ chục dòng; mặc định không đổi, nên các snapshot phải giữ nguy�
 5. Stack wasm: worker dùng 16 MB; cần `-zstack-size`.
 6. CI: thêm bước build `--no-default-features` và một bước `cargo check` cho wasm.
 
-Còn phải kiểm tra: kích thước `.wasm`, feature `tokenizers` trên wasm.
+**Đã làm (bước 0):** các mục 1, 2, 3 và 6. `cargo check --lib --target wasm32-unknown-unknown
+--no-default-features --features openai-tokenizers` chạy qua; CI kiểm tra nó trong job
+`no default features + wasm`.
+
+Còn phải làm khi tới bước wasm: feature `tokenizers` (Hugging Face) cần `getrandom` với cấu hình
+`wasm_js` (đặt trong crate `bindings/wasm`, không phải trong lõi); kích thước `.wasm`; mục 4 và 5.
 
 ## 6. Lộ trình
 

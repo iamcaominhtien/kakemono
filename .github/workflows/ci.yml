@@ -63,6 +63,28 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
+  # The library without its default features (no downloads, no tokenizers),
+  # and for WebAssembly: what the bindings for other languages build on
+  # (docs/LANGUAGE-BINDINGS.md).
+  features:
+    name: no default features + wasm
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: features
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo check --lib --target wasm32-unknown-unknown --no-default-features --features openai-tokenizers
+
   test:
     name: tests (real papers + browser)
     needs: changes
