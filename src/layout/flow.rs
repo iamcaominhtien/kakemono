@@ -959,7 +959,7 @@ impl Flow<'_, '_> {
         } else {
             table
         };
-        let laid = self.lay_table(table, width);
+        let laid = self.lay_table(table, width, None);
         let mut height = 0.0;
         for (row, laid_row) in table.rows.iter().zip(&laid.rows) {
             height += laid_row.height;
@@ -1908,9 +1908,13 @@ impl Flow<'_, '_> {
     }
 
     /// Lays out a table at a column width: column positions, row heights and
-    /// cell content.
-    fn lay_table(&mut self, table: &Table, width: f32) -> LaidTable {
+    /// cell content; its fields show page `page` (else the current page's
+    /// number).
+    fn lay_table(&mut self, table: &Table, width: f32, page: Option<u32>) -> LaidTable {
         let mut laying = self.start_table(table, width);
+        if let Some(number) = page {
+            laying.number = number;
+        }
         while laying.laid.rows.len() < table.rows.len() {
             self.lay_rows(table, &mut laying);
         }
@@ -2077,7 +2081,7 @@ impl Flow<'_, '_> {
         for block in blocks {
             match block {
                 Block::Para(para) => self.sub_para(sub, para, page),
-                Block::Table(table) => self.sub_table(sub, table),
+                Block::Table(table) => self.sub_table(sub, table, page),
             }
         }
         sub.close_frame();
@@ -2169,13 +2173,14 @@ impl Flow<'_, '_> {
     }
 
     /// Lays out a table in a sub-flow, row by row, with its shading and
-    /// borders.
-    fn sub_table(&mut self, sub: &mut SubFlow, table: &Table) {
+    /// borders; its fields show page `page` (that of the header or footer
+    /// it is in).
+    fn sub_table(&mut self, sub: &mut SubFlow, table: &Table, page: Option<u32>) {
         sub.close_frame();
         if let Some((after, _, _)) = sub.pending_after.take() {
             sub.y += after;
         }
-        let laid = self.lay_table(table, sub.width);
+        let laid = self.lay_table(table, sub.width, page);
         for row in &laid.rows {
             let mut row_items = Vec::new();
             for cell in &row.cells {
