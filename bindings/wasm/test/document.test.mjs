@@ -36,6 +36,8 @@ test('a Word document: binary outputs, a PDF once a font is given, edited text',
   json.blocks.find((block) => typeof block.text === 'string').text = 'Đã dịch'
   const edited = Document.fromBytes(bytes, { content: JSON.stringify(json) })
   assert.match(edited.toMarkdown().text, /Đã dịch/)
+  const fromObject = Document.fromBytes(bytes, { content: json })
+  assert.match(fromObject.toMarkdown().text, /Đã dịch/)
   assert.ok(Array.isArray(doc.analyze().blocks))
 })
 

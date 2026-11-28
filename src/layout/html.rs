@@ -34,9 +34,11 @@ const CSS: &str = "body{margin:0;background:#e9e9e9;color:#000}\
 /// Width of a phone screen below which the sheet loses its margins.
 const NOTE_PREFIX: &str = "note-";
 
-/// Renders `doc` as an HTML page.
-pub fn to_html(doc: &FDoc) -> String {
+/// Renders `doc` as an HTML page; `None` when no font can be loaded (none
+/// installed, embedded or added).
+pub fn to_html(doc: &FDoc) -> Option<String> {
     let mut book = FontBook::new(&doc.fonts, &doc.font_kinds);
+    book.require_font().ok()?;
     let mut shaper = Shaper::default();
     let notes = note_numbers(doc);
     let mut coverage = HashMap::new();
@@ -50,7 +52,7 @@ pub fn to_html(doc: &FDoc) -> String {
         last_style: None,
     };
     writer.document();
-    resolve_images(&writer.out, &doc.images)
+    Some(resolve_images(&writer.out, &doc.images))
 }
 
 /// Starts and ends the mark of a picture in the HTML being written.

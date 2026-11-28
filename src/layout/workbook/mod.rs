@@ -414,7 +414,8 @@ struct Builder<'a> {
 /// # Errors
 /// When the PDF cannot be written.
 pub fn to_pdf(doc: &Document, paper: Option<(f32, f32)>, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
-    let book = FontBook::new(&[], &HashMap::new());
+    let mut book = FontBook::new(&[], &HashMap::new());
+    book.require_font()?;
     let families = Families::choose(&book);
     let mut builder = Builder {
         config,

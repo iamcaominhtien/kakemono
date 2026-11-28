@@ -366,10 +366,12 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_chunks<'loc
                 ints(env, &chunk.pages)?,
             ];
             for (index, field) in fields.into_iter().enumerate() {
-                env.set_object_array_element(&item, len(index)?, &field).map_err(jni_error)?;
+                env.set_object_array_element(&item, len(index)?, &field)
+                    .map_err(jni_error)?;
                 env.delete_local_ref(field).map_err(jni_error)?;
             }
-            env.set_object_array_element(&result, len(at)?, &item).map_err(jni_error)?;
+            env.set_object_array_element(&result, len(at)?, &item)
+                .map_err(jni_error)?;
             env.delete_local_ref(item).map_err(jni_error)?;
         }
         Ok(result.into_raw())

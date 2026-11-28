@@ -10,12 +10,15 @@ use napi::{Env, Error, Result, Status};
 use napi_derive::napi;
 use std::sync::Arc;
 
-/// An error of kakemono as a JavaScript error: `code` is `InvalidArg` for a
-/// wrong argument or option, `GenericFailure` otherwise.
+/// An error of kakemono as a JavaScript error, its `code` saying its kind:
+/// `InvalidArg` for a wrong argument or option, `GenericFailure` for a
+/// document that cannot be read, fetched or written so, `Unknown` for a bug
+/// of kakemono.
 fn js_error(err: core::Error) -> Error {
     let status = match err.kind() {
         core::ErrorKind::InvalidArgument => Status::InvalidArg,
-        core::ErrorKind::Document | core::ErrorKind::Internal => Status::GenericFailure,
+        core::ErrorKind::Document => Status::GenericFailure,
+        core::ErrorKind::Internal => Status::Unknown,
     };
     Error::new(status, err.message().to_string())
 }
@@ -46,7 +49,7 @@ pub struct OpenOptions {
     /// Worker threads for one document, 0 for one per core (default 0). On a
     /// server converting several documents at once, 1 or 2 avoids running
     /// more threads than cores.
-    pub jobs: Option<u32>,
+    pub jobs: Option<f64>,
     /// How hard PNG pictures are compressed; the pixels are the same.
     #[napi(ts_type = "'fast' | 'balanced' | 'high'")]
     pub png_compression: Option<String>,
@@ -58,24 +61,38 @@ pub struct OpenOptions {
     pub content_dir: Option<String>,
     /// The header rows of every table of an Excel workbook, given instead
     /// of found.
-    pub header_rows: Option<u32>,
+    pub header_rows: Option<f64>,
+}
+
+/// A count option: a whole number, 0 or more (JavaScript numbers are
+/// doubles, and napi would wrap -1 to 4294967295).
+fn count(name: &str, value: Option<f64>) -> core::Result<Option<usize>> {
+    match value {
+        None => Ok(None),
+        Some(number) if number.is_finite() && number >= 0.0 && number.fract() == 0.0 && number <= 1e15 => {
+            Ok(Some(number as usize))
+        }
+        Some(number) => Err(core::Error::invalid(format!(
+            "{name} must be a whole number, 0 or more, not {number}"
+        ))),
+    }
 }
 
 impl OpenOptions {
     /// The options of the façade.
-    fn into_core(self) -> core::OpenOptions {
-        core::OpenOptions {
+    fn into_core(self) -> core::Result<core::OpenOptions> {
+        Ok(core::OpenOptions {
             source_name: self.source_name,
             tables: self.tables,
-            jobs: self.jobs.map(|jobs| jobs as usize),
+            jobs: count("jobs", self.jobs)?,
             png_compression: self.png_compression,
             content: self.content.map(|content| match content {
                 serde_json::Value::String(text) => text,
                 other => other.to_string(),
             }),
             content_dir: self.content_dir,
-            header_rows: self.header_rows.map(|rows| rows as usize),
-        }
+            header_rows: count("headerRows", self.header_rows)?,
+        })
     }
 }
 
@@ -204,7 +221,7 @@ pub struct EpubOptions {
 #[derive(Default)]
 pub struct ChunkOptions {
     /// Largest chunk, in tokens (default 512).
-    pub max_tokens: Option<u32>,
+    pub max_tokens: Option<f64>,
     /// The path of a Hugging Face `tokenizer.json`, or `'cl100k_base'` /
     /// `'o200k_base'`; tokens are estimated without it.
     pub tokenizer: Option<String>,
@@ -254,7 +271,7 @@ pub struct Chunk {
     pub section: Vec<String>,
     /// The blocks of the document it holds (their numbers).
     pub blocks: Vec<u32>,
-    /// The pages it comes from, from 1 (empty for documents without pages).
+    /// The pages it comes from, from 0 (`[0]` for documents without pages).
     pub pages: Vec<u32>,
 }
 
@@ -310,6 +327,7 @@ impl Document {
     ) -> Result<PromiseRaw<'env, Document>> {
         let opts = options.unwrap_or_default().into_core();
         spawn(env, move || {
+            let opts = opts?;
             core::Document::open(source, &opts).map(|doc| Document { doc: Arc::new(doc) })
         })
     }
@@ -539,12 +557,16 @@ impl Document {
     ) -> Result<PromiseRaw<'env, Vec<Chunk>>> {
         let o = options.unwrap_or_default();
         let opts = core::RenderOptions {
-            max_tokens: o.max_tokens.map(|tokens| tokens as usize),
             tokenizer: o.tokenizer,
             ..Default::default()
         };
+        let max_tokens = count("maxTokens", o.max_tokens);
         let doc = Arc::clone(&self.doc);
         spawn(env, move || {
+            let opts = core::RenderOptions {
+                max_tokens: max_tokens?,
+                ..opts
+            };
             Ok(doc
                 .chunks(&opts)?
                 .into_iter()

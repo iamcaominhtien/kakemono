@@ -23,8 +23,14 @@
   "exports": {
     ".": {
       "node": {
-        "types": "./pkg/node/kakemono_wasm.d.ts",
-        "default": "./pkg/node/kakemono_wasm.js"
+        "import": {
+          "types": "./pkg/node/index.d.mts",
+          "default": "./pkg/node/index.mjs"
+        },
+        "require": {
+          "types": "./pkg/node/kakemono_wasm.d.ts",
+          "default": "./pkg/node/kakemono_wasm.js"
+        }
       },
       "types": "./pkg/web/kakemono_wasm.d.ts",
       "default": "./pkg/web/kakemono_wasm.js"

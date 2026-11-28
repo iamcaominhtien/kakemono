@@ -96,6 +96,7 @@ const CJK_FAMILIES: &[&str] = &[
 /// When the PDF cannot be written.
 pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig, file: Option<&str>) -> Result<Vec<u8>> {
     let mut fonts = FontBook::new(&[], &HashMap::new());
+    fonts.require_font()?;
     let cjk = CJK_FAMILIES
         .iter()
         .find(|name| fonts.has_family(name))

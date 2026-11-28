@@ -11,3 +11,14 @@ wasm-bindgen --target nodejs --out-dir pkg/node "$module"
 wasm-bindgen --target web --out-dir pkg/web "$module"
 # The package is an ES module; the Node build is CommonJS.
 printf '{"type":"commonjs"}\n' > pkg/node/package.json
+# An ES module entry for Node, with the same default `init` as the web build
+# (a no-op: the Node build is ready once loaded), so that one import works in
+# both.
+cat > pkg/node/index.mjs <<'JS'
+import wasm from './kakemono_wasm.js'
+export const { Document, addFont, version } = wasm
+export default async function init() {}
+export function initSync() {}
+JS
+cp pkg/node/kakemono_wasm.d.ts pkg/node/index.d.mts
+printf '%s\n' 'export default function init(): Promise<void>' 'export function initSync(): void' >> pkg/node/index.d.mts

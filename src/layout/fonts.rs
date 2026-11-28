@@ -7,7 +7,7 @@ use crate::word::fmt::model::{EmbeddedFont, FontKind};
 use rustybuzz::ttf_parser;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 
 /// Fonts given with [`add_font`], in the order they were given.
 static ADDED: RwLock<Vec<Arc<Vec<u8>>>> = RwLock::new(Vec::new());
@@ -16,18 +16,18 @@ static ADDED: RwLock<Vec<Arc<Vec<u8>>>> = RwLock::new(Vec::new());
 /// lays out documents with and draws the text of SVG pictures with,
 /// besides the fonts installed on the computer and in `KAKEMONO_FONT_DIRS`.
 /// For where no font is installed: WebAssembly, small containers. It applies
-/// to the documents converted after it; the fonts are kept until the
-/// process ends. Returns the number of faces in `data`.
+/// to the documents converted after it, in the whole process, and cannot be
+/// undone: the fonts are kept until the process ends. Returns the number of
+/// faces in `data`.
 ///
 /// # Errors
-/// When `data` holds no font face.
+/// When `data` holds no font face with a family name kakemono can read.
 pub fn add_font(data: Vec<u8>) -> anyhow::Result<usize> {
-    let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
-    let faces = (0..count)
-        .filter(|&index| ttf_parser::Face::parse(&data, index).is_ok())
+    let faces = (0..face_count(&data))
+        .filter(|&index| ttf_parser::Face::parse(&data, index).is_ok_and(|face| !describe(&face).0.is_empty()))
         .count();
     if faces == 0 {
-        anyhow::bail!("not a TrueType or OpenType font");
+        anyhow::bail!("not a TrueType or OpenType font with a readable family name");
     }
     ADDED
         .write()
@@ -41,27 +41,16 @@ pub(crate) fn added_fonts() -> Vec<Arc<Vec<u8>>> {
     ADDED.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
-/// Whether there is any font to lay out with: one given with [`add_font`],
-/// or a font file in the folders of installed fonts (looked for once).
-pub(crate) fn any_font() -> bool {
-    static INSTALLED: OnceLock<bool> = OnceLock::new();
-    !added_fonts().is_empty() || *INSTALLED.get_or_init(|| font_dirs().iter().any(|dir| has_font_file(dir, 0)))
+/// The number of faces in the font file `data`: that of a collection's
+/// header, bounded by what the file can hold (4 bytes of offset each), or 1.
+fn face_count(data: &[u8]) -> u32 {
+    let room = u32::try_from(data.len().saturating_sub(12) / 4).unwrap_or(u32::MAX);
+    ttf_parser::fonts_in_collection(data).map_or(1, |count| count.min(room))
 }
 
-/// Whether there is a font file under `dir`.
-fn has_font_file(dir: &Path, depth: usize) -> bool {
-    const MAX_DEPTH: usize = 6;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        if path.is_dir() {
-            return depth < MAX_DEPTH && has_font_file(&path, depth + 1);
-        }
-        is_font_file(&path)
-    })
-}
+/// The message when no font can be loaded at all.
+const NO_FONT: &str = "no font is installed: laying out pages needs at least one TrueType or OpenType font \
+     (install one, name its folder in KAKEMONO_FONT_DIRS, or give it with add_font)";
 
 /// Whether `path` names a font file by its extension.
 fn is_font_file(path: &Path) -> bool {
@@ -304,8 +293,7 @@ impl FontBook {
 
     /// Adds the faces of the font file `data`, read from `source`.
     fn add_faces(&mut self, data: &[u8], source: &Source) {
-        let count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
-        for index in 0..count {
+        for index in 0..face_count(data) {
             let Ok(face) = ttf_parser::Face::parse(data, index) else {
                 continue;
             };
@@ -416,21 +404,38 @@ impl FontBook {
         })
     }
 
+    /// Checks that a face can be loaded at all (an installed font, one
+    /// embedded in the document or one given with [`add_font`]): the
+    /// layouts call it before laying out, so that none reaches the panic of
+    /// [`FontBook::last_resort`].
+    ///
+    /// # Errors
+    /// When no face can be loaded.
+    pub fn require_font(&mut self) -> anyhow::Result<()> {
+        match self.try_last_resort(false, false) {
+            Some(_) => Ok(()),
+            None => anyhow::bail!(NO_FONT),
+        }
+    }
+
     /// The face used when a family is not found.
     fn last_resort(&mut self, bold: bool, italic: bool) -> (FaceId, bool, bool) {
+        // `require_font` has checked that there is one.
+        self.try_last_resort(bold, italic).expect(NO_FONT)
+    }
+
+    /// The face used when a family is not found: a usual font, else the
+    /// first family (by name) whose face loads; `None` when none does.
+    fn try_last_resort(&mut self, bold: bool, italic: bool) -> Option<(FaceId, bool, bool)> {
         for name in LAST_RESORT {
             if let Some(face) = self.load_family(name, bold, italic) {
-                return face;
+                return Some(face);
             }
         }
-        // Any font at all.
-        let any = self.by_family.keys().next().cloned();
-        if let Some(name) = any
-            && let Some(face) = self.load_family(&name, bold, italic)
-        {
-            return face;
-        }
-        panic!("no font is installed: the layout needs at least one TrueType or OpenType font");
+        // Any font at all, chosen the same way at every run.
+        let mut names: Vec<String> = self.by_family.keys().cloned().collect();
+        names.sort_unstable();
+        names.into_iter().find_map(|name| self.load_family(&name, bold, italic))
     }
 
     /// Loads the best face of family `name` for the style.

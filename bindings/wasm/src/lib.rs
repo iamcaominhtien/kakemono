@@ -24,8 +24,8 @@ export interface OpenOptions {
   tables?: boolean
   /** How hard PNG pictures are compressed; the pixels are the same. */
   pngCompression?: 'fast' | 'balanced' | 'high'
-  /** An edited copy of the output of `toJson()` (its text): every output shows its text. */
-  content?: string
+  /** An edited copy of the output of `toJson()` (its text, or the parsed object): every output shows its text. */
+  content?: string | object
   /** The header rows of every table of an Excel workbook, given instead of found. */
   headerRows?: number
 }
@@ -85,7 +85,7 @@ export interface Chunk {
   title?: string
   section: string[]
   blocks: number[]
-  /** The pages it comes from, from 1 (empty for documents without pages). */
+  /** The pages it comes from, from 0 (`[0]` for documents without pages). */
   pages: number[]
 }
 "#;
@@ -119,6 +119,22 @@ fn options<T: Default + serde::de::DeserializeOwned>(value: JsValue) -> Result<T
     let json = js_sys::JSON::stringify(&value)
         .map_err(|_| invalid("invalid options: they cannot be written as JSON".into()))?;
     serde_json::from_str(&String::from(json)).map_err(|err| invalid(format!("invalid options: {err}")))
+}
+
+/// `opts` with its `content` as JSON text when it is an object (a copy:
+/// the caller's object is not changed).
+fn with_content_as_text(opts: JsValue) -> Result<JsValue, JsValue> {
+    if !opts.is_object() {
+        return Ok(opts);
+    }
+    let content = js_sys::Reflect::get(&opts, &JsValue::from_str("content"))?;
+    if !content.is_object() {
+        return Ok(opts);
+    }
+    let copy = js_sys::Object::assign(&js_sys::Object::new(), opts.unchecked_ref());
+    let text = js_sys::JSON::stringify(&content)?;
+    set(&copy, "content", &text);
+    Ok(copy.into())
 }
 
 /// Sets `object[key] = value`.
@@ -174,7 +190,7 @@ impl Document {
         data: &[u8],
         #[wasm_bindgen(unchecked_param_type = "OpenOptions")] opts: JsValue,
     ) -> Result<Document, JsValue> {
-        let mut opts: core::OpenOptions = options(opts)?;
+        let mut opts: core::OpenOptions = options(with_content_as_text(opts)?)?;
         // One thread: WebAssembly here has no others.
         opts.jobs = Some(1);
         if opts.content_dir.is_some() {

@@ -12,7 +12,7 @@ import java.util.Optional;
  * @param title the title of the document
  * @param section the headings of the section it is in, from the outermost
  * @param blocks the blocks of the document it holds (their numbers)
- * @param pages the pages it comes from, from 1 (empty for documents without pages)
+ * @param pages the pages it comes from, from 0 ({@code [0]} for documents without pages)
  */
 public record Chunk(
         int id, String text, int tokens, Optional<String> title, List<String> section, List<Integer> blocks,

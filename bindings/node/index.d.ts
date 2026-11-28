@@ -116,7 +116,7 @@ export interface Chunk {
   section: Array<string>
   /** The blocks of the document it holds (their numbers). */
   blocks: Array<number>
-  /** The pages it comes from, from 1 (empty for documents without pages). */
+  /** The pages it comes from, from 0 (`[0]` for documents without pages). */
   pages: Array<number>
 }
 

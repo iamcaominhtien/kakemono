@@ -70,6 +70,12 @@ test('errors carry a code and a message', async () => {
   await assert.rejects(Document.fromFile(data('word/sample.docx'), { pngCompression: 'max' }), {
     code: 'InvalidArg',
   })
+  // Counts are whole numbers, 0 or more (napi would wrap -1).
+  await assert.rejects(Document.fromFile(data('word/sample.docx'), { headerRows: -1 }), {
+    code: 'InvalidArg',
+    message: /headerRows must be a whole number/,
+  })
+  await assert.rejects(doc.toChunks({ maxTokens: 2.5 }), { code: 'InvalidArg' })
 })
 
 test('several outputs run at once without blocking the event loop', async () => {

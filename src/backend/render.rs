@@ -348,8 +348,8 @@ pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
     /// The fonts, with the number of added fonts they hold.
     static FONTS: std::sync::Mutex<Option<(usize, std::sync::Arc<resvg::usvg::fontdb::Database>)>> =
         std::sync::Mutex::new(None);
-    let added = crate::layout::fonts::added_fonts();
     let mut fonts = FONTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let added = crate::layout::fonts::added_fonts();
     if let Some((count, database)) = fonts.as_ref()
         && *count == added.len()
     {
@@ -357,7 +357,7 @@ pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
     }
     let mut database = (*system_svg_fonts()).clone();
     for data in &added {
-        database.load_font_data(data.as_ref().clone());
+        database.load_font_source(resvg::usvg::fontdb::Source::Binary(data.clone()));
     }
     let database = std::sync::Arc::new(database);
     *fonts = Some((added.len(), database.clone()));

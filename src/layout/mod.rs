@@ -28,6 +28,7 @@ pub fn to_pdf(doc: &FDoc) -> Result<Vec<u8>> {
         eprintln!("{doc:#?}");
     }
     let mut book = fonts::FontBook::new(&doc.fonts, &doc.font_kinds);
+    book.require_font()?;
     to_pdf_with(doc, &mut book)
 }
 
