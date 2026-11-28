@@ -1435,6 +1435,19 @@ pub(crate) fn preset_path(geometry: &str) -> Option<(&'static str, bool)> {
         "leftRightArrow" => "M0,50L25,0L25,25L75,25L75,0L100,50L75,100L75,75L25,75L25,100Z",
         "upDownArrow" => "M50,0L100,25L75,25L75,75L100,75L50,100L0,75L25,75L25,25L0,25Z",
         "chevron" => "M0,0L75,0L100,50L75,100L0,100L25,50Z",
+        "star5" => "M50,0L61,35L98,35L68,57L79,91L50,70L21,91L32,57L2,35L39,35Z",
+        "snip1Rect" => "M0,0L83,0L100,17L100,100L0,100Z",
+        "snip2DiagRect" => "M0,0L83,0L100,17L100,100L17,100L0,83Z",
+        "snip2SameRect" => "M17,0L83,0L100,17L100,100L0,100L0,17Z",
+        "round1Rect" => "M0,0L83,0Q100,0 100,17L100,100L0,100Z",
+        "round2DiagRect" => "M17,0L100,0L100,83Q100,100 83,100L0,100L0,17Q0,0 17,0Z",
+        "flowChartDelay" => "M0,0L50,0A50,50 0 0 1 50,100L0,100Z",
+        "corner" => "M0,0L50,0L50,50L100,50L100,100L0,100Z",
+        "downArrowCallout" => "M0,0L100,0L100,65L67,65L67,75L80,75L50,100L20,75L33,75L33,65L0,65Z",
+        "stripedRightArrow" => {
+            "M0,25L4,25L4,75L0,75Z M8,25L16,25L16,75L8,75Z M20,25L75,25L75,0L100,50L75,100L75,75L20,75Z"
+        }
+        "wedgeEllipseCallout" => "M0,50A50,50 0 1 1 100,50A50,50 0 1 1 0,50Z",
         "homePlate" => "M0,0L75,0L100,50L75,100L0,100Z",
         "parallelogram" | "flowChartInputOutput" => "M25,0L100,0L75,100L0,100Z",
         "trapezoid" => "M25,0L75,0L100,100L0,100Z",
