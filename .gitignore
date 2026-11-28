@@ -39,3 +39,9 @@ benchmark-results/
 /tests/data/web/
 /tests/data/web-bench/
 /target-*/
+
+# The bindings (bindings/): their build output and packages
+/bindings/target
+/bindings/**/node_modules
+/bindings/**/bin/
+/bindings/**/obj/
