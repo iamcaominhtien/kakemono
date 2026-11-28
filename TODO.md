@@ -146,19 +146,23 @@ corpus against the workbooks' XML.
 Measured on 4 cores and 16 GB, after the speed-ups of the stress test
 (quadratic glyph clusters, row splits, chunk cuts, clipped cell text).
 
-- [ ] The document-style PDF holds every laid-out page until the layout
-      ends (the PDF writer then drops each page once drawn): about 40 bytes
-      per character since the runs of a line are joined and a glyph takes 28
-      bytes. A workbook of 320 million characters (10,000 cells of 32,000,
-      about 100,000 pages) still runs out of memory past 11 GB (163 s); 1,000
-      such cells take 1.3 GB and 31 s. Word documents share the limit. Either
-      lay out and write the PDF page by page (shared `flow.rs` and the PDF
-      writer; `NUMPAGES`, `SECTIONPAGES` and `PAGEREF` need the page count
-      or a second pass, so check `scripts/word-fidelity.py`), or stop a
-      workbook's document-style PDF at a number of pages with a note saying
-      what is left out.
+- [ ] The document-style PDF of a long workbook is now written page by page
+      (`flow::STREAM_MIN_CHARS`), its tables laid out a few rows at a time:
+      320 million characters (10,000 cells of 32,000, about 43,000 pages)
+      take 918 MB and 337 s, where they ran out of memory past 11 GB; 1,000
+      such cells 114 MB instead of 1.3 GB. What is left is time, linear
+      (about 1 µs a character: shaping and line breaking), and the text held
+      by the `Grid`, the `Document` and the `FDoc`.
+- [ ] The Excel-style PDF still holds every printed page until the end: 2.8
+      GB and 64 s for the same workbook. Hand each page to `pdf::Writer` as
+      it is printed (`layout/workbook/print.rs`).
+- [ ] A long Word document whose headers show the page count, or whose
+      links point to its bookmarks, is laid out twice to be written page by
+      page (three times with `PAGEREF`): a first pass that only counts.
+      Measure on long real documents whether a shorter count (pages and
+      bookmarks without drawing) is worth it.
 - [ ] Large grids: 2.5 million cells (the cap) take 2.6 GB and 11 s for Word,
-      2.2 GB and 17 s for the document-style PDF, 1.8 GB and 19 s for the
+      1.9 GB and 16 s for the document-style PDF, 1.8 GB and 20 s for the
       Excel-style PDF, 1.4 GB and 10 s for the sheet view; the `Grid` and the
       `Document` are held at once.
 - [ ] Nothing bounds the size of the text outputs: the long-text workbook gives
