@@ -2,7 +2,8 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF; Excel workbooks, `.xlsx`, read by `src/excel/`; EPUB books, `.epub`, read by
+writes them as a PDF; Excel workbooks, `.xlsx`, read by `src/excel/`; PowerPoint presentations, `.pptx`, read by `src/powerpoint/` and drawn as pages by
+`src/layout/slides/`; EPUB books, `.epub`, read by
 `src/epub/` into the form of `src/word/`; and web pages, an `.html` file or an `http(s)` address,
 whose article `src/html/` finds and hands to the reader of `src/epub/`) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
@@ -40,6 +41,8 @@ cargo build --release
 ./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (every output)
 ./target/release/kakemono convert <file.xlsx> -o out/x.pdf                   # a workbook printed as Excel prints it (--pdf-style document: as a document)
 ./target/release/kakemono convert <file.xlsx> --header-rows 1 -o out/x.md    # header rows of every table, given instead of found
+./target/release/kakemono convert <file.pptx> -o out/x.md                    # a PowerPoint deck as input (every output)
+./target/release/kakemono convert <file.pptx> -o out/x.pdf                   # its visible slides drawn as PowerPoint draws them
 ./target/release/kakemono convert <file.epub> -o out/x.md                    # an EPUB book as input (any output)
 ./target/release/kakemono convert <https://... | file.html> -o out/x.md      # a web page as input (any output)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
@@ -60,6 +63,8 @@ scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layo
 python3 scripts/word-crash-test.py DIR...                            # every output of every Word file and Excel workbook: panics, timeouts
 python3 -I scripts/excel-report.py DIR... [--out FILE]               # per sheet: tables, header rows, paragraphs (to compare rules)
 scripts/fetch-excel-corpus.sh 8                                      # the public workbooks of tests/data/excel-corpus.tsv
+scripts/fetch-powerpoint-corpus.sh 8                                 # the public decks of tests/data/powerpoint-corpus.tsv (5 with PowerPoint's PDF)
+python3 scripts/word-fidelity.py --corpus tests/data/powerpoint-corpus --name PowerPoint   # slides vs PowerPoint's PDFs (CI minimums in ci.yml)
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
@@ -191,6 +196,28 @@ committing.
   `python3 -I scripts/excel-report.py DIR... --out before.tsv` (sheets, tables, header rows of each
   table, paragraphs), before and after the change, then `diff` the two reports.
   `table_min_fill_ratio` stays 0 because no value separates forms from sparse financial tables there.
+
+## PowerPoint input (`src/powerpoint`)
+
+- The slides are read into `word::ir` with Word style names, so `word/build.rs` decides what each
+  paragraph is, as for EPUB: a rule about block kinds goes there; a rule about slides (titles in
+  text boxes, title slides, page furniture) in `src/powerpoint/rules.rs`, its threshold a
+  documented field of `PowerPointConfig` (`src/powerpoint/mod.rs`, re-exported by `src/config.rs`)
+  with its unit in the name. Reading order is by position (`order.rs`), not the shape tree's.
+- A rule that fixes one deck easily breaks another: compare the titles and headings of the corpus
+  (`tests/data/powerpoint-corpus.tsv`, `scripts/fetch-powerpoint-corpus.sh`; not committed) before
+  and after, as for Excel's rules.
+- The test sample is `tests/data/powerpoint/sample.pptx`, written by
+  `python3 -I tests/data/powerpoint/make-sample-pptx.py`; a change to the reading shows in
+  `tests/data/snapshots/powerpoint-sample.txt` (the flowing outputs only: the page modes depend on
+  the fonts installed).
+- A deck read so has no pages (`Document::pages` is empty). Its PDF (`Paper::to_pdf`) is a second
+  reading of the file by `src/layout/slides/`, each visible slide drawn as PowerPoint draws it,
+  with the Word layout engine's fonts and line breaking; `hard`, `hard-95` and `medium` send that
+  PDF through the PDF pipeline (`Paper::laid`). A rule of the pages is checked against
+  PowerPoint's PDFs with `scripts/word-fidelity.py --corpus tests/data/powerpoint-corpus --name
+  PowerPoint` (CI job `powerpoint-fidelity`); a change to the shared layout code (`para.rs`,
+  `flow.rs`, `excel/view.rs`, `chart/`) must keep `scripts/word-fidelity.py` (Word) where it was.
 
 ## EPUB input (`src/epub`)
 

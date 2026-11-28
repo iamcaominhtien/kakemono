@@ -1,6 +1,6 @@
 //! kakemono: convert scientific-paper PDFs (such as those on arXiv), Word
-//! documents (`.docx`, `.doc`), Excel workbooks (`.xlsx`), EPUB books
-//! (`.epub`) and web pages (an `.html` file or an `http(s)` address:
+//! documents (`.docx`, `.doc`), Excel workbooks (`.xlsx`), PowerPoint
+//! presentations (`.pptx`), EPUB books (`.epub`) and web pages (an `.html` file or an `http(s)` address:
 //! [`Paper::from_path`], [`Paper::from_url`]) into clean HTML, Word
 //! documents, Markdown, LaTeX, Typst or EPUB books.
 //!
@@ -34,8 +34,9 @@ pub mod source;
 pub mod analysis;
 #[doc(hidden)]
 pub mod backend;
-// Charts of workbooks and Word documents: read, drawn and made ready here,
-// placed in the documents by the Excel and Word readers.
+// Charts of workbooks, Word documents and presentations: read, drawn and
+// made ready here, placed in the documents by the Excel, Word and
+// PowerPoint readers.
 pub(crate) mod chart;
 #[doc(hidden)]
 pub mod common;

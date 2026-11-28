@@ -1,5 +1,5 @@
 //! The native part of the `kakemono` Python package. A [`Document`] is a PDF,
-//! a Word document, an Excel workbook, an EPUB book or a web page read and analysed once (with the text of an edited JSON file
+//! a Word document, an Excel workbook, a PowerPoint presentation, an EPUB book or a web page read and analysed once (with the text of an edited JSON file
 //! applied, `content`); it is then written as HTML, a Word document, Markdown,
 //! LaTeX, an EPUB book, the editable JSON, chunks for retrieval, a PDF (Word
 //! documents, workbooks) or the document structure (as JSON). [`render_svg`] and
@@ -118,7 +118,8 @@ struct Document {
 #[pymethods]
 impl Document {
     /// Reads and analyses `data` (the bytes of a PDF, a Word document, an
-    /// Excel workbook, an EPUB book or a web page), the file at `path` (a web page with its
+    /// Excel workbook, a PowerPoint presentation, an EPUB book or a web
+    /// page), the file at `path` (a web page with its
     /// pictures next to it) or the document at the address `url` (a web
     /// page with its pictures, fetched), and
     /// applies the edited JSON `content` to the analysis; a relative
@@ -191,7 +192,8 @@ impl Document {
         self.paper.format().name()
     }
 
-    /// The number of pages of a PDF (0 for a Word document, which has none).
+    /// The number of pages of a PDF (0 for any other input, which has none of
+    /// its own).
     #[getter]
     fn page_count(&self) -> usize {
         if self.paper.format().has_pages() {
@@ -201,7 +203,7 @@ impl Document {
         }
     }
 
-    /// The HTML of each of `modes`. A Word document has only the friendly
+    /// The HTML of each of `modes`. An input other than a PDF has only the friendly
     /// mode, and the hard mode cannot show edited text.
     #[pyo3(signature = (modes, *, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0))]
     fn convert(
@@ -227,7 +229,7 @@ impl Document {
         }
         if !self.paper.format().has_pages() && modes.iter().any(|mode| *mode != Mode::Friendly) {
             return Err(value_error(
-                "a Word document or an EPUB book has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
+                "this input has no pages of its own: hard, hard-95 and medium show the pages of a PDF; use 'friendly' (or to_pdf, then read that PDF)",
             ));
         }
         Ok(py.detach(|| {
@@ -445,12 +447,14 @@ impl Document {
     }
 
     /// A Word document, an EPUB book or a web page laid out in pages as Word
-    /// lays it out, or a workbook printed as Excel prints it, as the bytes of
-    /// a PDF. With edited text, the edited document is laid out.
+    /// lays it out, a workbook printed as Excel prints it, or a presentation's
+    /// visible slides drawn as PowerPoint draws them, one page each, as the
+    /// bytes of a PDF. With edited text, the edited document is laid out (a
+    /// presentation's then as a document, not as slides).
     fn to_pdf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         if self.paper.format().has_pages() {
             return Err(value_error(
-                "the input is already a PDF: only a Word document, a workbook, an EPUB book or a web page is laid out as a PDF",
+                "the input is already a PDF: only a Word document, a workbook, a presentation, an EPUB book or a web page is laid out as a PDF",
             ));
         }
         let data = py.detach(|| {

@@ -168,8 +168,9 @@ Four layers, from cheap and certain to costly and subjective:
 **Files:**
 - Modify: `python/src/lib.rs` (docs of `format`, `to_pdf` accepts a deck, its error message), `python/README.md`, `python/tests/test_kakemono.py` (a test with the sample), `README.md`, `ARCHITECTURE.md` (module table, pipeline diagram, dependencies), `CLAUDE.md` (a "PowerPoint input" section like "Excel input"; commands), `docs/GUIDE.md`, new `docs/POWERPOINT-INPUT.md` (what is read, what each output shows, limitations), `CHANGELOG.md` through `scripts/release.py` only
 
-- [ ] **Step 1:** write the documents; `cd python && maturin develop --release && pytest tests` in `/root/.venvs/kakemono-py`.
-- [ ] **Step 2: Commit** — `docs: document PowerPoint input`
+- [x] **Step 1:** write the documents; `cd python && maturin develop --release && pytest tests` in `/root/.venvs/kakemono-py`.
+  - Done 2026-11-28: `docs/POWERPOINT-INPUT.md`; README, GUIDE (input, limitations, testing), ARCHITECTURE (pipeline, modules, dependencies), CLAUDE.md (a "PowerPoint input" section, commands), the crate's and the Python package's descriptions; Python docs and messages name presentations, and `test_powerpoint_deck_converts_to_markdown_and_slides` passes with the other 32 (in a venv of the scratchpad: `/root/.venvs` is not set up in this container). Found on the way: macro-enabled decks (`.pptm`, `.ppsm`, `.potm`) were taken for Word documents (`fix(powerpoint): read decks, shows and templates with macros`). Demos on uk-0007 found three more, fixed: an EPUB table with no body rows left `<thead>` open (shared renderer), title slides set in body placeholders read as "Slide 1", and PowerPoint's default title and lone "Default Section" heading.
+- [x] **Step 2: Commit** — `docs: document PowerPoint input`
 - [ ] **Step 3:** PR (when the user asks): title in English, assignee `iamcaominhtien`, labels `enhancement` and `documentation`, then `python3 scripts/release.py bump --pr <N>` and `chore(release): vX.Y.Z`; SonarQube issues fixed after the checks.
 
 ## Order and size

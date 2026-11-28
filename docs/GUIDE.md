@@ -96,6 +96,40 @@ groups of columns (no column is ever cut off), charts drawn as vector, CJK text 
 unless the workbook's print settings name another paper. Details:
 [docs/EXCEL-INPUT.md](EXCEL-INPUT.md).
 
+## PowerPoint presentations as input
+
+A `.pptx` file (and `.pptm`, `.ppsx`, `.potx`: the same format) is an input like a PDF or a Word
+document (`kakemono convert talk.pptx -o talk.md`); the format is recognised from the file's
+bytes. The slides say what their text is, so the deck is read directly into the same structure,
+to read it as a document or to feed it to an AI:
+
+- each visible slide is a section headed by its title (from its title placeholder, else a large
+  text box near its top, else "Slide N"); PowerPoint sections are headings above their slides'
+  titles; hidden slides are left out;
+- the first slide, when it is a title slide, gives the document's title and front matter;
+- the rest of a slide comes in reading order, by where its shapes lie: bullets as lists at their
+  levels, tables with their merged cells, pictures with their alternative text, charts drawn by
+  kakemono and followed by a table of their data, SmartArt as a list, formulas as math;
+- footers, dates, slide numbers, the layout's and master's shapes, banners repeated on many
+  slides and placeholder prompts ("Click to add title") are left out;
+- speaker notes follow their slide, under a heading "Notes", so a chunk of notes has the path
+  "Slide title › Notes".
+
+```bash
+kakemono convert talk.pptx -o talk.md        # Markdown, a section per slide
+kakemono convert talk.pptx -o talk.jsonl     # chunks for retrieval (RAG), each under its slide's title
+kakemono convert talk.pptx -o talk.pdf       # the visible slides as PowerPoint draws them, a page each
+```
+
+`-o talk.pdf` draws each visible slide as a page of the slide's size, as PowerPoint draws it,
+without PowerPoint or LibreOffice: backgrounds, the master's and layout's shapes, outlines with
+their fills and lines, pictures, text laid out in its frame (insets, anchoring, autofit, bullets,
+vertical text), tables with their table style, charts and SmartArt. `hard`, `hard-95` and `medium`
+show those pages (a picture of each slide; its text as real HTML text; its text reflowed);
+`friendly` is the deck as a document, the form every other output takes. Edited text
+(`--content`) reaches the flowing outputs, not the pages. Details:
+[docs/POWERPOINT-INPUT.md](POWERPOINT-INPUT.md).
+
 ## EPUB books as input
 
 An `.epub` file is an input like a PDF or a Word document (`kakemono convert book.epub -o
@@ -755,6 +789,10 @@ are not fetched from the Web.
 - Excel input: `.xls`, `.ods` and `.csv` are not read; pivot tables and comments are left out;
   formulas show the value saved in the file; forms drawn on a grid stay sparse tables (or their
   text) in the document outputs, not rebuilt forms.
+- PowerPoint input: `.ppt` (PowerPoint 97–2003), `.odp` and Keynote files are not read;
+  animations, audio, video, comments and effects (shadows, glow, 3-D) are left out; in the pages,
+  curved connectors are drawn straight, and some lines break one word earlier than PowerPoint's
+  (its spaces are a little narrower than the open fonts').
 - Unusual layouts may be read wrongly: `inspect` shows what was detected.
 
 ## Testing
@@ -787,6 +825,11 @@ cargo test --release
   `tests/data/excel/make-chart-xlsx.py`, are read and written to every format (snapshot in
   `tests/data/snapshots/excel-sample.txt`). To make the sample again:
   `soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`.
+- **PowerPoint input** (`tests/powerpoint.rs`): `tests/data/powerpoint/sample.pptx`, written by
+  `python3 -I tests/data/powerpoint/make-sample-pptx.py` (the standard library only), is read and
+  written to every format (snapshot in `tests/data/snapshots/powerpoint-sample.txt`); small decks
+  built in the test cover titles in text boxes, title slides, sections, furniture, reading order,
+  notes and hostile packages; `src/layout/slides/tests.rs` covers the pages.
 - **EPUB input** (`tests/epub.rs`): `tests/data/epub/sample.epub`, written by pandoc from the same
   `tests/data/word/sample.md`, is read like the Word sample and written to every format (snapshot
   in `tests/data/snapshots/epub-sample.txt`); small books built in the test cover style sheets,
@@ -816,6 +859,12 @@ cargo test --release
   (`scripts/compare-layout.py`): the share of lines broken at the same words, and of documents
   with the same page count. The job fails below its minimums. Pairs left out, and why, are in
   `tests/data/word-corpus-excluded.tsv`.
+- **PowerPoint layout fidelity** (CI job "PowerPoint layout fidelity"):
+  `scripts/fetch-powerpoint-corpus.sh` downloads the 113 public decks of
+  `tests/data/powerpoint-corpus.tsv` (not committed), with the PDF PowerPoint made of the five that
+  publish one; `scripts/word-fidelity.py --corpus tests/data/powerpoint-corpus --name PowerPoint`
+  compares our pages with PowerPoint's as for Word. `python3 scripts/word-crash-test.py
+  tests/data/powerpoint-corpus` writes every output of every deck and reports panics and timeouts.
 - **Word layout fixtures** (`tests/word_layout.rs`): seven documents of that corpus, chosen for
   what they hold (columns, text boxes, floating shapes, frames, EMF pictures, rows of exact height),
   are laid out and compared with Word's PDFs on every CI run, with a minimum per document; they

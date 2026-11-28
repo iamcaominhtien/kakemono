@@ -2,7 +2,7 @@
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
 documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval, and Word documents
-into PDFs, from Python. Word documents (`.docx`, `.doc`), Excel workbooks (`.xlsx`), EPUB books (`.epub`) and web pages (an
+into PDFs, from Python. Word documents (`.docx`, `.doc`), Excel workbooks (`.xlsx`), PowerPoint presentations (`.pptx`), EPUB books (`.epub`) and web pages (an
 `.html` file, or an `http(s)` address: the article of the page, with its pictures) are inputs too. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
@@ -26,6 +26,8 @@ content = kakemono.to_json("paper.pdf", "paper.json")      # the editable JSON, 
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 kakemono.to_pdf("report.docx", "report.pdf")              # a Word document laid out in pages as Word does
 sheet = kakemono.to_markdown("sales.xlsx", header_rows=1)  # an Excel workbook: one table per region of each sheet
+deck = kakemono.to_markdown("talk.pptx")                   # a PowerPoint deck: a section per slide, its notes after it
+kakemono.to_pdf("talk.pptx", "talk.pdf")                   # its slides drawn as PowerPoint draws them, a page each
 png = kakemono.render_svg("figure.svg", "figure.png", scale=2)  # an SVG drawn as a PNG
 math = kakemono.read_formula("formula.png")               # a formula picture read as MathML (or None)
 ```
@@ -121,8 +123,9 @@ keeps its own, with a `UserWarning`. The `hard` mode cannot show edited text. A 
 current folder when `content` is a dict or text).
 
 `to_pdf` lays out a Word document (`.docx`, `.doc`), an EPUB book or a web page in pages as Word does, or
-prints an Excel workbook (`.xlsx`) as Excel prints it, and returns the PDF (with `content`, the edited
-document); a PDF input is a `ValueError`.
+prints an Excel workbook (`.xlsx`) as Excel prints it, or draws the visible slides of a PowerPoint
+presentation (`.pptx`) as PowerPoint draws them, a page per slide, and returns the PDF (with `content`, the
+edited document, a deck's laid out as a document); a PDF input is a `ValueError`.
 
 `render_svg(svg, path=None, *, scale=1.0, resources_dir=None)` draws an SVG (a path, or the SVG
 as text or bytes) as a PNG, as `kakemono render-svg` does: the same fonts (the system's and those

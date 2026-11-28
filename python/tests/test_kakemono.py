@@ -398,3 +398,21 @@ def test_header_rows_sets_the_header_of_workbook_tables():
     assert _prices_header_rows() == 1
     assert _prices_header_rows(header_rows=0) == 0
     assert _prices_header_rows(header_rows=2) == 2
+
+
+PPTX_SAMPLE = Path(__file__).resolve().parents[2] / "tests" / "data" / "powerpoint" / "sample.pptx"
+
+
+def test_powerpoint_deck_converts_to_markdown_and_slides():
+    document = kakemono.Document(PPTX_SAMPLE)
+    assert document.format == "pptx"
+    assert document.page_count == 0
+    text = kakemono.to_markdown(PPTX_SAMPLE)
+    assert "# Coral Sea Survey 2026" in text
+    assert "Results by site" in text
+    # The hidden slide is left out.
+    assert "Draft ideas" not in text
+    # Its PDF: a page per visible slide.
+    pdf = document.to_pdf()
+    assert pdf.startswith(b"%PDF")
+    assert kakemono.Document(pdf).page_count == 10
