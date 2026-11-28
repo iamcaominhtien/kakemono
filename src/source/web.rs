@@ -251,11 +251,16 @@ pub fn fetch_pictures(_urls: &[String]) -> HashMap<String, Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fetched, fetch, fetch_pictures, is_url, read_body};
+    use super::{Fetched, is_url};
+    #[cfg(feature = "net")]
+    use super::{fetch, fetch_pictures, read_body};
+    #[cfg(feature = "net")]
     use crate::common::cancel::{CancelToken, Cancelled};
+    #[cfg(feature = "net")]
     use std::time::{Duration, Instant};
 
     /// The address of a server that takes connections and never answers.
+    #[cfg(feature = "net")]
     fn silent_server() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}/page", listener.local_addr().unwrap());
@@ -269,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "net")]
     fn a_body_is_read_up_to_its_limit_or_its_token() {
         let data = vec![7u8; 200_000];
         assert_eq!(read_body(&data[..], 1_000_000, None).unwrap(), data);
@@ -280,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "net")]
     fn a_download_that_waits_for_an_answer_stops_when_cancelled() {
         // A proxy of the environment may answer in its place: the download
         // then fails at once instead; either way it does not wait.
