@@ -45,6 +45,9 @@ use text::TextContext;
 const DEFAULT_BODY_SIZE_PT: f32 = 18.0;
 /// The heading of a slide's speaker notes.
 const NOTES_HEADING: &str = "Notes";
+/// The title PowerPoint gives a new deck (`docProps/core.xml`), kept by
+/// decks whose author never set one: not the deck's title.
+const DEFAULT_DECK_TITLE: &str = "PowerPoint Presentation";
 /// PowerPoint's default font of the body text (the theme's minor font of
 /// the default theme before Office 2023).
 pub(crate) const DEFAULT_BODY_FONT: &str = "Calibri";
@@ -136,7 +139,8 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
         .and_then(|part| zip.read(&part).ok().flatten());
     let mut media = Media::new(&zip, theme.as_deref());
     let mut word = WordDoc {
-        title: crate::word::docx::document_title(&zip)?,
+        // PowerPoint's own title of a new deck names no deck.
+        title: crate::word::docx::document_title(&zip)?.filter(|title| title.trim() != DEFAULT_DECK_TITLE),
         body_size_pt: DEFAULT_BODY_SIZE_PT,
         body_font: DEFAULT_BODY_FONT.to_string(),
         ..Default::default()
@@ -155,11 +159,19 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     rules::remove_furniture(&mut slides, height_pt, &config);
     // With sections, each section's name heads its slides, one level up,
     // before the first of them that is shown; an unnamed section has none.
-    let slide_level = if presentation.sections.is_empty() { 1 } else { 2 };
+    // One section alone (often PowerPoint's own "Default Section") holds
+    // the whole deck and heads nothing.
+    let sectioned = presentation.sections.len() > 1;
+    let slide_level = if sectioned { 2 } else { 1 };
     let mut section = None;
     for (index, (slide, content)) in shown.iter().zip(slides).enumerate() {
         let notes = parts.notes(slide);
-        if index == 0 && (content.title_slide || rules::looks_like_title_slide(&content, &config)) {
+        let mut content = content;
+        if index == 0
+            && (content.title_slide
+                || rules::looks_like_title_slide(&content, &config)
+                || rules::title_from_first_paragraph(&mut content, &config))
+        {
             front_matter(content, &config, &mut word.body);
             push_notes(notes, slide_level, &mut word.body);
             continue;
@@ -167,7 +179,7 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
         if content.is_empty() && notes.is_empty() {
             continue;
         }
-        let current = presentation.section_of(&slide.id);
+        let current = presentation.section_of(&slide.id).filter(|_| sectioned);
         let mut section_name = "";
         if current != section {
             section = current;

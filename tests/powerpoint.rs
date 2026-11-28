@@ -46,7 +46,18 @@ fn headings(doc: &Document) -> Vec<(u8, String)> {
 /// tree), with the extra relationships `rels` of the presentation part
 /// (id, type, target, external).
 fn deck(slides: &[&str], rels: &[(&str, &str, &str, bool)]) -> Vec<u8> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    deck_with(slides, rels, "", Vec::new())
+}
+
+/// A deck as [`deck`] makes it, with `extension` in the presentation
+/// part's `p:extLst` (sections) and the extra parts `parts`.
+fn deck_with(
+    slides: &[&str],
+    rels: &[(&str, &str, &str, bool)],
+    extension: &str,
+    parts: Vec<(String, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut entries: Vec<(String, Vec<u8>)> = parts;
     let rel = |id: &str, kind: &str, target: &str, external: bool| {
         let mode = if external { " TargetMode=\"External\"" } else { "" };
         format!("<Relationship Id=\"{id}\" Type=\"{R_NS}/{kind}\" Target=\"{target}\"{mode}/>")
@@ -85,7 +96,7 @@ fn deck(slides: &[&str], rels: &[(&str, &str, &str, bool)]) -> Vec<u8> {
     entries.push((
         "ppt/presentation.xml".into(),
         format!(
-            "<p:presentation xmlns:p=\"{P_NS}\" xmlns:r=\"{R_NS}\"><p:sldIdLst>{ids}</p:sldIdLst></p:presentation>"
+            "<p:presentation xmlns:p=\"{P_NS}\" xmlns:r=\"{R_NS}\"><p:sldIdLst>{ids}</p:sldIdLst><p:extLst><p:ext>{extension}</p:ext></p:extLst></p:presentation>"
         )
         .into_bytes(),
     ));
@@ -782,4 +793,94 @@ fn medium_keeps_slide_pages() {
     assert!(html.contains("10 pages</span>"), "medium: ten pages");
     assert!(html.contains("Coral Sea Survey 2026"));
     assert!(!html.contains("Draft ideas"));
+}
+
+/// A body placeholder (`p:ph type="body"`) at `y` points from the top,
+/// holding the paragraphs `paras`.
+fn body_placeholder(idx: u32, y: f32, paras: &[&str]) -> String {
+    let emu = |pt: f32| (pt * 12700.0) as i64;
+    let paras: String = paras
+        .iter()
+        .map(|text| format!("<a:p><a:r><a:rPr sz=\"2400\" b=\"1\"/><a:t>{text}</a:t></a:r></a:p>"))
+        .collect();
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{}\" name=\"Text Placeholder\"/><p:cNvSpPr/><p:nvPr><p:ph type=\"body\" idx=\"{idx}\"/></p:nvPr></p:nvSpPr>\
+         <p:spPr><a:xfrm xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:off x=\"500000\" y=\"{}\"/><a:ext cx=\"8000000\" cy=\"600000\"/></a:xfrm></p:spPr>\
+         <p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp>",
+        idx + 10,
+        emu(y)
+    )
+}
+
+#[test]
+fn first_slide_of_body_placeholders_gives_the_title() {
+    // A corporate title slide: its lines in body placeholders, the deck's
+    // title the one PowerPoint gives a new deck.
+    let first = [
+        body_placeholder(12, 130.0, &["Diabetes Prevention Programme"]),
+        body_placeholder(13, 210.0, &["England", "11 July 2019"]),
+    ]
+    .concat();
+    let second = text_box(40.0, 30.0, 600.0, 50.0, &[("Introduction", 28)]);
+    let core = (
+        "docProps/core.xml".to_string(),
+        "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" \
+         xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>PowerPoint Presentation</dc:title></cp:coreProperties>"
+            .as_bytes()
+            .to_vec(),
+    );
+    let doc = Paper::from_bytes(deck_with(&[&first, &second], &[], "", vec![core]))
+        .unwrap()
+        .analyze()
+        .doc;
+    assert_eq!(doc.meta.title.as_deref(), Some("Diabetes Prevention Programme"));
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:?}", doc.blocks[0]);
+    assert_eq!(headings(&doc), vec![(1, "Introduction".to_string())]);
+}
+
+#[test]
+fn a_long_first_paragraph_is_not_taken_for_a_title() {
+    let caption = ["word"; 40].join(" ");
+    let first = body_placeholder(12, 130.0, &[&caption]);
+    let doc = Paper::from_bytes(deck(&[&first], &[])).unwrap().analyze().doc;
+    assert_eq!(headings(&doc), vec![(1, "Slide 1".to_string())]);
+}
+
+#[test]
+fn a_lone_section_heads_nothing() {
+    let slides: Vec<String> = ["Cover", "One", "Two"]
+        .iter()
+        .map(|title| text_box(40.0, 30.0, 600.0, 50.0, &[(title, 28)]))
+        .collect();
+    let sections = |names: &[(&str, &[u32])]| {
+        let list: String = names
+            .iter()
+            .map(|(name, ids)| {
+                let ids: String = ids.iter().map(|id| format!("<p14:sldId id=\"{id}\"/>")).collect();
+                format!("<p14:section name=\"{name}\"><p14:sldIdLst>{ids}</p14:sldIdLst></p14:section>")
+            })
+            .collect();
+        format!(
+            "<p14:sectionLst xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\">{list}</p14:sectionLst>"
+        )
+    };
+    let read = |extension: &str| {
+        let slides: Vec<&str> = slides.iter().map(String::as_str).collect();
+        headings(
+            &Paper::from_bytes(deck_with(&slides, &[], extension, Vec::new()))
+                .unwrap()
+                .analyze()
+                .doc,
+        )
+    };
+    let one = |text: &str| (1, text.to_string());
+    let two = |text: &str| (2, text.to_string());
+    assert_eq!(
+        read(&sections(&[("Default Section", &[256, 257, 258])])),
+        vec![one("One"), one("Two")]
+    );
+    assert_eq!(
+        read(&sections(&[("Start", &[256, 257]), ("End", &[258])])),
+        vec![one("Start"), two("One"), one("End"), two("Two")]
+    );
 }

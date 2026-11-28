@@ -153,9 +153,12 @@ fn paragraphs_of(items: Vec<Item>) -> Vec<Para> {
 /// it, no list, table or chart, and little text
 /// (`PowerPointConfig::title_slide_max_words`).
 pub(crate) fn looks_like_title_slide(slide: &SlideContent, config: &PowerPointConfig) -> bool {
-    if slide.title.is_none() {
-        return false;
-    }
+    slide.title.is_some() && holds_a_title_slides_text(slide, config)
+}
+
+/// Whether the text of `slide` besides its title is a title slide's: no
+/// list, table or chart, and little text.
+fn holds_a_title_slides_text(slide: &SlideContent, config: &PowerPointConfig) -> bool {
     let mut words = slide
         .subtitle
         .iter()
@@ -178,4 +181,44 @@ pub(crate) fn looks_like_title_slide(slide: &SlideContent, config: &PowerPointCo
         }
     }
     words <= config.title_slide_max_words
+}
+
+/// Gives the first slide `slide`, when it has no title but holds a title
+/// slide's text (corporate templates set a title slide's lines in body
+/// placeholders), the paragraph that comes first on it as its title: the
+/// first paragraph of its topmost piece (leftmost of those as high).
+/// Whether it did.
+pub(crate) fn title_from_first_paragraph(slide: &mut SlideContent, config: &PowerPointConfig) -> bool {
+    if slide.title.is_some() || !holds_a_title_slides_text(slide, config) {
+        return false;
+    }
+    let has_text =
+        |item: &Item| matches!(item, Item::Para(para) if !super::text::inlines_text(&para.inlines).trim().is_empty());
+    let first = slide
+        .pieces
+        .iter()
+        .enumerate()
+        .filter(|(_, piece)| piece.items.first().is_some_and(has_text))
+        .min_by(|(_, a), (_, b)| {
+            let at = |piece: &Piece| piece.frame.map_or((0.0, 0.0), |frame| (frame.y, frame.x));
+            let (a, b) = (at(a), at(b));
+            a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+        })
+        .map(|(index, _)| index);
+    let Some(index) = first else {
+        return false;
+    };
+    // A title is short (`PowerPointConfig::title_max_words`): a longer
+    // paragraph is a caption or a statement, not the deck's name.
+    let Some(Item::Para(para)) = slide.pieces[index].items.first() else {
+        return false;
+    };
+    if super::text::inlines_text(&para.inlines).split_whitespace().count() > config.title_max_words {
+        return false;
+    }
+    let Item::Para(para) = slide.pieces[index].items.remove(0) else {
+        return false;
+    };
+    slide.title = Some(para.inlines);
+    true
 }
