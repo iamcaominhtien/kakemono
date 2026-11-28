@@ -5,7 +5,7 @@
 # version as the wasm-bindgen crate (Cargo.toml).
 set -euo pipefail
 cd "$(dirname "$0")"
-cargo build --release
+cargo build --release --locked
 module=target/wasm32-unknown-unknown/release/kakemono_wasm.wasm
 wasm-bindgen --target nodejs --out-dir pkg/node "$module"
 wasm-bindgen --target web --out-dir pkg/web "$module"

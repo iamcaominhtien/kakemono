@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the Typst output. */
 public final class TypstOptions extends Options<TypstOptions> {
     /** Options with kakemono's defaults. */
-    public TypstOptions() {}
+    public TypstOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** How displayed formulas are written (default MATHML). */
     public TypstOptions equations(Equations equations) {

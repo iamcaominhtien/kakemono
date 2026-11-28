@@ -9,7 +9,9 @@ import java.nio.file.Path;
 /** Options of reading and analysing a document, kept for every output. */
 public final class OpenOptions extends Options<OpenOptions> {
     /** Options with kakemono's defaults. */
-    public OpenOptions() {}
+    public OpenOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** The name recorded as the document's source (by default: the file name, the address, {@code arXiv:<id>}, nothing for bytes). */
     public OpenOptions sourceName(String sourceName) {

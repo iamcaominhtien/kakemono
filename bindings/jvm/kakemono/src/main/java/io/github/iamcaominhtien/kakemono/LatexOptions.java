@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the LaTeX output. */
 public final class LatexOptions extends Options<LatexOptions> {
     /** Options with kakemono's defaults. */
-    public LatexOptions() {}
+    public LatexOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** How displayed formulas are written (default MATHML). */
     public LatexOptions equations(Equations equations) {

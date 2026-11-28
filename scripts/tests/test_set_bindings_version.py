@@ -47,7 +47,8 @@ def test_every_manifest_gets_the_version(bindings):
     cargo = (bindings / "Cargo.toml").read_text(encoding="utf-8")
     assert 'serde = { version = "1"' in cargo
     loader = (bindings / "node/index.js").read_text(encoding="utf-8")
-    assert "expected 1.2.3 but" in loader and "'0.20.0'" not in loader
+    assert "expected 1.2.3 but" in loader
+    assert "'0.20.0'" not in loader
 
 
 def test_a_child_pom_gets_its_parent_version(bindings):

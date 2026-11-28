@@ -352,7 +352,7 @@ pub enum Target {
 
 impl Target {
     /// Every target, with its name.
-    pub const ALL: [(&'static str, Self); 10] = [
+    pub const ALL: [(&str, Self); 10] = [
         ("html", Self::Html),
         ("docx", Self::Docx),
         ("markdown", Self::Markdown),

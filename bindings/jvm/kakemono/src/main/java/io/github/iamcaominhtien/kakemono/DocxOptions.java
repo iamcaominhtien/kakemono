@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the Word output: with {@code imageDir}, its pictures are files too. */
 public final class DocxOptions extends Options<DocxOptions> {
     /** Options with kakemono's defaults. */
-    public DocxOptions() {}
+    public DocxOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** How displayed formulas are written (default MATHML). */
     public DocxOptions equations(Equations equations) {

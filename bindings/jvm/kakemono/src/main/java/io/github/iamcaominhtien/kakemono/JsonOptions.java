@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the editable JSON output. */
 public final class JsonOptions extends Options<JsonOptions> {
     /** Options with kakemono's defaults. */
-    public JsonOptions() {}
+    public JsonOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** How displayed formulas are written (default MATHML). */
     public JsonOptions equations(Equations equations) {

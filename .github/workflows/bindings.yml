@@ -121,7 +121,7 @@ jobs:
           cargo clippy --all-targets -- -D warnings
       - name: Tests
         working-directory: bindings
-        run: cargo test --release -p kakemono-bindings -p kakemono-c
+        run: cargo test --release --locked -p kakemono-bindings -p kakemono-c
       - name: The committed header is cbindgen's
         working-directory: bindings/c
         run: |
@@ -159,8 +159,8 @@ jobs:
       - name: Build and test
         working-directory: bindings/node
         run: |
-          npm ci
-          npx napi build --platform --release
+          npm ci --ignore-scripts
+          node_modules/.bin/napi build --platform --release
           git diff --exit-code index.js index.d.ts
           npm test
           npm run typecheck
@@ -226,7 +226,7 @@ jobs:
           cache: maven
       - name: Build and test
         run: |
-          cargo build --release --manifest-path bindings/Cargo.toml -p kakemono-jni
+          cargo build --release --locked --manifest-path bindings/Cargo.toml -p kakemono-jni
           mvn -B -f bindings/jvm/pom.xml verify
 
   dotnet:
@@ -254,7 +254,7 @@ jobs:
           dotnet-version: 8.0.x
       - name: Build and test
         run: |
-          cargo build --release --manifest-path bindings/Cargo.toml -p kakemono-c
+          cargo build --release --locked --manifest-path bindings/Cargo.toml -p kakemono-c
           dotnet test bindings/dotnet/Kakemono.sln
           dotnet build -c Release bindings/dotnet/Kakemono/Kakemono.csproj
 
@@ -306,8 +306,8 @@ jobs:
           # A shared library on musl links the C runtime dynamically.
           RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C target-feature=-crt-static' || '' }}
         run: |
-          pip install cargo-zigbuild==0.24.1
-          cargo zigbuild --release --manifest-path bindings/Cargo.toml \
+          pip install --only-binary :all: --require-hashes -r bindings/requirements-zig.txt
+          cargo zigbuild --release --locked --manifest-path bindings/Cargo.toml \
             -p kakemono-c -p kakemono-jni -p kakemono-node --target "$ZIG_TARGET"
       - name: Build
         if: matrix.zig == ''
@@ -317,7 +317,7 @@ jobs:
           # The oldest macOS the libraries run on (C code too, not only Rust's).
           MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || '10.13' }}
         run: |
-          cargo build --release --manifest-path bindings/Cargo.toml \
+          cargo build --release --locked --manifest-path bindings/Cargo.toml \
             -p kakemono-c -p kakemono-jni -p kakemono-node --target "$TARGET"
       - name: Gather the libraries
         shell: bash
@@ -372,8 +372,8 @@ jobs:
         run: |
           python3 scripts/set-bindings-version.py "$VERSION"
           cd bindings/node
-          npm ci
-          npx napi create-npm-dirs
+          npm ci --ignore-scripts
+          node_modules/.bin/napi create-npm-dirs
           for addon in ../../natives/*/node/*.node; do
             napi=$(basename "$addon" .node); napi=${napi#kakemono.}
             cp "$addon" "npm/$napi/"

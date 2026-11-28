@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the EPUB output. */
 public final class EpubOptions extends Options<EpubOptions> {
     /** Options with kakemono's defaults. */
-    public EpubOptions() {}
+    public EpubOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** How displayed formulas are written (default MATHML). */
     public EpubOptions equations(Equations equations) {

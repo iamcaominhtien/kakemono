@@ -55,7 +55,7 @@ public class KakemonoDocumentParser implements DocumentParser {
             // so are the links to them.
             String text = pictures
                     ? doc.toMarkdown(new MarkdownOptions().inlineImages(true)).text()
-                    : withoutPictures(doc.toMarkdown(new MarkdownOptions().imageDir(PICTURES)).text());
+                    : withoutPictures(doc.toMarkdown(new MarkdownOptions().imageDir(PICTURE_DIR)).text());
             if (text.isBlank()) {
                 throw new BlankDocumentException();
             }
@@ -75,10 +75,10 @@ public class KakemonoDocumentParser implements DocumentParser {
     }
 
     /** The folder of the pictures, whose links are left out. */
-    private static final String PICTURES = "kakemono-pictures";
+    private static final String PICTURE_DIR = "kakemono-pictures";
 
     /** Markdown without the links to its pictures ({@code ![alt](kakemono-pictures/...)}). */
     static String withoutPictures(String markdown) {
-        return markdown.replaceAll("!\\[[^\\]]*]\\(" + PICTURES + "/[^)]*\\)", "");
+        return markdown.replaceAll("!\\[[^\\]]*]\\(" + PICTURE_DIR + "/[^)]*\\)", "");
     }
 }

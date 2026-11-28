@@ -147,16 +147,29 @@ final class Native {
         createPrivateDirectories(dir);
         Path partial = Files.createTempFile(dir, file, ".part");
         Files.write(partial, data);
+        return moveIntoPlace(partial, target) ? target : partial;
+    }
+
+    /** Renames {@code partial} to {@code target}, atomically where it can: whether it could. */
+    private static boolean moveIntoPlace(Path partial, Path target) {
         try {
-            try {
-                Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (AtomicMoveNotSupportedException e) {
+            return moveReplacing(partial, target);
         } catch (IOException e) {
-            return partial;
+            return false;
         }
-        return target;
+    }
+
+    /** Renames {@code partial} to {@code target}, replacing it: whether it could. */
+    private static boolean moveReplacing(Path partial, Path target) {
+        try {
+            Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**

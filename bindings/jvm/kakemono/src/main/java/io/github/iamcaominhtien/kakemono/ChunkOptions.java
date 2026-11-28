@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the chunks for retrieval. */
 public final class ChunkOptions extends Options<ChunkOptions> {
     /** Options with kakemono's defaults. */
-    public ChunkOptions() {}
+    public ChunkOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** Largest chunk, in tokens (default 512). */
     public ChunkOptions maxTokens(int maxTokens) {

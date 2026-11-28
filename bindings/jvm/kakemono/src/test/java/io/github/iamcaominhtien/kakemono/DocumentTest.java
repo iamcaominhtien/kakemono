@@ -103,7 +103,7 @@ class DocumentTest {
         KakemonoException missing = assertThrows(KakemonoException.class, () -> Document.open(Path.of("/no/such.pdf")));
         assertTrue(missing.getMessage().contains("/no/such.pdf"), missing.getMessage());
         assertThrows(KakemonoException.class, () -> Document.addFont(new byte[] {1, 2, 3}));
-        assertTrue(Document.version().matches("\\d+\\.\\d+\\.\\d+.*"));
+        assertTrue(java.util.regex.Pattern.compile("^\\d+\\.\\d+\\.\\d+").matcher(Document.version()).find());
     }
 
     @Test

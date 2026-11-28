@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the HTML output (pictures inline unless {@code inlineImages(false)}). */
 public final class HtmlOptions extends Options<HtmlOptions> {
     /** Options with kakemono's defaults. */
-    public HtmlOptions() {}
+    public HtmlOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** The mode (default FRIENDLY). */
     public HtmlOptions mode(Mode mode) {

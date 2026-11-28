@@ -116,11 +116,13 @@ public final class Document implements AutoCloseable {
         String json = json(options);
         // Read once: the fence must keep the token whose handle is given alive.
         CancelToken token = Options.token(options);
+        long handle;
         try {
-            return new Document(call.open(json, token == null ? 0 : token.handle(), Options.timeoutMillis(options)));
+            handle = call.open(json, token == null ? 0 : token.handle(), Options.timeoutMillis(options));
         } finally {
             Reference.reachabilityFence(token);
         }
+        return new Document(handle);
     }
 
     /** A native open call. */

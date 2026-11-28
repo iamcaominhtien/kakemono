@@ -25,4 +25,4 @@ async function main(): Promise<void> {
   console.log(text, bytes, html, pages, pdf, format, title, version())
 }
 
-void main
+export { main }

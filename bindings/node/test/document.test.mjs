@@ -156,8 +156,11 @@ const { parentPort } = require('node:worker_threads')
   for (let round = 0; round < 2; round++) {
     const worker = new Worker(code, { eval: true })
     await new Promise((resolve) => worker.once('message', resolve))
-    await worker.terminate()
+    assert.equal(typeof (await worker.terminate()), 'number')
     // The calls end on the blocking pool after the worker's environment is gone.
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }
+  // Still alive: a call on this thread works.
+  const doc = await Document.fromFile(data('word/sample.docx'))
+  assert.match((await doc.toMarkdown()).text, /Gradient Descent/)
 })

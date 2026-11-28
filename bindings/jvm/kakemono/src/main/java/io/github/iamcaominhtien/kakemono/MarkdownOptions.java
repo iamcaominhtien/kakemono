@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 /** Options of the Markdown output. */
 public final class MarkdownOptions extends Options<MarkdownOptions> {
     /** Options with kakemono's defaults. */
-    public MarkdownOptions() {}
+    public MarkdownOptions() {
+        // Every option starts unset, so kakemono's defaults apply.
+    }
 
     /** MEDIUM keeps tables as HTML; the default is FRIENDLY (the hard modes do not apply). */
     public MarkdownOptions mode(Mode mode) {

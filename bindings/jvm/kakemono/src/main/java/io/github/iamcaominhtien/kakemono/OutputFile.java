@@ -3,7 +3,9 @@ package io.github.iamcaominhtien.kakemono;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A picture file of an output.
@@ -23,6 +25,23 @@ public record OutputFile(String path, byte[] data) {
             Files.createDirectories(parent);
         }
         Files.write(target, data);
+    }
+
+    /** Equal to another file with the same path and bytes. */
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof OutputFile that && path.equals(that.path) && Arrays.equals(data, that.data);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(path, Arrays.hashCode(data));
+    }
+
+    /** The path and the size of the bytes, not the bytes themselves. */
+    @Override
+    public String toString() {
+        return "OutputFile[path=" + path + ", data=" + data.length + " bytes]";
     }
 
     /** Writes every file of {@code files} under {@code folder}. */

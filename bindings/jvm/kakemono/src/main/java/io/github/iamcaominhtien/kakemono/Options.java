@@ -102,28 +102,25 @@ public abstract class Options<S extends Options<S>> {
     /** Appends {@code text} as a JSON string; a lone surrogate becomes U+FFFD. */
     static void quote(StringBuilder out, String text) {
         out.append('"');
-        for (int at = 0; at < text.length(); at++) {
-            char ch = text.charAt(at);
-            switch (ch) {
+        // A surrogate pair is one code point; a lone surrogate is one of its own.
+        text.codePoints().forEach(point -> {
+            switch (point) {
                 case '"' -> out.append("\\\"");
                 case '\\' -> out.append("\\\\");
                 case '\n' -> out.append("\\n");
                 case '\r' -> out.append("\\r");
                 case '\t' -> out.append("\\t");
                 default -> {
-                    if (ch < 0x20) {
-                        out.append(String.format("\\u%04x", (int) ch));
-                    } else if (Character.isHighSurrogate(ch) && at + 1 < text.length()
-                            && Character.isLowSurrogate(text.charAt(at + 1))) {
-                        out.append(ch).append(text.charAt(++at));
-                    } else if (Character.isSurrogate(ch)) {
-                        out.append('�');
+                    if (point < 0x20) {
+                        out.append(String.format("\\u%04x", point));
+                    } else if (point >= Character.MIN_SURROGATE && point <= Character.MAX_SURROGATE) {
+                        out.append('\uFFFD');
                     } else {
-                        out.append(ch);
+                        out.appendCodePoint(point);
                     }
                 }
             }
-        }
+        });
         out.append('"');
     }
 }
