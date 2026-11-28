@@ -55,16 +55,17 @@ import contextvars
 import dataclasses
 import functools
 import inspect
+import math
 import os
 import pickle
 import sys
 import threading
-import warnings
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Literal, Optional, Sequence
 
 from . import (
+    Cancelled,
     CancelToken,
     Content,
     Document as _Document,
@@ -114,20 +115,16 @@ class ProcessError(RuntimeError):
     (it crashed, or was killed from outside)."""
 
 
-async def _stopped(
-    function: Callable[..., Any],
-    *args: Any,
-    cancel: Optional[CancelToken] = None,
-    timeout: Optional[float] = None,
-    _executor: Optional[Executor] = None,
-    **kwargs: Any,
-) -> Any:
-    """`function(*args, **kwargs)` run in a worker thread (of `_executor`, by
-    default the loop's) with a token of its own (a child of `cancel`, timing
-    out `timeout` seconds from now), which a cancellation of the awaiting
-    task cancels; the cancellation is raised once the work has stopped, or at
-    once when it has not started."""
-    token = cancel.child(timeout=timeout) if cancel is not None else CancelToken(timeout=timeout)
+async def _stopped(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """`function(*args, **kwargs)` run in a worker thread, with a token of its
+    own: a child of the ``cancel`` keyword, timing out ``timeout`` seconds
+    from now, which a cancellation of the awaiting task cancels. The
+    cancellation is raised once the work has stopped, or at once when it has
+    not started. ``_executor`` names the executor (the loop's by default)."""
+    cancel: Optional[CancelToken] = kwargs.pop("cancel", None)
+    limit: Optional[float] = kwargs.pop("timeout", None)
+    executor: Optional[Executor] = kwargs.pop("_executor", None)
+    token = cancel.child(timeout=limit) if cancel is not None else CancelToken(timeout=limit)
     started = threading.Event()
     context = contextvars.copy_context()  # the caller's, as asyncio.to_thread gives it
 
@@ -135,71 +132,107 @@ async def _stopped(
         started.set()
         return context.run(function, *args, cancel=token, **kwargs)
 
-    work = asyncio.get_running_loop().run_in_executor(_executor, call)
+    work = asyncio.get_running_loop().run_in_executor(executor, call)
     try:
         return await asyncio.shield(work)
     except asyncio.CancelledError:
         token.cancel()
-        if not started.is_set():
-            # Still waiting for a thread: when it gets one, it stops at
-            # once on the cancelled token, before any work.
-            work.add_done_callback(_retrieve)
-            raise
-        # The work stops at its next stopping point: wait for it, even if
-        # cancelled again meanwhile, so that nothing of it runs afterwards.
-        while not work.done():
-            try:
-                await asyncio.shield(work)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        _retrieve(work)
+        # Work still waiting for a thread stops at once on the cancelled
+        # token when it gets one; started work at its next stopping point.
+        if started.is_set():
+            await _wait_out(work)
+        work.add_done_callback(_retrieve)
         raise
+
+
+async def _wait_out(work: "asyncio.Future[Any]") -> None:
+    """Waits for `work` to end, even when the awaiting task is cancelled
+    meanwhile, so that nothing of it runs afterwards; a cancellation that
+    came meanwhile is raised once it has ended. The outcome of `work` is
+    left to the caller."""
+    cancelled: Optional[asyncio.CancelledError] = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as error:
+            cancelled = error
+            if work.done():
+                raise
+        except Exception:
+            break
+    if cancelled is not None:
+        raise cancelled
 
 
 def _retrieve(work: "asyncio.Future[Any]") -> None:
     """Marks the outcome of `work` as seen: it is the cancellation's doing."""
-    if work.done() and not work.cancelled():
+    if not work.cancelled():
         work.exception()
 
 
 async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
-    """`kakemono.<name>(*args, **kwargs)` run in a Python process of its own,
-    killed when the awaiting task is cancelled, its ``timeout`` passes or its
-    ``cancel`` token is cancelled."""
+    """`kakemono.<name>(*args, **kwargs)` (or `module:function`) run in a
+    Python process of its own, killed when the awaiting task is cancelled,
+    its ``timeout`` passes or its ``cancel`` token is cancelled."""
     cancel: Optional[CancelToken] = kwargs.pop("cancel", None)
-    timeout: Optional[float] = kwargs.pop("timeout", None)
-    if timeout is not None and not timeout > 0:
+    limit: Optional[float] = kwargs.pop("timeout", None)
+    if limit is not None and (math.isnan(limit) or limit <= 0):
         raise ValueError("timeout must be a positive number of seconds")
-    # A memoryview cannot be pickled: its bytes are sent instead.
-    plain = lambda value: bytes(value) if isinstance(value, (memoryview, bytearray)) else value  # noqa: E731
-    args = tuple(plain(value) for value in args)
-    kwargs = {key: plain(value) for key, value in kwargs.items()}
-    request = pickle.dumps((name, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
-    package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # Isolated mode (-I): no module of the current folder or of PYTHONPATH
-    # is imported in place of the standard library's.
     process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-I",
-        "-c",
-        f"import sys; sys.path.insert(0, {package_parent!r}); from kakemono._isolated import main; main()",
+        *_CHILD,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
     )
-    exchange = asyncio.ensure_future(process.communicate(request))
+    exchange = asyncio.ensure_future(process.communicate(_request(name, args, kwargs)))
+    output = await _output_or_kill(process, exchange, cancel, limit)
+    if process.returncode != 0 or not output:
+        raise ProcessError(f"the conversion process ended without a result (exit code {process.returncode})")
+    from ._isolated import outcome
+
+    return outcome(output, stacklevel=4)
+
+
+#: The command of the process of an isolated conversion: in isolated mode
+#: (-I), so that no module of the current folder or of PYTHONPATH is
+#: imported in place of the standard library's.
+_CHILD = (
+    sys.executable,
+    "-I",
+    "-c",
+    f"import sys; sys.path.insert(0, {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))!r}); "
+    "from kakemono._isolated import main; main()",
+)
+
+
+def _request(name: str, args: Any, kwargs: Dict[str, Any]) -> bytes:
+    """The call sent to the process of an isolated conversion, pickled. A
+    memoryview cannot be pickled: its bytes are sent instead."""
+
+    def plain(value: Any) -> Any:
+        return bytes(value) if isinstance(value, (memoryview, bytearray)) else value
+
+    call = (name, tuple(plain(value) for value in args), {key: plain(value) for key, value in kwargs.items()})
+    return pickle.dumps(call, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+async def _output_or_kill(
+    process: Any, exchange: "asyncio.Future[Any]", cancel: Optional[CancelToken], limit: Optional[float]
+) -> bytes:
+    """The output of `process`, or its kill and the error of why: the
+    awaiting task was cancelled, `limit` seconds passed (``TimeoutError``),
+    or `cancel` was cancelled (``Cancelled``, or ``TimeoutError`` once past
+    its own limit)."""
     watch = asyncio.ensure_future(_watch(cancel)) if cancel is not None else None
     try:
         waiting = {exchange} if watch is None else {exchange, watch}
-        done, _ = await asyncio.wait(waiting, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-        if exchange not in done:
-            if await _kill(process, exchange):
-                raise asyncio.CancelledError
-            if watch is not None and watch in done and not cancel.timed_out:
-                raise _cancelled_error()
-            raise TimeoutError("the conversion took longer than its time limit")
-        output, _ = exchange.result()
+        done, _ = await asyncio.wait(waiting, timeout=limit, return_when=asyncio.FIRST_COMPLETED)
+        if exchange in done:
+            output: bytes = exchange.result()[0]
+            return output
+        await _kill(process, exchange)
+        if cancel is not None and watch in done and not cancel.timed_out:
+            raise Cancelled("the conversion was cancelled")
+        raise TimeoutError("the conversion took longer than its time limit")
     except asyncio.CancelledError:
         await _kill(process, exchange)
         raise
@@ -207,14 +240,6 @@ async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
         if watch is not None:
             watch.cancel()
             await asyncio.gather(watch, return_exceptions=True)
-    if process.returncode != 0 or not output:
-        raise ProcessError(f"the conversion process ended without a result (exit code {process.returncode})")
-    status, value, caught = pickle.loads(output)
-    for message, category in caught:
-        warnings.warn(message, category, stacklevel=3)
-    if status == "error":
-        raise value
-    return value
 
 
 async def _watch(cancel: CancelToken) -> None:
@@ -227,30 +252,15 @@ async def _watch(cancel: CancelToken) -> None:
 _WATCH_INTERVAL_S = 0.02
 
 
-async def _kill(process: Any, exchange: Any) -> bool:
-    """Kills `process` and waits for it to end, even when cancelled again
-    meanwhile, so that no process is left behind; returns whether a
-    cancellation came meanwhile (the caller raises it)."""
+async def _kill(process: Any, exchange: "asyncio.Future[Any]") -> None:
+    """Kills `process` and waits for it to end (see :func:`_wait_out`), so
+    that no process is left behind."""
     if process.returncode is None:
         try:
             process.kill()
         except ProcessLookupError:
             pass
-    ended = asyncio.gather(exchange, return_exceptions=True)
-    cancelled = False
-    while not ended.done():
-        try:
-            await asyncio.shield(ended)
-        except asyncio.CancelledError:
-            cancelled = True
-    return cancelled
-
-
-def _cancelled_error() -> BaseException:
-    """The exception of a conversion stopped by its token's ``cancel()``."""
-    from . import Cancelled
-
-    return Cancelled("the conversion was cancelled")
+    await _wait_out(asyncio.gather(exchange, return_exceptions=True))
 
 
 def _awaited(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -324,7 +334,7 @@ class Document:
         content: Optional[Content] = None,
         header_rows: Optional[int] = None,
         cancel: Optional[CancelToken] = None,
-        timeout: Optional[float] = None,
+        timeout: Optional[float] = None,  # NOSONAR python:S7483: the time limit of every kakemono function
     ) -> "Document":
         """Read and analyse `source`, with the options of :class:`kakemono.Document`."""
         document = await _stopped(
@@ -432,7 +442,7 @@ async def convert_many(
     *,
     limit: Optional[int] = None,
     isolate: bool = False,
-    timeout: Optional[float] = None,
+    timeout: Optional[float] = None,  # NOSONAR python:S7483: a limit per document, not one for the whole call
     jobs: Optional[int] = None,
     options: Optional[Dict[str, Dict[str, Any]]] = None,
     cancel: Optional[CancelToken] = None,
@@ -494,7 +504,7 @@ async def convert_many(
 
     async def one(index: int) -> ConvertResult:
         name, source = named[index]
-        call = dict(source=source, out_dir=folder, name=name, formats=formats, jobs=jobs, options=options)
+        call = {"source": source, "out_dir": folder, "name": name, "formats": formats, "jobs": jobs, "options": options}
         async with gate:
             start = time.perf_counter()
             try:

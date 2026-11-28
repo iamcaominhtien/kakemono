@@ -218,7 +218,52 @@ pub fn fetch_pictures(urls: &[String]) -> HashMap<String, Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Fetched, is_url};
+    use super::{Fetched, fetch, fetch_pictures, is_url, read_body};
+    use crate::common::cancel::{CancelToken, Cancelled};
+    use std::time::{Duration, Instant};
+
+    /// The address of a server that takes connections and never answers.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}/page", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn a_body_is_read_up_to_its_limit_or_its_token() {
+        let data = vec![7u8; 200_000];
+        assert_eq!(read_body(&data[..], 1_000_000, None).unwrap(), data);
+        assert_eq!(read_body(&data[..], 1000, None).unwrap().len(), 1000);
+        let token = CancelToken::new();
+        assert_eq!(read_body(&data[..], 1_000_000, Some(&token)).unwrap(), data);
+        token.cancel();
+        assert!(read_body(&data[..], 1_000_000, Some(&token)).is_err());
+    }
+
+    #[test]
+    fn a_download_that_waits_for_an_answer_stops_when_cancelled() {
+        // A proxy of the environment may answer in its place: the download
+        // then fails at once instead; either way it does not wait.
+        let url = silent_server();
+        let token = CancelToken::with_timeout(Duration::from_millis(300));
+        let start = Instant::now();
+        let outcome = token.run(|| fetch(&url).map(|_| ()));
+        assert!(matches!(outcome, Err(Cancelled::TimedOut) | Ok(Err(_))), "{outcome:?}");
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        let urls = vec![url.clone(), format!("{url}2")];
+        let token = CancelToken::with_timeout(Duration::from_millis(300));
+        let start = Instant::now();
+        let outcome = token.run(|| fetch_pictures(&urls).len());
+        assert!(matches!(outcome, Err(Cancelled::TimedOut) | Ok(0)), "{outcome:?}");
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        assert_eq!(CancelToken::new().run(|| fetch("not an address").is_err()), Ok(true));
+    }
 
     #[test]
     fn addresses_and_types() {

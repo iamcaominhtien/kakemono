@@ -3,7 +3,6 @@
 import asyncio
 import os
 import inspect
-import subprocess
 import sys
 import threading
 import time
@@ -105,7 +104,8 @@ def test_a_document_is_opened_once_and_awaited():
         return doc, md, content, book
 
     doc, md, content, book = asyncio.run(main())
-    assert doc.format == "pdf" and doc.page_count == 16
+    assert doc.format == "pdf"
+    assert doc.page_count == 16
     assert repr(doc) == "<kakemono.aio.Document pdf, 16 pages>"
     assert md == doc.sync.to_markdown()
     assert content["blocks"] == kakemono.to_json(LIGO)["blocks"]
@@ -123,8 +123,9 @@ def test_errors_are_raised_where_awaited():
 
     with pytest.raises(ValueError):
         asyncio.run(main())
+    opening = aio.Document.open("no/such/file.pdf")
     with pytest.raises(FileNotFoundError):
-        asyncio.run(aio.Document.open("no/such/file.pdf"))
+        asyncio.run(opening)
 
 
 def test_the_functions_keep_their_signature_and_docs():
@@ -302,10 +303,53 @@ def test_an_isolated_conversion_gives_its_warnings():
         asyncio.run(aio.to_markdown(LIGO, content=content, isolate=True))
 
 
+def _stub_script():
+    """scripts/make-aio-stub.py, imported (its name is not a module name)."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "make-aio-stub.py"
+    spec = importlib.util.spec_from_file_location("make_aio_stub", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_the_typed_stub_is_current():
-    script = Path(__file__).resolve().parents[2] / "scripts" / "make-aio-stub.py"
-    result = subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    script = _stub_script()
+    assert script.STUB.read_text() == script.stub(), "run scripts/make-aio-stub.py"
+
+
+def test_the_stub_script_writes_and_checks(tmp_path, monkeypatch):
+    script = _stub_script()
+    monkeypatch.setattr(script, "STUB", tmp_path / "aio.pyi")
+    monkeypatch.setattr(sys, "argv", ["make-aio-stub.py"])
+    script.main()
+    assert (tmp_path / "aio.pyi").read_text() == script.stub()
+    monkeypatch.setattr(sys, "argv", ["make-aio-stub.py", "--check"])
+    script.main()  # current: no error
+    (tmp_path / "aio.pyi").write_text("old")
+    with pytest.raises(SystemExit):
+        script.main()
+
+
+def test_the_isolated_process_hands_back_results_errors_and_warnings():
+    import pickle
+
+    from kakemono import _isolated
+
+    def call(name, *args, **kwargs):
+        return _isolated.outcome(_isolated.run(pickle.dumps((name, args, kwargs))))
+
+    assert call("os.path:basename", "/a/b.txt") == "b.txt"
+    with pytest.raises(ValueError):
+        call("to_markdown", b"not a document")
+    content = kakemono.to_json(LIGO)
+    content["blocks"][1]["text"] = "<unknown>tag</unknown>"
+    with pytest.warns(UserWarning):
+        call("to_markdown", LIGO, content=content)
+    # An outcome that cannot be pickled comes back as a RuntimeError.
+    with pytest.raises(RuntimeError):
+        call("threading:Lock")
 
 
 def test_aio_convert_is_stopped_too():
@@ -369,10 +413,12 @@ def test_cancelled_is_a_kakemono_exception_that_pickles():
     assert isinstance(error, kakemono.Cancelled)
     token = kakemono.CancelToken(timeout=0.001)
     time.sleep(0.01)
-    assert token.cancelled and token.timed_out
+    assert token.cancelled
+    assert token.timed_out
     stopped = kakemono.CancelToken()
     stopped.cancel()
-    assert stopped.cancelled and not stopped.timed_out
+    assert stopped.cancelled
+    assert not stopped.timed_out
 
 
 # --- convert_many -------------------------------------------------------------
@@ -395,13 +441,17 @@ def test_convert_many_writes_every_format_of_every_document(tmp_path, isolate):
     assert [result.index for result in results] == [0, 1, 2, 3, 4]
     ligo, docx, xlsx, broken, named = results
     # The PDF has no pdf output: only that format fails.
-    assert set(ligo.outputs) == {"md", "docx", "medium"} and set(ligo.errors) == {"pdf"}
+    assert set(ligo.outputs) == {"md", "docx", "medium"}
+    assert set(ligo.errors) == {"pdf"}
     assert Path(ligo.outputs["md"]).read_text() == kakemono.to_markdown(LIGO, tmp_path / "again" / "1602.03837v1.md")
     assert Path(ligo.outputs["medium"]).name == "1602.03837v1.medium.html"
     # A Word document has no pages: no medium mode, but a PDF.
-    assert set(docx.errors) == {"medium"} and Path(docx.outputs["pdf"]).read_bytes().startswith(b"%PDF-")
-    assert set(xlsx.outputs) == {"md", "docx", "pdf"} and set(xlsx.errors) == {"medium"}  # no pages
-    assert isinstance(broken.error, ValueError) and broken.outputs == {}
+    assert set(docx.errors) == {"medium"}
+    assert Path(docx.outputs["pdf"]).read_bytes().startswith(b"%PDF-")
+    assert set(xlsx.outputs) == {"md", "docx", "pdf"}
+    assert set(xlsx.errors) == {"medium"}  # no pages
+    assert isinstance(broken.error, ValueError)
+    assert broken.outputs == {}
     assert Path(named.outputs["md"]).name == "named.md"
     assert (tmp_path / "1602.03837v1_assets").is_dir()
 

@@ -125,18 +125,29 @@ def convert_one(
             if pictures and fmt in _WITH_PICTURES:
                 # Each format its own folder: they may draw a picture apart.
                 kwargs.setdefault("image_dir", f"{name}_{fmt}_assets")
-            try:
-                if fmt == "html" or fmt in MODES:
-                    page = doc.convert("friendly" if fmt == "html" else fmt, cancel=cancel, **kwargs)
-                    _write(path, page)
-                else:
-                    getattr(doc, _METHODS[fmt])(path, cancel=cancel, **kwargs)
-            except (Cancelled, TimeoutError):
-                raise
-            except Exception as error:  # this format only
+            error = _write_format(doc, fmt, path, kwargs, cancel)
+            if error is None:
+                written[fmt] = path
+            else:
                 failed[fmt] = error
-                continue
-            written[fmt] = path
     except Exception as error:  # reading it, or its cancellation or time limit
         return written, failed, error
     return written, failed, None
+
+
+def _write_format(
+    doc: Document, fmt: str, path: str, kwargs: Dict[str, Any], cancel: Optional[CancelToken]
+) -> Optional[Exception]:
+    """Writes `doc` in the format `fmt` to `path`; returns why it could not
+    be written in that format, or ``None``. A cancellation or a time limit
+    stops the whole document: it is raised."""
+    try:
+        if fmt == "html" or fmt in MODES:
+            _write(path, doc.convert("friendly" if fmt == "html" else fmt, cancel=cancel, **kwargs))
+        else:
+            getattr(doc, _METHODS[fmt])(path, cancel=cancel, **kwargs)
+    except (Cancelled, TimeoutError):
+        raise
+    except Exception as error:  # this format only
+        return error
+    return None

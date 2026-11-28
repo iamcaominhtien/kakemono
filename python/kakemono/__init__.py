@@ -608,7 +608,7 @@ def to_docx(
     return doc.to_docx(path, equations=equations, scale=scale, image_dir=image_dir, save_images=save_images, cancel=token)
 
 
-def to_markdown(
+def to_markdown(  # NOSONAR python:S107: keyword options, as on the command line
     source: Source,
     path: Optional[PathArg] = None,
     *,
@@ -714,7 +714,7 @@ def to_typst(
     return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout, cancel=token)
 
 
-def to_epub(
+def to_epub(  # NOSONAR python:S107: keyword options, as on the command line
     source: Source,
     path: Optional[PathArg] = None,
     *,

@@ -371,6 +371,69 @@ mod tests {
     }
 
     #[test]
+    fn a_blocking_call_is_left_when_cancelled() {
+        // Without a token it runs on this thread.
+        assert!(super::blocking(|token| token.is_none()));
+        // The call sees the token.
+        assert_eq!(
+            CancelToken::new().run(|| super::blocking(|token| token.is_some())),
+            Ok(true)
+        );
+        // A call that outlasts the time limit is left, and ends by itself.
+        let token = CancelToken::with_timeout(Duration::from_millis(30));
+        let start = std::time::Instant::now();
+        let outcome = token.run(|| super::blocking(|_| std::thread::sleep(Duration::from_millis(800))));
+        assert_eq!(outcome, Err(Cancelled::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // A call that ends gives its result.
+        assert_eq!(CancelToken::new().run(|| super::blocking(|_| 5)), Ok(5));
+    }
+
+    #[test]
+    fn a_panic_in_a_blocking_call_goes_on() {
+        let token = CancelToken::new();
+        let outcome = std::panic::catch_unwind(|| token.run(|| super::blocking(|_| panic!("boom"))));
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn a_sleep_ends_at_a_cancellation() {
+        let start = std::time::Instant::now();
+        super::sleep(Duration::from_millis(5));
+        assert!(start.elapsed() >= Duration::from_millis(5));
+        let token = CancelToken::with_timeout(Duration::from_millis(20));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            token.run(|| super::sleep(Duration::from_secs(10))),
+            Err(Cancelled::TimedOut)
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_pace_checks_once_in_many_steps() {
+        let token = CancelToken::new();
+        let steps = std::cell::Cell::new(0);
+        let outcome = token.run(|| {
+            let mut pace = super::Pace::default();
+            token.cancel();
+            loop {
+                pace.tick();
+                steps.set(steps.get() + 1);
+            }
+        });
+        assert_eq!(outcome, Err::<(), _>(Cancelled::Requested));
+        assert_eq!(steps.get(), super::Pace::STEPS - 1);
+    }
+
+    #[test]
+    fn the_reasons_read_well() {
+        assert_eq!(Cancelled::Requested.to_string(), "the conversion was cancelled");
+        assert!(Cancelled::TimedOut.to_string().contains("time limit"));
+        assert_eq!(CancelToken::default().state(), None);
+    }
+
+    #[test]
     fn runs_nest() {
         let outer = CancelToken::new();
         let inner = CancelToken::new();
