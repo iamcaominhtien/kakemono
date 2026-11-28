@@ -154,9 +154,13 @@ Four layers, from cheap and certain to costly and subjective:
 **Files:**
 - Modify: `scripts/word-fidelity.py` (`--corpus-file`, `--corpus` for a deck corpus; the comparison unchanged), `.github/workflows/ci.yml` (a `powerpoint-fidelity` job like `word-fidelity`, fetching the corpus with the decks that have a PDF), `scripts/fetch-powerpoint-corpus.sh`
 
-- [ ] **Step 1:** run it; record the totals (share of lines broken at the same words, page counts).
-- [ ] **Step 2:** fix the largest causes of difference first (fonts, autofit, line spacing, insets), each a `fix(layout):` commit that raises the totals and keeps `word-fidelity.py` where it was.
-- [ ] **Step 3:** set the CI minimums at the levels reached.
+- [x] **Step 1:** run it; record the totals (share of lines broken at the same words, page counts).
+  - Result: 5 decks have a PDF by PowerPoint (uk-0002, uk-0003, uk-0007, uk-0009, uk-0010). 5430 of 5931 lines broken as PowerPoint (0.916); page counts 5/5; lines on the same page 0.907. By deck: uk-0007 0.990, uk-0002 0.933, uk-0009 0.921, uk-0003 0.918, uk-0010 0.846.
+- [x] **Step 2:** fix the largest causes of difference first (fonts, autofit, line spacing, insets), each a `fix(layout):` commit that raises the totals and keeps `word-fidelity.py` where it was.
+  - Charts: a plot area placed by hand (`c:manualLayout`) was laid out automatically, which cut long category labels and moved the plot (`fix(chart): place a plot area placed by hand where the file puts it`). On uk-0010's slide 11, 10 lines missed instead of 25; the total is 5432.
+  - Text width: PowerPoint's lines are about 0.6% narrower than ours. Its letters keep Arial's widths, but its spaces (and `v`, `w`, `y`) are narrower or wider by size, as whole pixels at 96 dpi would make them at 11, 13, 14 and 16 pt, not at 10, 12, 15 or 20 pt. Rounding the space so moved the total to 0.923 but lowered uk-0007 and uk-0010: not a rule, left out. Real Arial (its hinting) would be needed to know more.
+  - Left: chart tick spacing and turned category labels (our label widths are estimated on the safe side), error bars.
+- [x] **Step 3:** set the CI minimums at the levels reached (lines 0.90: chart text is drawn in other fonts on CI; pages 1.0).
 - [ ] **Step 4: Commit** — `ci: measure the slides' pages against PowerPoint's PDFs`
 
 ### Task 10: Python, documents, release

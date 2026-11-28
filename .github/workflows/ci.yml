@@ -164,3 +164,43 @@ jobs:
         with:
           name: word-fidelity
           path: word-fidelity.json
+
+  powerpoint-fidelity:
+    name: PowerPoint layout fidelity
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: fidelity
+      # Liberation for Arial, Carlito for Calibri, as for Word documents.
+      - name: Fonts
+        run: sudo apt-get install -y --no-install-recommends fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core fonts-freefont-ttf
+      # The decks of the corpus that have a PDF made by PowerPoint (the
+      # fifth column), downloaded once, then restored from the cache.
+      - name: Restore the PowerPoint corpus
+        id: corpus
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: tests/data/powerpoint-corpus
+          key: powerpoint-pdf-corpus-${{ hashFiles('tests/data/powerpoint-corpus.tsv') }}
+      - name: Download the PowerPoint corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: scripts/fetch-powerpoint-corpus.sh 8 $(awk -F'\t' '!/^#/ && $5 != "" {print $1}' tests/data/powerpoint-corpus.tsv)
+      - run: cargo build --release --locked
+      # Lines broken where PowerPoint breaks them, and decks with as many
+      # pages as PowerPoint's: the minimums are the levels reached, less
+      # what the chart text may move on fonts other than the local ones.
+      - name: Compare with PowerPoint's PDFs
+        run: python3 scripts/word-fidelity.py --corpus tests/data/powerpoint-corpus --name PowerPoint --min-lines 0.90 --min-pages 1.0 --json powerpoint-fidelity.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: powerpoint-fidelity
+          path: powerpoint-fidelity.json

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Measures how close kakemono's PDFs of Word documents are to the PDFs Word
 made of them, on the corpus of tests/data/word-corpus.tsv (downloaded by
-scripts/fetch-word-corpus.sh), and fails below the thresholds.
+scripts/fetch-word-corpus.sh), and fails below the thresholds. With
+`--corpus tests/data/powerpoint-corpus --name PowerPoint`, the same for the
+slides of PowerPoint decks (scripts/fetch-powerpoint-corpus.sh) against the
+PDFs PowerPoint made of them.
 
-Usage: word-fidelity.py [--corpus DIR] [--kakemono PATH] [--json FILE]  (FILE: in the current directory)
+Usage: word-fidelity.py [--corpus DIR] [--name NAME] [--kakemono PATH] [--json FILE]  (FILE: in the current directory)
                         [--min-lines RATIO] [--min-pages RATIO]
 
-For each document: the share of Word's lines that break at the same words
-in ours (scripts/compare-layout.py), and whether the page count is the same.
+For each document (a .docx, .doc or .pptx with a .pdf of the same name): the
+share of the reference's lines that break at the same words in ours
+(scripts/compare-layout.py), and whether the page count is the same.
 Totals are over all lines and all documents. A document kakemono cannot
 convert fails the run. With GITHUB_STEP_SUMMARY set, a table is added to
 the summary of the CI run.
@@ -21,6 +25,7 @@ spec.loader.exec_module(compare)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--corpus', default=os.path.join(here, '..', 'tests', 'data', 'word-corpus'))
+parser.add_argument('--name', default='Word', help='what made the reference PDFs, in the report')
 parser.add_argument('--kakemono', default=os.path.join(here, '..', 'target', 'release', 'kakemono'))
 parser.add_argument('--json', help='file written in the current directory')
 parser.add_argument('--min-lines', type=float, default=0.0)
@@ -43,7 +48,7 @@ args.corpus = confined(args.corpus)
 compare.KAKEMONO = args.kakemono
 out_dir = tempfile.mkdtemp(prefix='word-fidelity-')
 docs = sorted(name for name in os.listdir(args.corpus)
-              if name.endswith(('.docx', '.doc')) and os.path.exists(os.path.join(args.corpus, os.path.splitext(name)[0] + '.pdf')))
+              if name.endswith(('.docx', '.doc', '.pptx')) and os.path.exists(os.path.join(args.corpus, os.path.splitext(name)[0] + '.pdf')))
 
 
 def one(name):
@@ -82,18 +87,18 @@ for r in sorted(ok, key=lambda r: r['line_ratio'])[:15]:
 for r in errors:
     print(f"{r['id']}: ERROR {r['error']}")
 print(f"\ndocuments {len(results)}, errors {len(errors)}")
-print(f"lines broken as Word: {lines}/{total} = {line_ratio:.3f} (minimum {args.min_lines})")
+print(f"lines broken as {args.name}: {lines}/{total} = {line_ratio:.3f} (minimum {args.min_lines})")
 print(f"same page count: {same_pages}/{len(ok)} = {page_ratio:.3f} (minimum {args.min_pages})")
-print(f"lines on the same page as Word: {on_page:.3f}")
+print(f"lines on the same page as {args.name}: {on_page:.3f}")
 if args.json:
     with open(os.path.basename(args.json), 'w') as report:
         json.dump({'summary': summary, 'documents': results}, report, indent=1)
 if os.environ.get('GITHUB_STEP_SUMMARY'):
     with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
-        f.write('## Word layout fidelity\n\n| measure | value | minimum |\n| --- | --- | --- |\n')
+        f.write(f'## {args.name} layout fidelity\n\n| measure | value | minimum |\n| --- | --- | --- |\n')
         f.write(f'| documents | {len(results)} | |\n| conversion errors | {len(errors)} | 0 |\n')
-        f.write(f'| lines broken as Word | {line_ratio:.1%} | {args.min_lines:.1%} |\n')
+        f.write(f'| lines broken as {args.name} | {line_ratio:.1%} | {args.min_lines:.1%} |\n')
         f.write(f'| same page count | {page_ratio:.1%} | {args.min_pages:.1%} |\n')
-        f.write(f'| lines on the same page as Word | {on_page:.1%} | |\n')
+        f.write(f'| lines on the same page as {args.name} | {on_page:.1%} | |\n')
 failed = errors or line_ratio < args.min_lines or page_ratio < args.min_pages
 sys.exit(1 if failed else 0)
