@@ -46,7 +46,8 @@ Four layers, from cheap and certain to costly and subjective:
 
 ### Task 0 (from the start, alongside Tasks 1–5): The corpus
 
-- [ ] Collect public decks (gov.uk, data.gov.au, open.canada.ca, data.gov.uk, GitHub repositories of talks; English, Japanese, Vietnamese), preferring those published with the PDF PowerPoint made of them (the PDF's `Producer` or `Creator` names Microsoft PowerPoint). Record them in `tests/data/powerpoint-corpus.tsv` (Task 6 adds the fetch script and the crash test). Started early so that the number of decks with a PowerPoint PDF, which Task 9 depends on, is known early.
+- [x] Collect public decks (gov.uk, data.gov.au, open.canada.ca, data.gov.uk, GitHub repositories of talks; English, Japanese, Vietnamese), preferring those published with the PDF PowerPoint made of them (the PDF's `Producer` or `Creator` names Microsoft PowerPoint). Record them in `tests/data/powerpoint-corpus.tsv` (Task 6 adds the fetch script and the crash test). Started early so that the number of decks with a PowerPoint PDF, which Task 9 depends on, is known early.
+  - Result (2026-11-28): 113 decks (data.gov.uk 21, open.canada.ca 32, data.gov.au 40, Japanese ministries 18, GitHub 2; English 80, Japanese 18, French 12), only 5 with a PowerPoint PDF (uk-0002, uk-0003, uk-0007, uk-0009, uk-0010: 213 slides, all from the London Datastore and NHS Digital). No Vietnamese deck was found. Task 9 starts with those 5 and adds pairs as they are found.
 
 ### Task 1: Detection, the package, and wiring into `Paper`
 

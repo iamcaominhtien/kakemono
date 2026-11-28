@@ -39,3 +39,4 @@ benchmark-results/
 /tests/data/web/
 /tests/data/web-bench/
 /target-*/
+tests/data/powerpoint-corpus/
