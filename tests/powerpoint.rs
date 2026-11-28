@@ -747,3 +747,39 @@ fn pdf_has_one_page_per_visible_slide_of_the_slide_size() {
     // The hidden slide's text is not drawn.
     assert!(!text.contains("Draft ideas"), "{text}");
 }
+
+fn html(mode: kakemono::Mode) -> String {
+    let paper = Paper::from_bytes(std::fs::read(data(SAMPLE)).unwrap()).unwrap();
+    let analysis = paper.analyze();
+    let opts = HtmlOptions {
+        mode,
+        ..Default::default()
+    };
+    let html = paper.to_html(&analysis, &opts).html;
+    // `write_html` writes the same page.
+    let mut written = Vec::new();
+    paper
+        .write_html(&analysis, &opts, &mut written, &mut |_, _| Ok(()))
+        .unwrap();
+    assert_eq!(String::from_utf8(written).unwrap(), html, "{mode:?}");
+    html
+}
+
+#[test]
+fn hard_modes_show_the_slides() {
+    // One page per visible slide: ten.
+    for mode in [kakemono::Mode::Hard, kakemono::Mode::Hard95] {
+        let html = html(mode);
+        assert!(html.contains("10 pages</span>"), "{mode:?}: ten pages");
+        assert!(html.contains("Results by site"), "{mode:?}");
+        assert!(!html.contains("Draft ideas"), "{mode:?}: the hidden slide");
+    }
+}
+
+#[test]
+fn medium_keeps_slide_pages() {
+    let html = html(kakemono::Mode::Medium);
+    assert!(html.contains("10 pages</span>"), "medium: ten pages");
+    assert!(html.contains("Coral Sea Survey 2026"));
+    assert!(!html.contains("Draft ideas"));
+}

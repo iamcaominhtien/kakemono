@@ -141,9 +141,12 @@ Four layers, from cheap and certain to costly and subjective:
 **Files:**
 - Modify: `src/paper.rs` (`laid`: any source that draws its own PDF, Word or slides; `word_layout_html` and `write_html` route the three modes of a deck through `laid`), `tests/powerpoint.rs`
 
-- [ ] **Step 1: Failing tests:** `hard_modes_show_the_slides` (`hard` has one page picture per visible slide; `hard-95` text holds the slides' titles), `medium_keeps_slide_pages`.
-- [ ] **Step 2: Implement**; snapshot of the sample updated (the three modes change from the friendly page to the slides).
-- [ ] **Step 3:** `node tests/browser/check-hard95.js` and `check-stable.js` on the sample's outputs (not the book view).
+- [x] **Step 1: Failing tests:** `hard_modes_show_the_slides` (`hard` has one page picture per visible slide; `hard-95` text holds the slides' titles), `medium_keeps_slide_pages`.
+- [x] **Step 2: Implement**. The sample's snapshot holds only its friendly page (as Word's does: the page modes depend on the fonts installed), so it did not change; the tests check that `write_html` writes what `to_html` gives.
+- [x] **Step 3:** `node tests/browser/check-hard95.js` and `check-stable.js` on the sample's outputs (not the book view).
+  - Result: `check-stable.js` passes on medium for the sample and five corpus decks (uk-0002, uk-0007, uk-0010, jp-0001, ca-0021). In hard-95 every line fits its width (5 of 1981 on uk-0002), and paragraphs reflow without overflowing.
+  - The check's "no paragraph on the first two pages" fails on the sample, uk-0010 and ca-0021: they open with a title slide and an agenda (headings and list items only). The sample's friendly deep link lands at 267 px because the heading is less than a screen from the end of the page; it does not move.
+  - Left: a slide number stays in medium's text when a deck is too short for it to repeat as a footer; `hard` of a large deck is large (uk-0002, 94 slides: 50 MB), its page pictures.
 - [ ] **Step 4: Commit** — `feat(powerpoint): show slides in the hard, hard-95 and medium modes`
 
 ### Task 9: Fidelity against PowerPoint's PDFs, in CI

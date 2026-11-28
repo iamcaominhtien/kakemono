@@ -274,9 +274,12 @@ impl Paper {
         }
     }
 
-    /// The Word document laid out in pages and analysed, made once.
+    /// The Word document laid out in pages, or the deck drawn in pages, and
+    /// analysed, made once.
     fn laid(&self) -> Option<&Laid> {
-        self.word_format()?;
+        if self.word_format().is_none() && !matches!(self.file, Source::Slides(..)) {
+            return None;
+        }
         self.laid
             .get_or_init(|| {
                 let pdf = PdfFile::open(self.to_pdf().ok()?).ok()?;
@@ -294,9 +297,17 @@ impl Paper {
     /// The HTML of a Word document in a mode that shows its layout: its
     /// pages (`hard`, `hard-95`), or Word's formatting in one continuous
     /// page (`medium`); of a workbook in a mode other than `friendly`, its
-    /// sheets as Excel shows them. `None` for a PDF, the `friendly` mode,
-    /// or when the layout failed.
+    /// sheets as Excel shows them; of a deck, its slides as pages (`medium`
+    /// reflows the text of each slide's page). `None` for a PDF, the
+    /// `friendly` mode, or when the layout failed.
     fn word_layout_html(&self, opts: &HtmlOptions) -> Option<HtmlOutput> {
+        if matches!(self.file, Source::Slides(..)) {
+            if opts.mode == Mode::Friendly {
+                return None;
+            }
+            let laid = self.laid()?;
+            return Some(render(&laid.analysis, Some(&laid.pdf), opts));
+        }
         if let Source::Sheet(_, _, data, config) = &self.file {
             if opts.mode == Mode::Friendly {
                 return None;
@@ -459,8 +470,9 @@ impl Paper {
     /// show its pages, `medium` its formatting in one continuous page
     /// (neither shows text edited with [`Paper::apply_content`]); when the
     /// layout fails, they give the `friendly` page. A workbook shows its
-    /// sheets as Excel does, a tab per sheet, in every mode but `friendly`
-    /// (nor do they show edited text).
+    /// sheets as Excel does, a tab per sheet, in every mode but `friendly`;
+    /// a deck its slides drawn as pages, as PowerPoint draws them, in
+    /// `hard`, `hard-95` and `medium` (nor do they show edited text).
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         if let Some(output) = self.word_layout_html(opts) {
             return output;
@@ -495,8 +507,9 @@ impl Paper {
         file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
         let sheet = matches!(self.file, Source::Sheet(..));
-        if (self.word_format().is_some() || sheet) && opts.mode != Mode::Friendly {
-            if opts.mode == Mode::Medium || sheet {
+        let slides = matches!(self.file, Source::Slides(..));
+        if (self.word_format().is_some() || sheet || slides) && opts.mode != Mode::Friendly {
+            if (opts.mode == Mode::Medium && !slides) || sheet {
                 if let Some(output) = self.word_layout_html(opts) {
                     return out.write_all(output.html.as_bytes());
                 }
