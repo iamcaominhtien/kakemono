@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.21.0](https://github.com/iamcaominhtien/kakemono/compare/v0.20.0...v0.21.0) - 2026-11-28
+
+### Added
+
+- Stop conversions with a CancelToken, and kakemono.aio for asyncio
+
+Conversions can now be stopped, and the Python package can run them without blocking an asyncio event loop.
+
+#### Stop a conversion: `CancelToken`
+
+- **Rust:** `token.run(|| paper.analyze())` returns `Err(Cancelled)` soon after `token.cancel()` is called from another thread. `CancelToken::with_timeout(..)` sets a time limit and returns `Cancelled::TimedOut`.
+  - The pipeline checks the token at its natural stopping points: each page, stage, block, table row, Word paragraph, sheet event and picture drawn.
+  - The worker threads inherit the token, and downloads wait on a thread of their own.
+  - No signature of the public API changes. Without a token, the output is the same byte for byte.
+- **Python:** every conversion takes `cancel=` and `timeout=`. A cancelled conversion raises `kakemono.Cancelled`, one past its time limit raises `TimeoutError`, and neither writes any file.
+
+How long a conversion takes to stop after `cancel()`, cancelled at 8 points of each run:
+
+| Input | Worst | Median |
+| --- | --- | --- |
+| 8 arXiv papers, 6 output formats | 151 ms | 2–97 ms |
+| Word → Markdown / PDF | 98 / 418 ms | 4–166 ms |
+| Workbooks | ≤ 100 ms (839 ms for a 21 s workbook) | ≤ 580 ms |
+| Web pages | 123 ms | ≤ 66 ms |
+
+The checks cost nothing measurable. Against the previous release, run alternately 7 times on PDFs, Word documents, workbooks and web pages, totals stay within −1.6% to +1.8%, inside the noise. A token, with or without a deadline, adds +0.6% to +0.8%, also inside the noise.
+
+#### `kakemono.aio`: the functions to await
+
+- Every function has an awaited version with the same arguments: `await aio.to_markdown("paper.pdf")`. `aio.Document.open` reads a document once.
+- The work runs in a worker thread and the GIL is released, so several conversions run in parallel.
+- Cancelling the task, `asyncio.wait_for` or `timeout=` stops the conversion. The cancellation is raised only once the conversion has stopped, and at once for a conversion still waiting for a thread.
+- `isolate=True` runs a conversion in a Python process of its own. The process is killed when the task is cancelled or its time limit passes. This gives a hard limit for documents that are not trusted, and a process that crashes raises `aio.ProcessError`.
+- `aio.pyi` gives the typed signatures. It is written by `scripts/make-aio-stub.py`, and a test checks that it is current.
+
+#### `aio.convert_many`: many documents into several formats
+
+```python
+async for result in aio.convert_many(paths, "out", ["docx", "epub", "md", "pdf"], limit=50, timeout=120, isolate=False):
+    print(result.source, result.outputs if result.ok else result.error or result.errors)
+```
+
+- Each document is read once and written in every format asked for: html and the four modes, docx, md, tex, typ, epub, json, jsonl or pdf.
+- `limit` documents run at once, each with its own time limit, in threads or in isolated processes.
+- A result is yielded for each document as soon as it is done, with the files written and the error of each format or of the whole document. A document that fails does not stop the others.
+- It sets up its own threads: `limit` of them, with the cores shared out among the documents as `jobs`.
+- The README now says how many conversions the default executor runs at once, and how to run more.
+
 ## [0.20.0](https://github.com/iamcaominhtien/kakemono/compare/v0.19.1...v0.20.0) - 2026-11-28
 
 ### Added
