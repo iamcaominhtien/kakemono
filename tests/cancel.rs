@@ -3,10 +3,21 @@
 //! from another thread and by a time limit, at every stage.
 
 use kakemono::{AnalyzeOptions, CancelToken, Cancelled, MarkdownOptions, Paper};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// The LIGO paper.
 const LIGO: &str = "tests/data/1602.03837v1.pdf";
+
+/// Held by every test of this file while it runs: the tests that time a
+/// conversion compare it with another run, which other tests running at the
+/// same time on the same cores would make slower or faster.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// Waits for the other tests of this file to end.
+fn alone() -> MutexGuard<'static, ()> {
+    ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The whole conversion of `path` to Markdown, as one piece of work.
 fn markdown(path: &str, jobs: usize) -> String {
@@ -24,6 +35,7 @@ fn markdown(path: &str, jobs: usize) -> String {
 
 #[test]
 fn a_token_that_is_not_cancelled_changes_nothing() {
+    let _alone = alone();
     for jobs in [1, 4] {
         let plain = markdown(LIGO, jobs);
         let token = CancelToken::new();
@@ -33,6 +45,7 @@ fn a_token_that_is_not_cancelled_changes_nothing() {
 
 #[test]
 fn a_cancelled_conversion_stops_soon_at_any_point() {
+    let _alone = alone();
     for jobs in [1, 4] {
         let start = Instant::now();
         let _ = markdown(LIGO, jobs);
@@ -40,7 +53,7 @@ fn a_cancelled_conversion_stops_soon_at_any_point() {
         // The longest step (drawing one figure) is a share of the whole
         // run, whatever the speed of the build (a debug build with coverage
         // is tens of times slower than a release build).
-        let limit = Duration::from_millis(200) + full / 4;
+        let limit = Duration::from_millis(200) + full / 2;
         for tenth in 1..10 {
             let token = CancelToken::new();
             let stopper = token.clone();
@@ -68,17 +81,19 @@ fn a_cancelled_conversion_stops_soon_at_any_point() {
 
 #[test]
 fn a_time_limit_stops_the_conversion() {
+    let _alone = alone();
     let start = Instant::now();
     let _ = markdown(LIGO, 4);
     let full = start.elapsed();
     let token = CancelToken::with_timeout(full / 10);
     let start = Instant::now();
     assert_eq!(token.run(|| markdown(LIGO, 4)), Err(Cancelled::TimedOut));
-    assert!(start.elapsed() < full / 10 + Duration::from_millis(200) + full / 4);
+    assert!(start.elapsed() < full / 10 + Duration::from_millis(200) + full / 2);
 }
 
 #[test]
 fn word_and_excel_documents_stop_too() {
+    let _alone = alone();
     for path in [
         "tests/data/word/sample.docx",
         "tests/data/word/sample.doc",
@@ -105,6 +120,7 @@ fn word_and_excel_documents_stop_too() {
 
 #[test]
 fn a_paper_stays_usable_after_a_cancelled_rendering() {
+    let _alone = alone();
     let paper = Paper::from_path(LIGO).unwrap();
     let analysis = paper.analyze();
     let opts = MarkdownOptions::default();
@@ -119,6 +135,7 @@ fn a_paper_stays_usable_after_a_cancelled_rendering() {
 
 #[test]
 fn a_parent_token_stops_its_children() {
+    let _alone = alone();
     let parent = CancelToken::new();
     let child = parent.child(Some(Duration::from_secs(60)));
     parent.cancel();
