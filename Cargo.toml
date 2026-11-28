@@ -20,6 +20,8 @@ path = "src/lib.rs"
 [[bin]]
 name = "kakemono"
 path = "src/main.rs"
+# The command line needs its parser and allocator (the `cli` feature, on by default).
+required-features = ["cli"]
 
 [dependencies]
 hayro = "0.9"
@@ -29,7 +31,8 @@ hayro-svg = "0.9"
 hayro-font = "0.5"
 kurbo = "0.13"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+# The command line's parser (the `cli` feature).
+clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -71,11 +74,14 @@ self_cell = "1"
 # freed memory for a second, so a 15-page paper took three times the memory
 # of the system allocator. Not on WebAssembly, where its C code does not build.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mimalloc = { version = "0.1.52", features = ["v2"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
+mimalloc = { version = "0.1.52", features = ["v2"], optional = true }
+libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"], optional = true }
 
 [features]
-default = ["net", "tokenizers", "openai-tokenizers"]
+default = ["cli", "net", "tokenizers", "openai-tokenizers"]
+## The `kakemono` command line: its argument parser and its allocator
+## (mimalloc, not on WebAssembly). The library does not need them.
+cli = ["dep:clap", "dep:mimalloc", "dep:libmimalloc-sys"]
 ## `Paper::from_url`, arXiv ids and the pictures of web pages: downloads over
 ## HTTPS. Without it (for WebAssembly), they fail with an error and a page's
 ## pictures that are not in it are left out.

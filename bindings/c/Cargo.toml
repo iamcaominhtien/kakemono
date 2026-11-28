@@ -1,0 +1,16 @@
+[package]
+name = "kakemono-c"
+description = "The C ABI of kakemono (include/kakemono.h), which the .NET binding calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# A name of its own, apart from the `kakemono` executable and library.
+name = "kakemono_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+kakemono-bindings = { workspace = true }

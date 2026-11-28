@@ -201,12 +201,25 @@ fn rgb(value: &str) -> Option<Rgb> {
     Some([part(0)?, part(2)?, part(4)?])
 }
 
-/// Today's date (ISO) and time (hours and minutes), in UTC, as a header
-/// prints them.
-pub(super) fn now() -> (String, String) {
-    let seconds = std::time::SystemTime::now()
+/// Seconds since 1970-01-01 UTC, from the system clock.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
+        .map_or(0, |since| since.as_secs())
+}
+
+/// [`unix_seconds`] where there is no system clock: 0.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn unix_seconds() -> u64 {
+    0
+}
+
+/// Today's date (ISO) and time (hours and minutes), in UTC, as a header
+/// prints them. On WebAssembly without a host (`wasm32-unknown-unknown`),
+/// where the system clock panics, the date is 1970-01-01 00:00.
+pub(super) fn now() -> (String, String) {
+    let seconds = unix_seconds();
     let days = i64::try_from(seconds / 86_400).unwrap_or(0);
     let of_day = seconds % 86_400;
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).

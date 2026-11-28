@@ -1,0 +1,31 @@
+# The bindings of kakemono for other languages (docs/BINDINGS.md): a Cargo
+# workspace of its own, apart from the root crate, so that building and
+# testing the library never needs Node, Java or .NET. Not published on
+# crates.io: each binding is published to its own registry (npm, Maven
+# Central, NuGet) by the Bindings workflow.
+[workspace]
+resolver = "3"
+members = ["core", "c"]
+# The wasm binding builds for wasm32 only, without the default features of
+# the library: a workspace of its own too (bindings/wasm/Cargo.toml).
+exclude = ["wasm"]
+
+[workspace.package]
+version = "0.20.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/iamcaominhtien/kakemono"
+publish = false
+
+[workspace.dependencies]
+kakemono = { path = "..", default-features = false }
+kakemono-bindings = { path = "core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+# The native libraries ship in npm, Maven and NuGet packages, once per
+# platform: no symbols, and link-time optimisation, keep them small.
+strip = "symbols"
+lto = "thin"
