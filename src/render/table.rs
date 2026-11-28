@@ -134,10 +134,14 @@ fn write_table(table: &Table, numeric: &[bool], math: bool) -> String {
             }
         }
     });
-    if open_row.is_some() {
-        out.push_str("</tr>");
+    // The group the last row is in is closed: the header of a table that
+    // has no body row, else the body.
+    match open_row {
+        Some(row) if row < table.header_rows => out.push_str("</tr></thead>"),
+        Some(_) => out.push_str("</tr></tbody>"),
+        None => {}
     }
-    out.push_str("</tbody></table>");
+    out.push_str("</table>");
     out
 }
 
@@ -190,4 +194,53 @@ fn cell_html(table: &Table, row_idx: usize, cell: &TableCell, tag: &str, num: bo
         table_rule_classes(table, row_idx, cell.col, cell.colspan, cell.rowspan),
         text_html(&cell.spans, math)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::table_html;
+    use crate::model::{Span, Table, TableCell, TableGeom};
+
+    /// A table of `rows` rows of one cell, the first `header_rows` of them
+    /// header rows.
+    fn table(rows: usize, header_rows: usize) -> Table {
+        Table {
+            n_cols: 1,
+            header_rows,
+            col_align: vec!["left"],
+            rows: (0..rows)
+                .map(|row| {
+                    vec![TableCell {
+                        col: 0,
+                        colspan: 1,
+                        rowspan: 1,
+                        spans: vec![Span::plain(format!("r{row}"))],
+                    }]
+                })
+                .collect(),
+            rule_above: vec![vec![0]; rows],
+            rule_bottom: vec![0],
+            rule_left: vec![vec![false]; rows],
+            rule_right: vec![false; rows],
+            geom: TableGeom::default(),
+        }
+    }
+
+    #[test]
+    fn every_row_group_that_is_opened_is_closed() {
+        for (rows, header_rows) in [(2, 1), (2, 0), (1, 1), (2, 2)] {
+            let html = table_html(&table(rows, header_rows), false);
+            assert_eq!(
+                html.matches("<thead>").count(),
+                html.matches("</thead>").count(),
+                "{html}"
+            );
+            assert_eq!(
+                html.matches("<tbody>").count(),
+                html.matches("</tbody>").count(),
+                "{html}"
+            );
+            assert!(html.starts_with("<table") && html.ends_with("</table>"), "{html}");
+        }
+    }
 }
