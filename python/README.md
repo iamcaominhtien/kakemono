@@ -150,8 +150,8 @@ md = kakemono.to_markdown("paper.pdf", timeout=30)
 `kakemono.aio` has the same functions to be awaited in asyncio programs: each runs in a worker
 thread, so the event loop is not blocked while a document is fetched, read and written, and
 several run in parallel. `aio.Document.open` reads a document once. Cancelling a task (or
-`asyncio.timeout`, `asyncio.wait_for`, `timeout=`) stops its conversion, and the cancellation is
-raised once it has stopped:
+`asyncio.wait_for`, `asyncio.timeout` from Python 3.11, `timeout=`) stops its conversion, and the
+cancellation is raised once it has stopped (at once for a conversion still waiting for a thread):
 
 ```python
 import asyncio
@@ -171,6 +171,7 @@ its `timeout`: a hard limit, even for a document that would make the library han
 (`aio.ProcessError`). It costs the start of a process (about a tenth of a second) and the copy of
 the arguments and of the result; a killed conversion may leave a file it was writing half written.
 The number of conversions at once is that of the loop's default executor
-(`loop.set_default_executor`).
+(`loop.set_default_executor`); isolated ones do not wait for it, and each uses every core: bound
+them with an `asyncio.Semaphore`.
 
 MIT license.

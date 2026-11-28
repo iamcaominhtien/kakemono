@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 /// Why a conversion stopped before its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cancelled {
     /// [`CancelToken::cancel`] was called (on the token or on its parent).
     Requested,
@@ -136,6 +137,19 @@ impl CancelToken {
     /// result, or why it stopped early. Work that ends normally keeps its
     /// result, even when the token was cancelled meanwhile; work is not
     /// started with a token already cancelled.
+    ///
+    /// The work stops by unwinding its stack, as a panic does but without
+    /// the panic hook, so:
+    /// - the program must be built with `panic = "unwind"` (the default):
+    ///   with `panic = "abort"`, a cancellation aborts the process;
+    /// - a `catch_unwind` inside `work` (one of yours, or a library's) sees
+    ///   the cancellation as a panic: let a payload of type [`Cancelled`]
+    ///   go on with `std::panic::resume_unwind`;
+    /// - a `run` inside `work` makes its own token current until it
+    ///   returns: give it a [`child`](Self::child) of this one, so that
+    ///   cancelling this one stops it too;
+    /// - threads that `work` starts itself do not see the token: only the
+    ///   library's own worker threads do.
     ///
     /// # Errors
     /// [`Cancelled`] when the token was cancelled, or timed out, before

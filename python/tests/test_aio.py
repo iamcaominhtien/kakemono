@@ -305,3 +305,70 @@ def test_the_typed_stub_is_current():
     script = Path(__file__).resolve().parents[2] / "scripts" / "make-aio-stub.py"
     result = subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_aio_convert_is_stopped_too():
+    async def main():
+        start = time.perf_counter()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(aio.convert(LIGO, "medium"), 0.03)
+        return time.perf_counter() - start
+
+    assert asyncio.run(main()) < 0.5
+
+
+def test_a_conversion_waiting_for_a_thread_is_dropped_at_once():
+    from concurrent.futures import ThreadPoolExecutor
+
+    async def main():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+        busy = asyncio.create_task(aio.to_epub(LIGO))
+        waiting = asyncio.create_task(aio.to_markdown(LIGO))
+        await asyncio.sleep(0.01)
+        start = time.perf_counter()
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        dropped = time.perf_counter() - start
+        await busy
+        return dropped
+
+    assert asyncio.run(main()) < 0.05
+
+
+def test_a_time_limit_counts_from_the_call():
+    from concurrent.futures import ThreadPoolExecutor
+
+    async def main():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+        busy = asyncio.create_task(aio.to_markdown(LIGO))
+        await asyncio.sleep(0.01)
+        with pytest.raises(TimeoutError):  # its limit passed while it waited for the thread
+            await aio.to_markdown(LIGO, timeout=0.05)
+        await busy
+
+    asyncio.run(main())
+
+
+def test_an_isolated_conversion_takes_a_memoryview():
+    data = memoryview(LIGO.read_bytes())
+    assert asyncio.run(aio.to_markdown(data, isolate=True)) == kakemono.to_markdown(LIGO)
+
+
+def test_an_isolated_conversion_times_out_with_its_token_as_in_a_thread():
+    with pytest.raises(TimeoutError):
+        asyncio.run(aio.convert_all(LIGO, isolate=True, cancel=kakemono.CancelToken(timeout=0.3)))
+
+
+def test_cancelled_is_a_kakemono_exception_that_pickles():
+    import pickle
+
+    assert kakemono.Cancelled.__module__ == "kakemono"
+    error = pickle.loads(pickle.dumps(kakemono.Cancelled("stopped")))
+    assert isinstance(error, kakemono.Cancelled)
+    token = kakemono.CancelToken(timeout=0.001)
+    time.sleep(0.01)
+    assert token.cancelled and token.timed_out
+    stopped = kakemono.CancelToken()
+    stopped.cancel()
+    assert stopped.cancelled and not stopped.timed_out

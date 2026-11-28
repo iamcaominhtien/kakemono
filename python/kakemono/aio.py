@@ -20,11 +20,14 @@ To write several outputs of one document, open it once:
 
 Cancelling the task stops the conversion: it stops at its next stopping
 point, normally within a page, and the cancellation is raised once it has
-stopped, so nothing of it is still running or writing files. ``timeout``
-(seconds) raises ``TimeoutError`` in the same way; ``asyncio.timeout`` and
-``asyncio.wait_for`` work too. The number of conversions at once is that of
-the loop's default executor (``loop.set_default_executor``), or of an
-``asyncio.Semaphore`` of your own.
+stopped, so it writes no file afterwards (a download it was waiting for may
+hold its connection until the download's own time limit, writing nothing).
+A conversion still waiting for a thread of the executor is dropped at once.
+``timeout`` (seconds, counted from the call) raises ``TimeoutError`` in the
+same way; ``asyncio.wait_for`` (and ``asyncio.timeout`` from Python 3.11)
+work too, and raise ``asyncio.TimeoutError``. The number of conversions at
+once is that of the loop's default executor (``loop.set_default_executor``),
+or of an ``asyncio.Semaphore`` of your own.
 
 With ``isolate=True``, a function runs in a process of its own, which a
 cancellation or ``timeout`` kills at once: for documents that are not
@@ -32,7 +35,9 @@ trusted, or a hard time limit. It costs the start of a Python process
 (about a tenth of a second), and its arguments and result are copied
 between the processes; a killed conversion may leave a file it was writing
 half written. A process that ends without a result (it crashed) raises
-:class:`ProcessError`.
+:class:`ProcessError`. Isolated conversions do not wait for the executor:
+each starts its process at once, and uses every core (``jobs=0``), so bound
+how many run at once with an ``asyncio.Semaphore``.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ import inspect
 import os
 import pickle
 import sys
+import threading
 import warnings
 from typing import Any, Callable, Dict, List, Literal, Optional
 
@@ -95,19 +101,35 @@ class ProcessError(RuntimeError):
     (it crashed, or was killed from outside)."""
 
 
-async def _stopped(function: Callable[..., Any], *args: Any, cancel: Optional[CancelToken] = None, **kwargs: Any) -> Any:
+async def _stopped(
+    function: Callable[..., Any],
+    *args: Any,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
+    **kwargs: Any,
+) -> Any:
     """`function(*args, **kwargs)` run in a worker thread with a token of its
-    own (a child of `cancel`), which a cancellation of the awaiting task
-    cancels; the cancellation is raised once the work has stopped."""
-    token = cancel.child() if cancel is not None else CancelToken()
-    loop = asyncio.get_running_loop()
-    call = functools.partial(function, *args, cancel=token, **kwargs)
-    # The context of the caller goes with the work, as with asyncio.to_thread.
-    work = loop.run_in_executor(None, functools.partial(contextvars.copy_context().run, call))
+    own (a child of `cancel`, timing out `timeout` seconds from now), which a
+    cancellation of the awaiting task cancels; the cancellation is raised
+    once the work has stopped, or at once when it has not started."""
+    token = cancel.child(timeout=timeout) if cancel is not None else CancelToken(timeout=timeout)
+    started = threading.Event()
+    context = contextvars.copy_context()  # the caller's, as asyncio.to_thread gives it
+
+    def call() -> Any:
+        started.set()
+        return context.run(function, *args, cancel=token, **kwargs)
+
+    work = asyncio.get_running_loop().run_in_executor(None, call)
     try:
         return await asyncio.shield(work)
     except asyncio.CancelledError:
         token.cancel()
+        if not started.is_set():
+            # Still waiting for a thread: when it gets one, it stops at
+            # once on the cancelled token, before any work.
+            work.add_done_callback(_retrieve)
+            raise
         # The work stops at its next stopping point: wait for it, even if
         # cancelled again meanwhile, so that nothing of it runs afterwards.
         while not work.done():
@@ -115,11 +137,16 @@ async def _stopped(function: Callable[..., Any], *args: Any, cancel: Optional[Ca
                 await asyncio.shield(work)
             except asyncio.CancelledError:
                 continue
-            except BaseException:
+            except Exception:
                 break
-        if not work.cancelled():
-            work.exception()  # retrieved: it is the cancellation's doing
+        _retrieve(work)
         raise
+
+
+def _retrieve(work: "asyncio.Future[Any]") -> None:
+    """Marks the outcome of `work` as seen: it is the cancellation's doing."""
+    if work.done() and not work.cancelled():
+        work.exception()
 
 
 async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
@@ -130,10 +157,17 @@ async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
     timeout: Optional[float] = kwargs.pop("timeout", None)
     if timeout is not None and not timeout > 0:
         raise ValueError("timeout must be a positive number of seconds")
+    # A memoryview cannot be pickled: its bytes are sent instead.
+    plain = lambda value: bytes(value) if isinstance(value, (memoryview, bytearray)) else value  # noqa: E731
+    args = tuple(plain(value) for value in args)
+    kwargs = {key: plain(value) for key, value in kwargs.items()}
     request = pickle.dumps((name, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
     package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Isolated mode (-I): no module of the current folder or of PYTHONPATH
+    # is imported in place of the standard library's.
     process = await asyncio.create_subprocess_exec(
         sys.executable,
+        "-I",
         "-c",
         f"import sys; sys.path.insert(0, {package_parent!r}); from kakemono._isolated import main; main()",
         stdin=asyncio.subprocess.PIPE,
@@ -145,8 +179,9 @@ async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
         waiting = {exchange} if watch is None else {exchange, watch}
         done, _ = await asyncio.wait(waiting, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         if exchange not in done:
-            await _kill(process, exchange)
-            if watch is not None and watch in done:
+            if await _kill(process, exchange):
+                raise asyncio.CancelledError
+            if watch is not None and watch in done and not cancel.timed_out:
                 raise _cancelled_error()
             raise TimeoutError("the conversion took longer than its time limit")
         output, _ = exchange.result()
@@ -156,6 +191,7 @@ async def _isolated(name: str, args: Any, kwargs: Dict[str, Any]) -> Any:
     finally:
         if watch is not None:
             watch.cancel()
+            await asyncio.gather(watch, return_exceptions=True)
     if process.returncode != 0 or not output:
         raise ProcessError(f"the conversion process ended without a result (exit code {process.returncode})")
     status, value, caught = pickle.loads(output)
@@ -176,20 +212,23 @@ async def _watch(cancel: CancelToken) -> None:
 _WATCH_INTERVAL_S = 0.02
 
 
-async def _kill(process: Any, exchange: Any) -> None:
-    """Kills `process` and waits for it to end (shielded from a second
-    cancellation, so that no process is left behind)."""
+async def _kill(process: Any, exchange: Any) -> bool:
+    """Kills `process` and waits for it to end, even when cancelled again
+    meanwhile, so that no process is left behind; returns whether a
+    cancellation came meanwhile (the caller raises it)."""
     if process.returncode is None:
         try:
             process.kill()
         except ProcessLookupError:
             pass
     ended = asyncio.gather(exchange, return_exceptions=True)
+    cancelled = False
     while not ended.done():
         try:
             await asyncio.shield(ended)
         except asyncio.CancelledError:
-            continue
+            cancelled = True
+    return cancelled
 
 
 def _cancelled_error() -> BaseException:
@@ -202,7 +241,11 @@ def _cancelled_error() -> BaseException:
 def _awaited(function: Callable[..., Any]) -> Callable[..., Any]:
     """`function`, awaited: run in a worker thread with the same arguments
     (and ``isolate``), signature and docstring."""
-    stoppable = "cancel" in inspect.signature(function).parameters
+    # `convert` hands its options (`cancel` among them) on to `convert_all`.
+    stoppable = any(
+        param.name == "cancel" or param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in inspect.signature(function).parameters.values()
+    )
 
     @functools.wraps(function)
     async def run(*args: Any, isolate: bool = False, **kwargs: Any) -> Any:

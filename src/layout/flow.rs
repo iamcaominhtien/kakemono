@@ -1713,7 +1713,9 @@ impl Flow<'_> {
         let mut rows: Vec<LaidRow> = Vec::new();
         // Merged cells: the row where each column's merge started.
         let mut merge_start: HashMap<usize, (usize, usize)> = HashMap::new();
+        let mut pace = crate::common::cancel::Pace::default();
         for (row_at, row) in table.rows.iter().enumerate() {
+            pace.tick();
             let mut column = row.grid_before;
             let mut cells = Vec::new();
             for cell in &row.cells {

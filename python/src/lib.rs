@@ -79,8 +79,9 @@ fn check_scale(scale: f32) -> PyResult<()> {
     }
 }
 
+// Named in the `kakemono` package, which exports it: instances pickle.
 pyo3::create_exception!(
-    _kakemono,
+    kakemono,
     Cancelled,
     PyException,
     "Raised by a conversion stopped with the `cancel()` of its `CancelToken`."
@@ -113,6 +114,13 @@ impl PyCancelToken {
     #[getter]
     fn cancelled(&self) -> bool {
         self.0.state().is_some()
+    }
+
+    /// Whether the work must stop because its time limit (or its
+    /// parent's) passed, and not because of a `cancel()`.
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.0.state() == Some(kakemono::Cancelled::TimedOut)
     }
 
     /// A token stopped by this one and by its own `cancel()` and `timeout`,
@@ -157,8 +165,8 @@ fn stoppable<R: Send>(
     py.detach(|| match token {
         None => Ok(work()),
         Some(token) => token.run(work).map_err(|stopped| match stopped {
-            kakemono::Cancelled::Requested => Cancelled::new_err(stopped.to_string()),
             kakemono::Cancelled::TimedOut => PyTimeoutError::new_err(stopped.to_string()),
+            _ => Cancelled::new_err(stopped.to_string()),
         }),
     })
 }

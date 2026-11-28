@@ -471,7 +471,9 @@ impl Paper {
     /// for long documents (all the page pictures of `hard` mode). When
     /// pictures are not inlined, each picture file is given to `file` as
     /// (path relative to the HTML file, contents) instead of being
-    /// returned. The bytes written are those of [`HtmlOutput::html`].
+    /// returned. The bytes written are those of [`HtmlOutput::html`]. A
+    /// conversion stopped by a [`CancelToken`](crate::CancelToken) leaves
+    /// `out` and the files given so far partly written.
     ///
     /// # Errors
     /// The first error of `out` or `file`.
