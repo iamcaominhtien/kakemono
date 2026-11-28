@@ -195,16 +195,23 @@ struct CategoryText<'c> {
     skip: Option<usize>,
 }
 
-/// Draws `chart`, whose groups are all on a plane, in `area`.
-pub(super) fn draw(out: &mut Svg, chart: &Chart, area: Area) {
+/// Draws `chart`, whose groups are all on a plane, in `area`; its plot
+/// area at `placed` when it was placed by hand: the plot alone (`inner`),
+/// or the plot with its labels and titles.
+pub(super) fn draw(out: &mut Svg, chart: &Chart, area: Area, placed: Option<(Area, bool)>) {
+    let (area, inner) = match placed {
+        Some((placed, true)) => (area, Some(placed)),
+        Some((placed, false)) => (placed, None),
+        None => (area, None),
+    };
     if chart
         .groups
         .iter()
         .all(|group| matches!(group.kind, ChartKind::Scatter { .. }))
     {
-        scatter(out, chart, area);
+        scatter(out, chart, area, inner);
     } else {
-        categories(out, chart, area);
+        categories(out, chart, area, inner);
     }
 }
 
@@ -235,7 +242,7 @@ pub(super) fn category_labels(categories: Option<&Categories>, count: usize, dat
 }
 
 /// Draws bars, lines and areas over categories.
-fn categories(out: &mut Svg, chart: &Chart, area: Area) {
+fn categories(out: &mut Svg, chart: &Chart, area: Area, inner: Option<Area>) {
     let groups = &chart.groups;
     let horizontal = groups
         .iter()
@@ -270,7 +277,19 @@ fn categories(out: &mut Svg, chart: &Chart, area: Area) {
             .and_then(|axis| axis.label_skip)
             .map(|skip| skip.div_ceil(buckets.size)),
     };
-    let (plot, layout) = lay_out(area, horizontal, &mut axes, &labels, &cat, groups, &spans, &on_axis);
+    let (mut plot, mut layout) = lay_out(area, horizontal, &mut axes, &labels, &cat, groups, &spans, &on_axis);
+    if let Some(inner) = inner {
+        plot = inner;
+        // The labels beside horizontal bars have the room left of the plot.
+        if horizontal {
+            let title = if cat.title.is_some() {
+                TEXT_SIZE_PT * LINE_RATIO
+            } else {
+                0.0
+            };
+            layout.max_width = (plot.x - area.x - LABEL_GAP_PT - title).max(layout.max_width);
+        }
+    }
     let bars_drawn = groups.iter().any(|group| matches!(group.kind, ChartKind::Bar { .. }));
     let frame = Frame {
         plot,
@@ -1196,7 +1215,7 @@ fn shown_title(axis: Option<&Axis>) -> Option<String> {
 
 /// Draws a scatter chart: each series' points at their x and y values,
 /// joined in order when it has a line, marked when it has markers.
-fn scatter(out: &mut Svg, chart: &Chart, area: Area) {
+fn scatter(out: &mut Svg, chart: &Chart, area: Area, inner: Option<Area>) {
     let (x_axis, y_axis) = scatter_axes(chart, &chart.groups[0]);
     let series: Vec<(&Series, Pairs)> = chart
         .series()
@@ -1234,6 +1253,7 @@ fn scatter(out: &mut Svg, chart: &Chart, area: Area) {
         y_format: y_axis.and_then(|axis| axis.format.clone()).unwrap_or(y_format),
     };
     let plot = scatter_layout(&mut axes, &series, area, chart.date1904);
+    let plot = inner.unwrap_or(plot);
     out.rect("plot", plot.x, plot.y, plot.width, plot.height, r#"fill="none""#);
     let (x_scale, y_scale) = (axes.x_scale, axes.y_scale);
     if y_axis.is_none_or(|axis| axis.major_gridlines) {

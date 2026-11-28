@@ -175,7 +175,18 @@ pub(crate) fn svg(chart: &Chart, size_pt: (f32, f32)) -> Option<String> {
         area = legend(&mut out, &shown, total, position, area);
     }
     match plan {
-        Plan::Plane => plane::draw(&mut out, chart, area),
+        Plan::Plane => {
+            let placed = chart.plot_box.map(|placed| {
+                let rect = Area {
+                    x: placed.x * width,
+                    y: placed.y * height,
+                    width: placed.width * width,
+                    height: placed.height * height,
+                };
+                (rect, placed.inner)
+            });
+            plane::draw(&mut out, chart, area, placed);
+        }
         Plan::Round(group) => round::pie(&mut out, group, area, chart.date1904),
         Plan::Radar => round::radar(&mut out, chart, area),
     }

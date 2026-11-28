@@ -1,6 +1,6 @@
 //! Tests of the chart drawing, through [`svg`](super::svg).
 
-use crate::chart::read::tests::{AXES, AXIS_PARTS, chart, num_ref, ser, space, str_ref};
+use crate::chart::read::tests::{AXES, AXIS_PARTS, NS, chart, num_ref, ser, space, str_ref};
 use crate::chart::svg;
 use crate::chart::{Categories, Chart, ChartKind, Grouping, Numbers, PlotGroup, Series};
 use crate::excel::numfmt::NumFmt;
@@ -783,4 +783,28 @@ fn stacked_segments_too_short_for_their_label_show_none() {
         ser(1, "small", &["a"], &["0.1"], shown)
     );
     assert_eq!(data_labels(&draw(&space("", &plot))), ["100"]);
+}
+
+#[test]
+fn a_plot_area_placed_by_hand_is_drawn_there() {
+    let long = "A category label longer than usual";
+    let part = format!(
+        r#"<?xml version="1.0"?><c:chartSpace {NS}><c:chart><c:plotArea><c:layout><c:manualLayout><c:layoutTarget val="inner"/><c:xMode val="edge"/><c:yMode val="edge"/><c:x val="0.6"/><c:y val="0.1"/><c:w val="0.35"/><c:h val="0.8"/></c:manualLayout></c:layout><c:barChart><c:barDir val="bar"/><c:grouping val="clustered"/>{}{AXES}</c:barChart>{AXIS_PARTS}</c:plotArea></c:chart></c:chartSpace>"#,
+        ser(0, "S", &[long, "b"], &["1", "2"], "")
+    );
+    let svg = draw(&part);
+    let doc = parsed(&svg);
+    let (x, y, width, height) = plot(&doc);
+    for (got, want) in [
+        (x, 0.6 * SIZE.0),
+        (y, 0.1 * SIZE.1),
+        (width, 0.35 * SIZE.0),
+        (height, 0.8 * SIZE.1),
+    ] {
+        assert!((got - want).abs() < 0.01, "{got} != {want}");
+    }
+    // The labels beside the bars have the room left of the plot: the
+    // long one is not cut.
+    let labels: Vec<String> = of_class(&doc, "category").into_iter().map(text).collect();
+    assert!(labels.iter().any(|label| label == long), "{labels:?}");
 }

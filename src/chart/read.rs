@@ -7,7 +7,7 @@
 use super::theme::{Theme, color};
 use super::{
     Axis, AxisKind, AxisPosition, Categories, Chart, ChartConfig, ChartKind, DataLabels, Grouping, LabelPosition,
-    LegendPosition, Numbers, PlotGroup, Rgb, Series, chartex,
+    LegendPosition, Numbers, PlotBox, PlotGroup, Rgb, Series, chartex,
 };
 use crate::excel::numfmt::NumFmt;
 use crate::word::docx::parse;
@@ -131,6 +131,15 @@ fn chart_space(root: Node<'_, '_>, theme: &Theme, config: &ChartConfig) -> Chart
             .filter_map(|node| plot_group(node, theme, &mut limits))
             .collect();
         chart.axes = kids(plot).filter_map(|node| axis(node, &mut limits)).collect();
+        // A plot box reaching past the chart's edge is cut there; an empty
+        // one is placed automatically.
+        chart.plot_box = placed_box(plot)
+            .map(|placed| PlotBox {
+                width: placed.width.min(1.0 - placed.x),
+                height: placed.height.min(1.0 - placed.y),
+                ..placed
+            })
+            .filter(|placed| placed.width > 0.0 && placed.height > 0.0);
     }
     chart.legend = chart_el(chart_node, "legend")
         .map(|legend| placed_legend(legend).unwrap_or_else(|| legend_position(val(legend, "legendPos"))));
@@ -650,12 +659,11 @@ fn axis_id(text: &str) -> Option<u32> {
         .or_else(|| text.parse::<i32>().ok().map(i32::cast_unsigned))
 }
 
-/// The side of the chart a legend placed by hand (`c:manualLayout`, its
-/// box given from the chart's edges) is on: a box wider than tall is
-/// below or above, another one right or left, by where its middle is;
-/// `None` for a legend not placed so.
-fn placed_legend(legend: Node<'_, '_>) -> Option<LegendPosition> {
-    let manual = chart_el(chart_el(legend, "layout")?, "manualLayout")?;
+/// The box of `node` (a legend, a plot area) placed by hand: its
+/// `c:layout/c:manualLayout` with its edges given from the chart's edges
+/// (`edge` modes) and within the chart; `None` otherwise.
+fn placed_box(node: Node<'_, '_>) -> Option<PlotBox> {
+    let manual = chart_el(chart_el(node, "layout")?, "manualLayout")?;
     let edge = |name: &str| val(manual, name) == Some("edge");
     if !edge("xMode") || !edge("yMode") {
         return None;
@@ -668,6 +676,24 @@ fn placed_legend(legend: Node<'_, '_>) -> Option<LegendPosition> {
             .filter(|share| share.is_finite() && (0.0..=1.0).contains(share))
     };
     let (x, y, width, height) = (share("x")?, share("y")?, share("w")?, share("h")?);
+    Some(PlotBox {
+        // The default target is the outer box.
+        inner: val(manual, "layoutTarget") == Some("inner"),
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+/// The side of the chart a legend placed by hand (`c:manualLayout`, its
+/// box given from the chart's edges) is on: a box wider than tall is
+/// below or above, another one right or left, by where its middle is;
+/// `None` for a legend not placed so.
+fn placed_legend(legend: Node<'_, '_>) -> Option<LegendPosition> {
+    let PlotBox {
+        x, y, width, height, ..
+    } = placed_box(legend)?;
     let half = 0.5;
     Some(if width > height {
         if y + height / 2.0 > half {
@@ -741,7 +767,7 @@ pub(crate) mod tests {
     use std::fmt::Write as _;
 
     /// The namespaces of a chart part.
-    const NS: &str = r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
+    pub(crate) const NS: &str = r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
 
     /// A chart part with `inside` in its `c:chart` and `plot` in its plot
     /// area.
@@ -1306,6 +1332,34 @@ pub(crate) mod tests {
         assert_eq!(legend("r", (0.1, 0.02, 0.8, 0.1)), Some(LegendPosition::Top));
         assert_eq!(legend("b", (0.8, 0.2, 0.15, 0.6)), Some(LegendPosition::Right));
         assert_eq!(legend("b", (0.02, 0.2, 0.15, 0.6)), Some(LegendPosition::Left));
+    }
+
+    #[test]
+    fn a_plot_area_placed_by_hand_keeps_its_box_within_the_chart() {
+        let placed = |target: &str, mode: &str, (x, y, width, height): (f32, f32, f32, f32)| {
+            let xml = format!(
+                r#"<c:chartSpace {NS}><c:chart><c:plotArea><c:layout><c:manualLayout>{target}<c:xMode val="{mode}"/><c:yMode val="edge"/><c:x val="{x}"/><c:y val="{y}"/><c:w val="{width}"/><c:h val="{height}"/></c:manualLayout></c:layout><c:lineChart>{}</c:lineChart></c:plotArea></c:chart></c:chartSpace>"#,
+                ser(0, "a", &["x"], &["1"], "")
+            );
+            chart(&xml).plot_box
+        };
+        let inner = r#"<c:layoutTarget val="inner"/>"#;
+        assert_eq!(
+            placed(inner, "edge", (0.4, 0.1, 0.5, 0.8)),
+            Some(PlotBox {
+                inner: true,
+                x: 0.4,
+                y: 0.1,
+                width: 0.5,
+                height: 0.8
+            })
+        );
+        // The outer box by default; one reaching past the edge is cut there.
+        let outer = placed("", "edge", (0.5, 0.1, 0.55, 0.8)).unwrap();
+        assert!(!outer.inner && (outer.width - 0.5).abs() < 1e-6, "{outer:?}");
+        // Shares of the automatic box (`factor`) are not a place.
+        assert_eq!(placed(inner, "factor", (0.1, 0.1, 0.5, 0.5)), None);
+        assert_eq!(placed(inner, "edge", (0.1, 0.1, 0.0, 0.5)), None);
     }
 
     #[test]

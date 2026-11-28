@@ -94,6 +94,9 @@ pub(crate) struct Chart {
     pub(crate) axes: Vec<Axis>,
     /// Where the legend is; `None` when the chart has no legend.
     pub(crate) legend: Option<LegendPosition>,
+    /// Where the plot area was placed by hand (`c:plotArea/c:layout`);
+    /// `None` when it is placed automatically.
+    pub(crate) plot_box: Option<PlotBox>,
     /// Only the visible cells are plotted (`c:plotVisOnly`); the caches
     /// already hold only those.
     pub(crate) plot_visible_only: bool,
@@ -109,6 +112,23 @@ pub(crate) struct Chart {
     /// Every reference of its data is broken (`#REF!`): its cached values
     /// are left over, not data.
     pub(crate) broken_refs: bool,
+}
+
+/// A box placed by hand in a chart (`c:manualLayout` with both modes
+/// `edge`): its edges as shares of the chart's width and height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlotBox {
+    /// The box holds the plot alone (`c:layoutTarget` `inner`), not its
+    /// tick labels and axis titles too.
+    pub(crate) inner: bool,
+    /// The left edge.
+    pub(crate) x: f32,
+    /// The top edge.
+    pub(crate) y: f32,
+    /// The width.
+    pub(crate) width: f32,
+    /// The height.
+    pub(crate) height: f32,
 }
 
 /// A group of series plotted with one chart type, on one pair of axes.
