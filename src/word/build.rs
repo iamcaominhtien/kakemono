@@ -6,16 +6,19 @@
 
 use super::ir::{Inline, Item, Para, Table as WordTable, VMerge, WordDoc};
 use super::omml::plain_text;
+use super::pictures::{FALLBACK_PICTURE_PT, bounded_size, pixel_size_pt};
 use crate::analysis::semantics::AssembleConfig;
 use crate::analysis::semantics::assemble::{link_blocks, link_contents, reference_label, slug_marker};
 use crate::analysis::semantics::patterns::{HEADING_LETTER, HEADING_NUM, HEADING_ROMAN, REF_HEADING};
 use crate::analysis::semantics::text::slug;
+use crate::chart::{self, Placed};
 use crate::common::geom::Rect;
 use crate::common::patterns::CAP_LABEL;
 use crate::model::{
-    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Span, Table, TableCell, TableGeom,
+    BOLD, Block, BlockKind, Document, FloatKind, ImageSpec, MATH, MathNode, Meta, Picture, Span, Table, TableCell,
 };
 use regex::Regex;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -24,15 +27,6 @@ use std::sync::LazyLock;
 const LEADING_RATIO: f32 = 1.2;
 /// The math font named for a document with Office Math (Word's own).
 const OFFICE_MATH_FONT: &str = "Cambria Math";
-/// Points per pixel of a picture whose size the document does not give
-/// (96 dpi).
-const PT_PER_PX: f32 = 0.75;
-/// Size of a picture whose size is unknown, in points.
-const FALLBACK_PICTURE_PT: (f32, f32) = (300.0, 200.0);
-/// Rule above the first row and below the last of a rebuilt table: heavy.
-const HEAVY_RULE: u8 = 2;
-/// Rule under the header of a rebuilt table: thin.
-const THIN_RULE: u8 = 1;
 
 /// The number of an equation as it is set next to it: "(3)", "(2.1a)".
 static EQUATION_NUMBER: LazyLock<Regex> =
@@ -105,14 +99,24 @@ struct Builder<'a> {
     loose_bookmarks: Vec<String>,
     /// A caption waiting for the float after it.
     caption: Option<PendingCaption>,
+    /// Charts so far, which name those without a title ("Chart 2").
+    charts: usize,
+    /// The last chart whose caption is its own (its title, or "Chart N"):
+    /// the index of its figure and the number of blocks after its own
+    /// blocks, so that a caption right after them can be given to it.
+    last_chart: Option<(usize, usize)>,
     /// The paragraphs read now belong to the abstract.
     in_abstract: bool,
     /// The paragraphs read now are the bibliography.
     in_references: bool,
     /// Code lines being gathered into one listing.
     code: Vec<Vec<Span>>,
-    /// Sizes of the pictures, by index.
-    picture_sizes: Vec<Option<(f32, f32)>>,
+    /// The pictures of the document, by index.
+    pictures: &'a [Picture],
+    /// Sizes of the pictures in points (96 pixels per inch), by index,
+    /// found when first needed: only a picture whose document gives it no
+    /// size needs its own, and an SVG is parsed to know it.
+    picture_sizes: Vec<OnceCell<Option<(f32, f32)>>>,
 }
 
 /// Builds the document of a Word file.
@@ -122,7 +126,7 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         .iter()
         .map(|note| ((note.endnote, note.id.clone()), note.body.as_slice()))
         .collect();
-    let picture_sizes = word.pictures.iter().map(|picture| pixel_size(&picture.data)).collect();
+    let picture_sizes = word.pictures.iter().map(|_| OnceCell::new()).collect();
     let mut builder = Builder {
         notes,
         note_numbers: HashMap::new(),
@@ -136,9 +140,12 @@ pub(crate) fn build(word: WordDoc, source: Option<String>) -> Document {
         bookmarks: HashMap::new(),
         loose_bookmarks: Vec::new(),
         caption: None,
+        charts: 0,
+        last_chart: None,
         in_abstract: false,
         in_references: false,
         code: Vec::new(),
+        pictures: &word.pictures,
         picture_sizes,
     };
     builder.items(&word.body);
@@ -238,7 +245,7 @@ impl Builder<'_> {
         let mut first = true;
         for inline in &para.inlines {
             match inline {
-                Inline::Math { display: true, .. } | Inline::Picture { .. } => {
+                Inline::Math { display: true, .. } | Inline::Picture { .. } | Inline::Chart(_) => {
                     if has_text(&text) {
                         self.text_block(para, role, &text, first);
                         first = false;
@@ -426,23 +433,46 @@ impl Builder<'_> {
                 }
                 self.push_float(block);
             }
+            Inline::Chart(chart) => self.chart(chart),
             _ => {}
         }
     }
 
+    /// Adds a chart: its figure (with the caption waiting before it, else
+    /// its title, else "Chart N"), then its data table with the same
+    /// caption, or the note saying why it has none. A caption after it can
+    /// still be given to it ([`Builder::caption_para`]).
+    fn chart(&mut self, chart: &(Placed, Option<usize>)) {
+        self.charts += 1;
+        let (placed, picture) = chart;
+        let mut blocks = chart::blocks(placed.clone(), *picture, &format!("Chart {}", self.charts)).into_iter();
+        let Some(first) = blocks.next() else { return };
+        let figure = self.blocks.len();
+        let own_caption = self.caption.is_none();
+        if matches!(first.kind, BlockKind::Figure { .. }) {
+            self.push_float(first);
+        } else {
+            self.flush_caption();
+            self.push(first);
+        }
+        let caption = self.blocks[figure].spans.clone();
+        for mut block in blocks {
+            if block.table.is_some() {
+                block.spans.clone_from(&caption);
+            }
+            self.push(block);
+        }
+        self.last_chart = own_caption.then_some((figure, self.blocks.len()));
+    }
+
     /// The picture `index` at its size in the document (or its own size).
     fn picture_spec(&self, index: usize, width_pt: f32, height_pt: f32) -> ImageSpec {
-        let (width, height) = if width_pt > 0.0 && height_pt > 0.0 {
-            (width_pt, height_pt)
-        } else {
-            self.picture_sizes
-                .get(index)
-                .copied()
-                .flatten()
-                .map_or(FALLBACK_PICTURE_PT, |(width, height)| {
-                    (width * PT_PER_PX, height * PT_PER_PX)
-                })
-        };
+        let (width, height) = bounded_size((width_pt, height_pt))
+            .or_else(|| {
+                let picture = self.pictures.get(index)?;
+                *self.picture_sizes.get(index)?.get_or_init(|| pixel_size_pt(picture))
+            })
+            .unwrap_or(FALLBACK_PICTURE_PT);
         ImageSpec {
             page: 0,
             rect: Rect {
@@ -463,6 +493,22 @@ impl Builder<'_> {
         self.flush_caption();
         let spans = self.spans(para, false);
         let label = caption_label(&text_of(&spans));
+        // A figure caption right after a chart with its own caption is
+        // the chart's, and its data table's.
+        if let Some((figure, end)) = self.last_chart.take()
+            && end == self.blocks.len()
+            && !label_is_table(label.as_deref())
+            && matches!(self.blocks[figure].kind, BlockKind::Figure { .. })
+        {
+            for block in &mut self.blocks[figure + 1..end] {
+                if block.table.is_some() {
+                    block.spans.clone_from(&spans);
+                }
+            }
+            self.caption_float(figure, spans, label, false);
+            self.mark_bookmarks(para);
+            return;
+        }
         let previous_free = self
             .blocks
             .last()
@@ -631,24 +677,7 @@ impl Builder<'_> {
         } else {
             usize::from(rows.len() > 1)
         };
-        let mut rule_above = vec![vec![0u8; n_cols]; rows.len()];
-        if let Some(first) = rule_above.first_mut() {
-            first.fill(HEAVY_RULE);
-        }
-        if let Some(under_header) = rule_above.get_mut(header_rows).filter(|_| header_rows > 0) {
-            under_header.fill(THIN_RULE);
-        }
-        Table {
-            n_cols,
-            header_rows,
-            col_align: vec!["left"; n_cols],
-            rule_above,
-            rule_bottom: vec![HEAVY_RULE; n_cols],
-            rule_left: vec![vec![false; n_cols]; rows.len()],
-            rule_right: vec![false; rows.len()],
-            rows,
-            geom: TableGeom::default(),
-        }
+        Table::ruled(rows, n_cols, header_rows, vec!["left"; n_cols])
     }
 
     /// The text of a table cell: its paragraphs one after another.
@@ -706,7 +735,7 @@ impl Builder<'_> {
                     spans.push(span);
                     self.pending_notes.push((*endnote, id.clone()));
                 }
-                Inline::Picture { .. } => {}
+                Inline::Picture { .. } | Inline::Chart(_) => {}
             }
         }
         let mut spans = merge_spans(spans);
@@ -943,7 +972,7 @@ fn is_picture_only(para: &Para) -> bool {
     for inline in &para.inlines {
         match inline {
             Inline::Text(span) if span.text.trim().is_empty() => {}
-            Inline::Picture { .. } => any = true,
+            Inline::Picture { .. } | Inline::Chart(_) => any = true,
             _ => return false,
         }
     }
@@ -961,7 +990,7 @@ fn has_text(inlines: &[&Inline]) -> bool {
     inlines.iter().any(|inline| match inline {
         Inline::Text(span) => !span.text.trim().is_empty(),
         Inline::Math { .. } | Inline::NoteRef { .. } => true,
-        Inline::Picture { .. } => false,
+        Inline::Picture { .. } | Inline::Chart(_) => false,
     })
 }
 
@@ -1234,6 +1263,9 @@ mod tests {
             in_references: false,
             code: Vec::new(),
             picture_sizes: Vec::new(),
+            charts: 0,
+            last_chart: None,
+            pictures: &[],
         };
         let mut anchor = |base: &str| builder.unique_anchor(base.to_string());
         assert_eq!(anchor("intro"), "intro");

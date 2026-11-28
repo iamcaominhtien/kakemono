@@ -360,8 +360,8 @@ Steps 0 and 1a–1c give Word input for every flowing output. Step 2 waits for
   EMF/WMF (charts, MathType previews), for which there is no good Rust
   renderer: phase 1 keeps them as files where the output can (Word output) and
   otherwise writes the caption with a warning. SVG (with a PNG fallback in
-  newer Office) can go through `resvg`. GIF/TIFF need the `gif`/`tiff`
-  features of `image`.
+  newer Office) can go through `resvg`. GIF, BMP and TIFF (the pictures of
+  Mac Office) are made PNG by the `gif`, `bmp` and `tiff` features of `image`.
 - **Renderers that look at geometry**: the caption-above-or-below test
   (`line.bbox.cy() < spec.rect.cy()`) in `flow.rs`, `docx/body.rs`,
   `latex/mod.rs`, `markdown/mod.rs` should read the order from the document

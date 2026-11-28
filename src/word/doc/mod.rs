@@ -13,7 +13,7 @@ pub(crate) mod props;
 
 use super::docx::field_link;
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
-use super::pictures::normalize;
+use super::pictures::{MAX_PICTURE_BYTES, store};
 use super::styles::{Numbering, RunProps, Styles};
 use super::symbols::{symbol_font_char, symbol_font_text};
 use crate::model::{MathNode, Span};
@@ -521,10 +521,7 @@ impl Reader<'_> {
     /// The picture at `location` of the `Data` stream, read and converted.
     fn picture(&mut self, location: u32) -> Inline {
         let (file, (width_pt, height_pt)) = picture::picture(self.data, location);
-        let index = file.and_then(normalize).map(|picture| {
-            self.pictures.push(picture);
-            self.pictures.len() - 1
-        });
+        let index = file.and_then(|data| store(&mut self.pictures, data, MAX_PICTURE_BYTES));
         Inline::Picture {
             index,
             width_pt,

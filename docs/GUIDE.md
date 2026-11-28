@@ -14,13 +14,20 @@ read directly, without the layout analysis a PDF needs, and turned into the same
   and table of contents entries; list numbering gives list items with their markers ("1.", "(a)");
 - Word equations (Office Math) keep their structure: MathML, LaTeX and Office Math in the outputs,
   in running text too;
-- tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, SVG) figures,
+- tables become rebuilt tables (merged cells kept), pictures (PNG, JPEG, GIF, BMP, TIFF, WebP, SVG) figures,
   with the caption before or after them; footnotes and endnotes follow their paragraph;
 - hyperlinks, cross-references to bookmarks, citations and references to figures and tables become
   links, as for a PDF;
 - pictures stored as Windows metafiles (EMF, WMF: charts, older drawings) are drawn by kakemono
-  (as SVG), formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and
-  `.docx` files) become real formulas, floating shapes and text boxes of `.doc` files are read,
+  as SVG; they and SVG pictures (the SVG Word keeps beside a PNG too) stay vector in every output:
+  an `<img>` of the SVG in HTML, an `.svg` file in Markdown, JSON and EPUB, a PDF picture in LaTeX,
+  an SVG with a PNG beside it in Word, vector drawing in the PDF. An SVG is written again by
+  kakemono first, with only its drawing (no script, link or style sheet);
+- charts of `.docx` files are drawn by kakemono as SVG (vector in the PDF too), each followed by a
+  table of its data; an Office 2016 chart (waterfall, treemap, ...) shows the picture Word keeps
+  beside it, else its data; the charts of `.doc` files are left out;
+- formulas made with the Equation Editor 3.0 or MathType (MTEF 3 and 5, in `.doc` and `.docx`
+  files) become real formulas, floating shapes and text boxes of `.doc` files are read,
   and nested lists keep their level.
 
 **Pages as Word lays them out.** kakemono also lays a Word document out in pages itself, the way
@@ -44,6 +51,50 @@ layout (PDF, `hard`, `hard-95`, `medium`). `.doc` files (Word 97–2003) are rea
 itself; Word 6/95 files, RTF files and password-protected files are not. Comments, tracked
 changes (read as accepted), macros and form fields are not shown. See
 [docs/WORD-INPUT.md](WORD-INPUT.md) for the design.
+
+## Excel workbooks as input
+
+A `.xlsx` file is an input like a PDF or a Word document (`kakemono convert sales.xlsx -o sales.md`);
+the format is recognised from the file's bytes. The cells say what the content is, so the workbook
+is read directly into the same structure, to read it comfortably outside Excel's grid or to feed
+it to an AI:
+
+- each visible sheet is a section headed by its name; hidden sheets, rows and columns are left out;
+- the cells of a sheet are cut into tables where empty rows or columns separate them; a title or
+  unit line above a table is its caption, single-cell rows below it are notes;
+- the header rows of a table come from `--header-rows N` if given, else from what the file declares
+  (Excel Table, auto-filter, frozen rows, print titles), else from the types of the columns (the
+  header is the rows above the first one whose cells have the type of their column), else the
+  first row;
+- values are shown as Excel shows them: percentages, thousands separators, decimals; dates and
+  times always in ISO form (`2024-01-31`, `14:05`); furigana never reaches the text;
+- the text of shapes and text boxes is read; forms drawn on a grid keep their text, not their look;
+- pictures become figures (also those of groups, and those placed in cells, after their table);
+  charts are drawn by kakemono as SVG, sharp at any zoom (bar, column, line, area, pie, doughnut,
+  scatter, radar, and bar and line combined; the colours and data labels of the file), each
+  followed by a table of its data, which is what the chunks and the JSON give;
+- in the chunks (`.jsonl`), a table is cut between rows and every chunk repeats its header rows.
+
+```bash
+kakemono convert sales.xlsx -o sales.md                  # Markdown, a pipe table per region
+kakemono convert sales.xlsx -o sales.jsonl               # chunks for retrieval (RAG)
+kakemono convert sales.xlsx --header-rows 2 -o sales.md  # two header rows in every table (0: none)
+```
+
+`-m medium` (and `hard`, `hard-95`) shows the workbook as Excel does: a tab per sheet, and on each
+the grid of its cells with their widths, heights, merges, fonts, fills, borders and alignment, the
+column letters and row numbers, and its charts, pictures, shapes and connectors drawn where they
+are anchored. `friendly` is the workbook as a document, the form every other output takes.
+`-o sales.pdf` prints it as Excel prints it, without TeX: each sheet's print area (or the cells it
+uses) cut into pages by its print settings (paper, orientation, margins, scale or fit to pages,
+manual breaks, rows repeated at the top), with the look of every cell and its charts, pictures and
+shapes where they are anchored, the text kept as text. `--pdf-style document` lays it out as a
+document instead: each sheet after its heading,
+tables with rules and their cells wrapped in their columns, a long table broken between rows with
+its header rows repeated on each page, a wide one set smaller, then on landscape pages, then in
+groups of columns (no column is ever cut off), charts drawn as vector, CJK text in CJK fonts; on A4
+unless the workbook's print settings name another paper. Details:
+[docs/EXCEL-INPUT.md](EXCEL-INPUT.md).
 
 ## EPUB books as input
 
@@ -458,14 +509,16 @@ kakemono convert paper.pdf -o paper.json
 kakemono convert paper.pdf --content paper.edited.json -m hard-95
 ```
 
-The input is a PDF file, a Word document (`.docx`, `.doc`), an EPUB book (`.epub`), an arXiv ID (`1706.03762`,
+The input is a PDF file, a Word document (`.docx`, `.doc`), an Excel workbook (`.xlsx`), an EPUB book (`.epub`), an arXiv ID (`1706.03762`,
 `arXiv:1706.03762v7`, `hep-th/9901001`) or an arXiv URL. Downloaded PDFs are cached in `~/.cache/kakemono` (`KAKEMONO_CACHE` changes it).
 
 | Option | Meaning |
 | --- | --- |
 | `-m, --mode <hard\|hard-95\|medium\|friendly>` | Mode (default `friendly`); for Markdown, `friendly` or `medium` (how tables are written) |
 | `--all` | All four modes: `<name>.<mode>.html` |
-| `-f, --format <html\|docx\|md\|tex\|typst\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, Typst, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word and EPUB input only: the document laid out in pages as Word lays it out); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `-f, --format <html\|docx\|md\|tex\|typst\|epub\|json\|chunks\|pdf>` | HTML (default), a Word document, Markdown, LaTeX, Typst, an EPUB book, editable JSON, chunks for retrieval, or a PDF (Word and EPUB input: the document laid out in pages as Word lays it out; a workbook: printed as Excel prints it); chosen from `--output` when it ends in `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` |
+| `--header-rows <N>` | Header rows of every table of an Excel workbook, 0 for none (default: found from the cells); ignored for other inputs |
+| `--pdf-style <excel\|document>` | The PDF of an Excel workbook: printed as Excel prints it (default), or laid out as a document |
 | `-o, --output <path>` | HTML, `.docx`, `.md`, `.tex`, `.typ`, `.epub`, `.json`, `.jsonl` or `.pdf` file, or directory |
 | `--content <file.json>` | Write the output with the text of an edited JSON file (from `--format json`, for the same PDF); every format but `hard` mode for PDF input; Word page-layout outputs do not use edited text |
 | `--images <inline\|files>` | Embed images (default for HTML and Word) or write them to a folder next to the file (default for Markdown and JSON, always for LaTeX and Typst; Word keeps them embedded too; never for EPUB) |
@@ -699,6 +752,9 @@ are not fetched from the Web.
   floating shapes and text boxes are read where they are anchored in the flowing outputs; the page
   layout has no true transparency (a transparent fill is blended over white) and draws rounded
   and freeform shapes as their bounding rectangle.
+- Excel input: `.xls`, `.ods` and `.csv` are not read; pivot tables and comments are left out;
+  formulas show the value saved in the file; forms drawn on a grid stay sparse tables (or their
+  text) in the document outputs, not rebuilt forms.
 - Unusual layouts may be read wrongly: `inspect` shows what was detected.
 
 ## Testing
@@ -726,6 +782,11 @@ cargo test --release
   read and written to every format (snapshot in `tests/data/snapshots/word-sample.txt`); the LIGO
   paper goes through a round trip PDF → Word → kakemono. To make the samples again:
   `cd tests/data/word && pandoc sample.md -o sample.docx && soffice --headless --convert-to doc sample.docx`.
+- **Excel input** (`tests/excel.rs`): `tests/data/excel/sample.xlsx`, saved by LibreOffice from the
+  hand-written `sample.fods`, and `charts.xlsx` (charts, pictures), written by
+  `tests/data/excel/make-chart-xlsx.py`, are read and written to every format (snapshot in
+  `tests/data/snapshots/excel-sample.txt`). To make the sample again:
+  `soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`.
 - **EPUB input** (`tests/epub.rs`): `tests/data/epub/sample.epub`, written by pandoc from the same
   `tests/data/word/sample.md`, is read like the Word sample and written to every format (snapshot
   in `tests/data/snapshots/epub-sample.txt`); small books built in the test cover style sheets,

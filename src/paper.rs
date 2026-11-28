@@ -1,10 +1,11 @@
-//! High-level entry points: PDF, Word, EPUB or HTML bytes (or a file, or
-//! an address of the Web) in, structured document and HTML (or Word,
-//! Markdown, LaTeX or EPUB) out.
+//! High-level entry points: PDF, Word, Excel, EPUB or HTML bytes (or a
+//! file, or an address of the Web) in, structured document and HTML (or
+//! Word, Markdown, LaTeX, Typst or EPUB) out.
 
 use crate::analysis::pipeline::{Analysis, analyze};
 use crate::backend::{PageRenderer, PdfFile, PngCompression};
-use crate::config::AnalyzeOptions;
+use crate::config::{AnalyzeOptions, ExcelConfig, WorkbookPdfConfig, WorkbookPdfStyle};
+use crate::excel;
 use crate::model::{Document, Meta};
 use crate::render::{
     Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, HtmlOptions, HtmlOutput, JsonOptions,
@@ -28,6 +29,8 @@ pub enum InputFormat {
     Docx,
     /// A Word 97–2003 document (`.doc`).
     Doc,
+    /// An Excel workbook in Office Open XML (`.xlsx`).
+    Xlsx,
     /// An EPUB book (`.epub`).
     Epub,
     /// A web page (`.html`, or an address of the Web).
@@ -35,13 +38,14 @@ pub enum InputFormat {
 }
 
 impl InputFormat {
-    /// The usual file extension (`pdf`, `docx`, `doc`, `epub`, `html`), also the name of the
+    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`, `epub`, `html`), also the name of the
     /// format in the JSON output.
     pub fn name(self) -> &'static str {
         match self {
             InputFormat::Pdf => "pdf",
             InputFormat::Docx => "docx",
             InputFormat::Doc => "doc",
+            InputFormat::Xlsx => "xlsx",
             InputFormat::Epub => "epub",
             InputFormat::Html => "html",
         }
@@ -61,13 +65,19 @@ enum Source {
     /// A Word document, read into its structure when loaded, with its file
     /// (read again with its formatting for the layout).
     Word(Box<Document>, InputFormat, Vec<u8>),
+    /// An Excel workbook, read into its structure when loaded (its pages
+    /// are laid out from that structure), with the paper its print
+    /// settings name (width and height in points), its file (read again
+    /// with the look of every cell for the sheet view) and the thresholds
+    /// it was read with.
+    Sheet(Box<Document>, Option<(f32, f32)>, Vec<u8>, ExcelConfig),
     /// An EPUB book or a web page (the format), read into its structure
     /// when loaded.
     Book(Box<Document>, InputFormat),
 }
 
-/// A loaded PDF, Word document, EPUB book or web page, ready to be
-/// analysed and rendered.
+/// A loaded PDF, Word document, Excel workbook, EPUB book or web page,
+/// ready to be analysed and rendered.
 ///
 /// Typical use: [`Paper::from_bytes`], [`Paper::analyze`], then
 /// [`Paper::to_html`] once per output mode (the analysis does not depend on
@@ -97,27 +107,39 @@ struct Laid {
 }
 
 impl Paper {
-    /// Loads a PDF, a Word document (`.docx`, `.doc`), an EPUB book
-    /// (`.epub`) or a web page (HTML) from its bytes; the format is
-    /// recognised from the bytes. The pictures of a web page loaded so are
-    /// only those inside it (`data:` URLs): [`Paper::from_path`] reads them
-    /// next to its file, [`Paper::from_url`] fetches them.
+    /// Loads a PDF, a Word document (`.docx`, `.doc`), an Excel workbook
+    /// (`.xlsx`), an EPUB book (`.epub`) or a web page (HTML) from its
+    /// bytes; the format is recognised from the bytes. The pictures of a
+    /// web page loaded so are only those inside it (`data:` URLs):
+    /// [`Paper::from_path`] reads them next to its file, [`Paper::from_url`]
+    /// fetches them.
     ///
     /// # Errors
-    /// When the data is not a readable PDF, Word document, EPUB book or
-    /// web page, or the PDF has no pages.
+    /// When the data is not a readable PDF, Word document, workbook, EPUB
+    /// book or web page, or the PDF has no pages.
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
+        Self::from_bytes_with(data, &ExcelConfig::default())
+    }
+
+    /// Loads a file like [`Paper::from_bytes`], reading a workbook with
+    /// the thresholds `excel` (they do not apply to the other formats).
+    ///
+    /// # Errors
+    /// As [`Paper::from_bytes`].
+    pub fn from_bytes_with(data: Vec<u8>, excel: &ExcelConfig) -> Result<Self> {
         if crate::html::is_html(&data) {
             return Self::from_html(&data, crate::html::Origin::Bytes);
         }
         let sha256 = sha256_hex(&data);
         if crate::epub::is_epub(&data) {
-            return Ok(Self {
-                file: Source::Book(Box::new(crate::epub::read(&data, None)?), InputFormat::Epub),
-                source: None,
-                sha256,
-                laid: std::sync::OnceLock::new(),
-            });
+            let doc = crate::epub::read(&data, None)?;
+            return Ok(Self::loaded(Source::Book(Box::new(doc), InputFormat::Epub), sha256));
+        }
+        // A workbook, a Word document and an EPUB book are ZIP packages:
+        // each looks for its own main part.
+        if excel::detect(&data) {
+            let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
+            return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper, data, *excel), sha256));
         }
         let file = match word::detect(&data) {
             Some(format) => {
@@ -130,12 +152,17 @@ impl Paper {
             }
             None => Source::Pdf(PdfFile::open(data)?),
         };
-        Ok(Self {
+        Ok(Self::loaded(file, sha256))
+    }
+
+    /// A paper of `file`, whose bytes have the SHA-256 `sha256`.
+    fn loaded(file: Source, sha256: String) -> Self {
+        Self {
             file,
             source: None,
             sha256,
             laid: std::sync::OnceLock::new(),
-        })
+        }
     }
 
     /// Loads the file at `path`, as [`Paper::from_bytes`] does; the
@@ -144,12 +171,21 @@ impl Paper {
     /// # Errors
     /// When the file cannot be read, or [`Paper::from_bytes`] fails.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_path_with(path, &ExcelConfig::default())
+    }
+
+    /// Loads the file at `path` like [`Paper::from_path`], reading a
+    /// workbook with the thresholds `excel`.
+    ///
+    /// # Errors
+    /// As [`Paper::from_path`].
+    pub fn from_path_with(path: impl AsRef<Path>, excel: &ExcelConfig) -> Result<Self> {
         let path = path.as_ref();
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         if crate::html::is_html(&data) {
             return Self::from_html(&data, crate::html::Origin::File(path));
         }
-        Self::from_bytes(data)
+        Self::from_bytes_with(data, excel)
     }
 
     /// Fetches the document at the `http(s)` address `url` and loads it, as
@@ -203,6 +239,7 @@ impl Paper {
         match &self.file {
             Source::Pdf(_) => InputFormat::Pdf,
             Source::Word(_, format, _) => *format,
+            Source::Sheet(..) => InputFormat::Xlsx,
             Source::Book(_, format) => *format,
         }
     }
@@ -211,14 +248,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) | Source::Book(..) => None,
+            Source::Word(..) | Source::Sheet(..) | Source::Book(..) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) | Source::Book(..) => None,
+            Source::Pdf(_) | Source::Sheet(..) | Source::Book(..) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -243,9 +280,19 @@ impl Paper {
 
     /// The HTML of a Word document in a mode that shows its layout: its
     /// pages (`hard`, `hard-95`), or Word's formatting in one continuous
-    /// page (`medium`). `None` for a PDF, the `friendly` mode, or when the
-    /// layout failed.
+    /// page (`medium`); of a workbook in a mode other than `friendly`, its
+    /// sheets as Excel shows them. `None` for a PDF, the `friendly` mode,
+    /// or when the layout failed.
     fn word_layout_html(&self, opts: &HtmlOptions) -> Option<HtmlOutput> {
+        if let Source::Sheet(_, _, data, config) = &self.file {
+            if opts.mode == Mode::Friendly {
+                return None;
+            }
+            return Some(HtmlOutput {
+                html: excel::sheet_view(data, config, self.source.as_deref()).ok()?,
+                files: Vec::new(),
+            });
+        }
         let Source::Word(_, _, data) = &self.file else {
             return None;
         };
@@ -265,16 +312,43 @@ impl Paper {
         }
     }
 
-    /// The document laid out in pages as Word lays it out, as a PDF: only
-    /// for a Word document, an EPUB book or a web page (a PDF already has
-    /// its pages). A book or a page is written as a Word document first,
-    /// which is laid out.
+    /// The document laid out in pages, as a PDF: a Word document as Word
+    /// lays it out; a workbook printed as Excel prints it (each sheet's
+    /// print area cut into pages by its print settings, with the look of
+    /// every cell), as [`WorkbookPdfConfig::default`] does; with
+    /// [`WorkbookPdfStyle::Document`], laid out as a document instead; an
+    /// EPUB book or a web page written as a Word document first, which is
+    /// laid out. A PDF already has its pages.
     ///
     /// # Errors
     /// When the paper is a PDF, or the layout cannot be written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
+        self.to_pdf_with(&WorkbookPdfConfig::default())
+    }
+
+    /// The document laid out in pages, as [`Paper::to_pdf`] does; a
+    /// workbook with the page, fonts and table limits of `config` (they do
+    /// not apply to a Word document).
+    ///
+    /// # Errors
+    /// As [`Paper::to_pdf`].
+    pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
+            Source::Sheet(doc, paper, data, excel_config) => match config.style {
+                WorkbookPdfStyle::Document => crate::layout::workbook::to_pdf(doc, *paper, config),
+                // As the sheet view reads it, without its limits.
+                _ => {
+                    // A header's `&F` prints the workbook's file name.
+                    let file = self.source.as_deref().map(|source| {
+                        std::path::Path::new(source)
+                            .file_name()
+                            .map_or(source, |name| name.to_str().unwrap_or(source))
+                    });
+                    let book = excel::read_book(data, excel_config)?;
+                    crate::layout::workbook::print::to_pdf(&book, config, file)
+                }
+            },
             Source::Book(..) => {
                 let docx = self.to_docx(&self.analyze(), &DocxOptions::default());
                 Paper::from_bytes(docx)?.to_pdf()
@@ -310,7 +384,8 @@ impl Paper {
         self
     }
 
-    /// Number of pages; 0 for a Word document or a book, which have none.
+    /// Number of pages; 0 for a Word document, a workbook or a book, which
+    /// have none.
     pub fn page_count(&self) -> usize {
         self.pdf().map_or(0, PdfFile::page_count)
     }
@@ -324,14 +399,18 @@ impl Paper {
     ///
     /// Pages are read, and their lines built, on `opts.jobs` threads; the
     /// result does not depend on the number of threads.
-    /// A Word document or a book needs no analysis: its structure, read
+    /// A Word document, a workbook or a book needs no analysis: its structure, read
     /// when it was loaded, is returned (`opts` does not apply to it).
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Book(doc, _) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
+                // A file with no title of its own is called by its name.
+                if doc.meta.title.is_none() {
+                    doc.meta.title = self.source.as_deref().and_then(file_title);
+                }
                 return Analysis {
                     doc,
                     loose: Vec::new(),
@@ -354,7 +433,7 @@ impl Paper {
     }
 
     /// A renderer for pictures of pages and page regions, or `None` for a
-    /// Word document, which has no pages. Not thread-safe: every thread
+    /// Word document or a workbook, which have no pages. Not thread-safe: every thread
     /// that draws needs its own.
     pub fn renderer(&self) -> Option<PageRenderer<'_>> {
         self.pdf().map(PdfFile::renderer)
@@ -365,7 +444,9 @@ impl Paper {
     /// document is first laid out as Word lays it out: `hard` and `hard-95`
     /// show its pages, `medium` its formatting in one continuous page
     /// (neither shows text edited with [`Paper::apply_content`]); when the
-    /// layout fails, they give the `friendly` page.
+    /// layout fails, they give the `friendly` page. A workbook shows its
+    /// sheets as Excel does, a tab per sheet, in every mode but `friendly`
+    /// (nor do they show edited text).
     pub fn to_html(&self, analysis: &Analysis, opts: &HtmlOptions) -> HtmlOutput {
         if let Some(output) = self.word_layout_html(opts) {
             return output;
@@ -399,8 +480,9 @@ impl Paper {
         out: &mut dyn std::io::Write,
         file: &mut dyn FnMut(&str, &[u8]) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        if self.word_format().is_some() && opts.mode != Mode::Friendly {
-            if opts.mode == Mode::Medium {
+        let sheet = matches!(self.file, Source::Sheet(..));
+        if (self.word_format().is_some() || sheet) && opts.mode != Mode::Friendly {
+            if opts.mode == Mode::Medium || sheet {
                 if let Some(output) = self.word_layout_html(opts) {
                     return out.write_all(output.html.as_bytes());
                 }
@@ -520,10 +602,25 @@ impl Paper {
                 ));
                 continue;
             };
-            analysis.doc.pictures.push(crate::model::Picture {
-                data: svg.into_bytes(),
-                jpeg: false,
-            });
+            // Made ready (its caps checked, its PNG size found), but its own
+            // SVG kept: kakemono wrote it, and its edited text stays text,
+            // which the SVG written again by usvg would draw as paths.
+            let ready =
+                crate::word::pictures::normalize(svg.clone().into_bytes()).map(|picture| match picture.format {
+                    crate::model::PictureFormat::Svg => crate::model::Picture {
+                        data: svg.into_bytes(),
+                        ..picture
+                    },
+                    _ => picture,
+                });
+            let Some(picture) = ready else {
+                report.warnings.push(format!(
+                    "block {}: the figure drawn again with its edited text is too large to keep",
+                    block.id
+                ));
+                continue;
+            };
+            analysis.doc.pictures.push(picture);
             let index = analysis.doc.pictures.len() - 1;
             if let crate::model::BlockKind::Figure { image: Some(spec), .. } =
                 &mut analysis.doc.blocks[edit.block_idx].kind
@@ -557,4 +654,31 @@ pub fn convert(data: Vec<u8>, opts: &HtmlOptions) -> Result<HtmlOutput> {
     let paper = Paper::from_bytes(data)?;
     let analysis = paper.analyze();
     Ok(paper.to_html(&analysis, opts))
+}
+
+/// The name of the file `source` (a path or a name) without its folder and
+/// extension (`report.xlsx` is `report`); `None` when nothing is left.
+fn file_title(source: &str) -> Option<String> {
+    let path = std::path::Path::new(source);
+    let stem = path.file_stem()?.to_str()?.trim();
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The friendly page and the Word document of a workbook say what it
+    /// was converted from.
+    #[test]
+    fn outputs_name_the_format_of_a_workbook() {
+        let paper = Paper::from_bytes(std::fs::read("tests/data/excel/sample.xlsx").unwrap()).unwrap();
+        let analysis = paper.analyze();
+        let html = paper.to_html(&analysis, &HtmlOptions::default()).html;
+        assert!(html.contains("Converted from Excel by kakemono"), "friendly colophon");
+        let docx = paper.to_docx(&analysis, &DocxOptions::default());
+        let zip = crate::word::zip::ZipArchive::new(&docx).unwrap();
+        let core = zip.read_text("docProps/core.xml").unwrap().unwrap();
+        assert!(core.contains("Converted from Excel by kakemono"), "{core}");
+    }
 }

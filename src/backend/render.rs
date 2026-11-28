@@ -11,6 +11,48 @@ use hayro_syntax::Pdf;
 use kurbo::Affine;
 use std::collections::{HashMap, HashSet};
 
+/// Most pixels of a picture drawn or decoded (40 million: 160 MB in RGBA,
+/// more than a 36-megapixel photo): an SVG or a metafile that would be
+/// larger is drawn smaller, and a bitmap that says it is larger is not
+/// shown. A file of a few bytes can declare any size; this keeps memory
+/// use bounded.
+pub const MAX_RASTER_PIXELS: u64 = 40_000_000;
+/// Most pixels the filters of an SVG picture drawn as a bitmap are drawn
+/// over, all its filters together (10 million): each filter can cover the
+/// whole picture, and 200 blurs over 20 million pixels each took minutes
+/// (over 40 million pixels in all, 14 s). A picture with many filters is
+/// drawn smaller.
+pub(crate) const MAX_FILTERED_PIXELS: u64 = 10_000_000;
+/// Most characters of text in an SVG picture, counted with the copies that
+/// `<use>` makes (20 000): usvg lays out its text as it reads it, looking
+/// for a font for each character, and 240 kB of text took 18 s. A picture
+/// with more is left out (Word keeps a PNG beside an SVG, taken instead).
+pub(crate) const MAX_SVG_TEXT_CHARS: u64 = 20_000;
+/// Most elements of an SVG picture, counted with the copies that `<use>`
+/// makes, that is read at all (1 million): a few lines of `<use>` can ask
+/// for billions. A picture with more is left out.
+pub(crate) const MAX_SVG_ELEMENTS: u64 = 1_000_000;
+/// Most bytes of path data (`d`, `points`) of an SVG picture, counted with
+/// the copies that `<use>` makes, that is read at all (64 MiB): usvg keeps
+/// each copy, and 8.5 kB of `<use>` over a path of 1500 segments took
+/// 1.9 GB to read. A picture with more is left out.
+pub(crate) const MAX_SVG_PATH_BYTES: u64 = 64 * 1024 * 1024;
+/// Most nodes of an SVG picture kept as SVG, once read (100 000): usvg's
+/// writer writes each copy that `<use>` makes in full. A picture with more
+/// is kept as a PNG.
+pub(crate) const MAX_SVG_NODES: u64 = 100_000;
+/// Most points of the paths of an SVG picture kept as SVG, once read
+/// (1 million, about 20 MB written). A picture with more is kept as a PNG.
+pub(crate) const MAX_SVG_POINTS: u64 = 1_000_000;
+/// Most points of the paths of an SVG picture drawn as a PNG (10 million):
+/// a picture with more is left out.
+pub(crate) const MAX_RASTER_SVG_POINTS: u64 = 10_000_000;
+/// Most filters of an SVG picture kept as SVG (16): a PDF draws each as a
+/// bitmap. A picture with more is kept as a PNG.
+pub(crate) const MAX_SVG_FILTERS: usize = 16;
+/// Longest SVG picture, in bytes: as read (decompressed) and as written
+/// (32 MiB). A longer one is left out, or kept as a PNG once read.
+pub(crate) const MAX_SVG_BYTES: usize = 32 * 1024 * 1024;
 /// Largest width or height of a rendered bitmap, in pixels: the scale is
 /// reduced for regions that would exceed it, to keep memory use sane.
 const MAX_BITMAP_SIDE_PX: f32 = 6000.0;
@@ -330,39 +372,171 @@ pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
         .clone()
 }
 
+/// The options SVG pictures are read with: the fonts of [`svg_fonts`], and
+/// only the pictures inside that are data (a path would read a file of this
+/// machine into the output) and whose size is known and within the pixel
+/// cap, or SVG (drawn within this one).
+pub(crate) fn svg_options() -> resvg::usvg::Options<'static> {
+    use resvg::usvg;
+    usvg::Options {
+        fontdb: svg_fonts(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(|mime, data, options| {
+                let allowed = match declared_size(&data) {
+                    Some(_) => within_pixel_cap(&data),
+                    // An SVG inside: within the caps of an SVG picture.
+                    None => mime == "image/svg+xml" && super::svg::within_read_caps(&data),
+                };
+                allowed
+                    .then(|| (usvg::ImageHrefResolver::default_data_resolver())(mime, data, options))
+                    .flatten()
+            }),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
+
+/// The scale (pixels per point) and the pixel size at which `tree` is drawn
+/// at `scale`, or smaller when it would have more than [`MAX_RASTER_PIXELS`];
+/// `None` when it cannot be drawn within them.
+pub(crate) fn plan_raster(tree: &resvg::usvg::Tree, scale: f32) -> Option<(f32, resvg::tiny_skia::IntSize)> {
+    // The pixmap is the size rounded up to whole pixels: counted so. Each
+    // nested group drawn apart (opacity, clip, mask, filter) takes a
+    // pixmap of its own, at most the size of the picture: they share the
+    // cap.
+    let filters = tree.filters().len() as u64;
+    let budget = (MAX_RASTER_PIXELS / (1 + isolated_depth(tree.root()))).min(MAX_FILTERED_PIXELS / filters.max(1));
+    let base = tree.size().to_int_size();
+    let pixels = f64::from(base.width()) * f64::from(base.height()) * f64::from(scale).powi(2);
+    let scale = if pixels > budget as f64 {
+        // Rounded down a little, so that the rounded size stays within.
+        (f64::from(scale) * (budget as f64 / pixels).sqrt() * 0.999) as f32
+    } else {
+        scale
+    };
+    let size = base.scale_by(scale)?;
+    // A side rounded up to one pixel can still leave too many.
+    if u64::from(size.width()) * u64::from(size.height()) > budget {
+        return None;
+    }
+    Some((scale, size))
+}
+
 /// Draws an SVG picture of a page (one written by
 /// [`PageRenderer::page_svg`], or a reduced copy of it) as a PNG on white,
-/// at `scale` pixels per point. Returns `None` when the SVG cannot be read.
+/// at `scale` pixels per point, or smaller when it would have more than
+/// [`MAX_RASTER_PIXELS`]. Returns `None` when the SVG cannot be read.
 pub fn svg_to_png(svg: &str, scale: f32) -> Option<Vec<u8>> {
-    svg_to_png_in(svg, scale, None).ok()
+    let tree = resvg::usvg::Tree::from_str(svg, &svg_options()).ok()?;
+    png_of_tree(&tree, scale)
 }
 
 /// [`svg_to_png`] for an SVG whose pictures are named by paths relative to
 /// the folder `resources`. The error says why the SVG cannot be drawn.
 ///
 /// # Errors
-/// When `svg` does not parse, or has no size.
+/// When `svg` does not parse, or has no size, or is too large to draw.
 pub fn svg_to_png_in(svg: &str, scale: f32, resources: Option<&std::path::Path>) -> Result<Vec<u8>, String> {
-    use resvg::{tiny_skia, usvg};
-    let options = usvg::Options {
-        fontdb: svg_fonts(),
+    let mut options = resvg::usvg::Options {
         resources_dir: resources.map(std::path::Path::to_path_buf),
-        ..Default::default()
+        ..svg_options()
     };
-    let tree = usvg::Tree::from_str(svg, &options).map_err(|err| err.to_string())?;
-    let size = tree
-        .size()
-        .to_int_size()
-        .scale_by(scale)
-        .ok_or("the scaled size is empty")?;
-    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("the picture is too large")?;
+    if resources.is_some() {
+        // The pictures it names by a path are read, from that folder.
+        options.image_href_resolver.resolve_string = resvg::usvg::ImageHrefResolver::default_string_resolver();
+    }
+    let tree = resvg::usvg::Tree::from_str(svg, &options).map_err(|err| err.to_string())?;
+    png_of_tree(&tree, scale).ok_or_else(|| "the picture is empty or too large to draw".to_string())
+}
+
+/// Draws the parsed SVG `tree` as [`svg_to_png`] draws an SVG.
+pub(crate) fn png_of_tree(tree: &resvg::usvg::Tree, scale: f32) -> Option<Vec<u8>> {
+    use resvg::tiny_skia;
+    let (scale, size) = plan_raster(tree, scale)?;
+    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
     pixmap.fill(tiny_skia::Color::WHITE);
     resvg::render(
-        &tree,
+        tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.encode_png().map_err(|err| err.to_string())
+    pixmap.encode_png().ok()
+}
+
+/// The most groups drawn apart (each on a pixmap of its own) nested in
+/// `group`, itself included.
+fn isolated_depth(group: &resvg::usvg::Group) -> u64 {
+    let inner = group
+        .children()
+        .iter()
+        .filter_map(|node| match node {
+            resvg::usvg::Node::Group(child) => Some(isolated_depth(child)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    inner + u64::from(group.should_isolate())
+}
+
+/// Whether the bitmap `data` has at most [`MAX_RASTER_PIXELS`] pixels, by
+/// the size its header gives; `true` when it has none that can be read
+/// (it is not a bitmap, or it is damaged: decoding it fails early).
+pub fn within_pixel_cap(data: &[u8]) -> bool {
+    declared_size(data).is_none_or(|(width, height)| u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS)
+}
+
+/// The size in pixels the header of the bitmap `data` gives, before any
+/// pixel is read; `None` when it is not a bitmap or its header is damaged.
+pub fn declared_size(data: &[u8]) -> Option<(u32, u32)> {
+    // A PNG's size is in its first chunk (IHDR): the decoder would not
+    // give it before finding pixel data.
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") && data.get(12..16) == Some(b"IHDR") {
+        let side = |at: usize| {
+            data.get(at..at + 4)
+                .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        return Some((side(16)?, side(20)?));
+    }
+    if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+        return webp_size(data);
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()?;
+    // The size as declared: the default limits would refuse to read a
+    // large one, which would pass as "no size".
+    reader.no_limits();
+    reader.into_dimensions().ok()
+}
+
+/// The size in pixels of the WebP picture `data`, from its first chunk:
+/// `VP8X` (extended: the canvas), `VP8L` (lossless) or `VP8 ` (lossy).
+fn webp_size(data: &[u8]) -> Option<(u32, u32)> {
+    let body = data.get(20..)?;
+    let le = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0u32, |value, &byte| (value << 8) | u32::from(byte))
+    };
+    match data.get(12..16)? {
+        b"VP8X" => Some((le(body.get(4..7)?) + 1, le(body.get(7..10)?) + 1)),
+        b"VP8L" => {
+            if *body.first()? != 0x2f {
+                return None;
+            }
+            let bits = le(body.get(1..5)?);
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        }
+        b"VP8 " => {
+            if body.get(3..6)? != [0x9d, 0x01, 0x2a] {
+                return None;
+            }
+            Some((le(body.get(6..8)?) & 0x3fff, le(body.get(8..10)?) & 0x3fff))
+        }
+        _ => None,
+    }
 }
 
 /// Lets the browser smooth the pictures of an SVG page whose pixels are
@@ -609,5 +783,91 @@ width=\"484\" height=\"209\" preserveAspectRatio=\"none\" style=\"image-renderin
         assert!(!smooth_fine_images(line(0.588843)).contains("pixelated"));
         // A heat map of big cells: 1.8 pt per pixel, kept sharp.
         assert!(smooth_fine_images(line(1.8)).contains("pixelated"));
+    }
+}
+
+#[cfg(test)]
+mod svg_tests {
+    use super::{MAX_RASTER_PIXELS, declared_size, svg_to_png, within_pixel_cap};
+
+    /// The pixels of the PNG `png`.
+    fn pixels(png: &[u8]) -> u64 {
+        let (width, height) = declared_size(png).unwrap();
+        u64::from(width) * u64::from(height)
+    }
+
+    #[test]
+    fn nested_groups_drawn_apart_share_the_cap() {
+        let open = r#"<g opacity="0.9">"#.repeat(30);
+        let close = "</g>".repeat(30);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000">{open}<rect width="30000" height="30000" fill="red"/>{close}</svg>"#
+        );
+        let png = svg_to_png(&svg, 2.0).expect("drawn smaller");
+        assert!(pixels(&png) * 31 <= MAX_RASTER_PIXELS, "{} pixels", pixels(&png));
+    }
+
+    #[test]
+    fn a_thin_svg_counts_its_rounded_pixels() {
+        // 2e8 × 0.01 points: 2e6 pixels as floats, 2e8 once rounded up.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="200000000" height="0.01"><rect width="10" height="10"/></svg>"#;
+        assert!(svg_to_png(svg, 2.0).is_none_or(|png| pixels(&png) <= MAX_RASTER_PIXELS));
+    }
+
+    /// The header of a WebP picture of `width` × `height` pixels, as each of
+    /// its three kinds of first chunk gives it.
+    fn webp_headers(width: u32, height: u32) -> [Vec<u8>; 3] {
+        let riff = |chunk: &[u8], body: &[u8]| {
+            let mut data = b"RIFF\0\0\0\0WEBP".to_vec();
+            data.extend(chunk);
+            data.extend((body.len() as u32).to_le_bytes());
+            data.extend(body);
+            data
+        };
+        let (wide, high) = (width - 1, height - 1);
+        let mut extended = vec![0u8; 4];
+        extended.extend(&wide.to_le_bytes()[..3]);
+        extended.extend(&high.to_le_bytes()[..3]);
+        let mut lossless = vec![0x2f];
+        lossless.extend((wide | (high << 14)).to_le_bytes());
+        let mut lossy = vec![0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a];
+        lossy.extend((width as u16).to_le_bytes());
+        lossy.extend((height as u16).to_le_bytes());
+        [
+            riff(b"VP8X", &extended),
+            riff(b"VP8L", &lossless),
+            riff(b"VP8 ", &lossy),
+        ]
+    }
+
+    #[test]
+    fn the_size_of_a_webp_picture_is_read() {
+        for header in webp_headers(16_383, 9_000) {
+            assert_eq!(declared_size(&header), Some((16_383, 9_000)));
+        }
+    }
+
+    #[test]
+    fn an_svg_draws_only_pictures_it_can_size_within_the_cap() {
+        let [_, lossless, _] = webp_headers(16_383, 16_383);
+        assert!(!within_pixel_cap(&lossless));
+        let [_, small, _] = webp_headers(100, 100);
+        assert!(within_pixel_cap(&small));
+    }
+
+    #[test]
+    fn a_huge_svg_is_drawn_within_the_pixel_cap() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
+        let png = svg_to_png(svg, 2.0).expect("drawn smaller");
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&png))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .unwrap();
+        assert!(
+            u64::from(width) * u64::from(height) <= MAX_RASTER_PIXELS,
+            "{width}x{height}"
+        );
+        assert!(width > 1000 && width == height, "{width}x{height}");
     }
 }

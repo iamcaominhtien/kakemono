@@ -145,7 +145,7 @@ pub fn render_typst(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &TypstOpti
     let mut images = ImageStore {
         opts: &html_opts,
         jobs: Vec::new(),
-        vector: false,
+        svg_as_pdf: false,
     };
     let doc = &analysis.doc;
     let anchors = linked_anchors(doc);
@@ -175,12 +175,7 @@ pub fn render_typst(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &TypstOpti
 
 /// The whole `.typ` file: the settings, the template and `body`.
 fn document(doc: &Document, layout: TypstLayout, body: &str) -> String {
-    let source = match super::source_label(doc) {
-        "EPUB" => "an EPUB book",
-        "HTML" => "a web page",
-        "Word" => "a Word document",
-        _ => "a PDF",
-    };
+    let source = super::source_phrase(doc);
     let (name, size, paper) = match layout {
         TypstLayout::Article => ("article", ARTICLE_FONT_SIZE, ARTICLE_PAPER),
         TypstLayout::Book => ("book", BOOK_FONT_SIZE, BOOK_PAPER),
@@ -857,7 +852,7 @@ mod tests {
         let mut images = ImageStore {
             opts: &HtmlOptions::default(),
             jobs: Vec::new(),
-            vector: false,
+            svg_as_pdf: false,
         };
         let opts = TypstOptions::default();
         let writer = Writer {

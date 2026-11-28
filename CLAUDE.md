@@ -2,10 +2,9 @@
 
 `kakemono`: a Rust CLI and library that converts arXiv PDF papers (and Word documents, `.docx`
 and `.doc`, read by `src/word/`; laid out in pages as Word does by `src/layout/`, which also
-writes them as a PDF; EPUB books, `.epub`, read by `src/epub/` into the form of `src/word/`; and
-web pages, an `.html` file or an `http(s)` address, whose article `src/html/` finds and hands to
-the reader of `src/epub/`)
-to HTML, in 4 modes, to a
+writes them as a PDF; Excel workbooks, `.xlsx`, read by `src/excel/`; EPUB books, `.epub`, read by
+`src/epub/` into the form of `src/word/`; and web pages, an `.html` file or an `http(s)` address,
+whose article `src/html/` finds and hands to the reader of `src/epub/`) to HTML, in 4 modes, to a
 Word document (`.docx`, `src/render/docx/`), to Markdown (`.md`, `src/render/markdown/`), to
 LaTeX (`.tex`, `src/render/latex/`), to Typst (`.typ`, `src/render/typst/`, an article or a
 printed book), to an EPUB book (`.epub`, `src/render/epub/`), to chunks for
@@ -38,6 +37,9 @@ cargo build --release
 ./target/release/kakemono convert <file.pdf> --content out/x.edited.json -m hard-95   # any output with the edited text
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.md         # a Word document as input (all 4 HTML modes too)
 ./target/release/kakemono convert <file.docx | file.doc> -o out/x.pdf        # a Word document laid out as Word does
+./target/release/kakemono convert <file.xlsx> -o out/x.md                    # an Excel workbook as input (every output)
+./target/release/kakemono convert <file.xlsx> -o out/x.pdf                   # a workbook printed as Excel prints it (--pdf-style document: as a document)
+./target/release/kakemono convert <file.xlsx> --header-rows 1 -o out/x.md    # header rows of every table, given instead of found
 ./target/release/kakemono convert <file.epub> -o out/x.md                    # an EPUB book as input (any output)
 ./target/release/kakemono convert <https://... | file.html> -o out/x.md      # a web page as input (any output)
 ./target/release/kakemono inspect <file.pdf>        # print the detected structure, for debugging
@@ -47,7 +49,7 @@ python3 scripts/web-bench/fetch.py && /root/.venvs/web-bench/bin/python scripts/
 /root/.venvs/web-bench/bin/python scripts/web-bench/report.py   # its review PDFs (out/web-bench/review/)
 python3 scripts/web-bench/perf.py stress --pdf                  # speed and memory on web pages (also sweep, parallel N, formats)
 cargo test --release                                  # unit tests + 8 real papers + snapshots
-KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test epub   # when output changes ON PURPOSE
+KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test real_papers --test word --test excel --test epub   # when output changes ON PURPOSE
 KAKEMONO_PRINT_METRICS=1 cargo test --release --test real_papers -- --nocapture  # print each paper's metrics
 cargo fmt --check && cargo clippy --all-targets -- -D warnings      # the CI lint gate
 node tests/browser/check-friendly.js out/*.friendly.html             # browser checks (book view: only when asked)
@@ -55,7 +57,9 @@ node tests/browser/check-hard95.js out/*.hard-95.html
 node tests/browser/check-stable.js out/*.medium.html out/*.friendly.html
 cd python && maturin develop --release && pytest tests             # Python package (in a venv with maturin, pytest)
 scripts/fetch-word-corpus.sh 8 && python3 scripts/word-fidelity.py   # Word layout vs Word's own PDFs (CI minimums in ci.yml)
-python3 scripts/word-crash-test.py DIR...                            # every output of every Word file: panics, timeouts
+python3 scripts/word-crash-test.py DIR...                            # every output of every Word file and Excel workbook: panics, timeouts
+python3 -I scripts/excel-report.py DIR... [--out FILE]               # per sheet: tables, header rows, paragraphs (to compare rules)
+scripts/fetch-excel-corpus.sh 8                                      # the public workbooks of tests/data/excel-corpus.tsv
 ```
 
 Chromium and Playwright are preinstalled in the cloud environment. Do not run
@@ -146,7 +150,12 @@ committing.
 - Both readers (`docx.rs` for `.docx`, `doc/` for `.doc`) fill the same intermediate form
   (`ir.rs`); `build.rs` alone decides what each paragraph is. A rule about styles goes there.
 - The test samples are `tests/data/word/sample.docx` (pandoc, from `sample.md`) and `sample.doc`
-  (LibreOffice); a change to the reading shows in `tests/data/snapshots/word-sample.txt`.
+  (LibreOffice), with `vector.docx` and `chart.docx` written by `make-vector-docx.py` and
+  `make-chart-docx.py` (`python3 -I tests/data/word/make-chart-docx.py`); a change to the reading
+  shows in `tests/data/snapshots/word-sample.txt`.
+- Charts (`src/chart/`, shared with `src/excel/`): `read.rs`/`chartex.rs` read a chart part into a
+  `Chart` (cached values only), `svg/` draws it, `table.rs` gives its data table, `place.rs` makes
+  the figure and the table a document shows. The `.doc` reader leaves charts out.
 - A Word document has no pages (`Document::pages` is empty) and its pictures are stored in
   `Document::pictures` (`ImageSpec::embedded`): renderers must not assume a page to draw from.
 - The page layout (`src/word/fmt/` → `src/layout/`) is a second reading of the same file, with
@@ -155,6 +164,33 @@ committing.
   `tests/data/word-corpus.tsv` (downloaded, not committed). A change that raises the totals
   should raise the minimums in `.github/workflows/ci.yml` too; one that lowers them is a
   regression. `scripts/compare-layout.py REF.pdf OURS.pdf --diff` shows the lines that differ.
+
+## Excel input (`src/excel`)
+
+- `sheet.rs` streams a worksheet into a `Grid`; `regions.rs` cuts it into tables and `build.rs` alone
+  decides what each region is (caption, header rows, body, notes, or paragraphs). A rule about
+  header rows or regions goes there; its threshold is a documented field of `ExcelConfig`
+  (`src/excel/mod.rs`, re-exported by `src/config.rs`), with its unit in the name.
+- The test sample is `tests/data/excel/sample.xlsx`, made by LibreOffice from the hand-written
+  `sample.fods` (`soffice --headless --convert-to xlsx --outdir tests/data/excel tests/data/excel/sample.fods`),
+  and `charts.xlsx` (charts, pictures in a group and in cells), written by
+  `python3 -I tests/data/excel/make-chart-xlsx.py`; a change to the reading shows in
+  `tests/data/snapshots/excel-sample.txt`.
+- A workbook has no pages (`Document::pages` is empty): the HTML modes other than friendly show the
+  sheet view (`src/excel/view.rs`): a second reading of the file with the look of every cell
+  (`styles.rs` looks, `Grid::looks`, drawing frames), drawn as Excel shows the sheets. Its PDF (`Paper::to_pdf`) is by default printed as Excel prints it
+  (`src/layout/workbook/print.rs`, from the same reading: print areas, page setup, breaks, the look
+  of every cell, drawn objects); with `WorkbookPdfStyle::Document` (`--pdf-style document`) it is
+  laid out by `src/layout/workbook/`, which turns the
+  `Document` into the Word layout engine's `FDoc` (tables fitted to the page: smaller, landscape, or
+  column groups; header rows repeated); its thresholds are `WorkbookPdfConfig`. A change to the
+  shared layout code (`flow.rs`, `para.rs`) must keep `scripts/word-fidelity.py` where it was. Dates are always written ISO, and
+  `--header-rows` (`ExcelConfig::header_rows`) overrides the header rules.
+- The rules are tried on the corpus of `tests/data/excel-corpus.tsv` (downloaded, not committed):
+  a change to the header or region rules should be compared on it, like a rule of the analysis:
+  `python3 -I scripts/excel-report.py DIR... --out before.tsv` (sheets, tables, header rows of each
+  table, paragraphs), before and after the change, then `diff` the two reports.
+  `table_min_fill_ratio` stays 0 because no value separates forms from sparse financial tables there.
 
 ## EPUB input (`src/epub`)
 

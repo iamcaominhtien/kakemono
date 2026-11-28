@@ -3,6 +3,7 @@
 //! The `.docx` reader (`docx`) and the `.doc` reader (`doc`) fill it in;
 //! `build` turns it into a [`Document`](crate::model::Document).
 
+use crate::chart::Placed;
 use crate::model::{MathNode, Picture, Span};
 
 /// A Word document read from its file.
@@ -83,6 +84,9 @@ pub(crate) enum Inline {
         /// Its description, if any.
         alt: String,
     },
+    /// A chart: read and drawn, with the index of its picture in
+    /// [`WordDoc::pictures`] when it was drawn.
+    Chart(Box<(Placed, Option<usize>)>),
     /// The mark of a footnote or endnote.
     NoteRef {
         /// It is an endnote.

@@ -735,6 +735,34 @@ impl Flow<'_> {
     /// next paragraph brings along: rows whose text is kept with the next,
     /// and the row after them.
     fn kept_rows_height(&mut self, table: &Table, width: f32) -> f32 {
+        // Only those rows are laid out when they give the same heights as
+        // the whole table: when the table's grid gives the column widths
+        // (else they come from the count of columns of every row) and no
+        // cell merged down from them goes on below them. A long table is
+        // then not laid out twice.
+        let kept = table.rows.iter().take_while(|row| row_keeps_next(row)).count() + 1;
+        let columns = table
+            .rows
+            .iter()
+            .map(|row| row.grid_before + row.grid_after + row.cells.iter().map(|cell| cell.span.max(1)).sum::<usize>())
+            .max()
+            .unwrap_or(0);
+        let own_grid = table.grid.len() >= columns && table.grid.iter().sum::<f32>() > 0.0;
+        let merged_on = table
+            .rows
+            .get(kept)
+            .is_some_and(|row| row.cells.iter().any(|cell| cell.vmerge == VMerge::Continue));
+        let truncated;
+        let table = if kept < table.rows.len() && own_grid && !merged_on {
+            truncated = Table {
+                props: table.props.clone(),
+                grid: table.grid.clone(),
+                rows: table.rows[..kept].to_vec(),
+            };
+            &truncated
+        } else {
+            table
+        };
         let laid = self.lay_table(table, width);
         let mut height = 0.0;
         for (row, laid_row) in table.rows.iter().zip(&laid.rows) {
@@ -1520,7 +1548,7 @@ impl Flow<'_> {
             self.state.y += anchor.vertical.offset.max(0.0);
         }
         let width = self.column_width();
-        let laid = self.lay_table(table, width);
+        let mut laid = self.lay_table(table, width);
         let header_rows: Vec<usize> = (0..laid.rows.len()).take_while(|&at| table.rows[at].header).collect();
         let mut at = 0;
         // Right after a page break (and the repeated header rows), a row is
@@ -1528,7 +1556,15 @@ impl Flow<'_> {
         let mut forced = false;
         let mut rest: Option<LaidRow> = None;
         while at < laid.rows.len() {
-            let row = rest.take().unwrap_or_else(|| laid.rows[at].clone());
+            // A row below the header is drawn once: it is taken, not copied
+            // (a long table is not held twice).
+            let row = rest.take().unwrap_or_else(|| {
+                if at < header_rows.len() {
+                    laid.rows[at].clone()
+                } else {
+                    std::mem::take(&mut laid.rows[at])
+                }
+            });
             let room_all = self.state.bottom - self.state.notes_height - self.state.y;
             // The row's footnotes go on the page with it.
             let room = room_all - self.row_notes_height(&row);
@@ -2007,7 +2043,7 @@ struct LaidTable {
 }
 
 /// A laid-out row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct LaidRow {
     height: f32,
     cells: Vec<LaidCell>,
@@ -2155,11 +2191,14 @@ impl SubFlow {
 /// Cuts a row so that its first part fits in `room`: each cell is cut at
 /// its last line that fits. `None` when no cell has a line that fits.
 fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
-    let mut first = row.clone();
-    let mut second = row.clone();
+    // Each item is copied once, to the part it falls in: copying the whole
+    // row twice and then its parts again was most of the time of a row
+    // that runs over many pages.
+    let mut firsts = Vec::with_capacity(row.cells.len());
+    let mut seconds = Vec::with_capacity(row.cells.len());
     let mut any = false;
     let mut rest_height: f32 = 0.0;
-    for (at, cell) in row.cells.iter().enumerate() {
+    for cell in &row.cells {
         let limit = room - cell.bottom_margin;
         let content_bottom = cell.content_height - cell.bottom_margin;
         let cut = if content_bottom <= limit + EPS {
@@ -2179,50 +2218,83 @@ fn split_row(row: &LaidRow, room: f32) -> Option<(LaidRow, LaidRow)> {
                 None => cell.top_margin,
             }
         };
-        let (head, tail): (Vec<Item>, Vec<Item>) =
-            cell.items.iter().cloned().partition(|item| item_top(item) < cut - EPS);
-        let (float_head, float_tail): (Vec<SubFloat>, Vec<SubFloat>) = cell
-            .floats
-            .iter()
-            .cloned()
-            .partition(|float| float.para_top < cut - EPS);
-        first.cells[at].floats = float_head;
-        second.cells[at].floats = float_tail
-            .iter()
-            .map(|float| float.moved(0.0, -(cut - cell.top_margin)))
-            .collect();
-        first.cells[at].items = head;
-        first.cells[at].notes.retain(|(_, y)| *y <= cut + EPS);
-        second.cells[at].notes = cell
+        let shift = cut - cell.top_margin;
+        let mut first = shell(cell);
+        let mut second = shell(cell);
+        for item in &cell.items {
+            if item_top(item) < cut - EPS {
+                first.items.push(item.clone());
+            } else {
+                push_items(&mut second.items, std::slice::from_ref(item), 0.0, -shift);
+            }
+        }
+        for float in &cell.floats {
+            if float.para_top < cut - EPS {
+                first.floats.push(float.clone());
+            } else {
+                second.floats.push(float.moved(0.0, -shift));
+            }
+        }
+        first.notes = cell.notes.iter().filter(|(_, y)| *y <= cut + EPS).cloned().collect();
+        second.notes = cell
             .notes
             .iter()
             .filter(|(_, y)| *y > cut + EPS)
-            .map(|(id, y)| (id.clone(), y - (cut - cell.top_margin)))
+            .map(|(id, y)| (id.clone(), y - shift))
             .collect();
-        first.cells[at].draw_bottom = false;
-        first.cells[at].height = room;
-        let shift = cut - cell.top_margin;
-        let mut moved = Vec::new();
-        push_items(&mut moved, &tail, 0.0, -shift);
-        second.cells[at].items = moved;
-        second.cells[at].breaks = cell
+        first.breaks.clone_from(&cell.breaks);
+        first.draw_bottom = false;
+        first.height = room;
+        second.breaks = cell
             .breaks
             .iter()
             .filter(|y| **y > cut + EPS)
             .map(|y| y - shift)
             .collect();
-        second.cells[at].draw_top = false;
+        second.draw_top = false;
         let remaining = (cell.content_height - shift).max(cell.top_margin + cell.bottom_margin);
-        second.cells[at].content_height = remaining;
-        second.cells[at].height = remaining;
+        second.content_height = remaining;
+        second.height = remaining;
         rest_height = rest_height.max(remaining);
+        firsts.push(first);
+        seconds.push(second);
     }
     if !any {
         return None;
     }
-    first.height = room;
-    second.height = rest_height;
-    Some((first, second))
+    Some((
+        LaidRow {
+            height: room,
+            cells: firsts,
+        },
+        LaidRow {
+            height: rest_height,
+            cells: seconds,
+        },
+    ))
+}
+
+/// A copy of `cell` without its items, floats, breaks and notes.
+fn shell(cell: &LaidCell) -> LaidCell {
+    LaidCell {
+        x: cell.x,
+        width: cell.width,
+        height: cell.height,
+        content_height: cell.content_height,
+        items: Vec::new(),
+        floats: Vec::new(),
+        breaks: Vec::new(),
+        top_margin: cell.top_margin,
+        bottom_margin: cell.bottom_margin,
+        bookmarks: cell.bookmarks.clone(),
+        notes: Vec::new(),
+        borders: cell.borders,
+        shading: cell.shading,
+        valign: cell.valign,
+        draw_top: cell.draw_top,
+        draw_bottom: cell.draw_bottom,
+        merged_rows: cell.merged_rows,
+    }
 }
 
 /// Whether a row is kept on the page of the next one: its cells' text is

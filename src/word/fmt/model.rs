@@ -79,10 +79,11 @@ pub enum FontKind {
 pub struct FImage {
     /// The file.
     pub data: Vec<u8>,
-    /// It is a JPEG (else a PNG).
-    pub jpeg: bool,
+    /// Its format.
+    pub format: crate::model::PictureFormat,
     /// For a metafile: the picture without the lines of text of
-    /// [`FImage::texts`] (a PNG), which the PDF draws as text over it.
+    /// [`FImage::texts`] (an SVG written by usvg), which the PDF draws as
+    /// text over it.
     pub bare: Option<Vec<u8>>,
     /// The lines of text of a metafile that the PDF draws as text.
     pub texts: Vec<crate::word::metafile::MetaText>,

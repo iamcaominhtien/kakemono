@@ -1,5 +1,5 @@
 //! The `kakemono` command line: parses the arguments and calls the
-//! library. `convert` turns a PDF, a Word document or an EPUB book into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
+//! library. `convert` turns a PDF, a Word document, an Excel workbook, an EPUB book or a web page into HTML, Word, Markdown, LaTeX or EPUB (and JSON), `fetch` downloads an
 //! arXiv PDF and `inspect` prints the detected structure for debugging.
 #![warn(
     missing_docs,
@@ -11,6 +11,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kakemono::analysis::pipeline::Analysis;
+use kakemono::config::{ExcelConfig, WorkbookPdfConfig, WorkbookPdfStyle};
 use kakemono::model::{Block, BlockKind, Loc};
 use kakemono::source::{arxiv, web};
 use kakemono::{
@@ -66,7 +67,7 @@ const BYTES_PER_MB: f64 = 1e6;
 #[command(
     name = "kakemono",
     version,
-    about = "Convert scientific-paper PDFs (arXiv), Word documents and EPUB books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
+    about = "Convert scientific-paper PDFs (arXiv), Word documents, Excel workbooks and EPUB books into clean, readable HTML, Word documents, Markdown, LaTeX or EPUB books"
 )]
 struct Cli {
     /// The subcommand to run.
@@ -78,7 +79,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an Excel workbook (.xlsx), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -90,8 +91,11 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF, Word or EPUB file, arXiv id or arXiv URL
+        /// Local PDF, Word (.docx, .doc), Excel (.xlsx) or EPUB file, arXiv id or arXiv URL
         input: String,
+        /// Header rows of every table of a workbook (default: found from the cells); only for .xlsx
+        #[arg(long, value_name = "N")]
+        header_rows: Option<usize>,
     },
     /// Print the text lines of a PDF with their baselines, as tab-separated
     /// page, baseline, left, right and text (for comparing layouts).
@@ -173,7 +177,7 @@ enum FormatArg {
     Json,
     /// Chunks for retrieval (.jsonl): pieces of at most --chunk-tokens tokens that follow the sections, each headed by its section path, one JSON object per line
     Chunks,
-    /// A PDF (.pdf) of a Word document or an EPUB book, laid out in pages as Word lays it out
+    /// A PDF (.pdf): a Word document or an EPUB book laid out in pages as Word lays it out, or a workbook printed as Excel prints it
     Pdf,
 }
 
@@ -254,6 +258,28 @@ enum PngCompressionArg {
     High,
 }
 
+/// Values of `--pdf-style`.
+#[derive(Clone, Copy, ValueEnum)]
+#[allow(
+    clippy::missing_docs_in_private_items,
+    reason = "a doc comment on a variant becomes its help text and would change --help"
+)]
+enum PdfStyleArg {
+    // Each sheet as Excel prints it (its print area, settings and look).
+    Print,
+    // The workbook as a document: headings, tables, charts with their data.
+    Document,
+}
+
+impl From<PdfStyleArg> for WorkbookPdfStyle {
+    fn from(arg: PdfStyleArg) -> Self {
+        match arg {
+            PdfStyleArg::Print => WorkbookPdfStyle::Print,
+            PdfStyleArg::Document => WorkbookPdfStyle::Document,
+        }
+    }
+}
+
 impl From<PngCompressionArg> for PngCompression {
     fn from(arg: PngCompressionArg) -> Self {
         match arg {
@@ -268,8 +294,11 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF, Word (.docx, .doc), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
+    /// Local PDF, Word (.docx, .doc), Excel (.xlsx), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
     input: String,
+    /// Header rows of every table of a workbook, 0 for none (default: found from the cells); only for .xlsx, ignored for other inputs
+    #[arg(long, value_name = "N")]
+    header_rows: Option<usize>,
     /// Fidelity mode (HTML); for Markdown, friendly adapts the tables to pipe tables and medium keeps their layout
     #[arg(short, long, value_enum, default_value = "friendly")]
     mode: ModeArg,
@@ -297,6 +326,9 @@ struct ConvertArgs {
     /// How hard PNG pictures are compressed: fast draws them several times faster, for larger files
     #[arg(long, value_enum, default_value = "balanced")]
     png_compression: PngCompressionArg,
+    /// How a workbook is laid out as a PDF: print each sheet as Excel prints it, or lay the workbook out as a document; only for .xlsx with -f pdf
+    #[arg(long, value_enum, default_value = "print")]
+    pdf_style: PdfStyleArg,
     /// How tables are handled
     #[arg(long, value_enum, default_value = "auto")]
     tables: TablesArg,
@@ -394,7 +426,7 @@ fn run() -> Result<()> {
             eprintln!("saved {}", dest.display());
             Ok(())
         }
-        Command::Inspect { input } => inspect(&input),
+        Command::Inspect { input, header_rows } => inspect(&input, header_rows),
         Command::Lines { input } => {
             let data = std::fs::read(&input).with_context(|| format!("reading {}", input.display()))?;
             let (lines, pages) = kakemono::layout::lines::pdf_lines(data)?;
@@ -440,7 +472,11 @@ fn render_svg(input: &Path, output: &Path, scale: f32) -> Result<()> {
 /// When the file cannot be read, the download fails, the data is not a
 /// document that can be read, or `input` is neither a file, an arXiv id
 /// nor an address.
-fn load(input: &str) -> Result<(Paper, String)> {
+fn load(input: &str, header_rows: Option<usize>) -> Result<(Paper, String)> {
+    let excel = ExcelConfig {
+        header_rows,
+        ..Default::default()
+    };
     let path = Path::new(input);
     if path.is_file() {
         let stem = path
@@ -453,13 +489,16 @@ fn load(input: &str) -> Result<(Paper, String)> {
             .and_then(|name| name.to_str())
             .unwrap_or(input)
             .to_string();
-        return Ok((Paper::from_path(path)?.with_source(name), stem));
+        return Ok((Paper::from_path_with(path, &excel)?.with_source(name), stem));
     }
     if let Some(id) = arxiv::parse_id(input) {
         eprintln!("fetching arXiv:{id} ...");
         let data = arxiv::fetch_pdf(&id)?;
         let stem = id.replace('/', "_");
-        return Ok((Paper::from_bytes(data)?.with_source(format!("arXiv:{id}")), stem));
+        return Ok((
+            Paper::from_bytes_with(data, &excel)?.with_source(format!("arXiv:{id}")),
+            stem,
+        ));
     }
     if web::is_url(input) {
         eprintln!("fetching {input} ...");
@@ -606,12 +645,12 @@ fn check_args(args: &ConvertArgs) -> Result<FormatArg> {
     Ok(format)
 }
 
-/// Writes a Word document laid out in pages as a PDF, with the text and
+/// Writes a Word document laid out in pages as a PDF, or a workbook printed
+/// as Excel prints it (or laid out as a document), with the text and
 /// pictures of `--content` when it is given.
 ///
 /// # Errors
-/// When the input is not a Word document or an EPUB book, or the file
-/// cannot be written.
+/// When the input is a PDF, or the file cannot be written.
 fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
     let started = Instant::now();
     let file = OutputPaths::new(args.output.as_ref(), false).single_file(stem, "pdf");
@@ -624,7 +663,10 @@ fn write_pdf(paper: &Paper, args: &ConvertArgs, stem: &str) -> Result<()> {
             let docx = paper.to_docx(&analysis, &kakemono::DocxOptions::default());
             Paper::from_bytes(docx)?.to_pdf()?
         }
-        None => paper.to_pdf()?,
+        None => paper.to_pdf_with(&WorkbookPdfConfig {
+            style: args.pdf_style.into(),
+            ..WorkbookPdfConfig::default()
+        })?,
     };
     write_file(&file, &data)?;
     eprintln!(
@@ -648,7 +690,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
     let format = check_args(&args)?;
     let (paper, stem) = match &args.base_url {
         Some(url) => load_saved_page(&args.input, url)?,
-        None => load(&args.input)?,
+        None => load(&args.input, args.header_rows)?,
     };
     let paper = paper.with_png_compression(args.png_compression.into());
     if format == FormatArg::Pdf {
@@ -1190,8 +1232,8 @@ fn formula(images: &[PathBuf], scores: bool) -> Result<()> {
 ///
 /// # Errors
 /// When the input cannot be loaded.
-fn inspect(input: &str) -> Result<()> {
-    let (paper, _) = load(input)?;
+fn inspect(input: &str, header_rows: Option<usize>) -> Result<()> {
+    let (paper, _) = load(input, header_rows)?;
     let analysis = paper.analyze();
     let doc = &analysis.doc;
     let mut out = std::io::stdout().lock();

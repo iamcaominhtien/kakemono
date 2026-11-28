@@ -14,7 +14,7 @@ use super::styles::{Level, Numbering, Style, StyleKind, Styles, parse_num_format
 use crate::word::doc::fib::{Fib, Pair, Text, plc, u16_at, u32_at};
 use crate::word::doc::props::{Run, bookmarks, fonts as font_table, run_at, runs, utf16};
 use crate::word::doc::{note_ranges, picture, stream};
-use crate::word::pictures::for_layout;
+use crate::word::pictures::{MAX_PICTURE_BYTES, store_for_layout};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -1068,9 +1068,11 @@ impl Reader<'_> {
             auto_height: false,
             fmt: RunFmt::default(),
         };
-        if let Some(image) = float.picture.and_then(for_layout) {
-            self.images.push(image);
-            shape.pictures.push((self.images.len() - 1, 0.0, 0.0, width, height));
+        if let Some(index) = float
+            .picture
+            .and_then(|data| store_for_layout(&mut self.images, data, MAX_PICTURE_BYTES))
+        {
+            shape.pictures.push((index, 0.0, 0.0, width, height));
             // A picture has no fill, nor an outline unless one is set.
             shape.fill = None;
             if !float.line_set {
@@ -1083,10 +1085,7 @@ impl Reader<'_> {
     /// The picture at `location` of the `Data` stream.
     fn picture(&mut self, location: u32, fmt: &RunFmt) -> Inline {
         let (file, (width, height)) = picture::picture(self.data, location);
-        let index = file.and_then(for_layout).map(|image| {
-            self.images.push(image);
-            self.images.len() - 1
-        });
+        let index = file.and_then(|data| store_for_layout(&mut self.images, data, MAX_PICTURE_BYTES));
         Inline::Image {
             index,
             width,

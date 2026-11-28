@@ -97,7 +97,7 @@ pub fn render(analysis: &Analysis, pdf: Option<&PdfFile>, opts: &HtmlOptions) ->
     let mut images = ImageStore {
         opts,
         jobs: Vec::new(),
-        vector: true,
+        svg_as_pdf: false,
     };
     let numbered = notes::numbered_analysis(analysis);
     let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);
@@ -122,7 +122,7 @@ pub fn render_to(
     let mut images = ImageStore {
         opts,
         jobs: Vec::new(),
-        vector: true,
+        svg_as_pdf: false,
     };
     let numbered = notes::numbered_analysis(analysis);
     let html = renderer_for(opts.mode).render(numbered.as_ref().unwrap_or(analysis), &mut images);

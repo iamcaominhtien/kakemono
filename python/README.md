@@ -2,7 +2,7 @@
 
 Convert PDF papers and books (a local file or an arXiv id) into clean, readable HTML, Word
 documents, Markdown, LaTeX, EPUB books, editable JSON or chunks for retrieval, and Word documents
-into PDFs, from Python. Word documents (`.docx`, `.doc`), EPUB books (`.epub`) and web pages (an
+into PDFs, from Python. Word documents (`.docx`, `.doc`), Excel workbooks (`.xlsx`), EPUB books (`.epub`) and web pages (an
 `.html` file, or an `http(s)` address: the article of the page, with its pictures) are inputs too. The conversion is done by the [kakemono](https://github.com/iamcaominhtien/kakemono) Rust
 library, bundled in the wheel: no poppler, mupdf or other system dependency.
 
@@ -25,6 +25,7 @@ md = kakemono.to_markdown("https://en.wikipedia.org/wiki/Fourier_transform", "ft
 content = kakemono.to_json("paper.pdf", "paper.json")      # the editable JSON, as a dict
 doc = kakemono.analyze(open("paper.pdf", "rb").read())     # the structure: blocks in reading order
 kakemono.to_pdf("report.docx", "report.pdf")              # a Word document laid out in pages as Word does
+sheet = kakemono.to_markdown("sales.xlsx", header_rows=1)  # an Excel workbook: one table per region of each sheet
 png = kakemono.render_svg("figure.svg", "figure.png", scale=2)  # an SVG drawn as a PNG
 math = kakemono.read_formula("formula.png")               # a formula picture read as MathML (or None)
 ```

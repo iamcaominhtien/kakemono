@@ -1,6 +1,6 @@
 [package]
 name = "kakemono"
-version = "0.19.1"
+version = "0.20.0"
 edition = "2024"
 description = "Convert PDF, Word and EPUB documents and web pages to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
 repository = "https://github.com/iamcaominhtien/kakemono"
@@ -35,12 +35,12 @@ serde_json = "1"
 base64 = "0.22"
 crc32fast = "1"
 flate2 = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
 regex = "1"
 unicode-normalization = "0.1"
 skrifa = "0.49"
 ureq = { version = "2", features = ["native-certs"] }
-resvg = { version = "0.45", default-features = false, features = ["raster-images", "text", "system-fonts", "memmap-fonts"] }
+resvg = { version = "0.47", default-features = false, features = ["raster-images", "text", "system-fonts", "memmap-fonts"] }
 # The CLI's allocator (src/main.rs). Version 2 of mimalloc: version 3 keeps
 # freed memory for a second, so a 15-page paper took three times the memory
 # of the system allocator.
@@ -59,6 +59,8 @@ cfb = "0.16"
 # The Word layout engine: text shaping, and the PDF it writes.
 rustybuzz = "0.20"
 krilla = { version = "0.8", default-features = false, features = ["raster-images"] }
+# SVG pictures drawn as vector into PDFs (the Word layout, the LaTeX output).
+krilla-svg = "0.8"
 # Real tokenizers for `--tokenizer` of the chunks output (optional: without
 # them, chunk sizes are estimated). Hugging Face's reads the tokenizer.json of
 # an embedding model; tiktoken-rs holds OpenAI's cl100k_base and o200k_base

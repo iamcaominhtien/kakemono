@@ -238,13 +238,7 @@ impl Assembler<'_> {
     /// Returns `base` if it is still free, else the first free `base-2`,
     /// `base-3`, …, and reserves it.
     fn unique_anchor(&mut self, base: String) -> String {
-        let mut anchor = base.clone();
-        let mut k = 2;
-        while !self.anchors.insert(anchor.clone()) {
-            anchor = format!("{base}-{k}");
-            k += 1;
-        }
-        anchor
+        unique_anchor(&mut self.anchors, base)
     }
 
     /// Kind, text and anchor of a text node of class `class`.

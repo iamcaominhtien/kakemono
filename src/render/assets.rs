@@ -8,6 +8,7 @@ use crate::model::*;
 use base64::Engine;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
+use std::sync::{Arc, OnceLock};
 
 /// Marks a placeholder; a control character never written to the HTML.
 pub(crate) const MARK: char = '\u{1}';
@@ -64,9 +65,9 @@ pub(crate) struct ImageStore<'r> {
     pub(crate) opts: &'r HtmlOptions,
     /// The pictures recorded so far; a placeholder holds an index into it.
     pub(crate) jobs: Vec<ImageJob>,
-    /// The format takes SVG pictures: a stored SVG stays one. Otherwise
-    /// (LaTeX) it is drawn as a PNG.
-    pub(crate) vector: bool,
+    /// An SVG picture is written as a PDF of one page (for LaTeX, whose
+    /// engines read PDF pictures but not SVG).
+    pub(crate) svg_as_pdf: bool,
 }
 
 /// The data of a picture, by kind.
@@ -79,46 +80,74 @@ pub(crate) enum PictureData {
     Svg(String),
 }
 
-/// What kind of picture `picture` holds, with its data: a JPEG when it says
-/// so, a PNG by its signature, an SVG when its text parses as one; `None`
-/// for anything else.
-pub(crate) fn picture_data(picture: &Picture) -> Option<PictureData> {
-    if picture.jpeg {
-        return Some(PictureData::Jpeg(picture.data.clone()));
-    }
-    if picture.data.starts_with(PNG_SIGNATURE) {
-        return Some(PictureData::Png(picture.data.clone()));
-    }
-    let text = std::str::from_utf8(&picture.data).ok()?;
-    resvg::usvg::Tree::from_str(text, &resvg::usvg::Options::default()).ok()?;
-    Some(PictureData::Svg(text.to_string()))
-}
-
-/// The first bytes of every PNG file.
-const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-
 /// A drawn picture: (data, mime type, file extension, name hint).
 type DrawnImage = (Vec<u8>, &'static str, &'static str, String);
 
 /// Where the pictures of a document come from: the pages of its PDF, and
 /// the picture files stored in the document (a Word document has only
 /// those).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Pictures<'a> {
     /// The PDF the pages and page areas are drawn from; `None` for a Word
     /// document.
     pub(crate) pdf: Option<&'a PdfFile>,
     /// The stored pictures ([`Document::pictures`]).
     pub(crate) stored: &'a [Picture],
+    /// The PNG and the PDF made of each stored SVG picture, each made at
+    /// most once for an output, however many times the picture is used.
+    renditions: Arc<Renditions>,
+}
+
+/// A file made of a stored picture, once made: `None` when it could not be.
+type Rendition = OnceLock<Option<Arc<[u8]>>>;
+
+/// The PNG and the PDF made of each stored picture, by index.
+struct Renditions {
+    /// The PNG (`backend::svg_to_png`).
+    png: Vec<Rendition>,
+    /// The PDF (`backend::svg_to_pdf`).
+    pdf: Vec<Rendition>,
 }
 
 impl<'a> Pictures<'a> {
     /// The pictures of `doc`, drawn from `pdf` when it has one.
     pub(crate) fn new(pdf: Option<&'a PdfFile>, doc: &'a Document) -> Self {
+        let empty = || (0..doc.pictures.len()).map(|_| OnceLock::new()).collect();
         Self {
             pdf,
             stored: &doc.pictures,
+            renditions: Arc::new(Renditions {
+                png: empty(),
+                pdf: empty(),
+            }),
         }
+    }
+
+    /// The PNG drawn of the stored SVG picture `index` (Word's fallback),
+    /// made once; `None` when it is not an SVG or none can be drawn.
+    pub(crate) fn svg_png(&self, index: usize) -> Option<Arc<[u8]>> {
+        let svg = self.stored_svg(index)?;
+        self.renditions.png[index]
+            .get_or_init(|| svg_to_png(svg, crate::backend::svg::SVG_PNG_SCALE).map(Arc::from))
+            .clone()
+    }
+
+    /// The PDF of one page made of the stored SVG picture `index` (for
+    /// LaTeX), made once; `None` when it is not an SVG or none can be made.
+    pub(crate) fn svg_pdf(&self, index: usize) -> Option<Arc<[u8]>> {
+        let svg = self.stored_svg(index)?;
+        self.renditions.pdf[index]
+            .get_or_init(|| crate::backend::svg_to_pdf(svg).map(Arc::from))
+            .clone()
+    }
+
+    /// The text of the stored picture `index` when it is an SVG.
+    fn stored_svg(&self, index: usize) -> Option<&'a str> {
+        let picture = self.stored.get(index)?;
+        if picture.format != PictureFormat::Svg {
+            return None;
+        }
+        std::str::from_utf8(&picture.data).ok()
     }
 
     /// A renderer of the pages of the PDF, for one thread; `None` without a
@@ -128,40 +157,23 @@ impl<'a> Pictures<'a> {
     }
 
     /// The picture of `spec` at `scale` pixels per point: a stored picture
-    /// as it is, or the area of the page drawn by `renderer`; `None` when it
-    /// cannot be drawn.
+    /// as it is (an SVG too), or the area of the page drawn by `renderer`
+    /// (a PNG or a JPEG). Returns the data and its format, or `None` when
+    /// it cannot be drawn.
     pub(crate) fn region(
         &self,
         renderer: Option<&PageRenderer<'_>>,
         spec: &ImageSpec,
         scale: f32,
-    ) -> Option<PictureData> {
+    ) -> Option<(Vec<u8>, PictureFormat)> {
         match spec.embedded {
-            Some(index) => picture_data(self.stored.get(index)?),
+            Some(index) => self
+                .stored
+                .get(index)
+                .map(|picture| (picture.data.clone(), picture.format)),
             None => renderer?
                 .region_picture(spec.page, spec.rect, scale, spec.transparent)
-                .map(|(data, jpeg)| {
-                    if jpeg {
-                        PictureData::Jpeg(data)
-                    } else {
-                        PictureData::Png(data)
-                    }
-                }),
-        }
-    }
-
-    /// The picture of `spec` as a PNG or a JPEG (an SVG is drawn at
-    /// `scale`): the data and whether it is a JPEG.
-    pub(crate) fn raster_region(
-        &self,
-        renderer: Option<&PageRenderer<'_>>,
-        spec: &ImageSpec,
-        scale: f32,
-    ) -> Option<(Vec<u8>, bool)> {
-        match self.region(renderer, spec, scale)? {
-            PictureData::Png(data) => Some((data, false)),
-            PictureData::Jpeg(data) => Some((data, true)),
-            PictureData::Svg(svg) => Some((svg_to_png(&svg, scale)?, false)),
+                .map(|(data, jpeg)| (data, if jpeg { PictureFormat::Jpeg } else { PictureFormat::Png })),
         }
     }
 }
@@ -214,14 +226,25 @@ impl ImageStore<'_> {
     ) -> Option<DrawnImage> {
         let page_hint = |page: usize| format!("page-{}", page + 1);
         match job {
-            ImageJob::Region(spec, hint) => Some(match pictures.region(renderer, spec, self.opts.scale)? {
-                PictureData::Jpeg(data) => (data, "image/jpeg", "jpg", hint.clone()),
-                PictureData::Png(data) => (data, "image/png", "png", hint.clone()),
-                PictureData::Svg(svg) if self.vector => {
-                    (svg_with_paths(&svg)?.into_bytes(), "image/svg+xml", "svg", hint.clone())
+            ImageJob::Region(spec, hint) => {
+                if self.svg_as_pdf
+                    && let Some(index) = spec.embedded
+                    && pictures.stored_svg(index).is_some()
+                {
+                    return svg_as_pdf(pictures, index, hint);
                 }
-                PictureData::Svg(svg) => (svg_to_png(&svg, self.opts.scale)?, "image/png", "png", hint.clone()),
-            }),
+                // An SVG of a document kept as one has its text turned into
+                // paths (`Picture::outline_text`).
+                if let Some(index) = spec.embedded
+                    && pictures.stored.get(index).is_some_and(|picture| picture.outline_text)
+                    && let Some(svg) = pictures.stored_svg(index)
+                    && let Some(svg) = svg_with_paths(svg)
+                {
+                    return Some((svg.into_bytes(), "image/svg+xml", "svg", hint.clone()));
+                }
+                let (data, format) = pictures.region(renderer, spec, self.opts.scale)?;
+                Some((data, format.mime(), format.extension(), hint.clone()))
+            }
             ImageJob::Page(page) => {
                 let renderer = renderer?;
                 match self.opts.page_image {
@@ -354,6 +377,22 @@ impl ImageStore<'_> {
         }
         writer.out.write_all(rest.as_bytes())
     }
+}
+
+/// The stored SVG picture `index` of `pictures` as a PDF picture, still
+/// vector, with the name hint `hint`; a PNG drawn of it when it cannot be
+/// made one (see `backend::svg_to_png`), `None` when neither can.
+fn svg_as_pdf(pictures: &Pictures<'_>, index: usize, hint: &str) -> Option<DrawnImage> {
+    if let Some(pdf) = pictures.svg_pdf(index) {
+        return Some((pdf.to_vec(), "application/pdf", "pdf", hint.to_string()));
+    }
+    let png = pictures.svg_png(index)?;
+    Some((
+        png.to_vec(),
+        PictureFormat::Png.mime(),
+        PictureFormat::Png.extension(),
+        hint.to_string(),
+    ))
 }
 
 /// The text before the next placeholder of `html`, the index in the
@@ -501,8 +540,8 @@ fn pixel_fill(payload: &str) -> Option<String> {
     Some(format!("fill=\"rgb({red},{green},{blue})\"{opacity}"))
 }
 
-/// `svg` written again with its text turned into paths, so that it looks the
-/// same where its fonts are missing; `None` when it does not parse.
+/// The SVG `svg` written again by usvg with its text drawn as paths, in
+/// the fonts kakemono draws SVG text with.
 fn svg_with_paths(svg: &str) -> Option<String> {
     let options = resvg::usvg::Options {
         fontdb: crate::backend::render::svg_fonts(),
@@ -523,26 +562,27 @@ pub(crate) fn origin_key(x: f32, y: f32) -> (i32, i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DrawnImage, HtmlOptions, ImageJob, ImageSpec, ImageStore, MARK, Picture, Pictures};
+    use super::{DrawnImage, HtmlOptions, ImageJob, ImageSpec, ImageStore, MARK, Pictures};
     use super::{next_placeholder, placeholders_in_order};
     use crate::common::geom::Rect;
 
     /// Draws a stored picture of `data` as a figure, for a format that
-    /// takes SVG (`vector`) or not.
+    /// takes SVG (`vector`) or not (LaTeX, which takes PDF).
     fn draw_stored(data: &[u8], vector: bool) -> Option<DrawnImage> {
-        let stored = [Picture {
-            data: data.to_vec(),
-            jpeg: false,
-        }];
+        let stored = [crate::word::pictures::normalize(data.to_vec())?];
         let pictures = Pictures {
             pdf: None,
             stored: &stored,
+            renditions: std::sync::Arc::new(super::Renditions {
+                png: vec![std::sync::OnceLock::new()],
+                pdf: vec![std::sync::OnceLock::new()],
+            }),
         };
         let opts = HtmlOptions::default();
         let store = ImageStore {
             opts: &opts,
             jobs: Vec::new(),
-            vector,
+            svg_as_pdf: !vector,
         };
         let spec = ImageSpec {
             page: 0,
@@ -565,13 +605,13 @@ mod tests {
         assert!(out.contains("<path"), "{out}");
     }
 
-    /// Where the format takes no SVG (LaTeX, Word), it is drawn as a PNG.
+    /// Where the format takes no SVG (LaTeX), it is written as a PDF.
     #[test]
-    fn a_stored_svg_is_rasterized_where_the_format_takes_no_svg() {
+    fn a_stored_svg_is_a_pdf_where_the_format_takes_no_svg() {
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
         let (data, mime, _, _) = draw_stored(svg.as_bytes(), false).unwrap();
-        assert_eq!(mime, "image/png");
-        assert!(data.starts_with(b"\x89PNG"));
+        assert_eq!(mime, "application/pdf");
+        assert!(data.starts_with(b"%PDF"));
     }
 
     fn placeholder(index: usize) -> String {
@@ -604,5 +644,41 @@ mod tests {
         assert!(!placeholders_in_order(&html(&[1, 0, 2]), 3));
         assert!(!placeholders_in_order(&html(&[0, 1]), 3));
         assert!(!placeholders_in_order(&html(&[0, 1, 1]), 2));
+    }
+
+    /// The PNG and the PDF of an SVG picture are made once, however many
+    /// times it is drawn.
+    #[test]
+    fn the_png_and_pdf_of_an_svg_are_made_once() {
+        use crate::model::{Document, Meta, Picture, PictureFormat};
+        use std::sync::Arc;
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
+        let Some(crate::backend::svg::ReadySvg::Svg { svg, png_size, .. }) = crate::backend::prepare_svg(svg) else {
+            panic!("kept as SVG");
+        };
+        let picture = Picture {
+            data: svg.into_bytes(),
+            format: PictureFormat::Svg,
+            png_size,
+            outline_text: true,
+        };
+        let doc = Document {
+            meta: Meta::default(),
+            pages: Vec::new(),
+            body_size: 10.0,
+            leading: 12.0,
+            body_font: String::new(),
+            math_font: String::new(),
+            blocks: Vec::new(),
+            pictures: vec![picture, Picture::bitmap(b"\x89PNG".to_vec(), PictureFormat::Png)],
+        };
+        let pictures = super::Pictures::new(None, &doc);
+        let copy = pictures.clone();
+        let png = pictures.svg_png(0).expect("a PNG");
+        assert!(Arc::ptr_eq(&png, &copy.svg_png(0).unwrap()));
+        let pdf = pictures.svg_pdf(0).expect("a PDF");
+        assert!(Arc::ptr_eq(&pdf, &copy.svg_pdf(0).unwrap()));
+        // Not an SVG: nothing made.
+        assert!(pictures.svg_png(1).is_none() && pictures.svg_pdf(1).is_none());
     }
 }

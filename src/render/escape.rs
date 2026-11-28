@@ -13,17 +13,27 @@ const FIGURE_ALT_MAX_CHARS: usize = 240;
 pub(crate) use crate::common::patterns::CAP_LABEL;
 
 /// What the document was converted from, as the colophons say it: `PDF`,
-/// `EPUB` for a book, `HTML` for a web page, or `Word` for another
-/// document without pages.
+/// `EPUB` for a book, `HTML` for a web page, `Excel` for a workbook, or
+/// `Word` for another document without pages.
 pub(crate) fn source_label(doc: &Document) -> &'static str {
-    if doc.meta.source_format.as_deref() == Some("epub") {
-        "EPUB"
-    } else if doc.meta.source_format.as_deref() == Some("html") {
-        "HTML"
-    } else if doc.pages.is_empty() {
-        "Word"
-    } else {
-        "PDF"
+    match doc.meta.source_format.as_deref() {
+        Some("epub") => "EPUB",
+        Some("html") => "HTML",
+        Some("xlsx") => "Excel",
+        _ if doc.pages.is_empty() => "Word",
+        _ => "PDF",
+    }
+}
+
+/// [`source_label`] as a phrase: `a PDF`, `an EPUB book`, `a web page`, `a
+/// Word document`, `an Excel workbook`.
+pub(crate) fn source_phrase(doc: &Document) -> &'static str {
+    match source_label(doc) {
+        "EPUB" => "an EPUB book",
+        "HTML" => "a web page",
+        "Word" => "a Word document",
+        "Excel" => "an Excel workbook",
+        _ => "a PDF",
     }
 }
 

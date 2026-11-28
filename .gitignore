@@ -32,7 +32,10 @@ benchmark-results/
 
 # Word documents and the PDFs Word made of them (scripts/fetch-word-corpus.sh)
 /tests/data/word-corpus/
+# Public Excel workbooks (tests/data/excel-corpus.tsv)
+/tests/data/excel-corpus/
 
 # Web pages (scripts/fetch-test-pages.sh)
 /tests/data/web/
 /tests/data/web-bench/
+/target-*/

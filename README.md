@@ -4,7 +4,7 @@
 
 # kakemono
 
-**Convert PDF papers and books, Word documents, EPUB books, web pages, or arXiv papers into readable, editable formats.**
+**Convert PDF papers and books, Word documents, Excel workbooks, EPUB books, web pages, or arXiv papers into readable, editable formats.**
 
 [![Release](https://img.shields.io/github/v/release/iamcaominhtien/kakemono?label=release&color=d9822b)](https://github.com/iamcaominhtien/kakemono/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iamcaominhtien/kakemono/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iamcaominhtien/kakemono/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 
 </div>
 
-kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files, EPUB books and web pages, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, Typst (an article or a printed book), EPUB, editable JSON and JSONL chunks for retrieval. Word and EPUB input can also be laid out as PDF. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
+kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files, Excel workbooks, EPUB books and web pages, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, Typst (an article or a printed book), EPUB, editable JSON and JSONL chunks for retrieval. Word and EPUB input can also be laid out as PDF, and a workbook printed as Excel prints it. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
 
 ## Install
 
@@ -33,6 +33,8 @@ To build from a checkout, run `cargo build --release`. For Python, use `pip inst
 kakemono convert paper.pdf                   # paper.friendly.html
 kakemono convert 1706.03762 -o paper.md      # arXiv ID → Markdown
 kakemono convert report.docx -o report.pdf   # Word → PDF
+kakemono convert sales.xlsx -o sales.md      # Excel → Markdown, a table per region of each sheet
+kakemono convert sales.xlsx -o sales.pdf     # Excel → PDF, printed as Excel prints it
 kakemono convert book.epub -o book.md        # EPUB → Markdown
 kakemono convert https://en.wikipedia.org/wiki/Fourier_transform -o ft.md   # web page → Markdown
 kakemono convert saved-page.html -o page.docx # HTML file → Word
@@ -41,7 +43,7 @@ kakemono convert book.pdf -o book.typ        # Typst; then `typst compile book.t
 kakemono convert paper.pdf -o paper.jsonl    # chunks for retrieval
 ```
 
-Input can be a local PDF, `.docx`, `.doc`, `.epub` or `.html`, an arXiv ID or an arXiv URL, or the `http(s)` address of a web page (its article is kept, without menus, sidebars or advertisements, and its pictures are fetched; see [web pages](docs/GUIDE.md#web-pages-as-input)). The output extension selects the format; use `--format` to choose explicitly. arXiv downloads are cached in `~/.cache/kakemono` (override with `KAKEMONO_CACHE`).
+Input can be a local PDF, `.docx`, `.doc`, `.xlsx`, `.epub` or `.html`, an arXiv ID or an arXiv URL, or the `http(s)` address of a web page (its article is kept, without menus, sidebars or advertisements, and its pictures are fetched; see [web pages](docs/GUIDE.md#web-pages-as-input)). The output extension selects the format; use `--format` to choose explicitly. arXiv downloads are cached in `~/.cache/kakemono` (override with `KAKEMONO_CACHE`).
 
 For HTML, choose a layout with `--mode`:
 
@@ -90,7 +92,7 @@ The [API reference](https://docs.rs/kakemono) and [library guide](docs/GUIDE.md#
 
 ## Limitations
 
-Scanned and encrypted PDFs are not supported. Complex tables and equations may be kept as images, and unusual layouts can affect reading order. Word 6/95, RTF and password-protected Word files are not supported, nor are EPUB books protected by DRM, nor web pages built by scripts in the browser or behind a login. See the [full limitations](docs/GUIDE.md#limitations), the [Word input guide](docs/WORD-INPUT.md), [EPUB input](docs/GUIDE.md#epub-books-as-input) and [web pages](docs/GUIDE.md#web-pages-as-input).
+Scanned and encrypted PDFs are not supported. Complex tables and equations may be kept as images, and unusual layouts can affect reading order. Word 6/95, RTF and password-protected Word files are not supported, nor are EPUB books protected by DRM, nor web pages built by scripts in the browser or behind a login. See the [full limitations](docs/GUIDE.md#limitations), the [Word input guide](docs/WORD-INPUT.md), the [Excel input guide](docs/EXCEL-INPUT.md), [EPUB input](docs/GUIDE.md#epub-books-as-input) and [web pages](docs/GUIDE.md#web-pages-as-input).
 
 ## Development
 

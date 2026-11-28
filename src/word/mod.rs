@@ -8,16 +8,16 @@
 
 mod build;
 pub(crate) mod doc;
-mod docx;
+pub(crate) mod docx;
 pub mod fmt;
 pub(crate) mod ir;
 pub(crate) mod metafile;
 pub(crate) mod mtef;
 pub(crate) mod omml;
-mod pictures;
+pub(crate) mod pictures;
 mod styles;
 mod symbols;
-mod xml;
+pub(crate) mod xml;
 pub(crate) mod zip;
 
 use crate::model::Document;
@@ -96,5 +96,52 @@ pub(crate) fn display_alone_formula(para: &mut ir::Para) {
         if let Some(ir::Inline::Math { display, .. }) = para.inlines.first_mut() {
             *display = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::paper::Paper;
+    use crate::render::zip::{Compression, ZipWriter};
+
+    /// The sample document with its picture's file replaced by `data`.
+    fn sample_with_picture(data: &[u8]) -> Vec<u8> {
+        let sample = std::fs::read("tests/data/word/sample.docx").unwrap();
+        let zip = super::zip::ZipArchive::new(&sample).unwrap();
+        let mut out = ZipWriter::default();
+        for name in zip.names() {
+            let contents = if name == "word/media/rId24.png" {
+                data.to_vec()
+            } else {
+                zip.read(&name).unwrap().unwrap()
+            };
+            out.add(&name, &contents, Compression::Deflated);
+        }
+        out.finish()
+    }
+
+    #[test]
+    fn a_picture_declaring_a_huge_size_is_bounded_in_text_and_layout() {
+        // A PNG header that says 100000 × 100000: left out.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(100_000u32.to_be_bytes());
+        png.extend(100_000u32.to_be_bytes());
+        png.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let paper = Paper::from_bytes(sample_with_picture(&png)).unwrap();
+        assert!(paper.analyze().doc.pictures.is_empty());
+        assert!(paper.to_pdf().is_ok());
+        // An SVG of 30000 × 30000 points: kept as SVG; its PNG, where an
+        // output needs one, drawn smaller.
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="30000" height="30000"><rect width="10" height="10"/></svg>"#;
+        let paper = Paper::from_bytes(sample_with_picture(svg)).unwrap();
+        let analysis = paper.analyze();
+        assert_eq!(analysis.doc.pictures.len(), 1);
+        assert_eq!(analysis.doc.pictures[0].format, crate::model::PictureFormat::Svg);
+        assert!(paper.to_pdf().is_ok());
+        let docx = paper.to_docx(&analysis, &crate::render::DocxOptions::default());
+        let zip = super::zip::ZipArchive::new(&docx).unwrap();
+        let png = zip.read("word/media/image1.png").unwrap().expect("the PNG fallback");
+        let (width, height) = crate::backend::declared_size(&png).unwrap();
+        assert!(u64::from(width) * u64::from(height) <= crate::backend::MAX_RASTER_PIXELS);
     }
 }

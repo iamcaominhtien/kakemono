@@ -115,6 +115,16 @@ const ALIASES: &[(&str, &[&str])] = &[
     ("courier", &["liberation mono", "cousine"]),
     ("georgia", &["gelasio"]),
     ("segoe ui", &["selawik"]),
+    // The IPA fonts have the widths of the MS ones (names written with
+    // full-width letters, "ＭＳ Ｐ明朝", are looked up as "ms p明朝").
+    ("ms 明朝", &["ipamincho"]),
+    ("ms mincho", &["ipamincho"]),
+    ("ms p明朝", &["ipapmincho"]),
+    ("ms pmincho", &["ipapmincho"]),
+    ("ms ゴシック", &["ipagothic"]),
+    ("ms gothic", &["ipagothic"]),
+    ("ms pゴシック", &["ipapgothic"]),
+    ("ms pgothic", &["ipapgothic"]),
 ];
 
 /// Fonts that only look like the original (their widths differ): used to
@@ -122,6 +132,9 @@ const ALIASES: &[(&str, &[&str])] = &[
 /// nothing better is known.
 const LOOKALIKES: &[(&str, &[&str])] = &[
     ("calibri light", &["carlito"]),
+    // Century Gothic was drawn on the metrics of ITC Avant Garde Gothic,
+    // which these two follow.
+    ("century gothic", &["urw gothic", "tex gyre adventor"]),
     ("verdana", &["dejavu sans"]),
     ("tahoma", &["dejavu sans"]),
     ("segoe ui", &["open sans", "noto sans", "dejavu sans"]),
@@ -132,6 +145,21 @@ const LOOKALIKES: &[(&str, &[&str])] = &[
     ("times new roman", &["freeserif"]),
     ("arial", &["freesans"]),
     ("courier new", &["freemono"]),
+    ("明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms 明朝", &["noto serif cjk jp"]),
+    ("ms mincho", &["noto serif cjk jp"]),
+    ("ms p明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms pmincho", &["ipaexmincho", "noto serif cjk jp"]),
+    ("游明朝", &["ipaexmincho", "noto serif cjk jp"]),
+    ("yu mincho", &["ipaexmincho", "noto serif cjk jp"]),
+    ("ms ゴシック", &["noto sans cjk jp"]),
+    ("ms gothic", &["noto sans cjk jp"]),
+    ("ms pゴシック", &["ipaexgothic", "noto sans cjk jp"]),
+    ("ms pgothic", &["ipaexgothic", "noto sans cjk jp"]),
+    ("游ゴシック", &["ipaexgothic", "noto sans cjk jp"]),
+    ("yu gothic", &["ipaexgothic", "noto sans cjk jp"]),
+    ("メイリオ", &["ipaexgothic", "noto sans cjk jp"]),
+    ("meiryo", &["ipaexgothic", "noto sans cjk jp"]),
 ];
 
 /// Families tried, in order, for characters the chosen font lacks.
@@ -249,8 +277,9 @@ impl FontBook {
             return found.unwrap_or_else(|| self.last_resort(bold, italic));
         }
         let mut names = vec![key.0.clone()];
+        let plain = table_name(&key.0);
         for table in [ALIASES, LOOKALIKES] {
-            if let Some((_, aliases)) = table.iter().find(|(name, _)| *name == key.0) {
+            for (_, aliases) in table.iter().filter(|(name, _)| *name == plain) {
                 names.extend(aliases.iter().map(|alias| (*alias).to_string()));
             }
         }
@@ -284,11 +313,34 @@ impl FontBook {
     /// Whether `family` (or a font with its metrics) is available.
     pub fn has_family(&self, family: &str) -> bool {
         let name = family.to_lowercase();
+        let plain = table_name(&name);
         self.by_family.contains_key(&name)
             || ALIASES
                 .iter()
-                .find(|(alias, _)| *alias == name)
+                .find(|(alias, _)| *alias == plain)
                 .is_some_and(|(_, aliases)| aliases.iter().any(|alias| self.by_family.contains_key(*alias)))
+    }
+
+    /// For an East Asian family `family` that is not installed, the
+    /// Western family of its kind (Times New Roman for a Mincho, Arial for
+    /// a Gothic) that sets its Latin letters and digits: the stand-ins of
+    /// the East Asian text (the IPA P fonts) have wider digits than the MS
+    /// P fonts' half an em. `None` for another family.
+    pub fn latin_stand_in(&self, family: &str) -> Option<&'static str> {
+        let lower = family.to_lowercase();
+        let plain = table_name(&lower);
+        let east_asian = !plain.is_ascii()
+            || LOOKALIKES
+                .iter()
+                .any(|(name, aliases)| *name == plain && aliases.iter().any(|alias| alias.contains("cjk")));
+        if !east_asian || self.by_family.contains_key(&lower) {
+            return None;
+        }
+        Some(match guess_kind(&plain) {
+            FontKind::Serif => "Times New Roman",
+            FontKind::Mono => "Courier New",
+            FontKind::Sans | FontKind::Symbol => "Arial",
+        })
     }
 
     /// The face used when a family is not found.
@@ -374,6 +426,20 @@ impl FontBook {
     }
 }
 
+/// A family name `name` (lowercase) as the tables of fonts name it: its
+/// full-width letters, digits and spaces (ＭＳ　Ｐ明朝) made plain.
+pub(crate) fn table_name(name: &str) -> String {
+    const FULL_WIDTH_OFFSET: u32 = 0xFEE0;
+    name.chars()
+        .map(|ch| match ch {
+            '\u{3000}' => ' ',
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(u32::from(ch) - FULL_WIDTH_OFFSET).unwrap_or(ch),
+            _ => ch,
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
 /// The kind of a font from its name, when the document does not say.
 fn guess_kind(name: &str) -> FontKind {
     const SERIF_WORDS: &[&str] = &[
@@ -384,6 +450,13 @@ fn guess_kind(name: &str) -> FontKind {
         "georgia",
         "book",
         "mincho",
+        "明朝",
+        "明體",
+        "宋体",
+        "mingliu",
+        "simsun",
+        "batang",
+        "myeongjo",
         "cambria",
         "palatino",
         "baskerville",
@@ -393,7 +466,11 @@ fn guess_kind(name: &str) -> FontKind {
         "century",
     ];
     const MONO_WORDS: &[&str] = &["mono", "courier", "consolas", "code", "typewriter"];
-    if name.contains("sans") {
+    // "-Roman" after a family names its upright style, not a serif
+    // (Helvetica-Roman, MetaNormalLF-Roman).
+    let name = name.strip_suffix("-roman").unwrap_or(name);
+    // A gothic is a sans serif (Century Gothic, MS Gothic, ゴシック).
+    if name.contains("sans") || name.contains("gothic") || name.contains("ゴシック") {
         FontKind::Sans
     } else if MONO_WORDS.iter().any(|word| name.contains(word)) {
         FontKind::Mono
@@ -483,4 +560,17 @@ fn font_dirs() -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FontKind, guess_kind};
+
+    #[test]
+    fn a_roman_style_is_not_a_serif() {
+        assert_eq!(guess_kind("times new roman"), FontKind::Serif);
+        assert_eq!(guess_kind("metanormallf-roman"), FontKind::Sans);
+        assert_eq!(guess_kind("century gothic"), FontKind::Sans);
+        assert_eq!(guess_kind("ｍｓ ｐ明朝"), FontKind::Serif);
+    }
 }

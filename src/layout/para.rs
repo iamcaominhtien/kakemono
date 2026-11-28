@@ -503,9 +503,21 @@ fn breaks_after(ch: char, next: Option<char>) -> bool {
             next.is_some_and(|next| next.is_alphanumeric() || is_east_asian(next))
         }
         '\u{00AD}' => true,
-        _ => is_east_asian(ch) || next.is_some_and(is_east_asian),
+        _ => {
+            (is_east_asian(ch) || next.is_some_and(is_east_asian))
+                && !NO_LINE_END.contains(ch)
+                && !next.is_some_and(|next| NO_LINE_START.contains(next))
+        }
     }
 }
+
+/// The letters a line may not end with, by Word's standard East Asian line
+/// breaking rules (kinsoku): opening brackets and quotes, currency signs.
+const NO_LINE_END: &str = "$([{£¥‘“〈《「『【〔＄（［｛｢￡￥";
+
+/// The letters a line may not start with, by the same rules: closing
+/// brackets and quotes, punctuation, iteration marks, sound marks.
+const NO_LINE_START: &str = "!%),.:;?]}¢°’”‰′″℃、。々〉》」』】〕゛゜ゝゞ・ヽヾ！％），．：；？］｝｡｣､･ﾞﾟ￠";
 
 /// The words of a stretch of text: (start, end of the body, end with the
 /// trailing spaces), as byte offsets.
@@ -606,6 +618,31 @@ pub fn layout(ctx: &mut Ctx<'_>, para: &Para, width: f32) -> ParaLayout {
         lines: builder.lines,
         floats: builder.floats,
     }
+}
+
+/// The widths of paragraph `para`'s content, without indents: set on one
+/// line (the widest of its lines between line breaks), of its widest word
+/// (the narrowest it can be set without cutting a word), and of all its
+/// lines together; and the number of its line breaks.
+pub(crate) fn measure(ctx: &mut Ctx<'_>, para: &Para) -> (f32, f32, f32, usize) {
+    let (mut natural, mut line, mut widest, mut trailing, mut total) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut breaks = 0;
+    for atom in atoms(ctx, para) {
+        if matches!(atom, Atom::Break(_)) {
+            natural = natural.max(line - trailing);
+            total += line - trailing;
+            breaks += 1;
+            (line, trailing) = (0.0, 0.0);
+            continue;
+        }
+        let (body, after) = atom_width(&atom);
+        line += body + after;
+        widest = widest.max(body);
+        if body + after > 0.0 {
+            trailing = after;
+        }
+    }
+    (natural.max(line - trailing), widest, total + line - trailing, breaks)
 }
 
 /// Widths of an atom: its body and its trailing spaces.
@@ -1141,7 +1178,13 @@ fn place_glyphs(
     let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
     let mut x = 0.0;
     let mut spaces = 0;
-    let clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+    // The clusters in order, to find where each ends (the next one after
+    // it) by a binary search: a scan of every cluster for each glyph was
+    // quadratic, minutes for a cell of 32,000 characters. Right-to-left
+    // text has its clusters in falling order, hence the sort.
+    let mut clusters: Vec<usize> = shaped.glyphs.iter().map(|glyph| glyph.cluster).collect();
+    clusters.sort_unstable();
+    clusters.dedup();
     let mut drawn_width = 0.0;
     for (at, glyph) in shaped.glyphs.iter().enumerate() {
         let start = glyph.cluster;
@@ -1158,10 +1201,8 @@ fn place_glyphs(
         drawn_width += glyph.advance;
         let advance = measured.unwrap_or(glyph.advance) * size * scale + spacing;
         let end = clusters
-            .iter()
+            .get(clusters.partition_point(|&cluster| cluster <= start))
             .copied()
-            .filter(|&cluster| cluster > start)
-            .min()
             .unwrap_or(shown.len());
         if shown[start..end].starts_with(' ') {
             spaces += 1;
@@ -1833,4 +1874,22 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
         fake_italic: piece.fake_italic,
         scale: piece.scale,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn japanese_lines_keep_brackets_and_punctuation_to_their_letters() {
+        // Between two Japanese letters a line may break...
+        assert!(breaks_after('予', Some('定')));
+        // ...but not after an opening bracket, nor before a closing one or
+        // a full stop.
+        assert!(!breaks_after('(', Some('予')));
+        assert!(!breaks_after('（', Some('予')));
+        assert!(!breaks_after('日', Some('）')));
+        assert!(!breaks_after('日', Some('。')));
+        assert!(breaks_after('。', Some('次')));
+    }
 }

@@ -15,6 +15,7 @@ class Document:
         png_compression: str = "balanced",
         content: Optional[str] = None,
         content_dir: Optional[str] = None,
+        header_rows: Optional[int] = None,
     ) -> None: ...
     @property
     def format(self) -> str: ...

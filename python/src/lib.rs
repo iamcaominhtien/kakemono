@@ -1,11 +1,12 @@
-//! The native part of the `kakemono` Python package. A [`Document`] is a PDF or
-//! Word document read and analysed once (with the text of an edited JSON file
+//! The native part of the `kakemono` Python package. A [`Document`] is a PDF,
+//! a Word document, an Excel workbook, an EPUB book or a web page read and analysed once (with the text of an edited JSON file
 //! applied, `content`); it is then written as HTML, a Word document, Markdown,
 //! LaTeX, an EPUB book, the editable JSON, chunks for retrieval, a PDF (Word
-//! documents) or the document structure (as JSON). [`render_svg`] and
+//! documents, workbooks) or the document structure (as JSON). [`render_svg`] and
 //! [`read_formula`] are the `render-svg` and `formula` commands.
 //! `kakemono/__init__.py` wraps it with path and arXiv handling.
 
+use kakemono::config::ExcelConfig;
 use kakemono::source::arxiv;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
@@ -117,15 +118,16 @@ struct Document {
 #[pymethods]
 impl Document {
     /// Reads and analyses `data` (the bytes of a PDF, a Word document, an
-    /// EPUB book or a web page), the file at `path` (a web page with its
+    /// Excel workbook, an EPUB book or a web page), the file at `path` (a web page with its
     /// pictures next to it) or the document at the address `url` (a web
     /// page with its pictures, fetched), and
     /// applies the edited JSON `content` to the analysis; a relative
     /// `replace_image` of `content` is read from `content_dir`. The warnings
     /// of applying it (blocks that kept their text) are given as
-    /// `UserWarning`s.
+    /// `UserWarning`s. `header_rows` gives the header rows of every table
+    /// of a workbook, instead of finding them.
     #[new]
-    #[pyo3(signature = (data=None, *, path=None, url=None, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None))]
+    #[pyo3(signature = (data=None, *, path=None, url=None, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None, header_rows=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -138,13 +140,18 @@ impl Document {
         png_compression: &str,
         content: Option<String>,
         content_dir: Option<String>,
+        header_rows: Option<usize>,
     ) -> PyResult<Self> {
         let png = parse_png_compression(png_compression)?;
         let edited = content.is_some();
         let (paper, analysis, warnings) = py.detach(move || {
+            let excel = ExcelConfig {
+                header_rows,
+                ..Default::default()
+            };
             let paper = match (data, path, url) {
-                (Some(data), None, None) => Paper::from_bytes(data),
-                (None, Some(path), None) => Paper::from_path(path),
+                (Some(data), None, None) => Paper::from_bytes_with(data, &excel),
+                (None, Some(path), None) => Paper::from_path_with(path, &excel),
                 (None, None, Some(url)) => Paper::from_url(&url),
                 _ => return Err(value_error("give one of data, path and url")),
             };
@@ -178,7 +185,7 @@ impl Document {
         })
     }
 
-    /// The input format: `"pdf"`, `"docx"`, `"doc"`, `"epub"` or `"html"`.
+    /// The input format: `"pdf"`, `"docx"`, `"doc"`, `"xlsx"`, `"epub"` or `"html"`.
     #[getter]
     fn format(&self) -> &'static str {
         self.paper.format().name()
@@ -442,7 +449,7 @@ impl Document {
     fn to_pdf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         if self.paper.format().has_pages() {
             return Err(value_error(
-                "the input is already a PDF: only a Word document or an EPUB book is laid out as a PDF",
+                "the input is already a PDF: only a Word document, a workbook or an EPUB book is laid out as a PDF",
             ));
         }
         let data = py.detach(|| {

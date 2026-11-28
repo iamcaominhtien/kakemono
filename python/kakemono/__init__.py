@@ -145,7 +145,7 @@ def _modified(modified: Optional[str]) -> str:
 
 
 class Document:
-    """A PDF or Word document, read and analysed once, from which any number
+    """A PDF, Word document, Excel workbook, EPUB book or web page, read and analysed once, from which any number
     of outputs are written.
 
     The module functions (:func:`convert`, :func:`to_docx`, ...) each read and
@@ -155,7 +155,7 @@ class Document:
     >>> doc = kakemono.Document("paper.pdf")
     >>> content = doc.to_json("out/paper.json")
     >>> # ... translate content["blocks"][i]["text"] ...
-    >>> vi = kakemono.Document("paper.pdf", content=content)
+    >>> vi = kakemono.Document("paper.pdf", content=content, header_rows=header_rows)
     >>> vi.to_docx("out/paper.vi.docx"); vi.to_epub("out/paper.vi.epub")
 
     The options are those of the analysis, kept for every output:
@@ -170,6 +170,8 @@ class Document:
       block whose edited text cannot be read keeps its own, with a
       ``UserWarning``. A relative ``replace_image`` is read from the folder
       of the JSON file (the current folder for a dict or text).
+    - ``header_rows``: the header rows of every table of an Excel workbook,
+      given instead of found.
 
     Raises ``ValueError`` when the data is not a readable PDF, Word
     document, EPUB book or web page, a page cannot be fetched, an option is
@@ -187,6 +189,7 @@ class Document:
         jobs: int = 0,
         png_compression: PngCompression = "balanced",
         content: Optional[Content] = None,
+        header_rows: Optional[int] = None,
     ) -> None:
         where, name = _load(source)
         text, folder = _content(content)
@@ -198,11 +201,12 @@ class Document:
             png_compression=png_compression,
             content=text,
             content_dir=folder,
+            header_rows=header_rows,
         )
 
     @property
-    def format(self) -> Literal["pdf", "docx", "doc", "epub", "html"]:
-        """The input format: ``"pdf"``, ``"docx"``, ``"doc"``, ``"epub"`` or ``"html"``."""
+    def format(self) -> Literal["pdf", "docx", "doc", "xlsx", "epub", "html"]:
+        """The input format: ``"pdf"``, ``"docx"``, ``"doc"``, ``"xlsx"``, ``"epub"`` or ``"html"``."""
         return self._doc.format
 
     @property
@@ -499,6 +503,7 @@ def convert_all(
     jobs: int = 0,
     png_compression: PngCompression = "balanced",
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> Dict[str, str]:
     """Convert a PDF or Word document to HTML in several modes, analysing it only once.
 
@@ -511,7 +516,7 @@ def convert_all(
     wrong or `content` does not fit the PDF, and ``FileNotFoundError`` when
     `source` names nothing.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.convert_all(modes, equations=equations, page_image=page_image, embed_fonts=embed_fonts, scale=scale)
 
 
@@ -536,6 +541,7 @@ def to_docx(
     image_dir: Optional[str] = None,
     save_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> bytes:
     """Convert a PDF or Word document to a Word document (``.docx``) and return its bytes.
 
@@ -544,7 +550,7 @@ def to_docx(
     """
     if save_images and path is None:
         raise ValueError("save_images needs a path to write the pictures next to")
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_docx(path, equations=equations, scale=scale, image_dir=image_dir, save_images=save_images)
 
 
@@ -560,6 +566,7 @@ def to_markdown(
     image_dir: Optional[str] = None,
     inline_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
     mode: Literal["friendly", "medium"] = "friendly",
 ) -> str:
     """Convert a PDF or Word document to Markdown and return the text.
@@ -567,7 +574,7 @@ def to_markdown(
     See :meth:`Document.to_markdown`; ``tables``, ``jobs``,
     ``png_compression`` and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_markdown(
         path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images, mode=mode
     )
@@ -585,13 +592,14 @@ def to_json(
     image_dir: Optional[str] = None,
     inline_images: bool = False,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Convert a PDF or Word document to the editable JSON and return it as a dict.
 
     See :meth:`Document.to_json`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_json(path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images)
 
 
@@ -606,13 +614,14 @@ def to_latex(
     png_compression: PngCompression = "balanced",
     image_dir: Optional[str] = None,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> str:
     """Convert a PDF or Word document to a LaTeX document (``.tex``) and return its source.
 
     See :meth:`Document.to_latex`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_latex(path, equations=equations, scale=scale, image_dir=image_dir)
 
 
@@ -628,13 +637,14 @@ def to_typst(
     image_dir: Optional[str] = None,
     layout: str = "auto",
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> str:
     """Convert a PDF or Word document to a Typst document (``.typ``) and return its source.
 
     See :meth:`Document.to_typst`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout)
 
 
@@ -651,6 +661,7 @@ def to_epub(
     cover: bool = True,
     modified: Optional[str] = None,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> bytes:
     """Convert a PDF or Word document to an EPUB 3 book (``.epub``) and return its bytes.
 
@@ -658,7 +669,7 @@ def to_epub(
     and ``content`` are those of :class:`Document`.
     """
     modified = _modified(modified)
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
     return doc.to_epub(
         path, equations=equations, scale=scale, max_math_width_em=max_math_width_em, cover=cover, modified=modified
     )
@@ -673,32 +684,42 @@ def to_chunks(
     tables: bool = True,
     jobs: int = 0,
     content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Cut a PDF or Word document into chunks for retrieval (RAG) and return them as dicts.
 
     See :meth:`Document.to_chunks`; ``tables``, ``jobs`` and ``content`` are
     those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, content=content)
+    doc = Document(source, tables=tables, jobs=jobs, content=content, header_rows=header_rows)
     return doc.to_chunks(path, max_tokens=max_tokens, tokenizer=tokenizer)
 
 
-def to_pdf(source: Source, path: Optional[PathArg] = None, *, content: Optional[Content] = None) -> bytes:
+def to_pdf(
+    source: Source,
+    path: Optional[PathArg] = None,
+    *,
+    content: Optional[Content] = None,
+    header_rows: Optional[int] = None,
+) -> bytes:
     """Lay out a Word document (``.docx``, ``.doc``) in pages as Word does, as a PDF, and return its bytes.
 
     When `path` is given, the PDF is also written there. With `content` (an
     edited JSON of the document, see :class:`Document`), the edited document
-    is laid out. Raises ``ValueError`` for a PDF.
+    is laid out. An Excel workbook is printed as Excel prints it. Raises
+    ``ValueError`` for a PDF.
     """
-    return Document(source, content=content).to_pdf(path)
+    return Document(source, content=content, header_rows=header_rows).to_pdf(path)
 
 
-def analyze(source: Source, *, tables: bool = True, jobs: int = 0) -> Dict[str, Any]:
+def analyze(
+    source: Source, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None
+) -> Dict[str, Any]:
     """The structure of a PDF or Word document: its blocks in reading order, as a dict.
 
     See :meth:`Document.analyze`.
     """
-    return Document(source, tables=tables, jobs=jobs).analyze()
+    return Document(source, tables=tables, jobs=jobs, header_rows=header_rows).analyze()
 
 
 def render_svg(

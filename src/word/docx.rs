@@ -3,14 +3,15 @@
 
 use super::ir::{Cell, Inline, Item, ListMark, Note, Para, Row, Table, VMerge, WordDoc};
 use super::omml;
-use super::pictures::normalize;
+use super::pictures::{MAX_PICTURE_BYTES, bounded_size, store, store_chart};
 use super::styles::{Numbering, RunProps, Styles, numbering_ref, outline_level};
 use super::symbols::symbol_font_text;
 use super::xml::{
-    DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child,
-    children, is, val,
+    CHART_NS, CHARTEX_NS, DC_NS, DRAWING_NS, MATH_NS, MC_NS, OFFICE_NS, PACKAGE_REL_NS, REL_NS, SVG_BLIP_NS, VML_NS,
+    WORD_NS, WP_NS, attr, child, children, is, val,
 };
 use super::zip::ZipArchive;
+use crate::chart::Charts;
 use crate::model::{MathNode, Span};
 use anyhow::{Context, Result};
 use roxmltree::{Document as Xml, Node, ParsingOptions};
@@ -18,6 +19,8 @@ use std::collections::HashMap;
 
 /// The main document part when the package relationships do not name one.
 const DEFAULT_DOCUMENT_PART: &str = "word/document.xml";
+/// The theme part when the relationships of the document do not name one.
+const DEFAULT_THEME_PART: &str = "word/theme/theme1.xml";
 /// Relationship type of the main document part.
 const OFFICE_DOCUMENT_REL: &str = "officeDocument";
 /// EMU (English Metric Units) per point: the unit of DrawingML sizes.
@@ -76,6 +79,8 @@ struct Reader<'a> {
     boxes: Vec<Item>,
     /// Bookmarks that start between paragraphs, given to the next one.
     pending_bookmarks: Vec<String>,
+    /// The charts read so far, with the document's theme.
+    charts: Charts,
 }
 
 /// Reads a `.docx` file.
@@ -108,6 +113,7 @@ pub(crate) fn read(data: &[u8]) -> Result<WordDoc> {
         fields: Vec::new(),
         boxes: Vec::new(),
         pending_bookmarks: Vec::new(),
+        charts: Charts::new(theme_part(&zip, &main).as_deref()),
     };
     let root = document.root_element();
     let body = child(root, WORD_NS, "body").context("the document has no body")?;
@@ -208,7 +214,7 @@ pub(crate) fn rel_types_of(zip: &ZipArchive<'_>, part: &str) -> Vec<(String, Str
 }
 
 /// The relationships of `part`: (id, last word of the type, relationship).
-fn read_rels(zip: &ZipArchive<'_>, part: &str) -> Result<Vec<(String, String, Rel)>> {
+pub(crate) fn read_rels(zip: &ZipArchive<'_>, part: &str) -> Result<Vec<(String, String, Rel)>> {
     let (dir, name) = part.rsplit_once('/').unwrap_or(("", part));
     let rels_path = if dir.is_empty() {
         format!("_rels/{name}.rels")
@@ -580,6 +586,12 @@ impl Reader<'_> {
             para.inlines.push(Inline::Math { node, display: false });
             return;
         }
+        if let Some(rel) = chart_rel(node) {
+            if let Some(chart) = self.chart(rel, drawing_size(node)) {
+                para.inlines.push(chart);
+            }
+            return;
+        }
         if let Some(blip) = node.descendants().find(|item| is(*item, DRAWING_NS, "blip")) {
             let (width_pt, height_pt) = drawing_size(node);
             let alt = node
@@ -589,7 +601,10 @@ impl Reader<'_> {
                 .unwrap_or_default()
                 .to_string();
             if let Some(id) = attr(blip, REL_NS, "embed") {
-                let index = self.picture(id);
+                // The SVG of a picture Word stores with a PNG beside it.
+                let index = svg_blip(blip)
+                    .and_then(|svg| self.picture(svg))
+                    .or_else(|| self.picture(id));
                 para.inlines.push(Inline::Picture {
                     index,
                     width_pt,
@@ -634,6 +649,19 @@ impl Reader<'_> {
         super::mtef::equation(&super::equation_native(&data)?)
     }
 
+    /// The chart of the chart part of relationship `id`, drawn `size_pt`
+    /// large; `None` when the part is missing or damaged.
+    fn chart(&mut self, id: &str, size_pt: (f32, f32)) -> Option<Inline> {
+        let rel = self.rels.get(id).filter(|rel| !rel.external)?;
+        let xml = self.zip.read(&rel.target).ok()??;
+        let mut placed = self.charts.place(&xml, size_pt)?;
+        let picture = placed
+            .svg
+            .take()
+            .and_then(|svg| store_chart(self.pictures, svg, placed.size_pt, MAX_PICTURE_BYTES));
+        Some(Inline::Chart(Box::new((placed, picture))))
+    }
+
     /// The index of the picture of relationship `id`, read and converted
     /// once; `None` when it cannot be shown.
     fn picture(&mut self, id: &str) -> Option<usize> {
@@ -646,20 +674,51 @@ impl Reader<'_> {
             .read(&rel.target)
             .ok()
             .flatten()
-            .and_then(normalize)
-            .map(|picture| {
-                self.pictures.push(picture);
-                self.pictures.len() - 1
-            });
+            .and_then(|data| store(self.pictures, data, MAX_PICTURE_BYTES));
         self.picture_index.insert(rel.target.clone(), index);
         index
     }
 }
 
+/// The relationship of the SVG picture of the `a:blip` `blip`
+/// (`asvg:svgBlip`, in an extension), whose own relationship is a PNG drawn
+/// of it for readers that do not know SVG.
+pub(crate) fn svg_blip<'a>(blip: Node<'a, '_>) -> Option<&'a str> {
+    let svg = blip.descendants().find(|item| is(*item, SVG_BLIP_NS, "svgBlip"))?;
+    attr(svg, REL_NS, "embed")
+}
+
 /// The content of an `mc:AlternateContent` to read: its first choice
-/// (Word's own markup), else its fallback.
+/// (Word's own markup), else its fallback; but the fallback picture of an
+/// extended chart (`cx:`), which is not drawn, when there is one.
 pub(crate) fn alternate<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
-    child(node, MC_NS, "Choice").or_else(|| child(node, MC_NS, "Fallback"))
+    let choice = child(node, MC_NS, "Choice");
+    let fallback = child(node, MC_NS, "Fallback");
+    if let (Some(choice), Some(fallback)) = (choice, fallback)
+        && choice.descendants().any(|item| is(item, CHARTEX_NS, "chart"))
+        && fallback.descendants().any(|item| is(item, DRAWING_NS, "blip"))
+    {
+        return Some(fallback);
+    }
+    choice.or(fallback)
+}
+
+/// The relationship of the chart part of a drawing (`c:chart` or
+/// `cx:chart` in its graphic); `None` when its graphic is not a chart.
+pub(crate) fn chart_rel<'a>(node: Node<'a, '_>) -> Option<&'a str> {
+    let chart = node
+        .descendants()
+        .find(|item| is(*item, CHART_NS, "chart") || is(*item, CHARTEX_NS, "chart"))?;
+    attr(chart, REL_NS, "id")
+}
+
+/// The theme part of the document whose main part is `main`: the one its
+/// relationships name, else Word's usual one.
+pub(crate) fn theme_part(zip: &ZipArchive<'_>, main: &str) -> Option<Vec<u8>> {
+    zip.read(&related_part(zip, main, "theme"))
+        .ok()
+        .flatten()
+        .or_else(|| zip.read(DEFAULT_THEME_PART).ok().flatten())
 }
 
 /// The link of a field instruction: a web address or a bookmark for
@@ -725,7 +784,8 @@ pub(crate) fn field_words(instr: &str) -> Vec<String> {
     words
 }
 
-/// The size of a DrawingML picture in points, from its `wp:extent`.
+/// The size of a DrawingML picture in points, from its `wp:extent`,
+/// bounded ([`bounded_size`]); `(0, 0)` when it has none.
 pub(crate) fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
     node.descendants()
         .find(|item| is(*item, WP_NS, "extent"))
@@ -736,13 +796,13 @@ pub(crate) fn drawing_size(node: Node<'_, '_>) -> (f32, f32) {
                     .and_then(|value| value.parse::<f32>().ok())
                     .unwrap_or(0.0)
             };
-            (emu("cx") / EMU_PER_PT, emu("cy") / EMU_PER_PT)
+            bounded_size((emu("cx") / EMU_PER_PT, emu("cy") / EMU_PER_PT)).unwrap_or_default()
         })
         .unwrap_or_default()
 }
 
 /// The size in points of a VML shape, from its `style` attribute
-/// (`width:120pt;height:3.5in`).
+/// (`width:120pt;height:3.5in`), bounded ([`bounded_size`]).
 pub(crate) fn vml_size(style: &str) -> (f32, f32) {
     let mut size = (0.0, 0.0);
     for declaration in style.split(';') {
@@ -768,12 +828,17 @@ pub(crate) fn vml_size(style: &str) -> (f32, f32) {
             _ => {}
         }
     }
-    size
+    // An infinite side gives no size; a huge one is bounded.
+    if !(size.0.is_finite() && size.1.is_finite()) {
+        return (0.0, 0.0);
+    }
+    bounded_size(size).unwrap_or(size)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::word::pictures::MAX_PICTURE_SIDE_PT;
 
     /// Links of hyperlink and cross-reference fields.
     #[test]
@@ -795,6 +860,24 @@ mod tests {
         assert_eq!(resolve("word", "../customXml/item1.xml"), "customXml/item1.xml");
         assert_eq!(resolve("", "word/document.xml"), "word/document.xml");
         assert_eq!(resolve("word", "/word/media/a.png"), "word/media/a.png");
+    }
+
+    /// The size of a drawing: an infinite or absurd one is not taken as
+    /// it is.
+    #[test]
+    fn drawing_sizes_are_finite_and_bounded() {
+        let size = |cx: &str, cy: &str| {
+            let xml = format!(r#"<wp:inline xmlns:wp="{WP_NS}"><wp:extent cx="{cx}" cy="{cy}"/></wp:inline>"#);
+            drawing_size(parse(&xml).unwrap().root_element())
+        };
+        assert_eq!(size("1828800", "914400"), (144.0, 72.0));
+        assert_eq!(size("inf", "914400"), (0.0, 0.0));
+        assert_eq!(size("NaN", "914400"), (0.0, 0.0));
+        let (width, height) = size("1e30", "5e29");
+        assert_eq!((width, height), (MAX_PICTURE_SIDE_PT, MAX_PICTURE_SIDE_PT / 2.0));
+        let digits = "9".repeat(45);
+        assert_eq!(vml_size(&format!("width:{digits}pt;height:10pt")), (0.0, 0.0));
+        assert_eq!(vml_size("width:3168pt;height:72pt"), (MAX_PICTURE_SIDE_PT, 36.0));
     }
 
     /// VML sizes in the units Word writes.

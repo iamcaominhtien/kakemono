@@ -585,6 +585,95 @@ fn word_document_has_every_mode() {
     assert!(medium.contains("font-family:"), "medium keeps Word's fonts");
 }
 
+/// The sample workbook of `tests/data/excel`.
+const EXCEL_SAMPLE: &str = "tests/data/excel/sample.xlsx";
+
+#[test]
+fn workbook_converts_to_markdown_tables() {
+    let dir = scratch("cli-excel-md");
+    let md = dir.join("sample.md");
+    let out = kakemono(&["convert", EXCEL_SAMPLE, "-o", md.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("read xlsx document"));
+    let text = std::fs::read_to_string(&md).unwrap();
+    assert!(text.contains("| **Year** |"), "{text}");
+    assert!(text.contains("| 1995 | 1995-01-01 |"), "{text}");
+}
+
+/// The `header_rows` of the first table of the JSON written for the sample
+/// workbook (the `Prices` sheet).
+fn prices_header_rows(extra: &[&str], name: &str) -> u64 {
+    let dir = scratch(name);
+    let json = dir.join("sample.json");
+    let mut args = vec!["convert", EXCEL_SAMPLE];
+    args.extend_from_slice(extra);
+    args.extend(["-o", json.to_str().unwrap()]);
+    let out = kakemono(&args);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    value["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|block| block.get("table"))
+        .expect("a table")["header_rows"]
+        .as_u64()
+        .unwrap()
+}
+
+#[test]
+fn header_rows_option_sets_the_header_of_workbook_tables() {
+    assert_eq!(prices_header_rows(&[], "cli-excel-hdr-auto"), 1);
+    assert_eq!(prices_header_rows(&["--header-rows", "0"], "cli-excel-hdr-0"), 0);
+    assert_eq!(prices_header_rows(&["--header-rows", "2"], "cli-excel-hdr-2"), 2);
+}
+
+#[test]
+fn workbook_is_written_as_pdf() {
+    let dir = scratch("cli-excel-pdf");
+    let pdf = dir.join("sample.pdf");
+    let out = kakemono(&["convert", EXCEL_SAMPLE, "-o", pdf.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+}
+
+#[test]
+fn workbook_has_every_html_mode() {
+    let dir = scratch("cli-excel-modes");
+    let out = kakemono(&[
+        "convert",
+        EXCEL_SAMPLE,
+        "--all",
+        "--fonts",
+        "system",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for mode in ["hard", "hard-95", "medium", "friendly"] {
+        let html = std::fs::read_to_string(dir.join(format!("sample.{mode}.html"))).unwrap();
+        assert!(html.contains("Prices"), "{mode}");
+    }
+}
+
+#[test]
+fn header_rows_needs_a_workbook_or_is_ignored_for_other_inputs() {
+    // The option only applies to workbooks: a PDF is converted as usual.
+    let dir = scratch("cli-excel-hdr-pdf");
+    let md = dir.join("ligo.md");
+    let out = kakemono(&[
+        "convert",
+        LIGO,
+        "-j",
+        "1",
+        "--header-rows",
+        "1",
+        "-o",
+        md.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
 /// Runs `kakemono` with `args` from the folder `dir`.
 fn kakemono_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_kakemono"))

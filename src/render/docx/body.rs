@@ -2,8 +2,8 @@
 //! reading order as paragraphs, tables, equations and pictures.
 
 use super::omml::{display_math, inline_math};
-use super::parts::{TEXT_WIDTH_TWIPS, TWIPS_PER_PT, section_props};
-use super::table::table_xml;
+use super::parts::{LANDSCAPE_TEXT_WIDTH_TWIPS, TEXT_WIDTH_TWIPS, TWIPS_PER_PT, page_section, section_props};
+use super::table::{Fit, table_xml};
 use super::xml::{bookmark_name, run_props, text_runs};
 use super::{DocxOptions, PendingImage};
 use crate::model::{Block, BlockKind, Document, FloatKind, ImageSpec, Span, style};
@@ -75,6 +75,8 @@ pub(super) struct Body<'a> {
     bookmarks: usize,
     /// The last thing written is a table.
     after_table: bool,
+    /// A landscape section (for wide tables) is open.
+    landscape: bool,
     /// The runs of each added note, in order: note `i` is the
     /// footnote with id `i + 1` (see [`super::footnotes_xml`]).
     pub(super) notes: Vec<String>,
@@ -93,6 +95,7 @@ impl<'a> Body<'a> {
             anchors: doc.blocks.iter().filter_map(|block| block.anchor.clone()).collect(),
             bookmarks: 0,
             after_table: false,
+            landscape: false,
             notes: Vec::new(),
         }
     }
@@ -138,10 +141,44 @@ impl<'a> Body<'a> {
                 idx += 2;
                 continue;
             }
+            self.turn_page(block, blocks.get(idx + 1).copied());
             self.block(block);
             idx += 1;
         }
+        if self.landscape {
+            self.section_break(true);
+        }
         self.xml.push_str(&section_props());
+    }
+
+    /// Opens a landscape section before a table too wide for the portrait
+    /// column (`block`), or before the heading right above it (`next`), and
+    /// closes it before anything else.
+    fn turn_page(&mut self, block: &Block, next: Option<&Block>) {
+        let is_wide = |block: &Block| {
+            block
+                .table
+                .as_ref()
+                .is_some_and(|table| Fit::of(table, LANDSCAPE_TEXT_WIDTH_TWIPS).1)
+        };
+        let wide = is_wide(block) || matches!(block.kind, BlockKind::Heading { .. }) && next.is_some_and(is_wide);
+        if wide != self.landscape {
+            if self.xml.is_empty() {
+                // Nothing before: the document starts landscape.
+                self.landscape = wide;
+                return;
+            }
+            self.section_break(self.landscape);
+            self.landscape = wide;
+            self.after_table = false;
+        }
+    }
+
+    /// Ends the section so far, landscape or not, with a paragraph that
+    /// holds its page layout.
+    fn section_break(&mut self, landscape: bool) {
+        self.xml
+            .push_str(&format!("<w:p><w:pPr>{}</w:pPr></w:p>", page_section(landscape)));
     }
 
     /// Writes one block.
@@ -476,7 +513,8 @@ impl<'a> Body<'a> {
         if let Some(table) = &block.table {
             self.before_table();
             let bookmark = self.bookmark(anchor.take());
-            let xml = table_xml(table, &mut |spans| self.runs(spans));
+            let (fit, _) = Fit::of(table, LANDSCAPE_TEXT_WIDTH_TWIPS);
+            let xml = table_xml(table, fit, &mut |spans| self.runs(spans));
             self.xml.push_str(&bookmark);
             self.xml.push_str(&xml);
             self.after_table = true;

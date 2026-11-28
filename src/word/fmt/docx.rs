@@ -9,9 +9,13 @@ use super::model::{
 };
 use super::props::{RawCell, RawPara, RawRun, TWIPS_PER_PT, ThemeFonts, is_on, parse_color, theme_fonts};
 use super::styles::{Conditional, Numbering, Styles, TableStyle, parse_num_format};
-use crate::word::docx::{Rel, alternate, document_title, field_words, main_part, parse, related_part, rels_of};
+use crate::chart::Charts;
+use crate::word::docx::{
+    Rel, alternate, chart_rel, document_title, field_words, main_part, parse, related_part, rels_of, svg_blip,
+    theme_part,
+};
 use crate::word::omml;
-use crate::word::pictures::for_layout;
+use crate::word::pictures::{MAX_PICTURE_BYTES, bounded_size, store_chart_for_layout, store_for_layout};
 use crate::word::xml::{
     DRAWING_NS, MATH_NS, MC_NS, REL_NS, VML_NS, WORD_NS, WP_NS, attr, child, children, is, toggle, val,
 };
@@ -75,6 +79,7 @@ struct Reader<'a> {
     part_index: HashMap<String, usize>,
     cell: Option<CellContext>,
     pending_bookmarks: Vec<String>,
+    charts: Charts,
 }
 
 /// Reads a `.docx` file with its formatting.
@@ -124,6 +129,7 @@ pub fn read(data: &[u8]) -> Result<FDoc> {
         part_index: HashMap::new(),
         cell: None,
         pending_bookmarks: Vec::new(),
+        charts: Charts::new(theme_part(&zip, &main).as_deref()),
     };
     let body = child(document.root_element(), WORD_NS, "body").context("the document has no body")?;
     doc.sections = reader.body(body);
@@ -293,11 +299,21 @@ fn twips(node: Node<'_, '_>, name: &str) -> Option<f32> {
         .map(|value| value / TWIPS_PER_PT)
 }
 
-/// EMU in the attribute `name` of `node` (no namespace), in points.
+/// EMU in the attribute `name` of `node` (no namespace), in points;
+/// `None` when it is not a finite number.
 fn emu(node: Node<'_, '_>, name: &str) -> Option<f32> {
     node.attribute(name)
         .and_then(|value| value.parse::<f32>().ok())
         .map(|value| value / EMU_PER_PT)
+        .filter(|value| value.is_finite())
+}
+
+/// The size in points of a drawing's `wp:extent`, bounded
+/// ([`bounded_size`]); `(0, 0)` when it has none, or a side that is not
+/// positive.
+fn extent_size(extent: Option<Node<'_, '_>>) -> (f32, f32) {
+    let size = |name: &str| extent.and_then(|extent| emu(extent, name)).unwrap_or(0.0);
+    bounded_size((size("cx"), size("cy"))).unwrap_or_default()
 }
 
 impl Reader<'_> {
@@ -854,9 +870,7 @@ impl Reader<'_> {
 
     /// A DrawingML drawing (`wp:inline` or `wp:anchor`).
     fn drawing(&mut self, node: Node<'_, '_>, fmt: &RunFmt) -> Option<Inline> {
-        let extent = child(node, WP_NS, "extent");
-        let width = extent.and_then(|extent| emu(extent, "cx")).unwrap_or(0.0);
-        let height = extent.and_then(|extent| emu(extent, "cy")).unwrap_or(0.0);
+        let (width, height) = extent_size(child(node, WP_NS, "extent"));
         let anchor = is(node, WP_NS, "anchor").then(|| drawing_anchor(node));
         let alt = child(node, WP_NS, "docPr")
             .and_then(|doc_pr| doc_pr.attribute("descr").or_else(|| doc_pr.attribute("title")))
@@ -896,7 +910,20 @@ impl Reader<'_> {
             self.group(group, width, height, &mut shape);
             return Some(Inline::Shape(Box::new(shape)));
         }
-        // A chart or diagram: its place is kept.
+        // A chart: drawn as vector at the drawing's size.
+        if let Some(rel) = chart_rel(data) {
+            let index = self.chart(rel, (width, height));
+            return Some(Inline::Image {
+                index,
+                width,
+                height,
+                anchor,
+                fmt: fmt.clone(),
+                alt,
+                crop: [0.0; 4],
+            });
+        }
+        // A diagram: its place is kept.
         Some(Inline::Image {
             index: None,
             width,
@@ -908,14 +935,27 @@ impl Reader<'_> {
         })
     }
 
+    /// The picture of the chart part of relationship `id`, drawn
+    /// `size_pt` large; `None` when the part is missing or damaged, or the
+    /// chart is not drawn.
+    fn chart(&mut self, id: &str, size_pt: (f32, f32)) -> Option<usize> {
+        let rel = self.rels.get(id).filter(|rel| !rel.external)?;
+        let xml = self.zip.read(&rel.target).ok()??;
+        let placed = self.charts.place(&xml, size_pt)?;
+        store_chart_for_layout(&mut self.images, placed.svg?, placed.size_pt, MAX_PICTURE_BYTES)
+    }
+
     /// The picture of a `pic:pic` and its cropping.
     fn blip(&mut self, pic: Node<'_, '_>) -> (Option<usize>, [f32; 4]) {
         let Some(fill) = pic.descendants().find(|item| is(*item, PIC_NS, "blipFill")) else {
             return (None, [0.0; 4]);
         };
-        let index = child(fill, DRAWING_NS, "blip")
-            .and_then(|blip| attr(blip, REL_NS, "embed"))
-            .and_then(|id| self.image(id));
+        // The SVG of a picture Word stores with a PNG beside it.
+        let index = child(fill, DRAWING_NS, "blip").and_then(|blip| {
+            svg_blip(blip)
+                .and_then(|svg| self.image(svg))
+                .or_else(|| attr(blip, REL_NS, "embed").and_then(|id| self.image(id)))
+        });
         let crop = child(fill, DRAWING_NS, "srcRect").map_or([0.0; 4], |rect| {
             let share = |name: &str| {
                 rect.attribute(name)
@@ -1084,11 +1124,7 @@ impl Reader<'_> {
             .read(&rel.target)
             .ok()
             .flatten()
-            .and_then(for_layout)
-            .map(|image| {
-                self.images.push(image);
-                self.images.len() - 1
-            });
+            .and_then(|data| store_for_layout(&mut self.images, data, MAX_PICTURE_BYTES));
         self.image_index.insert(rel.target, index);
         index
     }
@@ -1838,6 +1874,25 @@ pub(crate) fn number_text(number: u32, format: &NumFormat) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawing_extent_with_a_side_not_positive_has_no_size() {
+        for (cx, cy) in [("-914400", "914400"), ("914400", "0"), ("-1e30", "-1e30")] {
+            let xml = format!(r#"<e cx="{cx}" cy="{cy}"/>"#);
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            assert_eq!(extent_size(Some(doc.root_element())), (0.0, 0.0), "{cx} {cy}");
+        }
+        let doc = roxmltree::Document::parse(r#"<e cx="1828800" cy="914400"/>"#).unwrap();
+        assert_eq!(extent_size(Some(doc.root_element())), (144.0, 72.0));
+    }
+
+    #[test]
+    fn emu_values_are_finite() {
+        let doc = roxmltree::Document::parse(r#"<e a="914400" b="inf" c="1e40" d="NaN"/>"#).unwrap();
+        let node = doc.root_element();
+        assert_eq!(emu(node, "a"), Some(72.0));
+        assert_eq!([emu(node, "b"), emu(node, "c"), emu(node, "d")], [None, None, None]);
+    }
 
     /// The key of an obfuscated font is the GUID read backwards.
     #[test]

@@ -103,6 +103,44 @@ pub struct Table {
     pub geom: TableGeom,
 }
 
+/// Rule above the first row and below the last of a table rebuilt from a
+/// document without page geometry (Word, Excel): heavy.
+pub(crate) const HEAVY_RULE: u8 = 2;
+/// Rule under the header of such a table: thin.
+pub(crate) const THIN_RULE: u8 = 1;
+
+impl Table {
+    /// A table of the cells `rows` (on `n_cols` columns, the first
+    /// `header_rows` of them the header) ruled as a document without page
+    /// geometry shows it: a heavy rule above and below, a thin one under
+    /// the header, no vertical rules.
+    pub(crate) fn ruled(
+        rows: Vec<Vec<TableCell>>,
+        n_cols: usize,
+        header_rows: usize,
+        col_align: Vec<&'static str>,
+    ) -> Self {
+        let mut rule_above = vec![vec![0u8; n_cols]; rows.len()];
+        if let Some(first) = rule_above.first_mut() {
+            first.fill(HEAVY_RULE);
+        }
+        if let Some(under_header) = rule_above.get_mut(header_rows).filter(|_| header_rows > 0) {
+            under_header.fill(THIN_RULE);
+        }
+        Self {
+            n_cols,
+            header_rows,
+            col_align,
+            rule_above,
+            rule_bottom: vec![HEAVY_RULE; n_cols],
+            rule_left: vec![vec![false; n_cols]; rows.len()],
+            rule_right: vec![false; rows.len()],
+            rows,
+            geom: TableGeom::default(),
+        }
+    }
+}
+
 /// Where the grid of a [`Table`] lies on the page, so that the
 /// position-preserving renderer can place the HTML table over the original.
 #[derive(Debug, Clone, Default)]
@@ -219,14 +257,71 @@ impl ImageSpec {
     }
 }
 
-/// A picture file stored in the document (a picture of a Word document),
-/// ready to be written as it is.
+/// A picture file stored in the document (a picture of a Word document or
+/// of a workbook), ready to be written as it is.
 #[derive(Debug, Clone)]
 pub struct Picture {
-    /// The PNG, JPEG or SVG data (an SVG is recognised by its content).
+    /// The file, in the format [`Picture::format`].
     pub data: Vec<u8>,
-    /// The data is a JPEG (a PNG otherwise).
-    pub jpeg: bool,
+    /// The format of [`Picture::data`].
+    pub format: PictureFormat,
+    /// For an SVG: the size in pixels of the PNG drawn of it at 2 pixels
+    /// per point, found when it was read (`None` for a bitmap, whose header
+    /// gives its size, or when none would be drawn).
+    pub(crate) png_size: Option<(u32, u32)>,
+    /// For an SVG: its text is drawn as paths where it is written as an
+    /// SVG, so that it looks the same without its fonts (an `<img>` loads
+    /// none): a picture of a document. kakemono's own charts keep their
+    /// text, which can be selected and does not depend on the fonts of the
+    /// machine that converts.
+    pub(crate) outline_text: bool,
+}
+
+impl Picture {
+    /// A PNG or JPEG picture.
+    pub(crate) fn bitmap(data: Vec<u8>, format: PictureFormat) -> Self {
+        Self {
+            data,
+            format,
+            png_size: None,
+            outline_text: false,
+        }
+    }
+}
+
+/// The format of a [`Picture`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PictureFormat {
+    /// A PNG file.
+    Png,
+    /// A JPEG file.
+    Jpeg,
+    /// An SVG drawing, already written again by usvg (see
+    /// `backend::sanitize_svg`): it holds only drawing, no script, link or
+    /// style sheet, and can be written out as it is.
+    Svg,
+}
+
+impl PictureFormat {
+    /// The media type of a file of this format (`image/png`, ...).
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Svg => "image/svg+xml",
+        }
+    }
+
+    /// The extension of a file of this format, without its dot (`png`,
+    /// `jpg`, `svg`).
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Svg => "svg",
+        }
+    }
 }
 
 /// What a [`Block`] is, with the data specific to that kind. Serialised as

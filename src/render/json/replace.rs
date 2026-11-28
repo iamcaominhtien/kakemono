@@ -5,8 +5,8 @@
 //! at it, keeping its place on the page; every output then draws it.
 
 use super::apply::ContentReport;
-use crate::model::{BlockKind, Document, Picture};
-use crate::render::assets::{PictureData, picture_data};
+use crate::model::{BlockKind, Document, Picture, PictureFormat};
+use crate::render::assets::PictureData;
 use base64::Engine;
 use std::path::Path;
 
@@ -47,12 +47,7 @@ pub(crate) fn apply_replacement(
             return false;
         }
     };
-    let picture = Picture {
-        jpeg: data.starts_with(&[0xFF, 0xD8, 0xFF]),
-        data,
-    };
-    let Some((kind, size)) = picture_data(&picture).and_then(|kind| picture_size(&kind).map(|size| (kind, size)))
-    else {
+    let Some((kind, size)) = sniffed(data).and_then(|kind| picture_size(&kind).map(|size| (kind, size))) else {
         report.warnings.push(format!(
             "block {id}: replace_image {value} is not a PNG, JPEG or SVG picture"
         ));
@@ -87,12 +82,12 @@ pub(crate) fn apply_replacement(
     // figure's box: drawn at the size of the figure, never stretched, with
     // the pictures an SVG names kept inside it.
     let picture = match kind {
-        PictureData::Png(_) | PictureData::Jpeg(_) if !other_shape => picture,
-        kind => match fitted(&kind, folder.as_deref(), box_width, box_height) {
-            Some(svg) => Picture {
-                data: svg.into_bytes(),
-                jpeg: false,
-            },
+        PictureData::Png(data) if !other_shape => Picture::bitmap(data, PictureFormat::Png),
+        PictureData::Jpeg(data) if !other_shape => Picture::bitmap(data, PictureFormat::Jpeg),
+        kind => match fitted(&kind, folder.as_deref(), box_width, box_height)
+            .and_then(|svg| crate::word::pictures::normalize(svg.into_bytes()))
+        {
+            Some(picture) => picture,
             None => {
                 report
                     .warnings
@@ -107,6 +102,20 @@ pub(crate) fn apply_replacement(
         spec.embedded = Some(index);
     }
     true
+}
+
+/// The kind of the picture file `data`: a JPEG or a PNG by its signature,
+/// an SVG when its text parses as one; `None` for anything else.
+fn sniffed(data: Vec<u8>) -> Option<PictureData> {
+    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(PictureData::Jpeg(data));
+    }
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(PictureData::Png(data));
+    }
+    let text = String::from_utf8(data).ok()?;
+    resvg::usvg::Tree::from_str(&text, &resvg::usvg::Options::default()).ok()?;
+    Some(PictureData::Svg(text))
 }
 
 /// `picture` in an SVG of `width` by `height` (the figure's box, in
