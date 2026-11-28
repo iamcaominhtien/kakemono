@@ -576,6 +576,14 @@ impl Document {
     }
 }
 
+/// Adds a TrueType or OpenType font (or a collection) to those documents
+/// are laid out and SVG text drawn with, for the documents converted after
+/// it (for containers without fonts); returns its number of faces.
+#[napi]
+pub fn add_font(data: &[u8]) -> Result<u32> {
+    core::add_font(data.to_vec()).map(small).map_err(js_error)
+}
+
 /// The version of kakemono.
 #[napi]
 pub fn version() -> &'static str {

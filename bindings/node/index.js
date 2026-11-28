@@ -836,4 +836,5 @@ function __napiStampBindingTarget(exportsObject, target) {
 module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __napiLoadedBindingTarget)
 module.exports = nativeBinding
 module.exports.Document = nativeBinding.Document
+module.exports.addFont = nativeBinding.addFont
 module.exports.version = nativeBinding.version

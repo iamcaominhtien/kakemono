@@ -42,6 +42,15 @@ uint32_t kk_abi_version(void);
 // `len` is `NULL` or points to a `size_t`.
 const char *kk_version(size_t *len);
 
+// Adds the font (TrueType, OpenType or a collection) in the `len` bytes at
+// `data` to those documents are laid out and SVG text drawn with, for the
+// documents converted after it; returns its number of faces, 0 on error.
+//
+// # Safety
+// `data` points to `len` readable bytes; `err` is `NULL` or points to a
+// `KkError *`.
+size_t kk_add_font(const uint8_t *data, size_t len, struct KkError **err);
+
 // Reads and analyses the `len` bytes at `data` (a PDF, a Word document, an
 // Excel workbook, an EPUB book or a web page).
 //

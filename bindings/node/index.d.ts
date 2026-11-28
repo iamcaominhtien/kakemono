@@ -84,6 +84,13 @@ export declare class Document {
   analyze(): Promise<any>
 }
 
+/**
+ * Adds a TrueType or OpenType font (or a collection) to those documents
+ * are laid out and SVG text drawn with, for the documents converted after
+ * it (for containers without fonts); returns its number of faces.
+ */
+export declare function addFont(data: Uint8Array): number
+
 /** A binary output (Word document, EPUB book, PDF) and its picture files. */
 export interface BinaryOutput {
   /** The bytes. */

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 
-const { Document, version } = createRequire(import.meta.url)('../index.js')
+const { Document, addFont, version } = createRequire(import.meta.url)('../index.js')
 const data = (path) => new URL(`../../../tests/data/${path}`, import.meta.url).pathname
 
 test('a PDF is written as Markdown with its pictures', async () => {
@@ -82,6 +82,7 @@ test('several outputs run at once without blocking the event loop', async () => 
   assert.ok(ticks > 0, 'the event loop kept running')
 })
 
-test('the version is the library’s', () => {
+test('the version is the library’s; a font that is not one is refused', () => {
   assert.match(version(), /^\d+\.\d+\.\d+/)
+  assert.throws(() => addFont(Buffer.from('nothing')), { code: 'InvalidArg' })
 })

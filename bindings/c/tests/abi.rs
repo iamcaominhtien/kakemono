@@ -72,7 +72,10 @@ fn errors_have_a_kind_and_a_message() {
         assert!(out.is_null());
         assert_eq!(kk_error_kind(err), KK_ERROR_INVALID_ARGUMENT);
         let mut len = 0;
-        assert_eq!(text(kk_error_message(err, &mut len), len), "imageDir does not apply to epub");
+        assert_eq!(
+            text(kk_error_message(err, &mut len), len),
+            "imageDir does not apply to epub"
+        );
         kk_error_free(err);
 
         // NULL arguments are errors, not crashes; NULL frees do nothing.

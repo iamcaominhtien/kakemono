@@ -12,7 +12,13 @@
 //!   come from, and stay valid until it is freed.
 //! - A function that can fail takes `KkError **err`, which may be `NULL`.
 //!   On success it sets `*err` to `NULL`; on failure it returns `NULL` and
-//!   sets `*err` to an error the caller frees with [`kk_error_free`].
+//!   sets `*err` to an error the caller frees with `kk_error_free`. An error
+//!   already in `*err` is overwritten, not freed.
+//! - Empty bytes are a valid pointer to no bytes, never a dangling one.
+//! - A panic of kakemono is turned into an error, but Rust's default hook
+//!   still prints it (`thread 'kakemono' panicked at ...`) to stderr.
+//! - The static library needs, on Linux, `-lpthread -ldl -lm`; on Windows,
+//!   `ws2_32 userenv bcrypt ntdll advapi32 ole32`.
 //! - A `KkDocument` can be rendered from several threads at once; it must
 //!   not be freed while a render runs.
 //! - No panic crosses the ABI: one becomes an error of kind
@@ -51,6 +57,20 @@ impl Text {
     fn give(&self, len: *mut usize) -> *const c_char {
         set_len(len, self.0.len() - 1);
         self.0.as_ptr().cast()
+    }
+}
+
+/// Where empty bytes point: a real byte, so that no caller gets the
+/// dangling pointer of an empty `Vec` (UB for `memcpy` in C before C2y).
+static EMPTY: u8 = 0;
+
+/// The pointer of `data`, and its length into `len`.
+fn give_bytes(data: &[u8], len: *mut usize) -> *const u8 {
+    set_len(len, data.len());
+    if data.is_empty() {
+        &raw const EMPTY
+    } else {
+        data.as_ptr()
     }
 }
 
@@ -138,8 +158,13 @@ fn clear_error(out: *mut *mut KkError) {
 /// Runs `work` for a function that can fail: its value as a pointer the
 /// caller owns, or `NULL` with the error (a panic too) in `err`.
 fn fallible<T>(err: *mut *mut KkError, work: impl FnOnce() -> Result<T, Error>) -> *mut T {
-    let result = catch_unwind(AssertUnwindSafe(work))
-        .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "internal error in kakemono's C ABI")));
+    let result = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+        let what = kakemono_bindings::panic_message(&*panic);
+        Err(Error::new(
+            ErrorKind::Internal,
+            format!("internal error in kakemono's C ABI: {what}"),
+        ))
+    });
     match result {
         Ok(value) => {
             clear_error(err);
@@ -202,9 +227,34 @@ pub extern "C" fn kk_abi_version() -> u32 {
 /// `len` is `NULL` or points to a `size_t`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kk_version(len: *mut usize) -> *const c_char {
-    static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
-    set_len(len, VERSION.len() - 1);
-    VERSION.as_ptr().cast()
+    static VERSION: std::sync::OnceLock<Text> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| Text::new(kakemono_bindings::version()))
+        .give(len)
+}
+
+/// Adds the font (TrueType, OpenType or a collection) in the `len` bytes at
+/// `data` to those documents are laid out and SVG text drawn with, for the
+/// documents converted after it; returns its number of faces, 0 on error.
+///
+/// # Safety
+/// `data` points to `len` readable bytes; `err` is `NULL` or points to a
+/// `KkError *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_add_font(data: *const u8, len: usize, err: *mut *mut KkError) -> usize {
+    let faces = fallible(err, || {
+        if data.is_null() || len == 0 {
+            return Err(Error::invalid("data is NULL or empty"));
+        }
+        // SAFETY: `data` points to `len` readable bytes (the contract).
+        kakemono_bindings::add_font(unsafe { std::slice::from_raw_parts(data, len) }.to_vec())
+    });
+    if faces.is_null() {
+        0
+    } else {
+        // SAFETY: `fallible` gave a box of ours.
+        *unsafe { Box::from_raw(faces) }
+    }
 }
 
 /// Reads and analyses the `len` bytes at `data` (a PDF, a Word document, an
@@ -384,10 +434,7 @@ pub unsafe extern "C" fn kk_output_text(out: *const KkOutput, len: *mut usize) -
 pub unsafe extern "C" fn kk_output_data(out: *const KkOutput, len: *mut usize) -> *const u8 {
     // SAFETY: `out` is NULL or a live output (the contract).
     match unsafe { out.as_ref() }.and_then(|out| out.data.as_ref()) {
-        Some(data) => {
-            set_len(len, data.len());
-            data.as_ptr()
-        }
+        Some(data) => give_bytes(data, len),
         None => ptr::null(),
     }
 }
@@ -424,10 +471,7 @@ pub unsafe extern "C" fn kk_output_file_path(out: *const KkOutput, index: usize,
 pub unsafe extern "C" fn kk_output_file_data(out: *const KkOutput, index: usize, len: *mut usize) -> *const u8 {
     // SAFETY: `out` is NULL or a live output (the contract).
     match unsafe { out.as_ref() }.and_then(|out| out.files.get(index)) {
-        Some((_, data)) => {
-            set_len(len, data.len());
-            data.as_ptr()
-        }
+        Some((_, data)) => give_bytes(data, len),
         None => ptr::null(),
     }
 }

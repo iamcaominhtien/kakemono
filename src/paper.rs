@@ -299,6 +299,10 @@ impl Paper {
         match opts.mode {
             Mode::Friendly => None,
             Mode::Medium => {
+                // Without a font, the friendly page.
+                if !crate::layout::fonts::any_font() {
+                    return None;
+                }
                 let doc = word::fmt::read(data, self.word_format()?).ok()?;
                 Some(HtmlOutput {
                     html: crate::layout::html::to_html(&doc),
@@ -321,7 +325,8 @@ impl Paper {
     /// laid out. A PDF already has its pages.
     ///
     /// # Errors
-    /// When the paper is a PDF, or the layout cannot be written.
+    /// When the paper is a PDF, no font is installed nor given with
+    /// [`crate::add_font`], or the layout cannot be written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
         self.to_pdf_with(&WorkbookPdfConfig::default())
     }
@@ -333,6 +338,12 @@ impl Paper {
     /// # Errors
     /// As [`Paper::to_pdf`].
     pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
+        if !matches!(self.file, Source::Pdf(_)) && !crate::layout::fonts::any_font() {
+            anyhow::bail!(
+                "no font is installed: laying out pages needs at least one TrueType or OpenType font \
+                 (install one, name its folder in KAKEMONO_FONT_DIRS, or give it with add_font)"
+            );
+        }
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
             Source::Sheet(doc, paper, data, excel_config) => match config.style {

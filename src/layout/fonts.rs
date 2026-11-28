@@ -7,7 +7,71 @@ use crate::word::fmt::model::{EmbeddedFont, FontKind};
 use rustybuzz::ttf_parser;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
+
+/// Fonts given with [`add_font`], in the order they were given.
+static ADDED: RwLock<Vec<Arc<Vec<u8>>>> = RwLock::new(Vec::new());
+
+/// Adds a TrueType or OpenType font (or a collection) to those kakemono
+/// lays out documents with and draws the text of SVG pictures with,
+/// besides the fonts installed on the computer and in `KAKEMONO_FONT_DIRS`.
+/// For where no font is installed: WebAssembly, small containers. It applies
+/// to the documents converted after it; the fonts are kept until the
+/// process ends. Returns the number of faces in `data`.
+///
+/// # Errors
+/// When `data` holds no font face.
+pub fn add_font(data: Vec<u8>) -> anyhow::Result<usize> {
+    let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+    let faces = (0..count)
+        .filter(|&index| ttf_parser::Face::parse(&data, index).is_ok())
+        .count();
+    if faces == 0 {
+        anyhow::bail!("not a TrueType or OpenType font");
+    }
+    ADDED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Arc::new(data));
+    Ok(faces)
+}
+
+/// The fonts given with [`add_font`].
+pub(crate) fn added_fonts() -> Vec<Arc<Vec<u8>>> {
+    ADDED.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+/// Whether there is any font to lay out with: one given with [`add_font`],
+/// or a font file in the folders of installed fonts (looked for once).
+pub(crate) fn any_font() -> bool {
+    static INSTALLED: OnceLock<bool> = OnceLock::new();
+    !added_fonts().is_empty() || *INSTALLED.get_or_init(|| font_dirs().iter().any(|dir| has_font_file(dir, 0)))
+}
+
+/// Whether there is a font file under `dir`.
+fn has_font_file(dir: &Path, depth: usize) -> bool {
+    const MAX_DEPTH: usize = 6;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            return depth < MAX_DEPTH && has_font_file(&path, depth + 1);
+        }
+        is_font_file(&path)
+    })
+}
+
+/// Whether `path` names a font file by its extension.
+fn is_font_file(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc")
+}
 
 /// A loaded font face.
 pub struct Face {
@@ -84,6 +148,8 @@ enum Source {
     File(PathBuf),
     /// A font embedded in the document.
     Embedded(usize),
+    /// A font given with [`add_font`].
+    Added(usize),
 }
 
 /// The fonts available to the layout.
@@ -92,6 +158,8 @@ pub struct FontBook {
     by_family: HashMap<String, Vec<Candidate>>,
     loaded: HashMap<(Source, u32), FaceId>,
     embedded: Vec<Arc<Vec<u8>>>,
+    /// The fonts given with [`add_font`] when the book was made.
+    added: Vec<Arc<Vec<u8>>>,
     resolved: HashMap<StyleKey, Option<ChosenFace>>,
     /// [`FontBook::style`] by family as the document spells it, then by
     /// bold and italic (`2 * bold + italic`).
@@ -186,6 +254,7 @@ impl FontBook {
             by_family: HashMap::new(),
             loaded: HashMap::new(),
             embedded: Vec::new(),
+            added: added_fonts(),
             resolved: HashMap::new(),
             styles: HashMap::new(),
             fallback_faces: None,
@@ -193,6 +262,10 @@ impl FontBook {
         };
         for dir in font_dirs() {
             book.scan(&dir, 0);
+        }
+        for at in 0..book.added.len() {
+            let data = Arc::clone(&book.added[at]);
+            book.add_faces(&data, &Source::Added(at));
         }
         for (at, font) in embedded.iter().enumerate() {
             book.embedded.push(Arc::new(font.data.clone()));
@@ -221,29 +294,29 @@ impl FontBook {
                 }
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(std::ffi::OsStr::to_str)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if !matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+            if !is_font_file(&path) {
                 continue;
             }
             let Ok(data) = std::fs::read(&path) else { continue };
-            let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
-            for index in 0..count {
-                let Ok(face) = ttf_parser::Face::parse(&data, index) else {
-                    continue;
-                };
-                let (families, bold, italic) = describe(&face);
-                for family in families {
-                    self.by_family.entry(family).or_default().push(Candidate {
-                        source: Source::File(path.clone()),
-                        index,
-                        bold,
-                        italic,
-                    });
-                }
+            self.add_faces(&data, &Source::File(path));
+        }
+    }
+
+    /// Adds the faces of the font file `data`, read from `source`.
+    fn add_faces(&mut self, data: &[u8], source: &Source) {
+        let count = ttf_parser::fonts_in_collection(data).unwrap_or(1);
+        for index in 0..count {
+            let Ok(face) = ttf_parser::Face::parse(data, index) else {
+                continue;
+            };
+            let (families, bold, italic) = describe(&face);
+            for family in families {
+                self.by_family.entry(family).or_default().push(Candidate {
+                    source: source.clone(),
+                    index,
+                    bold,
+                    italic,
+                });
             }
         }
     }
@@ -377,6 +450,7 @@ impl FontBook {
         let data = match &source {
             Source::File(path) => Arc::new(std::fs::read(path).ok()?),
             Source::Embedded(at) => self.embedded.get(*at)?.clone(),
+            Source::Added(at) => self.added.get(*at)?.clone(),
         };
         let face = ttf_parser::Face::parse(&data, index).ok()?;
         let metrics = metrics(&face);

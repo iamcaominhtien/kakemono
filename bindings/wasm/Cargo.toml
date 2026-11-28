@@ -1,0 +1,31 @@
+# The WebAssembly binding of kakemono (npm: @kakemono/wasm). A workspace of
+# its own: it builds for wasm32-unknown-unknown only, without the library's
+# network access, tokenizers or command line.
+[workspace]
+
+[package]
+name = "kakemono-wasm"
+description = "The WebAssembly binding of kakemono (npm: @kakemono/wasm)"
+version = "0.20.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/iamcaominhtien/kakemono"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+kakemono-bindings = { path = "../core", default-features = false }
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"
+serde_json = "1"
+serde = "1"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = 3
+# Not `strip`: wasm-bindgen reads the module's target_features section.
+debug = false
+lto = true
+codegen-units = 1

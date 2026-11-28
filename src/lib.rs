@@ -56,9 +56,13 @@ pub mod render;
 #[doc(hidden)]
 pub mod word;
 
+/// The version of kakemono.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub use analysis::pipeline::Analysis;
 pub use backend::{PageRenderer, PngCompression};
 pub use config::{AnalyzeOptions, LayoutConfig};
+pub use layout::fonts::add_font;
 pub use paper::{InputFormat, Paper, convert};
 pub use render::{
     Chunk, ChunkOptions, ContentReport, DocxOptions, DocxOutput, EpubOptions, Equations, HtmlOptions, HtmlOutput,

@@ -1,0 +1,7 @@
+# Reading a PDF recurses deeply: the native worker threads have 16 MB of
+# stack, and so does the module's shadow stack (the default is 1 MB).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]
+
+[build]
+target = "wasm32-unknown-unknown"

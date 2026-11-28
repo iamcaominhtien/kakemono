@@ -164,7 +164,11 @@ fn every_target_name_reads_back() {
 #[test]
 fn chunks_come_as_objects_and_the_title_is_read() {
     let doc = ligo();
-    assert!(doc.title().is_some_and(|title| title.contains("Gravitational")), "{:?}", doc.title());
+    assert!(
+        doc.title().is_some_and(|title| title.contains("Gravitational")),
+        "{:?}",
+        doc.title()
+    );
     let opts = RenderOptions {
         max_tokens: Some(256),
         ..Default::default()
@@ -188,4 +192,10 @@ fn a_panic_on_the_worker_thread_is_an_internal_error() {
     let err = super::guarded::<()>(|| panic!("boom")).unwrap_err();
     assert_eq!(err.kind(), super::ErrorKind::Internal);
     assert!(err.message().contains("boom"), "{err}");
+}
+
+#[test]
+fn a_font_that_is_not_one_is_refused() {
+    let err = super::add_font(b"not a font".to_vec()).unwrap_err();
+    assert_eq!(err.kind(), super::ErrorKind::InvalidArgument);
 }

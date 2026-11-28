@@ -14,12 +14,12 @@
 //! threads nor unwinding, the work runs on the caller's stack and a panic
 //! aborts the module.
 
+pub use kakemono::Chunk;
 use kakemono::config::ExcelConfig;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
     MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
-pub use kakemono::Chunk;
 use serde::Deserialize;
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
@@ -105,7 +105,7 @@ impl From<anyhow::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The message of a panic's payload.
-fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     panic
         .downcast_ref::<&str>()
         .map(|text| (*text).to_string())
@@ -150,7 +150,18 @@ pub fn guarded<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
 
 /// The version of the kakemono library.
 pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    kakemono::VERSION
+}
+
+/// Adds a TrueType or OpenType font (or a collection) to those documents
+/// are laid out and SVG text drawn with, for the documents converted after
+/// it: for where no font is installed (WebAssembly, small containers).
+/// Returns the number of faces.
+///
+/// # Errors
+/// When `data` holds no font face.
+pub fn add_font(data: Vec<u8>) -> Result<usize> {
+    kakemono::add_font(data).map_err(|err| Error::invalid(format!("{err:#}")))
 }
 
 /// The arXiv identifier in `text` (an id such as `1706.03762` or an arXiv
@@ -333,7 +344,10 @@ impl FromStr for Target {
             .map(|(_, target)| *target)
             .ok_or_else(|| {
                 let names: Vec<&str> = Self::ALL.iter().map(|(name, _)| *name).collect();
-                Error::invalid(format!("unknown target '{name}' (expected one of {})", names.join(", ")))
+                Error::invalid(format!(
+                    "unknown target '{name}' (expected one of {})",
+                    names.join(", ")
+                ))
             })
     }
 }
@@ -404,7 +418,10 @@ impl RenderOptions {
             ("maxTokens", self.max_tokens.is_some()),
             ("tokenizer", self.tokenizer.is_some()),
         ];
-        all.into_iter().filter(|(_, given)| *given).map(|(name, _)| name).collect()
+        all.into_iter()
+            .filter(|(_, given)| *given)
+            .map(|(name, _)| name)
+            .collect()
     }
 
     /// The formulas option.
@@ -441,7 +458,12 @@ impl RenderOptions {
 /// folder.
 fn check_image_dir(dir: &str) -> Result<()> {
     let normal = dir.replace('\\', "/");
-    if dir.is_empty() || normal.starts_with('/') || Path::new(dir).is_absolute() || normal.split('/').any(|part| part == "..")
+    // A `:` makes a Windows path drive-relative (`C:dir`) or names an NTFS
+    // stream: either can leave the output folder.
+    if dir.is_empty()
+        || normal.starts_with('/')
+        || Path::new(dir).is_absolute()
+        || normal.split('/').any(|part| part == ".." || part.contains(':'))
     {
         return Err(Error::invalid(format!(
             "imageDir must be a relative folder inside the output folder, not '{dir}'"
@@ -620,9 +642,17 @@ impl Document {
                     .map(|name| name.to_string_lossy().into_owned());
                 (Paper::from_path_with(&path, &excel)?, name)
             }
-            Source::Url(url) => (Paper::from_url(&url)?, None),
+            Source::Url(url) => {
+                if opts.header_rows.is_some() {
+                    return Err(Error::invalid(
+                        "headerRows applies to a workbook read from bytes or a file, not from an address",
+                    ));
+                }
+                (Paper::from_url(&url)?, None)
+            }
             Source::Arxiv(text) => {
-                let id = parse_arxiv_id(&text).ok_or_else(|| Error::invalid(format!("'{text}' is not an arXiv id or URL")))?;
+                let id = parse_arxiv_id(&text)
+                    .ok_or_else(|| Error::invalid(format!("'{text}' is not an arXiv id or URL")))?;
                 let data = kakemono::source::arxiv::fetch_pdf(&id)?;
                 (Paper::from_bytes_with(data, &excel)?, Some(format!("arXiv:{id}")))
             }
@@ -721,7 +751,11 @@ impl Document {
                         "the {} mode of a {} document shows its own layout: it cannot show edited text from content{}",
                         mode_name(mode),
                         self.format(),
-                        if paper.format().has_pages() { " (hard-95 can)" } else { " (friendly can)" }
+                        if paper.format().has_pages() {
+                            " (hard-95 can)"
+                        } else {
+                            " (friendly can)"
+                        }
                     )));
                 }
                 let html = HtmlOptions {
@@ -754,7 +788,11 @@ impl Document {
             Target::Markdown => {
                 let mode = match parse_mode(opts.mode.as_deref().unwrap_or("friendly"))? {
                     mode @ (Mode::Medium | Mode::Friendly) => mode,
-                    _ => return Err(Error::invalid("Markdown has no pages: mode can be 'friendly' or 'medium'")),
+                    _ => {
+                        return Err(Error::invalid(
+                            "Markdown has no pages: mode can be 'friendly' or 'medium'",
+                        ));
+                    }
                 };
                 let markdown = MarkdownOptions {
                     inline_images: opts.inline_images.unwrap_or(false),
@@ -859,10 +897,12 @@ impl Document {
             return Err(Error::invalid("maxTokens must be at least 1"));
         }
         let counter = match &opts.tokenizer {
-            Some(spec) => TokenCounter::load(spec).map_err(|err| Error::invalid(format!("{err:#}")))?,
+            Some(spec) => TokenCounter::load(spec)?,
             None => TokenCounter::estimate(),
         };
-        Ok(self.paper.to_chunks(&self.analysis, &ChunkOptions { max_tokens, counter }))
+        Ok(self
+            .paper
+            .to_chunks(&self.analysis, &ChunkOptions { max_tokens, counter }))
     }
 
     /// A Word document, workbook or EPUB book laid out in pages, as a PDF;
