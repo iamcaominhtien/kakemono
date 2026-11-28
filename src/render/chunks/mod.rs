@@ -92,6 +92,7 @@ pub fn render_chunks(doc: &Document, opts: &ChunkOptions) -> Vec<Chunk> {
     // The headings open above the current block: (level, text).
     let mut headings: Vec<(u8, String)> = Vec::new();
     for block in &doc.blocks {
+        crate::common::cancel::check();
         if let BlockKind::Heading { level } = block.kind {
             builder.flush();
             while headings.last().is_some_and(|&(open, _)| open >= level) {

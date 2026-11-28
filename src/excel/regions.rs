@@ -34,7 +34,9 @@ pub(crate) fn split(grid: &Grid, config: &ExcelConfig) -> Vec<Merge> {
     // The texts that run over empty cells up to another cell of their
     // row: (item, that cell).
     let mut reaches: Vec<(usize, (u32, u32))> = Vec::new();
+    let mut pace = crate::common::cancel::Pace::default();
     for (&(row, col), cell) in &grid.cells {
+        pace.tick();
         if !visible((row, col)) {
             continue;
         }

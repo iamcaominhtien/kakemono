@@ -79,6 +79,7 @@ pub fn write(
     };
     let bookmarks: HashMap<&str, &Destination> = destinations.iter().map(|dest| (dest.name.as_str(), dest)).collect();
     for page in pages {
+        crate::common::cancel::check();
         let Some(settings) = PageSettings::from_wh(page.width.max(1.0), page.height.max(1.0)) else {
             continue;
         };

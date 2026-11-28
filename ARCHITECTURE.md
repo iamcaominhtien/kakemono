@@ -81,7 +81,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | `word/mtef.rs` | MathType and Equation Editor formulas (MTEF 3 and 5, the `Equation Native` stream of an OLE object) → `MathNode` |
 | `layout/` | The Word layout engine (SVG pictures drawn as vector): `fonts` (embedded, installed, metric-compatible open fonts, and the built-in metrics of `metrics.txt` for fonts with no open match), `shape` (glyphs with Word's defaults), `para` (line breaking, tabs, justification, line heights), `flow` (sections, columns, pages: spacing, widows and orphans, keep-with-next, tables, headers and footers, footnotes, floating objects), `display` (what is drawn where: the runs of a line in one face are joined as they are placed, and each glyph takes 28 bytes, since every page is held until the PDF is written), `pdf` (written with krilla, each page dropped once drawn), `html` (the medium mode for Word), `lines` (text lines of a PDF with their baselines, to compare a layout with Word's), `workbook` (a workbook's `Document` as an `FDoc`: headings, paragraphs, figures, and tables whose columns are measured with the engine's fonts and fitted to the page, smaller, on landscape pages or in groups of columns; `WorkbookPdfConfig`), `workbook/print` (the default PDF of a workbook: each sheet printed as Excel prints it, from the sheet view's reading, as display pages) |
 | `backend/` | Adapter around hayro: reads pages (`extract`), recognizes fonts (`fonts`), draws pages/regions (`render`; resvg turns a very large SVG page into a PNG; a photograph is cut out as a JPEG); `svg`: a foreign SVG picture parsed by usvg and written back by usvg's writer (no script, event handler, `foreignObject`, style sheet or link survives; only data pictures within the pixel cap), once: what it asks for (text, elements, path data, with the copies `<use>` makes) is counted before it is read and capped, and one too large to write as SVG (nodes, points, filters, bytes, or not well-formed once written) is kept as a PNG; drawn into a PDF as vector by krilla-svg (as a capped PNG when it has filters). The caps are constants next to `MAX_RASTER_PIXELS` in `render` |
-| `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution |
+| `common/` | Shared code with no dependency on any other module: geometry, text patterns (caption labels), parallel execution, stopping a conversion (`cancel.rs`: `CancelToken`) |
 | `analysis/` | The analysis stages, orchestrated by `analysis/pipeline.rs` |
 | `model/` | `Document` and its sub-types: the output of analysis, the input of HTML output, and also JSON |
 | `render/` | HTML output: a `Renderer` for each mode, the `assets` image store (pictures drawn from the pages of the PDF, or stored in the document for a Word input: `Pictures`, PNG, JPEG or SVG — an SVG is always an `<img>`, never inline SVG), shared HTML parts |
@@ -98,7 +98,7 @@ An edited JSON file is applied to the `Document` (`render/json/apply.rs`; a figu
 | `render/json/` | Editable JSON output: `markup` (spans ↔ one string with HTML-like tags; a formula in running text becomes `<m id>` and comes back as its original spans), `mod.rs` (the file: source, blocks with their section, layout, LaTeX/MathML, pictures through the `assets` store), `apply` (an edited file back into the `Document`: only text that differs from what would be written is applied; edited blocks lose their per-line text — `hlines`, `line_texts`, a table's `inner_spans` — which is how hard-95 knows to flow them in their box); read-only fields derived from the text: `plain_text` (`plain`: no tags, formulas as `$LaTeX$`), `citation` (a reference's authors, title, venue, year, identifiers, by the shapes of the usual citation styles), `front` (`meta`: authors with affiliations, e-mail addresses and notes, arXiv category, date, DOI, keywords, abstract) |
 | `render/chunks/` | Chunks for retrieval (RAG): `mod.rs` groups the blocks by section (text as the JSON's `plain`, tables as rows), cuts a block that does not fit at sentence ends, heads each chunk with its section path; `tokens` counts tokens, by an estimate fitted on two tokenizers or by a real tokenizer (Hugging Face `tokenizers`, OpenAI's through `tiktoken-rs`; optional cargo features) |
 | `bindings/` | The bindings for other languages ([docs/BINDINGS.md](docs/BINDINGS.md)), a Cargo workspace of its own: `core` (the façade every binding shares: a `Document` opened once and rendered to any target, options as plain data or JSON with the Python package's checks and defaults, work on a thread with a 16 MB stack, panics turned into errors of a kind), `c` (its C ABI, `include/kakemono.h`), `node` (napi-rs), `wasm` (wasm-bindgen, a workspace of its own), `jvm` (JNI and the Maven project), `dotnet` (C# over the C ABI) |
-| `python/` | The Python package (separate crate, built with maturin): `src/lib.rs` binds `Paper` and its analysis as one `Document` class with PyO3 (analysed once, written in any format) and releases the GIL, and binds `render-svg` and `formula`; `kakemono/__init__.py` adds paths and arXiv ids |
+| `python/` | The Python package (separate crate, built with maturin): `src/lib.rs` binds `Paper` and its analysis as one `Document` class with PyO3 (analysed once, written in any format) and releases the GIL, and binds `render-svg` and `formula`; `kakemono/__init__.py` adds paths and arXiv ids, `kakemono/aio.py` the same functions awaited (in worker threads) |
 | `raster/` | Formulas from pictures (`kakemono formula`): pieces of ink recognised against the TeX fonts (`tex`, `templates`, `shape`, `recognize`), then rebuilt by `analysis::math` |
 
 Dependencies run in one direction only:
@@ -158,6 +158,16 @@ it does and *why*, and does not repeat the code. For a non-trivial function, sta
 parameters, the return value and the special cases (when it returns `None`, when it panics).
 
 **Visibility.** Only what belongs to the public API is `pub`; internals are `pub(crate)` or private.
+
+**Stopping points.** A conversion run with a `CancelToken` (`common/cancel.rs`) stops at the next
+`cancel::check()`, which unwinds the stack to `CancelToken::run`: the functions keep their
+signatures. A loop that can run for long (the pages, the blocks of a renderer, the rows of a table,
+the paragraphs of a Word document) calls `cancel::check()` once per step, or
+`cancel::Pace::tick()` when its steps are tiny (the events of an XML part, the cells of a sheet).
+Put a check only where no lock shared beyond the work is held and nothing shared is half changed.
+Worker threads take the token of the thread that starts them (`parallel::map` does it); a blocking
+call with no stopping point of its own (a download) goes through `cancel::blocking`. A check costs
+a few nanoseconds: keep them at least a step of real work apart.
 
 CI checks these conventions (`clippy.toml`, lints in `lib.rs`).
 

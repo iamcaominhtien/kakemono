@@ -647,6 +647,7 @@ impl Reader<'_> {
         let mut cp = start;
         self.fields.clear();
         while cp < end {
+            crate::common::cancel::check();
             let mark = (cp..end)
                 .find(|&at| matches!(self.text.units[at as usize], PARAGRAPH_END | CELL_END))
                 .unwrap_or(end.saturating_sub(1).max(cp));

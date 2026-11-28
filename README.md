@@ -88,7 +88,9 @@ let out = paper.to_html(&analysis, &HtmlOptions { mode: Mode::Friendly, ..Defaul
 std::fs::write("paper.html", out.html)?;
 ```
 
-The [API reference](https://docs.rs/kakemono) and [library guide](docs/GUIDE.md#use-as-a-library) cover other outputs. Python bindings and examples are documented in [python/README.md](python/README.md); Node.js, WebAssembly, the JVM, .NET and C in [docs/BINDINGS.md](docs/BINDINGS.md).
+Any of this can be stopped from another thread, or after a time limit, with a `CancelToken`:
+`token.run(|| paper.analyze())` returns `Err(Cancelled)` soon after `token.cancel()`, normally
+within a page. The [API reference](https://docs.rs/kakemono) and [library guide](docs/GUIDE.md#use-as-a-library) cover other outputs. Python bindings and examples are documented in [python/README.md](python/README.md); Node.js, WebAssembly, the JVM, .NET and C in [docs/BINDINGS.md](docs/BINDINGS.md).
 
 ## Limitations
 

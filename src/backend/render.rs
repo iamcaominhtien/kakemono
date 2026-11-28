@@ -207,6 +207,7 @@ impl<'a> PageRenderer<'a> {
         // On white, every pixel is opaque: premultiplied is plain RGBA.
         let rgba = (!transparent).then(|| pixmap.data_as_u8_slice().to_vec());
         let png = encode_png(pixmap, self.png)?;
+        crate::common::cancel::check();
         if let Some(rgba) = rgba
             && png.len() >= PHOTO_MIN_PNG_BYTES
             && many_colours(&rgba, PHOTO_MIN_COLOURS)
@@ -235,7 +236,9 @@ impl<'a> PageRenderer<'a> {
             &mut ctx,
             transform,
         );
+        crate::common::cancel::check();
         ctx.flush();
+        crate::common::cancel::check();
         let mut pixmap = Pixmap::new(width_px, height_px);
         ctx.render_with(
             &mut pixmap,
@@ -245,6 +248,7 @@ impl<'a> PageRenderer<'a> {
                 ..Default::default()
             },
         );
+        crate::common::cancel::check();
         Some(pixmap)
     }
 

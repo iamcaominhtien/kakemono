@@ -124,6 +124,7 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     }
     let mut docs = Vec::with_capacity(package.spine.len());
     for path in &package.spine {
+        crate::common::cancel::check();
         let text = zip
             .read_text(path)?
             .with_context(|| format!("the EPUB has no content document {path}"))?;

@@ -222,6 +222,7 @@ pub(crate) fn render_flow(blocks: &[&Block], images: &mut ImageStore<'_>, ctx: &
     // The notes of headings, held back until the block after them.
     let mut held_notes = String::new();
     while block_idx < blocks.len() {
+        crate::common::cancel::check();
         let block = blocks[block_idx];
         if ctx.offprint
             && let Some(end) = code_run(blocks, block_idx)

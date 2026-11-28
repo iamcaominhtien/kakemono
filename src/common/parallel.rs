@@ -6,6 +6,7 @@
 //! time, so a few slow pages do not hold up the others, and results come
 //! back in item order.
 
+use crate::common::cancel;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,10 +45,18 @@ where
     let jobs = resolve_jobs(jobs).min(n);
     if jobs <= 1 {
         let mut state = init();
-        return (0..n).map(|i| func(&mut state, i)).collect();
+        return (0..n)
+            .map(|i| {
+                cancel::check();
+                func(&mut state, i)
+            })
+            .collect();
     }
     let next = AtomicUsize::new(0);
+    let token = cancel::current();
     let worker = || {
+        // A cancelled worker unwinds, and its panic is handed on by `join`.
+        let _entered = cancel::enter(token.as_ref());
         let mut state = init();
         let mut done = Vec::new();
         loop {
@@ -55,6 +64,7 @@ where
             if i >= n {
                 break;
             }
+            cancel::check();
             done.push((i, func(&mut state, i)));
         }
         done
@@ -173,6 +183,7 @@ where
     if jobs <= 1 {
         let mut state = init();
         for i in 0..n {
+            cancel::check();
             consume(i, func(&mut state, i))?;
         }
         return Ok(());
@@ -187,12 +198,17 @@ where
         moved: Condvar::new(),
     };
     let (sender, results) = mpsc::channel::<(usize, std::thread::Result<R>)>();
+    let token = cancel::current();
     let worker = |sender: mpsc::Sender<(usize, std::thread::Result<R>)>| {
+        let _entered = cancel::enter(token.as_ref());
         let mut state = init();
         while let Some(i) = gate.take(n, ahead) {
-            // A panic is sent to the caller, which would otherwise wait for
-            // this item for ever.
-            let result = catch_unwind(AssertUnwindSafe(|| func(&mut state, i)));
+            // A panic (a cancellation too) is sent to the caller, which
+            // would otherwise wait for this item for ever.
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                cancel::check();
+                func(&mut state, i)
+            }));
             let failed = result.is_err();
             if sender.send((i, result)).is_err() || failed {
                 break;

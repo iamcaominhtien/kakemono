@@ -176,6 +176,7 @@ impl Writer<'_, '_> {
         let mut in_abstract = false;
         let mut after_front = false;
         while idx < blocks.len() {
+            crate::common::cancel::check();
             let block = blocks[idx];
             if !after_front && !matches!(block.kind, BlockKind::Title | BlockKind::Authors | BlockKind::Note) {
                 self.arxiv_link(doc);
@@ -517,7 +518,9 @@ impl Writer<'_, '_> {
     /// A table as a GitHub-flavoured pipe table.
     fn pipe_table(&self, table: &Table) -> String {
         let mut lines = Vec::new();
+        let mut pace = crate::common::cancel::Pace::default();
         for (row_idx, row) in table.rows.iter().enumerate() {
+            pace.tick();
             let mut cells = vec![String::new(); table.n_cols];
             for cell in row.iter().filter(|cell| cell.col < table.n_cols) {
                 cells[cell.col] = self.inline.cell(&cell.spans);
@@ -605,9 +608,13 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
             _ => "---",
         })
         .collect();
+    let mut pace = crate::common::cancel::Pace::default();
     let body: Vec<Vec<String>> = grid[header_rows..]
         .iter()
-        .filter_map(|row| flat_row(inline, head, row, table.n_cols))
+        .filter_map(|row| {
+            pace.tick();
+            flat_row(inline, head, row, table.n_cols)
+        })
         .collect();
     // A column empty in every row (one a merged cell covers, written once)
     // is left out.
@@ -629,7 +636,10 @@ fn flat_table(inline: &Inline<'_>, table: &Table) -> String {
         .map(|(rule, _)| (*rule).to_string())
         .collect();
     let mut lines = vec![pipe_row(&kept(&header)), pipe_row(&rule)];
-    lines.extend(body.iter().map(|cells| pipe_row(&kept(cells))));
+    lines.extend(body.iter().map(|cells| {
+        pace.tick();
+        pipe_row(&kept(cells))
+    }));
     lines.join("\n")
 }
 
@@ -746,7 +756,9 @@ fn under_one_group(header: &[Vec<Option<&TableCell>>], cell: &TableCell, n_cols:
 fn covering_cells(table: &Table) -> Vec<Vec<Option<&TableCell>>> {
     let n_rows = table.rows.len();
     let mut grid = vec![vec![None; table.n_cols]; n_rows];
+    let mut pace = crate::common::cancel::Pace::default();
     for (row_idx, row) in table.rows.iter().enumerate() {
+        pace.tick();
         for cell in row {
             let rows_end = (row_idx + cell.rowspan.max(1)).min(n_rows);
             let cols_end = (cell.col + cell.colspan.max(1)).min(table.n_cols);

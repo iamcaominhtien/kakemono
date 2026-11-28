@@ -285,6 +285,7 @@ impl Reader<'_> {
     fn items(&mut self, node: Node<'_, '_>) -> Vec<Item> {
         let mut items = Vec::new();
         for item in node.children().filter(Node::is_element) {
+            crate::common::cancel::check();
             if item.tag_name().namespace() != Some(WORD_NS) {
                 continue;
             }
