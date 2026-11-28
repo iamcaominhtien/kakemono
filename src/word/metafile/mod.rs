@@ -129,6 +129,31 @@ mod tests {
         wmf
     }
 
+    /// A window whose extent is negative is flipped about its origin, as
+    /// GDI maps it: what is drawn inside it lies inside the picture.
+    #[test]
+    fn wmf_window_with_a_negative_extent() {
+        let data = wmf(|record| {
+            // Origin (-3473, -3766), extent 1934 wide and -1202 high: the
+            // window spans y from -4968 to -3766.
+            record(0x020B, &[-3766, -3473]);
+            record(0x020C, &[-1202, 1934]);
+            record(0x02FC, &[0, 0x00FF, 0, 0]);
+            record(0x012D, &[0]);
+            // A rectangle inside it (bottom, right, top, left).
+            record(0x041B, &[-4900, -1600, -3800, -3400]);
+        });
+        let svg = to_svg(&data).expect("an SVG");
+        let path = svg.split("d=\"").nth(1).expect("a path");
+        let path = &path[..path.find('"').expect("its end")];
+        let numbers: Vec<f32> = path
+            .split(|ch: char| !(ch.is_ascii_digit() || ch == '.' || ch == '-'))
+            .filter_map(|number| number.parse().ok())
+            .collect();
+        assert!(!numbers.is_empty());
+        assert!(numbers.iter().all(|value| (0.0..=1934.0).contains(value)), "{svg}");
+    }
+
     /// Lines, shapes, pens, fonts and saved states of a WMF reach the SVG.
     #[test]
     fn wmf_shapes_pens_and_fonts() {

@@ -117,7 +117,7 @@ fn record(dc: &mut Dc, function: u16, params: &[u8], window: &mut Option<[f32; 4
 }
 
 /// `SETWINDOWORG` and `SETWINDOWEXT`: the window, mapped to a box of its
-/// size at the origin (flipped when its extent is negative).
+/// size at the origin (flipped along an axis whose extent is negative).
 fn set_window(dc: &mut Dc, function: u16, params: &[u8], window: &mut Option<[f32; 4]>) {
     let (y, x) = (param(params, 0), param(params, 1));
     let mut view = window.unwrap_or([0.0, 0.0, 0.0, 0.0]);
@@ -131,12 +131,11 @@ fn set_window(dc: &mut Dc, function: u16, params: &[u8], window: &mut Option<[f3
         view[3] = y;
     }
     *window = Some(view);
+    // As GDI maps it: the window's origin to the box's, its far corner
+    // (origin plus extent, which may be negative) to the box's far corner.
     if let Some((ext_x, ext_y)) = dc.state.window_ext {
         dc.state.viewport_ext = Some((ext_x.abs(), ext_y.abs()));
-        dc.state.viewport_org = (
-            if ext_x < 0.0 { ext_x.abs() } else { 0.0 },
-            if ext_y < 0.0 { ext_y.abs() } else { 0.0 },
-        );
+        dc.state.viewport_org = (0.0, 0.0);
     }
 }
 
