@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The .NET binding of kakemono, over its C ABI (bindings/c: the native
+       library kakemono_ffi). The release workflow puts each platform's
+       library in runtimes/<rid>/native/ of the package. -->
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <!-- Trimming and NativeAOT: the analyzers refuse reflection (warnings are errors). -->
+    <IsAotCompatible Condition="'$(TargetFramework)' == 'net8.0'">true</IsAotCompatible>
+    <RootNamespace>Kakemono</RootNamespace>
+    <PackageId>Kakemono</PackageId>
+    <Version>0.20.0</Version>
+    <Authors>Cao Minh Tiến</Authors>
+    <Description>Convert PDF papers, Word documents, Excel workbooks, EPUB books and web pages to Markdown, HTML, Word, LaTeX, Typst, EPUB, editable JSON and chunks for RAG.</Description>
+    <PackageTags>pdf;docx;xlsx;epub;markdown;html;rag;chunking;document-conversion</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/iamcaominhtien/kakemono</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/iamcaominhtien/kakemono</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+    <!-- The native libraries, when the release workflow has gathered them in runtimes/. -->
+    <None Include="runtimes/**/*" Pack="true" PackagePath="runtimes/" Condition="Exists('runtimes')" />
+  </ItemGroup>
+</Project>

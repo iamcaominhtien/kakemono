@@ -227,7 +227,9 @@ fn remove_small_pictures(dom: &mut Dom, root: dom::Id, files: &PageFiles) {
     }
 }
 
-/// The `file:` URL of the directory of the file `path`.
+/// The `file:` URL of the directory of the file `path` (none on targets
+/// without file paths, such as WebAssembly in a browser).
+#[cfg(any(unix, windows, target_os = "wasi"))]
 fn directory_url(path: &Path) -> Option<Url> {
     let dir = path
         .parent()
@@ -235,6 +237,12 @@ fn directory_url(path: &Path) -> Option<Url> {
         .unwrap_or(Path::new("."));
     let dir = std::fs::canonicalize(dir).ok()?;
     Url::from_directory_path(dir).ok()
+}
+
+/// [`directory_url`] on targets without file paths.
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+fn directory_url(_path: &Path) -> Option<Url> {
+    None
 }
 
 /// The addresses of the pictures of the article in `root` to fetch, in
@@ -277,13 +285,25 @@ impl Resources for PageFiles {
         if let Some(data) = self.fetched.get(path) {
             return Some(data.clone());
         }
-        let file = Url::parse(path)
-            .ok()
-            .filter(|url| url.scheme() == "file")?
-            .to_file_path()
-            .ok()?;
-        std::fs::read(file).ok()
+        read_file_url(path)
     }
+}
+
+/// The bytes of the file at the `file:` URL `path`.
+#[cfg(any(unix, windows, target_os = "wasi"))]
+fn read_file_url(path: &str) -> Option<Vec<u8>> {
+    let file = Url::parse(path)
+        .ok()
+        .filter(|url| url.scheme() == "file")?
+        .to_file_path()
+        .ok()?;
+    std::fs::read(file).ok()
+}
+
+/// [`read_file_url`] on targets without file paths: nothing.
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+fn read_file_url(_path: &str) -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(test)]

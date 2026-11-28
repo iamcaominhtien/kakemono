@@ -1,0 +1,16 @@
+[package]
+name = "kakemono-jni"
+description = "The JNI library of kakemono's JVM binding (Maven: io.github.iamcaominhtien:kakemono)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kakemono_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+kakemono-bindings = { workspace = true }
+jni = { version = "0.21", default-features = false }

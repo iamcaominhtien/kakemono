@@ -25,7 +25,7 @@ Download a prebuilt binary for Linux, macOS or Windows from the [latest release]
 cargo install kakemono
 ```
 
-To build from a checkout, run `cargo build --release`. For Python, use `pip install kakemono` and see the [Python guide](python/README.md).
+To build from a checkout, run `cargo build --release`. For Python, use `pip install kakemono` and see the [Python guide](python/README.md). For JavaScript and TypeScript (`@kakemono/node`, `@kakemono/wasm`), Java and Kotlin (`io.github.iamcaominhtien:kakemono`, with a LangChain4j parser) and .NET (`Kakemono`), see [the bindings](docs/BINDINGS.md).
 
 ## Quick start
 
@@ -90,7 +90,7 @@ std::fs::write("paper.html", out.html)?;
 
 Any of this can be stopped from another thread, or after a time limit, with a `CancelToken`:
 `token.run(|| paper.analyze())` returns `Err(Cancelled)` soon after `token.cancel()`, normally
-within a page. The [API reference](https://docs.rs/kakemono) and [library guide](docs/GUIDE.md#use-as-a-library) cover other outputs. Python bindings and examples are documented in [python/README.md](python/README.md).
+within a page. The [API reference](https://docs.rs/kakemono) and [library guide](docs/GUIDE.md#use-as-a-library) cover other outputs. Python bindings and examples are documented in [python/README.md](python/README.md); Node.js, WebAssembly, the JVM, .NET and C in [docs/BINDINGS.md](docs/BINDINGS.md).
 
 ## Limitations
 

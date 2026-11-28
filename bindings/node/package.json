@@ -1,0 +1,57 @@
+{
+  "name": "@kakemono/node",
+  "version": "0.20.0",
+  "description": "Convert PDF papers, Word documents, Excel workbooks, EPUB books and web pages to Markdown, HTML, Word, LaTeX, Typst, EPUB, editable JSON and chunks for RAG",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamcaominhtien/kakemono.git",
+    "directory": "bindings/node"
+  },
+  "keywords": [
+    "pdf",
+    "docx",
+    "xlsx",
+    "epub",
+    "markdown",
+    "html",
+    "arxiv",
+    "rag",
+    "chunking",
+    "document-conversion"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">= 18"
+  },
+  "napi": {
+    "binaryName": "kakemono",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit --strict --module nodenext --moduleResolution nodenext --types node test/types.ts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.11.1",
+    "typescript": "5.9.3",
+    "@types/node": "22.19.1"
+  }
+}

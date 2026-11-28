@@ -17,7 +17,8 @@ name = "_kakemono"
 crate-type = ["cdylib"]
 
 [dependencies]
-kakemono = { path = ".." }
+# Not the command line's parser and allocator (the `cli` feature).
+kakemono = { path = "..", default-features = false, features = ["net", "tokenizers", "openai-tokenizers"] }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

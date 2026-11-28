@@ -25,11 +25,13 @@ use std::time::Instant;
 /// mimalloc instead of the system allocator: it gives memory freed on one
 /// thread back to the others (with glibc, the lines built on the worker
 /// threads stay reserved after they are freed), and it is faster.
+#[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// mimalloc option `purge_delay`, in milliseconds (its index in
 /// `mi_option_e` of mimalloc.h; the sys crate does not name it).
+#[cfg(not(target_arch = "wasm32"))]
 const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
 /// Tunes mimalloc for a short run that should hold as little memory as it
@@ -39,6 +41,7 @@ const MI_OPTION_PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 fn tune_allocator() {
     // SAFETY: `mi_option_set` only stores an option value, and
     // `MI_OPTION_PURGE_DELAY` is an option of the bundled mimalloc.
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         libmimalloc_sys::mi_option_set(MI_OPTION_PURGE_DELAY, 0);
     }

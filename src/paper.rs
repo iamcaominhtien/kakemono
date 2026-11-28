@@ -301,7 +301,8 @@ impl Paper {
             Mode::Medium => {
                 let doc = word::fmt::read(data, self.word_format()?).ok()?;
                 Some(HtmlOutput {
-                    html: crate::layout::html::to_html(&doc),
+                    // Without any font, the friendly page.
+                    html: crate::layout::html::to_html(&doc)?,
                     files: Vec::new(),
                 })
             }
@@ -321,7 +322,8 @@ impl Paper {
     /// laid out. A PDF already has its pages.
     ///
     /// # Errors
-    /// When the paper is a PDF, or the layout cannot be written.
+    /// When the paper is a PDF, no font is installed nor given with
+    /// [`crate::add_font`], or the layout cannot be written.
     pub fn to_pdf(&self) -> Result<Vec<u8>> {
         self.to_pdf_with(&WorkbookPdfConfig::default())
     }

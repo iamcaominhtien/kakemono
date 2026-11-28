@@ -1,34 +1,50 @@
 //! Fetching documents from the Web: a page (or a PDF, a Word document, an
 //! EPUB book) at an `http(s)` address, and the pictures of a page, many at
-//! once.
+//! once. Without the `net` feature, nothing is downloaded: [`fetch`] fails
+//! and [`fetch_pictures`] finds nothing.
 
+#[cfg(feature = "net")]
 use crate::common::cancel::{self, CancelToken};
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "net")]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use std::collections::HashMap;
+#[cfg(feature = "net")]
 use std::io::Read;
+#[cfg(feature = "net")]
 use std::sync::Mutex;
+#[cfg(feature = "net")]
 use std::time::Duration;
 
 /// Give up on a page after this long.
+#[cfg(feature = "net")]
 const PAGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Give up on one picture after this long.
+#[cfg(feature = "net")]
 const PICTURE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Largest document accepted, in bytes.
+#[cfg(feature = "net")]
 const MAX_DOCUMENT_BYTES: u64 = 300 * 1024 * 1024;
 /// Largest picture accepted, in bytes.
+#[cfg(feature = "net")]
 const MAX_PICTURE_BYTES: u64 = 25 * 1024 * 1024;
 /// Most pictures fetched for one page.
 pub const MAX_PICTURES: usize = 300;
 /// Tries at a picture (or a page) that fails for a reason that may pass: a
 /// connection lost, a server error, too many requests at once.
+#[cfg(feature = "net")]
 const ATTEMPTS: u32 = 3;
 /// Wait before the second try; it doubles at each try.
+#[cfg(feature = "net")]
 const RETRY_WAIT: Duration = Duration::from_secs(1);
 /// Pictures fetched at the same time.
+#[cfg(feature = "net")]
 const PICTURE_WORKERS: usize = 8;
 /// What is asked for a page: HTML first, any document otherwise.
+#[cfg(feature = "net")]
 const PAGE_ACCEPT: &str = "text/html,application/xhtml+xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5";
 /// What is asked for a picture: the formats that can be drawn (not AVIF).
+#[cfg(feature = "net")]
 const PICTURE_ACCEPT: &str = "image/png,image/jpeg,image/webp,image/gif,image/svg+xml;q=0.9,image/*;q=0.5";
 
 /// A document fetched from the Web.
@@ -72,6 +88,7 @@ pub fn is_url(input: &str) -> bool {
 
 /// The HTTP client: the proxy of the environment, a timeout, and a name
 /// that says what it is (as sites such as Wikipedia ask).
+#[cfg(feature = "net")]
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .try_proxy_from_env(true)
@@ -88,18 +105,23 @@ fn agent(timeout: Duration) -> ureq::Agent {
 ///
 /// # Errors
 /// When `url` is not an `http(s)` address, the request fails or times
-/// out, the server answers with an error, or the document is too large.
+/// out, the server answers with an error, or the document is too large;
+/// always without the `net` feature.
 pub fn fetch(url: &str) -> Result<Fetched> {
     if !is_url(url) {
         bail!("'{url}' is not an http(s) address");
     }
-    get_retrying(&agent(PAGE_TIMEOUT), url.trim(), PAGE_ACCEPT, MAX_DOCUMENT_BYTES)
+    #[cfg(feature = "net")]
+    return get_retrying(&agent(PAGE_TIMEOUT), url.trim(), PAGE_ACCEPT, MAX_DOCUMENT_BYTES);
+    #[cfg(not(feature = "net"))]
+    bail!("cannot download {url}: kakemono was built without the `net` feature")
 }
 
 /// [`get`], tried again (up to [`ATTEMPTS`] times) when it fails for a
 /// reason that may pass: no answer, a lost connection, a server error
 /// (5xx) or too many requests (429). A page that is missing (404) or
 /// refused (403) is not asked again.
+#[cfg(feature = "net")]
 fn get_retrying(agent: &ureq::Agent, url: &str, accept: &'static str, max_bytes: u64) -> Result<Fetched> {
     let mut wait = RETRY_WAIT;
     let mut attempt = 1;
@@ -124,12 +146,14 @@ fn get_retrying(agent: &ureq::Agent, url: &str, accept: &'static str, max_bytes:
 
 /// One request: on a thread of its own when the work can be cancelled
 /// ([`cancel::blocking`]), since waiting for an answer has no stopping point.
+#[cfg(feature = "net")]
 fn get(agent: &ureq::Agent, url: &str, accept: &'static str, max_bytes: u64) -> Result<Fetched> {
     let (agent, url) = (agent.clone(), url.to_string());
     cancel::blocking(move |token| get_now(&agent, &url, accept, max_bytes, token.as_ref()))
 }
 
 /// [`get`], on this thread.
+#[cfg(feature = "net")]
 fn get_now(
     agent: &ureq::Agent,
     url: &str,
@@ -156,6 +180,7 @@ fn get_now(
 }
 
 /// Bytes read from a download at a time, between two looks at its token.
+#[cfg(feature = "net")]
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// The bytes of `reader`, at most `max_bytes` of them, read in chunks of
@@ -164,6 +189,7 @@ const READ_CHUNK_BYTES: usize = 64 * 1024;
 ///
 /// # Errors
 /// When reading fails, or `token` stops.
+#[cfg(feature = "net")]
 pub(crate) fn read_body(reader: impl Read, max_bytes: u64, token: Option<&CancelToken>) -> std::io::Result<Vec<u8>> {
     let mut reader = reader.take(max_bytes);
     let mut data = Vec::new();
@@ -184,6 +210,7 @@ pub(crate) fn read_body(reader: impl Read, max_bytes: u64, token: Option<&Cancel
 /// Fetches the pictures at `urls` (at most [`MAX_PICTURES`], several at a
 /// time): the bytes of each one fetched, by address. A picture that cannot
 /// be fetched is left out.
+#[cfg(feature = "net")]
 pub fn fetch_pictures(urls: &[String]) -> HashMap<String, Vec<u8>> {
     let agent = agent(PICTURE_TIMEOUT);
     let queue = Mutex::new(urls.iter().take(MAX_PICTURES));
@@ -216,13 +243,24 @@ pub fn fetch_pictures(urls: &[String]) -> HashMap<String, Vec<u8>> {
     found.into_inner().unwrap_or_default()
 }
 
+/// [`fetch_pictures`] without the `net` feature: no picture is fetched.
+#[cfg(not(feature = "net"))]
+pub fn fetch_pictures(_urls: &[String]) -> HashMap<String, Vec<u8>> {
+    HashMap::new()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Fetched, fetch, fetch_pictures, is_url, read_body};
+    use super::{Fetched, is_url};
+    #[cfg(feature = "net")]
+    use super::{fetch, fetch_pictures, read_body};
+    #[cfg(feature = "net")]
     use crate::common::cancel::{CancelToken, Cancelled};
+    #[cfg(feature = "net")]
     use std::time::{Duration, Instant};
 
     /// The address of a server that takes connections and never answers.
+    #[cfg(feature = "net")]
     fn silent_server() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}/page", listener.local_addr().unwrap());
@@ -236,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "net")]
     fn a_body_is_read_up_to_its_limit_or_its_token() {
         let data = vec![7u8; 200_000];
         assert_eq!(read_body(&data[..], 1_000_000, None).unwrap(), data);
@@ -247,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "net")]
     fn a_download_that_waits_for_an_answer_stops_when_cancelled() {
         // A proxy of the environment may answer in its place: the download
         // then fails at once instead; either way it does not wait.

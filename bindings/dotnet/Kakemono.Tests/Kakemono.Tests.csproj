@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The native library the tests load: the release build of kakemono-c (cargo, in bindings/). -->
+    <KakemonoNative Condition="'$(KakemonoNative)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">../../target/release/kakemono_ffi.dll</KakemonoNative>
+    <KakemonoNative Condition="'$(KakemonoNative)' == '' And $([MSBuild]::IsOSPlatform('OSX'))">../../target/release/libkakemono_ffi.dylib</KakemonoNative>
+    <KakemonoNative Condition="'$(KakemonoNative)' == ''">../../target/release/libkakemono_ffi.so</KakemonoNative>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Kakemono/Kakemono.csproj" />
+    <None Include="$(KakemonoNative)" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

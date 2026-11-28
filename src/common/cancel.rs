@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 /// Why a conversion stopped before its end.
@@ -40,11 +40,22 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
+/// [`Inner::stopped`]: not stopped (yet).
+const RUNNING: u8 = 0;
+/// [`Inner::stopped`]: [`Cancelled::Requested`].
+const REQUESTED: u8 = 1;
+/// [`Inner::stopped`]: [`Cancelled::TimedOut`].
+const TIMED_OUT: u8 = 2;
+
 /// What a token holds, shared by its clones.
 #[derive(Debug)]
 struct Inner {
-    /// Set by [`CancelToken::cancel`].
-    cancelled: AtomicBool,
+    /// Why this token stopped, once it is known: [`RUNNING`], [`REQUESTED`]
+    /// (set by [`CancelToken::cancel`]) or [`TIMED_OUT`] (set when its
+    /// deadline is seen passed). The first one set stays, so that a token
+    /// cancelled after its deadline was seen, or the reverse, keeps the
+    /// cause that came first.
+    stopped: AtomicU8,
     /// When the work must stop, if it has a time limit.
     deadline: Option<Instant>,
     /// A token whose cancellation (or deadline) stops this one too.
@@ -105,7 +116,7 @@ impl CancelToken {
     /// A token with these fields.
     fn make(deadline: Option<Instant>, parent: Option<Self>) -> Self {
         Self(Arc::new(Inner {
-            cancelled: AtomicBool::new(false),
+            stopped: AtomicU8::new(RUNNING),
             deadline,
             parent,
         }))
@@ -114,23 +125,61 @@ impl CancelToken {
     /// Asks the work running with this token (and its children) to stop.
     /// It stops at its next stopping point, normally within a page.
     pub fn cancel(&self) {
-        self.0.cancelled.store(true, Ordering::Relaxed);
+        // A token already stopped keeps its cause.
+        let _ = self
+            .0
+            .stopped
+            .compare_exchange(RUNNING, REQUESTED, Ordering::Relaxed, Ordering::Relaxed);
     }
 
     /// Why the work must stop, or `None` while it may go on.
     #[must_use]
     pub fn state(&self) -> Option<Cancelled> {
-        let mut token = Some(self);
-        while let Some(CancelToken(inner)) = token {
-            if inner.cancelled.load(Ordering::Relaxed) {
-                return Some(Cancelled::Requested);
+        let found = self.cause()?;
+        // Kept on this token too, so that a later `cancel` of it does not
+        // change why it stopped.
+        Some(
+            match self
+                .0
+                .stopped
+                .compare_exchange(RUNNING, found, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => found,
+                Err(known) => known,
+            },
+        )
+        .map(|code| {
+            if code == TIMED_OUT {
+                Cancelled::TimedOut
+            } else {
+                Cancelled::Requested
             }
-            if inner.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Some(Cancelled::TimedOut);
-            }
-            token = inner.parent.as_ref();
+        })
+    }
+
+    /// Why this token must stop ([`REQUESTED`] or [`TIMED_OUT`]), from it
+    /// and its parents: a cause already known comes first, since a deadline
+    /// seen passed now may have passed after it.
+    fn cause(&self) -> Option<u8> {
+        let chain = || std::iter::successors(Some(self), |token| token.0.parent.as_ref());
+        if let Some(known) = chain()
+            .map(|token| token.0.stopped.load(Ordering::Relaxed))
+            .find(|&code| code != RUNNING)
+        {
+            return Some(known);
         }
-        None
+        let now = Instant::now();
+        let CancelToken(inner) = chain().find(|token| token.0.deadline.is_some_and(|deadline| now >= deadline))?;
+        // Recorded where it passed, unless a cancellation came meanwhile.
+        Some(
+            match inner
+                .stopped
+                .compare_exchange(RUNNING, TIMED_OUT, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => TIMED_OUT,
+                Err(known) => known,
+            },
+        )
     }
 
     /// Runs `work` on this thread with this token current, and returns its
@@ -247,6 +296,7 @@ impl Pace {
 
 /// How often [`blocking`] and [`sleep`] look at the current token while
 /// they wait: the longest they make a cancellation wait.
+#[cfg(any(feature = "net", test))]
 const WAIT_POLL: Duration = Duration::from_millis(10);
 
 /// Runs `work`, a call that blocks without stopping points of its own (a
@@ -258,6 +308,7 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 ///
 /// # Panics
 /// When `work` panics, or its thread cannot be started.
+#[cfg(any(feature = "net", test))]
 pub(crate) fn blocking<R: Send + 'static>(work: impl FnOnce(Option<CancelToken>) -> R + Send + 'static) -> R {
     let Some(token) = current() else {
         return work(None);
@@ -286,6 +337,7 @@ pub(crate) fn blocking<R: Send + 'static>(work: impl FnOnce(Option<CancelToken>)
 
 /// Sleeps for `wait`, returning early (by unwinding, as [`check`]) when the
 /// current token stops.
+#[cfg(any(feature = "net", test))]
 pub(crate) fn sleep(wait: Duration) {
     let end = Instant::now() + wait;
     loop {
@@ -424,6 +476,29 @@ mod tests {
         });
         assert_eq!(outcome, Err::<(), _>(Cancelled::Requested));
         assert_eq!(steps.get(), super::Pace::STEPS - 1);
+    }
+
+    #[test]
+    fn the_first_cause_stays() {
+        // Cancelled, then past the deadline: cancelled.
+        let parent = CancelToken::new();
+        let child = parent.child(Some(Duration::from_millis(1)));
+        parent.cancel();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(child.state(), Some(Cancelled::Requested));
+        // Past the deadline (and seen so), then cancelled: timed out.
+        let token = CancelToken::with_timeout(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(token.state(), Some(Cancelled::TimedOut));
+        token.cancel();
+        assert_eq!(token.state(), Some(Cancelled::TimedOut));
+        // A parent past its deadline stops its child as timed out.
+        let parent = CancelToken::with_timeout(Duration::from_millis(1));
+        let child = parent.child(None);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(child.state(), Some(Cancelled::TimedOut));
+        child.cancel();
+        assert_eq!(child.state(), Some(Cancelled::TimedOut));
     }
 
     #[test]

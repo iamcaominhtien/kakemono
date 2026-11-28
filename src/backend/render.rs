@@ -345,9 +345,31 @@ impl<'a> PageRenderer<'a> {
     }
 }
 
-/// The fonts SVG text is drawn with: the system's, and those of the folders
-/// in `KAKEMONO_FONT_DIRS` (loaded once).
+/// The fonts SVG text is drawn with: the system's, those of the folders in
+/// `KAKEMONO_FONT_DIRS` (loaded once), and those given with
+/// [`crate::add_font`] (added when they change).
 pub(crate) fn svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
+    /// The fonts, with the number of added fonts they hold.
+    static FONTS: std::sync::Mutex<Option<(usize, std::sync::Arc<resvg::usvg::fontdb::Database>)>> =
+        std::sync::Mutex::new(None);
+    let mut fonts = FONTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let added = crate::layout::fonts::added_fonts();
+    if let Some((count, database)) = fonts.as_ref()
+        && *count == added.len()
+    {
+        return database.clone();
+    }
+    let mut database = (*system_svg_fonts()).clone();
+    for data in &added {
+        database.load_font_source(resvg::usvg::fontdb::Source::Binary(data.clone()));
+    }
+    let database = std::sync::Arc::new(database);
+    *fonts = Some((added.len(), database.clone()));
+    database
+}
+
+/// The fonts of the system and of `KAKEMONO_FONT_DIRS`, loaded once.
+fn system_svg_fonts() -> std::sync::Arc<resvg::usvg::fontdb::Database> {
     static FONTS: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> = std::sync::OnceLock::new();
     FONTS
         .get_or_init(|| {

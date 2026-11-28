@@ -1,6 +1,6 @@
 [package]
 name = "kakemono"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 description = "Convert PDF, Word and EPUB documents and web pages to HTML, Markdown, EPUB, LaTeX and JSON in Rust"
 repository = "https://github.com/iamcaominhtien/kakemono"
@@ -20,6 +20,8 @@ path = "src/lib.rs"
 [[bin]]
 name = "kakemono"
 path = "src/main.rs"
+# The command line needs its parser and allocator (the `cli` feature, on by default).
+required-features = ["cli"]
 
 [dependencies]
 hayro = "0.9"
@@ -29,7 +31,8 @@ hayro-svg = "0.9"
 hayro-font = "0.5"
 kurbo = "0.13"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+# The command line's parser (the `cli` feature).
+clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
@@ -39,13 +42,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 regex = "1"
 unicode-normalization = "0.1"
 skrifa = "0.49"
-ureq = { version = "2", features = ["native-certs"] }
+# Fetching web pages and arXiv papers (optional: the `net` feature).
+ureq = { version = "2", features = ["native-certs"], optional = true }
 resvg = { version = "0.47", default-features = false, features = ["raster-images", "text", "system-fonts", "memmap-fonts"] }
-# The CLI's allocator (src/main.rs). Version 2 of mimalloc: version 3 keeps
-# freed memory for a second, so a 15-page paper took three times the memory
-# of the system allocator.
-mimalloc = { version = "0.1.52", features = ["v2"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"] }
 png = "0.18"
 sha2 = "0.10"
 roxmltree = "0.20"
@@ -71,8 +70,22 @@ tiktoken-rs = { version = "0.12", optional = true }
 # so that a font is parsed once for the whole layout.
 self_cell = "1"
 
+# The CLI's allocator (src/main.rs). Version 2 of mimalloc: version 3 keeps
+# freed memory for a second, so a 15-page paper took three times the memory
+# of the system allocator. Not on WebAssembly, where its C code does not build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "0.1.52", features = ["v2"], optional = true }
+libmimalloc-sys = { version = "0.1.49", features = ["extended", "v2"], optional = true }
+
 [features]
-default = ["tokenizers", "openai-tokenizers"]
+default = ["cli", "net", "tokenizers", "openai-tokenizers"]
+## The `kakemono` command line: its argument parser and its allocator
+## (mimalloc, not on WebAssembly). The library does not need them.
+cli = ["dep:clap", "dep:mimalloc", "dep:libmimalloc-sys"]
+## `Paper::from_url`, arXiv ids and the pictures of web pages: downloads over
+## HTTPS. Without it (for WebAssembly), they fail with an error and a page's
+## pictures that are not in it are left out.
+net = ["dep:ureq"]
 ## `--tokenizer path/to/tokenizer.json` (Hugging Face tokenizers).
 tokenizers = ["dep:tokenizers"]
 ## `--tokenizer cl100k_base` / `o200k_base` (OpenAI's tokenizers).

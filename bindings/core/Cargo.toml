@@ -1,0 +1,21 @@
+[package]
+name = "kakemono-bindings"
+description = "The façade of kakemono that its bindings for other languages share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+kakemono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+
+[features]
+default = ["net", "tokenizers"]
+## Documents at an http(s) address and arXiv papers (the library's `net`).
+net = ["kakemono/net"]
+## Real tokenizers for the chunks: Hugging Face's and OpenAI's.
+tokenizers = ["kakemono/tokenizers", "kakemono/openai-tokenizers"]

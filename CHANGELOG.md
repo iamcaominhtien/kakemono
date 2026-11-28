@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.22.0](https://github.com/iamcaominhtien/kakemono/compare/v0.21.0...v0.22.0) - 2026-11-28
+
+### Added
+
+- Bindings for Node.js, WebAssembly, the JVM, .NET and C
+
+kakemono can now be used from Node.js and TypeScript, browsers (WebAssembly), Java and Kotlin, C# and .NET, and C or C++, with the same API as the Python package. A `Document` is read and analysed once, then written to any output.
+
+#### Packages
+
+| Language | Package | How it calls Rust |
+| --- | --- | --- |
+| JavaScript, TypeScript (Node.js, Bun) | `@kakemono/node` (npm) | napi-rs 3, prebuilt for 8 platforms |
+| JavaScript, TypeScript (browsers, workers, edge) | `@kakemono/wasm` (npm, experimental) | wasm-bindgen |
+| Java 17+, Kotlin | `io.github.iamcaominhtien:kakemono`, plus `kakemono-native` (one JAR per platform) and the optional `kakemono-langchain4j` | JNI |
+| C#, F# (.NET 8+) | `Kakemono` (NuGet) | P/Invoke over the C ABI |
+| C, C++ | `include/kakemono.h` and the `kakemono_ffi` library | the C ABI itself |
+
+How the bindings share code:
+
+- All of them share one façade, `bindings/core`. It holds every option check and default, so each binding stays thin.
+- Options have the same camelCase names everywhere. A wrong option is refused with its name.
+- Each binding has its own README. `docs/BINDINGS.md` covers the layout, the shared behaviour, performance, building and releases.
+- The languages were chosen from a market survey and a comparison with Kreuzberg, written up in Vietnamese in `docs/LANGUAGE-BINDINGS.md`.
+
+#### Stopping a conversion
+
+Every binding can stop a call with the library's `CancelToken` (#41).
+
+| Binding | How to stop | Error when stopped |
+| --- | --- | --- |
+| Node | `{ signal, timeout }` in the options of every call | `AbortError` or `TimeoutError` |
+| JVM | a `CancelToken` and `Options.timeout` | `KakemonoException` of kind `CANCELLED` or `TIMED_OUT` |
+| .NET | a `CancellationToken` on every call | `OperationCanceledException` |
+| C | a `KkCancel` | `KK_ERROR_CANCELLED` or `KK_ERROR_TIMED_OUT` |
+
+- The call stops soon after the request, normally within a page.
+- The document stays usable afterwards.
+- WebAssembly cannot stop a call: its work is synchronous, and stopping would abort the module.
+
+#### Changes to the library
+
+- New cargo features `net` (downloads, through ureq) and `cli` (clap and mimalloc). Both are on by default, so the default build is unchanged.
+- Without `net`, the library builds for `wasm32-unknown-unknown`. On wasm the clock reads 0 instead of panicking.
+- New public items: `kakemono::VERSION` and `kakemono::add_font`, which adds a font that layout and SVG text use.
+- With no font at all, laying out a document now fails with an error instead of panicking.
+- `CancelToken` now keeps the first cause of a stop. Before, a cancelled token whose deadline passed before the next check was reported as timed out.
+- Fix: a download that fails on its own cancellation is reported as `Cancelled`, in Python and in the bindings. Before, it came back as a document error.
+
+#### Performance
+
+Measured on 4 cores: 10 documents written as Markdown with `jobs = 1`, best of 3 runs.
+
+| Called from | Rust | C | Node | Java | .NET | WebAssembly |
+| --- | --- | --- | --- | --- | --- | --- |
+| Seconds | 6.77 | 6.67 | 7.01 | 7.43 | 6.93 | 8.42 |
+
+- Every binding gives the same Markdown, byte for byte.
+- Memory stays flat over thousands of rounds of open, write and close, in every binding.
+- Node runs at most one conversion per core at once (`KAKEMONO_MAX_CONCURRENCY` changes it). With this cap, 24 calls at once peak at 754 MB instead of 1.6 GB.
+
+#### CI and releases
+
+- The `Bindings` workflow tests every binding on each pull request.
+- After a release, it builds the native libraries for Linux (glibc 2.17 and musl), macOS and Windows, on x86_64 and arm64.
+- It then assembles the npm, Maven and NuGet packages.
+- It publishes them only when the repository variable `BINDINGS_PUBLISH` is `true` and the registry secrets are set (`docs/BINDINGS.md`, "Releases"). Until then, the packages are only workflow artifacts.
+
 ## [0.21.0](https://github.com/iamcaominhtien/kakemono/compare/v0.20.0...v0.21.0) - 2026-11-28
 
 ### Added

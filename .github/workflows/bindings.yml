@@ -1,0 +1,571 @@
+name: Bindings
+
+# The bindings for other languages (bindings/, docs/BINDINGS.md): the façade and
+# C ABI, Node.js (@kakemono/node), WebAssembly (@kakemono/wasm), the JVM
+# (io.github.iamcaominhtien:kakemono) and .NET (Kakemono).
+#  - On every pull request: each binding is built and tested on Linux.
+#  - After each release (or when started by hand): the native libraries are built
+#    for 8 platforms, the packages are assembled, and, when the repository variable
+#    BINDINGS_PUBLISH is 'true', published: npm (secret NPM_TOKEN), Maven Central
+#    (secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, MAVEN_GPG_PRIVATE_KEY,
+#    MAVEN_GPG_PASSPHRASE) and NuGet (secret NUGET_API_KEY). A package already
+#    published at that version is skipped.
+# Tags pushed by the Release workflow do not start other workflows, hence the
+# `workflow_run` trigger (as in python.yml).
+on:
+  pull_request:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: bindings-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The version of wasm-bindgen of bindings/wasm/Cargo.toml.
+  WASM_BINDGEN_VERSION: 0.2.130
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      ref: ${{ steps.plan.outputs.ref }}
+      version: ${{ steps.plan.outputs.version }}
+      release: ${{ steps.plan.outputs.release }}
+      publish: ${{ steps.plan.outputs.publish }}
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      # After a release, the commit it released (main may have moved on since).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || (github.event_name == 'workflow_dispatch' && 'main' || '') }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PUBLISH: ${{ vars.BINDINGS_PUBLISH }}
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          ref=$(git rev-parse HEAD)
+          release=false
+          publish=false
+          if [ "$EVENT" = workflow_run ] || [ "$EVENT" = workflow_dispatch ]; then
+            tag="v$version"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              ref="$tag"
+              release=true
+              if [ "$PUBLISH" = true ]; then
+                publish=true
+              fi
+            fi
+          fi
+          {
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "release=$release"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "build $ref as version $version, release: $release, publish: $publish"
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/ci_changes.py "$BASE" "$HEAD"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---- Tests (Linux x86_64) ----------------------------------------------------
+
+  core:
+    name: Façade + C ABI
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bindings
+          shared-key: bindings
+      - name: fmt + clippy
+        working-directory: bindings
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: bindings
+        run: cargo test --release --locked -p kakemono-bindings -p kakemono-c
+      - name: The committed header is cbindgen's
+        working-directory: bindings/c
+        run: |
+          cargo install --locked cbindgen --version 0.29.4
+          cbindgen --config cbindgen.toml --verify --output include/kakemono.h
+      - name: C smoke test
+        working-directory: bindings/c
+        run: |
+          # cargo test builds the library for the tests, not its cdylib.
+          cargo build --release --locked -p kakemono-c
+          cc -Wall -Wextra -Werror -I include tests/smoke.c -L ../target/release -lkakemono_ffi -o smoke
+          LD_LIBRARY_PATH=../target/release ./smoke ../../tests/data/word/sample.docx
+
+  node:
+    name: Node.js
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bindings
+          shared-key: bindings
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build and test
+        working-directory: bindings/node
+        run: |
+          npm ci --ignore-scripts
+          node_modules/.bin/napi build --platform --release
+          git diff --exit-code index.js index.d.ts
+          npm test
+          npm run typecheck
+
+  wasm:
+    name: WebAssembly
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bindings/wasm
+          shared-key: wasm
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build and test
+        working-directory: bindings/wasm
+        run: |
+          cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          cargo fmt --check
+          cargo clippy --release -- -D warnings
+          ./build.sh
+          npm test
+
+  jvm:
+    name: JVM
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bindings
+          shared-key: bindings
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+      - name: Build and test
+        run: |
+          cargo build --release --locked --manifest-path bindings/Cargo.toml -p kakemono-jni
+          mvn -B -f bindings/jvm/pom.xml verify
+
+  dotnet:
+    name: .NET
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: bindings
+          shared-key: bindings
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 8.0.x
+      - name: Build and test
+        run: |
+          cargo build --release --locked --manifest-path bindings/Cargo.toml -p kakemono-c
+          dotnet test bindings/dotnet/Kakemono.sln
+          dotnet build -c Release bindings/dotnet/Kakemono/Kakemono.csproj
+
+  # ---- Release -------------------------------------------------------------------
+
+  natives:
+    name: Natives ${{ matrix.platform }}
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: built with zig against glibc 2.17 (RHEL 7 and later), and musl.
+          - { platform: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, zig: x86_64-unknown-linux-gnu.2.17, napi: linux-x64-gnu, rid: linux-x64 }
+          - { platform: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-gnu, zig: aarch64-unknown-linux-gnu.2.17, napi: linux-arm64-gnu, rid: linux-arm64 }
+          - { platform: linux-musl-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl, zig: x86_64-unknown-linux-musl, napi: linux-x64-musl, rid: linux-musl-x64 }
+          - { platform: linux-musl-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-musl, zig: aarch64-unknown-linux-musl, napi: linux-arm64-musl, rid: linux-musl-arm64 }
+          - { platform: macos-x86_64, os: macos-15, target: x86_64-apple-darwin, zig: "", napi: darwin-x64, rid: osx-x64 }
+          - { platform: macos-aarch64, os: macos-15, target: aarch64-apple-darwin, zig: "", napi: darwin-arm64, rid: osx-arm64 }
+          - { platform: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, zig: "", napi: win32-x64-msvc, rid: win-x64 }
+          - { platform: windows-aarch64, os: windows-latest, target: aarch64-pc-windows-msvc, zig: "", napi: win32-arm64-msvc, rid: win-arm64 }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Set the package versions
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python scripts/set-bindings-version.py "$VERSION"
+      - name: Build (zig)
+        if: matrix.zig != ''
+        shell: bash
+        env:
+          ZIG_TARGET: ${{ matrix.zig }}
+          # A shared library on musl links the C runtime dynamically.
+          RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C target-feature=-crt-static' || '' }}
+        run: |
+          pip install --only-binary :all: --require-hashes -r bindings/requirements-zig.txt
+          cargo zigbuild --release --locked --manifest-path bindings/Cargo.toml \
+            -p kakemono-c -p kakemono-jni -p kakemono-node --target "$ZIG_TARGET"
+      - name: Build
+        if: matrix.zig == ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          # The oldest macOS the libraries run on (C code too, not only Rust's).
+          MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || '10.13' }}
+        run: |
+          cargo build --release --locked --manifest-path bindings/Cargo.toml \
+            -p kakemono-c -p kakemono-jni -p kakemono-node --target "$TARGET"
+      - name: Gather the libraries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          NAPI: ${{ matrix.napi }}
+          RID: ${{ matrix.rid }}
+        run: |
+          built="bindings/target/$TARGET/release"
+          case "$TARGET" in
+            *windows*) prefix=""; ext=dll ;;
+            *apple*) prefix=lib; ext=dylib ;;
+            *) prefix=lib; ext=so ;;
+          esac
+          out="natives/$PLATFORM"
+          mkdir -p "$out/dotnet/runtimes/$RID/native" "$out/jvm/io/github/iamcaominhtien/kakemono/native/$PLATFORM" "$out/node"
+          cp "$built/${prefix}kakemono_ffi.$ext" "$out/dotnet/runtimes/$RID/native/"
+          cp "$built/${prefix}kakemono_jni.$ext" "$out/jvm/io/github/iamcaominhtien/kakemono/native/$PLATFORM/"
+          cp "$built/${prefix}kakemono_node.$ext" "$out/node/kakemono.$NAPI.node"
+          ls -lR "$out"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: natives-${{ matrix.platform }}
+          path: natives/
+          if-no-files-found: error
+
+  npm-node:
+    name: npm @kakemono/node
+    needs: [plan, natives]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: natives-*
+          path: natives
+          merge-multiple: true
+      - name: Assemble the packages
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 scripts/set-bindings-version.py "$VERSION"
+          cd bindings/node
+          npm ci --ignore-scripts
+          node_modules/.bin/napi create-npm-dirs
+          for addon in ../../natives/*/node/*.node; do
+            napi=$(basename "$addon" .node); napi=${napi#kakemono.}
+            cp "$addon" "npm/$napi/"
+          done
+          # The main package depends on each platform's, at this version.
+          node -e "
+            const fs = require('fs')
+            const pkg = JSON.parse(fs.readFileSync('package.json'))
+            pkg.optionalDependencies = {}
+            for (const dir of fs.readdirSync('npm')) pkg.optionalDependencies[pkg.name + '-' + dir] = pkg.version
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n')
+          "
+          mkdir -p ../../packages
+          for dir in npm/*/; do (cd "$dir" && npm pack --pack-destination ../../../../packages); done
+          npm pack --pack-destination ../../packages
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-node
+          path: packages/*.tgz
+          if-no-files-found: error
+      - name: Publish
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        # The platform packages first, the main package last: it must never point
+        # at platform packages that are not there.
+        run: |
+          main="packages/kakemono-node-$VERSION.tgz"
+          for package in $(ls packages/*.tgz | grep -vxF "$main") "$main"; do
+            name=$(tar -xOzf "$package" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).name')
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "$name $VERSION is already on npm"
+            else
+              npm publish "$package" --access public
+            fi
+          done
+
+  npm-wasm:
+    name: npm @kakemono/wasm
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Build and test
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 scripts/set-bindings-version.py "$VERSION"
+          cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          cd bindings/wasm
+          ./build.sh
+          npm test
+          mkdir -p ../../packages
+          npm pack --pack-destination ../../packages
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-wasm
+          path: packages/*.tgz
+          if-no-files-found: error
+      - name: Publish
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          if npm view "@kakemono/wasm@$VERSION" version >/dev/null 2>&1; then
+            echo "@kakemono/wasm $VERSION is already on npm"
+          else
+            npm publish packages/*.tgz --access public
+          fi
+
+  maven:
+    name: Maven Central
+    needs: [plan, natives]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+          gpg-private-key: ${{ needs.plan.outputs.publish == 'true' && secrets.MAVEN_GPG_PRIVATE_KEY || '' }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: natives-*
+          path: natives
+          merge-multiple: true
+      - name: Gather the JNI libraries
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 scripts/set-bindings-version.py "$VERSION"
+          mkdir -p jvm-natives
+          for dir in natives/*/; do
+            platform=$(basename "$dir")
+            mkdir -p "jvm-natives/$platform"
+            cp -R "$dir/jvm/." "jvm-natives/$platform/"
+          done
+          find jvm-natives -type f
+      - name: Package (tests use the Linux library)
+        if: needs.plan.outputs.publish != 'true'
+        run: >
+          mvn -B -f bindings/jvm/pom.xml -Prelease -Dgpg.skip package
+          -Dnatives.dir="$PWD/jvm-natives"
+          -Dkakemono.library.path="$PWD/jvm-natives/linux-x86_64/io/github/iamcaominhtien/kakemono/native/linux-x86_64/libkakemono_jni.so"
+      - name: Publish
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          # true publishes at once; otherwise the upload waits, validated, on
+          # central.sonatype.com (repository variable BINDINGS_MAVEN_AUTO_PUBLISH).
+          AUTO_PUBLISH: ${{ vars.BINDINGS_MAVEN_AUTO_PUBLISH == 'true' }}
+        # Central refuses a version twice: skip one already there.
+        run: |
+          if curl -sf -o /dev/null "https://repo1.maven.org/maven2/io/github/iamcaominhtien/kakemono/$VERSION/kakemono-$VERSION.pom"; then
+            echo "kakemono $VERSION is already on Maven Central"
+            exit 0
+          fi
+          mvn -B -f bindings/jvm/pom.xml -Prelease deploy \
+            -Dcentral.autoPublish="$AUTO_PUBLISH" \
+            -Dnatives.dir="$PWD/jvm-natives" \
+            -Dkakemono.library.path="$PWD/jvm-natives/linux-x86_64/io/github/iamcaominhtien/kakemono/native/linux-x86_64/libkakemono_jni.so"
+
+  nuget:
+    name: NuGet
+    needs: [plan, natives]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: natives-*
+          path: natives
+          merge-multiple: true
+      - name: Pack
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 scripts/set-bindings-version.py "$VERSION"
+          for dir in natives/*/; do
+            cp -R "$dir/dotnet/runtimes" bindings/dotnet/Kakemono/
+          done
+          find bindings/dotnet/Kakemono/runtimes -type f
+          dotnet pack -c Release -o packages bindings/dotnet/Kakemono/Kakemono.csproj
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nuget
+          path: packages/*.nupkg
+          if-no-files-found: error
+      - name: Publish
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "packages/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

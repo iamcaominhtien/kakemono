@@ -1,11 +1,14 @@
 //! Fetching papers from arXiv: recognising arXiv identifiers and URLs, and
 //! downloading PDFs through an on-disk cache.
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "net")]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use regex::Regex;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+#[cfg(feature = "net")]
 use std::time::Duration;
 
 /// Magic bytes at the start of every PDF file, used to tell a PDF from an
@@ -15,9 +18,11 @@ const PDF_MAGIC: &[u8] = b"%PDF";
 const CACHE_DIR_NAME: &str = "kakemono";
 /// Give up on a download after this long: large papers take a while, but a
 /// stalled connection should not hang the program.
+#[cfg(feature = "net")]
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Largest download accepted, in bytes; arXiv PDFs are far smaller, so
 /// anything beyond this is not a paper.
+#[cfg(feature = "net")]
 const MAX_PDF_BYTES: u64 = 300 * 1024 * 1024;
 
 /// A new-style arXiv identifier (`YYMM.NNNNN`, optionally with a version).
@@ -108,6 +113,7 @@ fn cache_dir_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
 ///
 /// # Errors
 /// When the request fails, times out, or the response is not a PDF.
+#[cfg(feature = "net")]
 fn download(id: &str) -> Result<Vec<u8>> {
     let url = format!("https://arxiv.org/pdf/{id}");
     let agent = ureq::AgentBuilder::new()
@@ -130,6 +136,12 @@ fn download(id: &str) -> Result<Vec<u8>> {
         ));
     }
     Ok(data)
+}
+
+/// [`download`] without the `net` feature: always an error.
+#[cfg(not(feature = "net"))]
+fn download(id: &str) -> Result<Vec<u8>> {
+    anyhow::bail!("cannot download arXiv:{id}: kakemono was built without the `net` feature")
 }
 
 #[cfg(test)]
