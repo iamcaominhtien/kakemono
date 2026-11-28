@@ -1,150 +1,134 @@
-# Hỗ trợ thư viện cho các ngôn ngữ khác: nghiên cứu
+# Thư viện cho các ngôn ngữ khác
 
-Ngày: 2026-11-28 · Phạm vi: Kotlin, Java, JavaScript, TypeScript, C++, C#, Swift, Go, Flutter/Dart.
+Ngày: 2026-11-28.
 
-## 1. Điểm xuất phát
+## 1. Quyết định
 
-- Thư viện Rust (`src/lib.rs`) đã có API ổn định: `Paper` (đọc) → `Analysis` → `to_html / to_docx /
-  to_markdown / to_latex / to_typst / to_epub / to_json / to_chunks / to_pdf`.
-- Binding Python (`python/src/lib.rs`, ~530 dòng, PyO3) đã chứng minh một **hình dạng API mỏng, dễ
-  chuyển ngữ**: một đối tượng `Document` (đọc + phân tích một lần), tuỳ chọn là chuỗi/số/bool, kết
-  quả là `bytes` / `str` kèm danh sách `(đường dẫn, bytes)` của hình ảnh. Không có callback, không có
-  kiểu dữ liệu lồng phức tạp. Đây là hình dạng lý tưởng cho FFI: mọi ngôn ngữ nên dùng lại đúng
-  hình dạng này.
+| Ngôn ngữ | Trạng thái | Cách làm |
+| --- | --- | --- |
+| Python | Đã có (`python/`, PyO3, PyPI) | Giữ nguyên |
+| JavaScript / TypeScript | **Làm, ưu tiên 1** | napi-rs (Node, Bun), sau đó wasm (trình duyệt, edge); một gói npm, `.d.ts` tự sinh |
+| Java / Kotlin (JVM) | **Làm, ưu tiên 2** | Một JAR trên Maven Central; kèm module `DocumentParser` cho LangChain4j |
+| C# / .NET | **Làm, ưu tiên 3** | Gói NuGet, P/Invoke trên C ABI |
+| Go, Swift, Android, Flutter/Dart, C++ | Không làm binding | Dùng CLI dựng sẵn, bản HTTP/Docker hoặc server MCP |
 
-## 1b. Khảo sát nhu cầu (số liệu lấy ngày 2026-11-28)
+## 2. Vì sao chọn bốn ngôn ngữ này: khảo sát nhu cầu
 
-Lượt tải lấy trực tiếp từ registry: npm (`api.npmjs.org`, 7 ngày), PyPI (`pypistats.org`, 7 ngày),
-NuGet (tổng từ trước đến nay), pub.dev (30 ngày), sao GitHub. Số tải bị thổi phồng bởi CI, nên chỉ
-dùng để so sánh độ lớn giữa các hệ sinh thái.
+Lượt tải lấy trực tiếp từ registry ngày 2026-11-28: npm (`api.npmjs.org`, 7 ngày), PyPI
+(`pypistats.org`, 7 ngày), NuGet (tổng), pub.dev (30 ngày), sao GitHub. Số tải bị thổi phồng bởi
+CI, nên chỉ dùng để so độ lớn giữa các hệ sinh thái.
 
 | Hệ sinh thái | Tín hiệu | Nhận xét |
 | --- | --- | --- |
-| Python (đã có) | pypdf 54,8 tr/tuần, pymupdf 42,3 tr, markitdown 6,6 tr, mammoth 4,7 tr, docling 0,91 tr, unstructured 0,57 tr | Thị trường RAG lớn nhất. |
-| JS / TS | pdfjs-dist 59,8 tr/tuần, turndown 17,3 tr, mammoth 16,1 tr, pdf-parse 13,0 tr, unpdf 12,6 tr, officeparser 1,8 tr | Lớn ngang Python, nhưng các thư viện chủ yếu cho ra **văn bản thô**: thiếu một công cụ PDF/Word → Markdown/HTML có cấu trúc. Có thêm lợi thế chạy được trong trình duyệt và trên edge (wasm). |
-| Java / Kotlin (JVM) | Tika, PDFBox đã có module riêng trong LangChain4j, và Tika có reader riêng trong Spring AI | Thị trường doanh nghiệp. Đã có sẵn chỗ để cắm vào: một `DocumentParser` của LangChain4j. Một JAR phục vụ cả Java và Kotlin phía server. |
-| C# / .NET | DocumentFormat.OpenXml 501 tr (tổng), PDFsharp 87,5 tr, itext7 57,8 tr; mảng AI: ManagedCode.MarkItDown 63 nghìn, Kreuzberg 80 nghìn | Thị trường tài liệu lớn, mảng PDF→Markdown cho AI còn nhỏ nhưng đang tăng. |
-| Go | pdfcpu 8,9k sao (chỉnh sửa PDF, không trích xuất), docconv 1,8k (văn bản thô), tabula 31 | Người dùng Go thích thư viện thuần Go; cgo là rào cản. Dịch vụ Go thường gọi CLI hoặc HTTP. |
-| Flutter / Dart | read_pdf_text 6,3 nghìn/30 ngày, docx_to_text 6,5 nghìn | Rất nhỏ (gói `pdf` 2,3 tr là gói *tạo* PDF). |
-| Swift / Kotlin Android | Ứng dụng dùng PDFKit, PdfRenderer để hiển thị; ít khi chuyển đổi ngay trên máy | Ngách: ứng dụng đọc sách, dịch offline. Binary lớn là điểm trừ. |
-| C++ | Đã có MuPDF, Poppler, PDFium | Ngách. |
+| Python | pypdf 54,8 tr/tuần, pymupdf 42,3 tr, markitdown 6,6 tr, mammoth 4,7 tr, docling 0,91 tr, unstructured 0,57 tr | Thị trường RAG lớn nhất. |
+| JS / TS | pdfjs-dist 59,8 tr/tuần, turndown 17,3 tr, mammoth 16,1 tr, pdf-parse 13,0 tr, unpdf 12,6 tr, officeparser 1,8 tr | Lớn ngang Python, nhưng các thư viện chủ yếu cho ra văn bản thô: chuyển PDF/Word thành Markdown/HTML có cấu trúc vẫn còn trống. Wasm còn chạy được ngay trong trình duyệt. |
+| Java / Kotlin | Tika, PDFBox có module riêng trong LangChain4j; Spring AI có reader Tika | Doanh nghiệp. Có sẵn chỗ để cắm vào framework. |
+| C# / .NET | DocumentFormat.OpenXml 501 tr (tổng), PDFsharp 87,5 tr, itext7 57,8 tr; mảng AI: ManagedCode.MarkItDown 63 nghìn, Kreuzberg 80 nghìn | Thị trường tài liệu lớn; mảng PDF→Markdown cho AI còn nhỏ nhưng đang tăng. |
+| Go | pdfcpu 8,9k sao (chỉnh sửa PDF, không trích xuất), docconv 1,8k (văn bản thô) | Người dùng thích thuần Go; cgo là rào cản. |
+| Flutter / Dart | read_pdf_text 6,3 nghìn/30 ngày, docx_to_text 6,5 nghìn | Rất nhỏ. |
+| Swift / Android / C++ | Ứng dụng dùng PDFKit, PdfRenderer để hiển thị; C++ có MuPDF, Poppler, PDFium | Ngách; binary lớn là điểm trừ trên di động. |
 
-Đối thủ đáng chú ý: **Kreuzberg** (lõi Rust, binding cho khoảng 16 ngôn ngữ) chỉ đạt khoảng 69 nghìn/tuần
-trên npm, 50 nghìn/tuần trên PyPI, 80 nghìn tổng trên NuGet. Phủ nhiều ngôn ngữ tự nó không tạo
-ra người dùng. Thứ tạo ra người dùng là chất lượng và chỗ cắm vào các framework (LangChain,
-LlamaIndex, LangChain4j, Semantic Kernel).
+## 3. Đối thủ gần nhất: Kreuzberg
 
-**Kết luận ưu tiên:**
-1. **JS/TS** (napi-rs, sau đó wasm): nhu cầu lớn nhất còn trống.
-2. **JVM** (một JAR cho Java + Kotlin server) kèm module LangChain4j.
-3. **C#**: khi có người dùng hỏi.
-4. **Go, Swift, Android, Flutter, C++**: hoãn. Thay vào đó phát hành CLI dựng sẵn và một bản HTTP/Docker
-   (hoặc server MCP cho agent AI), dùng được từ mọi ngôn ngữ mà không phải duy trì binding.
+Kreuzberg có lõi Rust và binding cho khoảng 16 ngôn ngữ, nhưng chỉ đạt khoảng 69 nghìn lượt
+tải/tuần trên npm, 50 nghìn/tuần trên PyPI và 80 nghìn tổng trên NuGet. Phủ nhiều ngôn ngữ tự nó
+không tạo ra người dùng.
 
-## 2. Đề xuất kiến trúc
+So sánh trực tiếp trên 8 bài test của repo (`scripts/fetch-test-pdfs.sh`): Kreuzberg 4.10.4 (gói
+PyPI, cấu hình mặc định, `output_format="markdown"`) với kakemono 0.20.0
+(`convert … -o x.md`). Các chỉ số là đếm dòng trong file Markdown.
+
+| Bài | Tiêu đề (kk / kz) | Bảng Markdown (kk / kz) | Công thức `$…$` (kk / kz) | Hình (kk / kz) |
+| --- | --- | --- | --- | --- |
+| 1412.6980 Adam | 21 / **532** | 0 / 0 | 112 / 0 | 8 / 0 |
+| 1506.01497 Faster R-CNN | 19 / 51 | 12 / 1 | 32 / 0 | 6 / 0 |
+| 1512.03385 ResNet | 22 / 56 | 13 / 1 | 38 / 0 | 9 / 0 |
+| 1602.03837 LIGO | 13 / 36 | 1 / 1 | 17 / 0 | 5 / 0 |
+| 1706.03762 Attention | 26 / 74 | 4 / 0 | 53 / 0 | 5 / 0 |
+| 1810.04805 BERT | 33 / 95 | 8 / 0 | 18 / 0 | 5 / 0 |
+| 2010.11929 ViT | 35 / 109 | 8 / 0 | 55 / 0 | 15 / 0 |
+| 2303.08774 GPT-4 | 138 / 246 | 8 / 3 | 24 / 0 | 41 / 0 |
+
+Ví dụ trong bài Attention:
+- Kreuzberg biến dòng tác giả, công thức và chú thích hình thành tiêu đề:
+  `### Attention(Q, K, V ) = softmax(QKT √ dk )V (1)`, `### Figure 1: …`.
+- Bảng 1 của Kreuzberg thành một tiêu đề cộng một dòng chữ:
+  `### Layer Type Complexity per Layer … Self-Attention O(n 2` rồi `- d) O(1) O(1) Recurrent …`.
+- kakemono cho ra bảng Markdown đúng 4 cột, với `$O(n^{2}\cdot d)$`, cùng tham chiếu `[Table 1](#tab-1)`
+  và `[38](#ref-38)`.
+
+Tốc độ ngang nhau (khoảng 0,2 đến 1 giây mỗi bài, trên máy này). Phép so sánh chỉ dùng cấu hình mặc định của Kreuzberg; chưa thử
+OCR hay các tuỳ chọn layout của nó. Trên bài báo khoa học, chất lượng là điểm khác biệt của
+kakemono. Nên đưa phép so sánh này vào README của từng gói.
+
+## 4. Kiến trúc
 
 ```
 src/ (crate kakemono)
-  └── ffi/  crate mới "kakemono-ffi" (không thuộc workspace, như python/)
-        ├── API façade: Document, Options, Output { text|bytes, files }, KakemonoError
-        ├── #[uniffi::export]      → Kotlin, Java, Swift, C#, Go
-        └── extern "C" + cbindgen  → kakemono.h (C) + kakemono.hpp (C++ RAII)
-  bindings/node/   napi-rs          → JavaScript + TypeScript (.d.ts tự sinh), Node/Bun/Deno
-  bindings/wasm/   wasm-bindgen     → trình duyệt (cùng gói npm, export khác)
-  bindings/dart/   flutter_rust_bridge v2 → Flutter (Android, iOS, desktop, web)
+ffi/            crate "kakemono-ffi", không thuộc workspace (như python/)
+                façade Document / Options / Output { text|bytes, files, warnings } / lỗi
+                + extern "C" (cbindgen → kakemono.h)
+bindings/node/  napi-rs trên façade        → npm (JS, TS)
+bindings/wasm/  wasm-bindgen trên façade   → cùng gói npm, export "browser"
+bindings/jvm/   JNI (crate jni) + lớp Java → Maven Central (Java, Kotlin)
+bindings/dotnet/ P/Invoke trên kakemono.h (csbindgen) → NuGet
 ```
 
-Nguyên tắc: **một façade Rust duy nhất** chứa logic chuyển tuỳ chọn (giống `parse_mode`,
-`check_scale`… của Python), các binding chỉ là lớp vỏ sinh tự động. Có thể chuyển dần
-`python/src/lib.rs` sang dùng chung façade này.
+- Façade lấy đúng hình dạng của binding Python: một đối tượng `Document` (đọc và phân tích một lần),
+  tuỳ chọn là chuỗi/số/bool, kết quả là `bytes`/`str` kèm `(đường dẫn, bytes)` của hình. Có thể
+  chuyển `python/src/lib.rs` sang dùng chung façade.
+- **Không cần UniFFI** khi chỉ có 4 ngôn ngữ này: UniFFI mạnh nhất cho Kotlin và Swift, còn C# là
+  generator của bên thứ ba và phải ghim phiên bản.
+- **JVM bằng JNI, không dùng FFM**: LangChain4j và Spring AI chạy từ Java 17, mà FFM (Panama) cần
+  Java 22+. Bề mặt API nhỏ (khoảng 15 hàm) nên JNI viết tay vẫn gọn. Kotlin gọi lớp Java trực
+  tiếp. JAR chứa native cho linux x64/arm64, macOS x64/arm64, Windows x64.
+- **C#**: P/Invoke là cách chuẩn của .NET; `csbindgen` sinh mã từ các hàm `extern "C"`. Native
+  nằm trong `runtimes/<rid>/native/`.
+- Chung: hàm chạy lâu được export bất đồng bộ (`Promise` / `CompletableFuture` / `Task`). Panic
+  được chặn bằng `catch_unwind` ở ranh giới C ABI (napi-rs tự làm). Lỗi gộp thành một kiểu
+  `KakemonoError`. Mọi gói lấy phiên bản theo tag release, như `scripts/set-python-version.py`.
 
-## 3. Từng ngôn ngữ
+## 5. Thay đổi cần trong lõi
 
-| Ngôn ngữ | Công cụ đề xuất | Độ chín | Phân phối | Ghi chú |
-| --- | --- | --- | --- | --- |
-| **Kotlin** | UniFFI (chính thức) | Cao (Mozilla dùng trong Firefox Android) | Maven Central: AAR (Android) + JAR có native cho linux/mac/win | Dùng JNA. Có hỗ trợ `async` → coroutine. |
-| **Java** | Dùng chung JAR Kotlin của UniFFI | Trung bình | Cùng artifact Maven | Gọi được từ Java (cần kotlin-stdlib); API mang phong cách Kotlin. Phương án B: Java 22+ FFM (Panama) + `jextract` trên `kakemono.h`, không cần JNA/Kotlin. |
-| **Swift** | UniFFI (chính thức) | Cao | SwiftPM `binaryTarget` với XCFramework (iOS, iOS-sim, macOS) | Hàm dài nên export `async` để không chặn main thread. |
-| **C#** | `uniffi-bindgen-cs` (NordSecurity) | Trung bình | NuGet, native trong `runtimes/<rid>/native/` | Phải ghim phiên bản UniFFI mà generator hỗ trợ. Phương án B: `csbindgen` (Cysharp) trên C ABI. |
-| **Go** | `uniffi-bindgen-go` (NordSecurity) | Trung bình | Go module + thư viện tĩnh dựng sẵn | cgo bắt buộc; Go không có cơ chế tải binary như npm/NuGet → phải commit `.a` theo nền tảng hoặc hướng dẫn tự build. Đây là ngôn ngữ phân phối khó nhất. |
-| **JavaScript / TypeScript** | napi-rs v3 (Node) + wasm-bindgen (trình duyệt) | Cao | npm: gói chính + `optionalDependencies` theo nền tảng; WASM làm phương án dự phòng | JS và TS là **một gói**: napi-rs sinh `.d.ts` tự động. napi-rs v3 còn build được `wasm32-wasip1-threads`. |
-| **C++** | C ABI (`extern "C"`) + `cbindgen` + header C++17 tự viết | Cao | Archive release (`.h`, `.hpp`, `.so/.dylib/.dll/.a`); sau này vcpkg/Conan | `cxx` hợp với dự án nhúng C++ vào Rust hơn là phân phối thư viện. C ABI này cũng là nền cho phương án B của Java/C#. |
-| **Flutter/Dart** | flutter_rust_bridge v2 (2.12 ổn định, 2.14 beta) | Cao | pub.dev, plugin tải binary dựng sẵn (Cargokit) | Tự chạy hàm nặng ngoài UI isolate. `uniffi-dart` còn non → không chọn. |
+Trên một bản sao, `cargo check --lib --target wasm32-unknown-unknown --no-default-features` chỉ
+vướng:
+- `ring` (C, qua `ureq` → `rustls`).
+- Sau khi tách `ureq`, `mimalloc`, `libmimalloc-sys`: còn đúng 10 lỗi, ở `src/source/web.rs`,
+  `src/source/arxiv.rs` (tải mạng) và `src/html/mod.rs:237, 283` (file-URL).
 
-**Tóm lại: 4 công cụ phủ 9 ngôn ngữ**: UniFFI (Kotlin, Java, Swift, C#, Go), napi-rs/wasm-bindgen
-(JS, TS), cbindgen (C++), flutter_rust_bridge (Dart).
+Toàn bộ phần đọc PDF, Word, Excel, EPUB, HTML và layout đều biên dịch được. Việc cần làm (vài
+chục dòng; mặc định không đổi, nên các snapshot phải giữ nguyên):
+1. Feature `net`, bật mặc định, bọc `ureq`; khi tắt, `fetch` trả lỗi rõ ràng.
+2. `cfg` cho hai chỗ file-URL.
+3. `mimalloc` chỉ là dependency ngoài wasm (chỉ `main.rs` dùng).
+4. Font: `src/layout/fonts.rs::font_dirs()` và `backend/render.rs::svg_fonts()` không có font nào
+   trên wasm, nên cần API truyền font (bytes) vào. Ảnh hưởng: PDF xuất từ Word/Excel, chữ trong SVG→PNG.
+5. Stack wasm: worker dùng 16 MB; cần `-zstack-size`.
+6. CI: thêm bước build `--no-default-features` và một bước `cargo check` cho wasm.
 
-## 4. Rào cản kỹ thuật đã kiểm tra trong mã
+Còn phải kiểm tra: kích thước `.wasm`, feature `tokenizers` trên wasm.
 
-### 4.1 WebAssembly (trình duyệt, cũng là đường cho Flutter web)
+## 6. Lộ trình
 
-Đã thử `cargo check --lib --target wasm32-unknown-unknown --no-default-features` (bản sao, không
-sửa repo):
+| Bước | Việc | Kết quả |
+| --- | --- | --- |
+| 0 | Mục 5, bước 1–3 và 6 | Lõi build được không có mạng, build được cho wasm |
+| 1 | `kakemono-ffi`: façade + C ABI | Nền cho JVM và .NET |
+| 2 | napi-rs, CI prebuild (5 nền tảng desktop/server) | npm: JS, TS |
+| 3 | wasm-bindgen, font truyền vào (mục 5, bước 4–5) | npm, chạy trong trình duyệt |
+| 4 | JNI + lớp Java + module LangChain4j | Maven: Java, Kotlin |
+| 5 | P/Invoke + NuGet | C# |
+| Song song | Phát hành binary CLI, image Docker có HTTP, server MCP | Mọi ngôn ngữ khác |
 
-- Lỗi đầu tiên: `ring` (C, qua `ureq` → `rustls`) không biên dịch cho wasm.
-- Sau khi tách `ureq`, `mimalloc`, `libmimalloc-sys` khỏi wasm: **chỉ còn 10 lỗi**, tất cả nằm ở:
-  - `src/source/web.rs`, `src/source/arxiv.rs`: dùng `ureq` (tải trang web, arXiv).
-  - `src/html/mod.rs:237, 283`: `Url::from_directory_path` / `to_file_path` không có trên wasm.
-- Toàn bộ phần đọc PDF (hayro), Word, Excel, EPUB, HTML, layout, krilla, resvg **đều biên dịch được**.
+Phần tốn công nhất là CI dựng và phát hành binary cho từng nền tảng, cùng phần chạy thử mẫu
+(LIGO, `sample.docx`) trên mỗi ngôn ngữ.
 
-Việc cần làm: một feature `net` (mặc định bật) bọc `ureq`; `cfg` cho 2 chỗ file-URL; chuyển
-`mimalloc` sang dependency chỉ của binary (hiện là dependency của cả lib, dù chỉ `main.rs` dùng).
-Còn phải kiểm tra:
-- Luồng: `common/parallel.rs` chạy trên luồng gọi khi `jobs <= 1`, và `available_parallelism()` trả lỗi
-  trên wasm → 1, nên không spawn luồng. Ổn.
-- Stack: worker dùng stack 16 MB vì PDF đệ quy sâu; wasm mặc định ~1 MB → cần
-  `-C link-arg=-zstack-size=...`.
-- Font: xem 4.2. Kích thước file `.wasm` và feature `tokenizers` chưa đo.
+## 7. Nguồn
 
-### 4.2 Font trên di động và wasm
-
-- `src/layout/fonts.rs::font_dirs()` chỉ biết Windows, macOS và Linux (`/usr/share/fonts`…):
-  **thiếu Android (`/system/fonts`) và iOS**. Trên wasm không có thư mục font nào.
-- `backend/render.rs::svg_fonts()` gọi `fontdb.load_system_fonts()`: cùng vấn đề.
-- Biến `KAKEMONO_FONT_DIRS` đã có, nhưng nên thêm API truyền font (bytes) từ ứng dụng, và thêm
-  `/system/fonts` cho Android. Ảnh hưởng: xuất PDF từ Word/Excel và vẽ chữ trong SVG→PNG.
-
-### 4.3 Mạng trên di động
-
-`ureq` dùng `native-certs` (`rustls-native-certs`) để đọc chứng chỉ hệ thống, cách này không chạy
-trên Android/iOS. Lựa chọn: `rustls-platform-verifier` hoặc `webpki-roots` cho mobile; hoặc để ứng
-dụng tự tải (đã có `Paper::from_page_at(data, url)`) và tắt feature `net`.
-
-### 4.4 Chung cho mọi binding
-
-- Hàm chạy lâu (giây): export bất đồng bộ (UniFFI `async`, napi `AsyncTask`, FRB tự làm) để không
-  chặn UI/event loop.
-- Panic: UniFFI, napi-rs, FRB đều bắt panic ở ranh giới; C ABI phải tự `catch_unwind`.
-- Lỗi: gộp `anyhow::Error` thành một `KakemonoError { message }`, giống `ValueError` của Python.
-- Cảnh báo (`warn_all` của Python): trả về `warnings: Vec<String>` trong kết quả thay vì callback.
-- Phiên bản: mọi gói theo tag release, như `scripts/set-python-version.py`.
-
-## 5. Lộ trình đề xuất
-
-Bảng dưới đây là lộ trình **đầy đủ** nếu làm mọi ngôn ngữ. Theo khảo sát ở mục 1b, nên làm
-theo thứ tự: bước 0, bước 2 (JS/TS), bước 6 (wasm), rồi JVM ở bước 3 (chỉ Kotlin/Java). Các bước
-còn lại để sau.
-
-| Bước | Việc | Mở khoá | Ước lượng |
-| --- | --- | --- | --- |
-| 0 | Feature `net`, `mimalloc` chỉ cho binary, font Android + API truyền font | wasm, mobile | 1–2 ngày |
-| 1 | Crate `kakemono-ffi`: façade + C ABI + `kakemono.h/.hpp` | C++ | 3–4 ngày |
-| 2 | napi-rs + `.d.ts`, CI prebuild 6 nền tảng | JS, TS (Node) | 3 ngày |
-| 3 | UniFFI trên façade: Kotlin/JVM + Android AAR, Swift XCFramework | Kotlin, Java, Swift | 1 tuần |
-| 4 | `uniffi-bindgen-cs`, `uniffi-bindgen-go` | C#, Go | 3–4 ngày |
-| 5 | flutter_rust_bridge plugin | Flutter/Dart | 3–4 ngày |
-| 6 | wasm-bindgen cho trình duyệt | JS/TS web, Flutter web | 3–5 ngày |
-
-Phần tốn công nhất không phải viết binding mà là **CI dựng và phát hành binary cho từng nền tảng**
-(linux x64/arm64, macOS x64/arm64, Windows x64, Android 4 ABI, iOS) và chạy thử test mẫu (LIGO,
-`sample.docx`) trên mỗi ngôn ngữ.
-
-## 6. Nguồn
-
-- UniFFI và danh sách binding bên thứ ba: https://github.com/mozilla/uniffi-rs
-- napi-rs v3 (WebAssembly): https://napi.rs/blog/announce-v3, https://napi.rs/docs/concepts/webassembly
-- flutter_rust_bridge: https://docs.rs/crate/flutter_rust_bridge/latest
-- Số tải: https://api.npmjs.org/downloads/point/last-week/<gói>, https://pypistats.org/api/packages/<gói>/recent,
-  https://azuresearch-usnc.nuget.org/query, https://pub.dev/api/packages/<gói>/score
+- Số tải: `https://api.npmjs.org/downloads/point/last-week/<gói>`,
+  `https://pypistats.org/api/packages/<gói>/recent`, `https://azuresearch-usnc.nuget.org/query`,
+  `https://pub.dev/api/packages/<gói>/score`
 - Kreuzberg: https://docs.rs/crate/kreuzberg/latest
-- LangChain4j parser modules: https://central.sonatype.com/artifact/dev.langchain4j/langchain4j-document-parser-apache-tika
+- LangChain4j: https://central.sonatype.com/artifact/dev.langchain4j/langchain4j-document-parser-apache-tika
+- napi-rs v3: https://napi.rs/blog/announce-v3, https://napi.rs/docs/concepts/webassembly
+- UniFFI: https://github.com/mozilla/uniffi-rs
