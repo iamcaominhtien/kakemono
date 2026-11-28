@@ -891,7 +891,7 @@ fn text_look(shape: &mut TextShape, body: Node<'_, '_>, style: Option<Node<'_, '
 /// Reads into `shape` its outline from its properties `props`: its
 /// preset geometry, the width, dashes and arrow heads of its line, and
 /// how it is mirrored and turned.
-fn outline(shape: &mut TextShape, props: Node<'_, '_>) {
+pub(crate) fn outline(shape: &mut TextShape, props: Node<'_, '_>) {
     let preset = named(props, "prstGeom").next();
     shape.geometry = preset.and_then(|geom| geom.attribute("prst")).map(str::to_string);
     shape.adjust = preset

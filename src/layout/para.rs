@@ -1675,7 +1675,8 @@ fn glyph_text<'a>(piece: &'a Piece, glyph: &Glyph) -> &'a str {
 fn shift_item(item: &mut Item, baseline: f32) {
     match item {
         Item::Text(run) => run.y += baseline,
-        Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } => *y += baseline,
+        Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } | Item::Turn { y, .. } => *y += baseline,
+        Item::EndTurn => {}
         Item::Line { y1, y2, .. } => {
             *y1 += baseline;
             *y2 += baseline;

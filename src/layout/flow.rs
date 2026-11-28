@@ -2332,8 +2332,9 @@ fn clip_cell(cell: &mut LaidCell, height: f32) {
 fn item_top(item: &Item) -> f32 {
     match item {
         Item::Text(run) => run.y - run.size * 0.5,
-        Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } => *y,
+        Item::Rect { y, .. } | Item::Image { y, .. } | Item::Link { y, .. } | Item::Turn { y, .. } => *y,
         Item::Line { y1, y2, .. } => y1.min(*y2),
+        Item::EndTurn => 0.0,
     }
 }
 
@@ -2497,7 +2498,7 @@ fn push_items(out: &mut Vec<Item>, items: &[Item], dx: f32, dy: f32) {
                 run.x += dx;
                 run.y += dy;
             }
-            Item::Rect { x, y, .. } | Item::Image { x, y, .. } | Item::Link { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::Image { x, y, .. } | Item::Link { x, y, .. } | Item::Turn { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -2507,6 +2508,7 @@ fn push_items(out: &mut Vec<Item>, items: &[Item], dx: f32, dy: f32) {
                 *y1 += dy;
                 *y2 += dy;
             }
+            Item::EndTurn => {}
         }
         out.push(item);
     }

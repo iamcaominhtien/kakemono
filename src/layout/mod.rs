@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod para;
 pub mod pdf;
 pub mod shape;
+pub(crate) mod slides;
 pub mod workbook;
 
 use crate::word::fmt::FDoc;

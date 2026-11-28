@@ -16,12 +16,12 @@ use std::collections::HashMap;
 
 /// Namespace of the Office 2010 drawing extensions (`a14:`), which hold a
 /// paragraph's formulas.
-const A14_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
+pub(crate) const A14_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
 /// PowerPoint's size of text that names none, in points.
-const DEFAULT_SIZE_PT: f32 = 18.0;
+pub(crate) const DEFAULT_SIZE_PT: f32 = 18.0;
 /// A percentage in DrawingML's units (thousandths of a percent): 100 000
 /// is 100 %.
-const PERCENT_UNITS: f32 = 100_000.0;
+pub(crate) const PERCENT_UNITS: f32 = 100_000.0;
 /// The deepest level a paragraph can have (`lvl` 0 to 8).
 const LEVELS: usize = 9;
 
@@ -36,7 +36,7 @@ pub(crate) struct TextContext<'r> {
 /// What marks a paragraph, from the first of its level properties that
 /// says.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Bullet {
+pub(crate) enum Bullet {
     /// None (`a:buNone`, or nothing said).
     None,
     /// A character or a picture (`a:buChar`, `a:buBlip`).
@@ -165,14 +165,14 @@ pub(crate) fn inlines_text(inlines: &[Inline]) -> String {
 /// same, across deeper paragraphs; a paragraph without a number at a level
 /// ends the numbering there, and any paragraph ends the deeper ones'.
 #[derive(Default)]
-struct Numbers {
+pub(crate) struct Numbers {
     /// The scheme and last number of each level.
     levels: [Option<(String, usize)>; LEVELS],
 }
 
 impl Numbers {
     /// The marker of a numbered paragraph at `level`.
-    fn next(&mut self, level: usize, scheme: &str, start: usize) -> String {
+    pub(crate) fn next(&mut self, level: usize, scheme: &str, start: usize) -> String {
         self.end_deeper(level);
         let number = match &self.levels[level] {
             Some((last_scheme, last)) if last_scheme == scheme => last + 1,
@@ -183,7 +183,7 @@ impl Numbers {
     }
 
     /// A paragraph without a number at `level`.
-    fn plain(&mut self, level: usize) {
+    pub(crate) fn plain(&mut self, level: usize) {
         self.end_deeper(level);
         self.levels[level] = None;
     }
@@ -197,7 +197,7 @@ impl Numbers {
 }
 
 /// The bullet the first of `chain` that says gives.
-fn bullet(chain: &[Node<'_, '_>]) -> Bullet {
+pub(crate) fn bullet(chain: &[Node<'_, '_>]) -> Bullet {
     for props in chain {
         for item in props.children().filter(Node::is_element) {
             match item.tag_name().name() {

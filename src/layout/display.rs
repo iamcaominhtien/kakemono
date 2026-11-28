@@ -79,6 +79,19 @@ pub enum Item {
         /// Share cut off each side: left, top, right, bottom.
         crop: [f32; 4],
     },
+    /// The items until the matching [`Item::EndTurn`] are drawn turned
+    /// by `angle_deg` (clockwise) about the point `x`, `y` (vertical text
+    /// of a slide).
+    Turn {
+        /// The angle, in degrees, clockwise.
+        angle_deg: f32,
+        /// The point turned about.
+        x: f32,
+        /// The point turned about.
+        y: f32,
+    },
+    /// Ends the last [`Item::Turn`].
+    EndTurn,
     /// A link area.
     Link {
         /// Left.

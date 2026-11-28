@@ -2008,7 +2008,7 @@ fn translate(items: &mut [Item], dx: f32, dy: f32) {
                 run.x += dx;
                 run.y += dy;
             }
-            Item::Rect { x, y, .. } | Item::Image { x, y, .. } | Item::Link { x, y, .. } => {
+            Item::Rect { x, y, .. } | Item::Image { x, y, .. } | Item::Link { x, y, .. } | Item::Turn { x, y, .. } => {
                 *x += dx;
                 *y += dy;
             }
@@ -2018,6 +2018,7 @@ fn translate(items: &mut [Item], dx: f32, dy: f32) {
                 *y1 += dy;
                 *y2 += dy;
             }
+            Item::EndTurn => {}
         }
     }
 }
@@ -2070,7 +2071,7 @@ fn clip_items(items: Vec<Item>, [left, top, right, bottom]: [f32; 4], open_right
                 *width = x2 - *x;
                 *height = y2 - *y;
             }
-            Item::Image { .. } => {}
+            Item::Image { .. } | Item::Turn { .. } | Item::EndTurn => {}
         }
         kept.push(item);
     }

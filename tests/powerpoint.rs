@@ -720,3 +720,24 @@ fn shapes_are_read_by_position() {
         ["Approach", "How the work was done", "Purpose", "What the work is for"]
     );
 }
+
+/// The sample is drawn as PowerPoint shows it: one page per visible slide,
+/// of the slide's size, with the text of its placeholders, text boxes,
+/// table and SmartArt.
+#[test]
+fn pdf_has_one_page_per_visible_slide_of_the_slide_size() {
+    let paper = Paper::from_bytes(std::fs::read(data(SAMPLE)).unwrap()).unwrap();
+    let pdf = paper.to_pdf().unwrap();
+    let (pages, _) = kakemono::backend::PdfFile::open(pdf.clone()).unwrap().extract(1);
+    assert!(pages.iter().all(|page| page.width == 960.0 && page.height == 540.0));
+    let (lines, count) = kakemono::layout::lines::pdf_lines(pdf).unwrap();
+    // Eleven slides, one hidden.
+    assert_eq!(count, 10);
+    let text: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+    let text = text.join("\n");
+    for expected in ["Coral Sea Survey 2026", "Results by site", "North reef", "Plan", "Dive manual, second edition"] {
+        assert!(text.contains(expected), "{expected} is not in {text}");
+    }
+    // The hidden slide's text is not drawn.
+    assert!(!text.contains("Draft ideas"), "{text}");
+}

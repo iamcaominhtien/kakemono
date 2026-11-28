@@ -76,6 +76,20 @@ impl<'z> Media<'z> {
         Some(Inline::Chart(Box::new((placed, picture))))
     }
 
+    /// The text of the part `path`, when there is one.
+    pub(crate) fn read_text(&self, path: &str) -> Option<String> {
+        self.zip.read_text(path).ok().flatten()
+    }
+
+    /// The relationships of the part `part`, by id.
+    pub(crate) fn rels(&self, part: &str) -> HashMap<String, Rel> {
+        crate::word::docx::read_rels(self.zip, part)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _, rel)| (id, rel))
+            .collect()
+    }
+
     /// The text of the SmartArt diagram whose data model is the part of
     /// the relationship `id`: its nodes in order, each with its depth (0
     /// for the outermost) and text; empty when the part is missing.

@@ -91,6 +91,8 @@ pub fn write(
             // and per space): a link is drawn apart, after the page, so it
             // does not end a group; anything else drawn does.
             let mut group: Vec<&TextRun> = Vec::new();
+            // The turns pushed and not yet ended.
+            let mut turns = 0usize;
             for item in &page.items {
                 match item {
                     Item::Link {
@@ -100,6 +102,20 @@ pub fn write(
                         height,
                         target,
                     } => links.push((*x, *y, *width, *height, target.clone())),
+                    Item::Turn { angle_deg, x, y } => {
+                        draw_runs(&mut surface, &group, &mut loaded);
+                        group.clear();
+                        push_turn(&mut surface, *angle_deg, *x, *y);
+                        turns += 1;
+                    }
+                    Item::EndTurn => {
+                        draw_runs(&mut surface, &group, &mut loaded);
+                        group.clear();
+                        if turns > 0 {
+                            surface.pop();
+                            turns -= 1;
+                        }
+                    }
                     Item::Text(run) if run.glyphs.is_empty() || run.size <= 0.0 => {}
                     Item::Text(run) => {
                         if group.last().is_some_and(|last| !continues(last, run)) {
@@ -116,6 +132,9 @@ pub fn write(
                 }
             }
             draw_runs(&mut surface, &group, &mut loaded);
+            for _ in 0..turns {
+                surface.pop();
+            }
             surface.finish();
         }
         for (x, y, width, height, target) in links {
@@ -131,6 +150,20 @@ pub fn write(
     let mut bytes = document.finish().map_err(|err| anyhow!("writing the PDF: {err:?}"))?;
     clear_small_caps(&mut bytes);
     Ok(bytes)
+}
+
+/// Turns what is drawn next on `surface` by `angle_deg` (clockwise) about
+/// the point `x`, `y`.
+fn push_turn(surface: &mut krilla::surface::Surface<'_>, angle_deg: f32, x: f32, y: f32) {
+    let (sin, cos) = angle_deg.to_radians().sin_cos();
+    surface.push_transform(&Transform::from_row(
+        cos,
+        sin,
+        -sin,
+        cos,
+        x - cos * x + sin * y,
+        y - sin * x - cos * y,
+    ));
 }
 
 /// Whether the run `next` continues the run `run` drawn just before it:
@@ -161,7 +194,7 @@ fn draw_runs(surface: &mut krilla::surface::Surface<'_>, runs: &[&TextRun], load
 /// Draws one item that is neither text nor a link on a page's surface.
 fn draw_item(surface: &mut krilla::surface::Surface<'_>, item: &Item, loaded: &mut Loaded<'_>) {
     match item {
-        Item::Text(_) | Item::Link { .. } => {}
+        Item::Text(_) | Item::Link { .. } | Item::Turn { .. } | Item::EndTurn => {}
         Item::Rect {
             x,
             y,

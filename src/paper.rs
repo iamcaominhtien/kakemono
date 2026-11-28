@@ -77,8 +77,9 @@ enum Source {
     /// An EPUB book or a web page (the format), read into its structure
     /// when loaded.
     Book(Box<Document>, InputFormat),
-    /// A PowerPoint presentation, read into its structure when loaded.
-    Slides(Box<Document>),
+    /// A PowerPoint presentation, read into its structure when loaded,
+    /// and the file, which its pages are drawn from.
+    Slides(Box<Document>, Vec<u8>),
 }
 
 /// A loaded PDF, Word document, Excel workbook, EPUB book or web page,
@@ -146,7 +147,7 @@ impl Paper {
         // part is there.
         if crate::powerpoint::detect(&data) {
             let doc = crate::powerpoint::read(&data, None)?;
-            return Ok(Self::loaded(Source::Slides(Box::new(doc)), sha256));
+            return Ok(Self::loaded(Source::Slides(Box::new(doc), data), sha256));
         }
         if excel::detect(&data) {
             let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
@@ -361,7 +362,7 @@ impl Paper {
                     crate::layout::workbook::print::to_pdf(&book, config, file)
                 }
             },
-            Source::Slides(..) => anyhow::bail!("a presentation cannot be written as a PDF yet"),
+            Source::Slides(_, data) => crate::layout::slides::to_pdf(data),
             Source::Book(..) => {
                 let docx = self.to_docx(&self.analyze(), &DocxOptions::default());
                 Paper::from_bytes(docx)?.to_pdf()
@@ -417,7 +418,7 @@ impl Paper {
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) | Source::Slides(doc) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) | Source::Slides(doc, _) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 // A file with no title of its own is called by its name.

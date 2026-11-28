@@ -41,6 +41,10 @@ pub(crate) struct Theme {
     pub(crate) hyperlink: Rgb,
     /// Followed hyperlinks.
     pub(crate) followed_hyperlink: Rgb,
+    /// The slots that `tx1`, `bg1`, `tx2` and `bg2` name, as indices into
+    /// dark 1, light 1, dark 2, light 2: a slide master's colour map
+    /// (`p:clrMap`), which a dark deck turns round.
+    pub(crate) map: [u8; 4],
 }
 
 impl Default for Theme {
@@ -61,6 +65,7 @@ impl Default for Theme {
             ],
             hyperlink: [0x05, 0x63, 0xC1],
             followed_hyperlink: [0x95, 0x4F, 0x72],
+            map: [0, 1, 2, 3],
         }
     }
 }
@@ -107,15 +112,38 @@ impl Theme {
     /// The colour the scheme names `name` (`accent1`, `tx1`, `bg2`, ...);
     /// `None` for a name it does not know (`phClr`).
     pub(crate) fn scheme(&self, name: &str) -> Option<Rgb> {
+        let slots = [self.dark1, self.light1, self.dark2, self.light2];
+        let mapped = |at: usize| slots[usize::from(self.map[at]) % slots.len()];
         Some(match name {
-            "dk1" | "tx1" => self.dark1,
-            "lt1" | "bg1" => self.light1,
-            "dk2" | "tx2" => self.dark2,
-            "lt2" | "bg2" => self.light2,
+            "dk1" => self.dark1,
+            "lt1" => self.light1,
+            "dk2" => self.dark2,
+            "lt2" => self.light2,
+            "tx1" => mapped(0),
+            "bg1" => mapped(1),
+            "tx2" => mapped(2),
+            "bg2" => mapped(3),
             "hlink" => self.hyperlink,
             "folHlink" => self.followed_hyperlink,
             other => self.accents[accent_number(other)?],
         })
+    }
+
+    /// The theme with the colour map `clr_map` (a `p:clrMap` or
+    /// `a:overrideClrMapping`: `tx1="dk1" bg1="lt1" ...`); a name it does
+    /// not map keeps its slot.
+    pub(crate) fn with_map(mut self, clr_map: Node<'_, '_>) -> Self {
+        for (at, name) in ["tx1", "bg1", "tx2", "bg2"].iter().enumerate() {
+            let slot = match clr_map.attribute(*name) {
+                Some("dk1") => 0,
+                Some("lt1") => 1,
+                Some("dk2") => 2,
+                Some("lt2") => 3,
+                _ => continue,
+            };
+            self.map[at] = slot;
+        }
+        self
     }
 
     /// The automatic colour of the series (or point) `index`, as Office
@@ -139,6 +167,12 @@ pub(crate) fn color(node: Node<'_, '_>, theme: &Theme, placeholder: Rgb) -> Opti
     let element = node
         .children()
         .find(|item| item.is_element() && item.tag_name().namespace() == Some(DRAWING_NS))?;
+    color_element(element, theme, placeholder)
+}
+
+/// The colour of the colour element `element` itself (`a:srgbClr`,
+/// `a:schemeClr`, ...), as [`color`] reads it; `None` for another element.
+pub(crate) fn color_element(element: Node<'_, '_>, theme: &Theme, placeholder: Rgb) -> Option<Rgb> {
     let base = match element.tag_name().name() {
         "srgbClr" => hex(element.attribute("val")?)?,
         "sysClr" => hex(element.attribute("lastClr")?)?,

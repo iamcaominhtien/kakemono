@@ -19,12 +19,12 @@
 //! - `rules`: titles found in text boxes, title slides, page furniture.
 
 mod build;
-mod inherit;
-mod media;
+pub(crate) mod inherit;
+pub(crate) mod media;
 mod order;
-mod package;
+pub(crate) mod package;
 mod rules;
-mod text;
+pub(crate) mod text;
 
 use crate::model::{Document, Span};
 use crate::word::docx::{Rel, parse, read_rels};
@@ -47,7 +47,7 @@ const DEFAULT_BODY_SIZE_PT: f32 = 18.0;
 const NOTES_HEADING: &str = "Notes";
 /// PowerPoint's default font of the body text (the theme's minor font of
 /// the default theme before Office 2023).
-const DEFAULT_BODY_FONT: &str = "Calibri";
+pub(crate) const DEFAULT_BODY_FONT: &str = "Calibri";
 
 /// The thresholds of the rules that read a deck as a document. Every
 /// field's name ends with its unit.
@@ -252,7 +252,7 @@ fn heading(inlines: Vec<Inline>, level: u8) -> Para {
 
 /// The parts of a deck, read once each (a layout and a master serve many
 /// slides).
-struct Parts<'z> {
+pub(crate) struct Parts<'z> {
     /// The package.
     zip: &'z ZipArchive<'z>,
     /// The text of the parts read, by path; `None` for one missing.
@@ -261,7 +261,7 @@ struct Parts<'z> {
 
 impl<'z> Parts<'z> {
     /// The parts of `zip`.
-    fn new(zip: &'z ZipArchive<'z>) -> Self {
+    pub(crate) fn new(zip: &'z ZipArchive<'z>) -> Self {
         Self {
             zip,
             texts: HashMap::new(),
@@ -269,7 +269,7 @@ impl<'z> Parts<'z> {
     }
 
     /// The text of the part `path`, when there is one.
-    fn text(&mut self, path: &str) -> Option<String> {
+    pub(crate) fn text(&mut self, path: &str) -> Option<String> {
         self.texts
             .entry(path.to_string())
             .or_insert_with(|| self.zip.read_text(path).ok().flatten())
@@ -278,7 +278,7 @@ impl<'z> Parts<'z> {
 
     /// The part related to `part` by a relationship of type `kind`
     /// (`slideLayout`, `slideMaster`).
-    fn related(&self, part: &str, kind: &str) -> Option<String> {
+    pub(crate) fn related(&self, part: &str, kind: &str) -> Option<String> {
         read_rels(self.zip, part)
             .ok()?
             .into_iter()
@@ -392,6 +392,6 @@ impl Parts<'_> {
 }
 
 /// The shape tree of a slide, layout or master (`p:cSld/p:spTree`).
-fn shape_tree<'a, 'input>(doc: &'a Xml<'input>) -> Option<Node<'a, 'input>> {
+pub(crate) fn shape_tree<'a, 'input>(doc: &'a Xml<'input>) -> Option<Node<'a, 'input>> {
     child(doc.root_element(), P_NS, "cSld").and_then(|slide| child(slide, P_NS, "spTree"))
 }
