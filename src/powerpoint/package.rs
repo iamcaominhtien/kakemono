@@ -116,9 +116,19 @@ pub(crate) fn presentation_part(zip: &ZipArchive<'_>) -> Option<String> {
         .filter(|target| zip.contains(target))?;
     let is_presentation = content_type(zip, &target).map_or_else(
         || target.rsplit('/').next() == Some(PRESENTATION_NAME),
-        |kind| kind.contains(".presentationml.") && kind.ends_with(".main+xml"),
+        |kind| is_presentation_type(&kind),
     );
     is_presentation.then_some(target)
+}
+
+/// Whether `kind` is the content type of a presentation's main part: a
+/// deck, a show or a template (`application/vnd.openxmlformats-
+/// officedocument.presentationml.….main+xml`), or one of them with macros
+/// (`application/vnd.ms-powerpoint.….macroEnabled.main+xml`).
+fn is_presentation_type(kind: &str) -> bool {
+    let kind = kind.trim().to_ascii_lowercase();
+    kind.ends_with(".main+xml")
+        && (kind.contains(".presentationml.") || kind.starts_with("application/vnd.ms-powerpoint."))
 }
 
 /// The content type the package declares for `part` (an `Override`), if any.
@@ -198,6 +208,28 @@ fn sections(root: Node<'_, '_>) -> Vec<Section> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decks_shows_and_templates_with_or_without_macros_are_presentations() {
+        for kind in [
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
+            "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+            "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+            "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml",
+            "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+        ] {
+            assert!(is_presentation_type(kind), "{kind}");
+        }
+        for kind in [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+            "application/vnd.ms-word.document.macroEnabled.main+xml",
+            "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+            "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+        ] {
+            assert!(!is_presentation_type(kind), "{kind}");
+        }
+    }
 
     fn root_of(xml: &str, test: impl FnOnce(Node<'_, '_>)) {
         let doc = parse(xml).unwrap();
