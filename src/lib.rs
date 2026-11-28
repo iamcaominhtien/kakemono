@@ -50,6 +50,8 @@ pub mod layout;
 #[doc(hidden)]
 pub mod paper;
 #[doc(hidden)]
+pub mod powerpoint;
+#[doc(hidden)]
 pub mod raster;
 #[doc(hidden)]
 pub mod render;

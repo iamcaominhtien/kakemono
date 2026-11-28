@@ -185,7 +185,7 @@ impl Document {
         })
     }
 
-    /// The input format: `"pdf"`, `"docx"`, `"doc"`, `"xlsx"`, `"epub"` or `"html"`.
+    /// The input format: `"pdf"`, `"docx"`, `"doc"`, `"xlsx"`, `"pptx"`, `"epub"` or `"html"`.
     #[getter]
     fn format(&self) -> &'static str {
         self.paper.format().name()

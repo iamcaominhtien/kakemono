@@ -79,7 +79,7 @@ struct Cli {
 /// the help texts.
 #[derive(Subcommand)]
 enum Command {
-    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an Excel workbook (.xlsx), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
+    /// Convert a PDF (local file, arXiv id or arXiv URL), a Word document (.docx, .doc), an Excel workbook (.xlsx), a PowerPoint presentation (.pptx), an EPUB book (.epub) or a web page (.html file or http(s) address) to HTML, Word, Markdown, LaTeX or EPUB.
     Convert(ConvertArgs),
     /// Download the PDF of an arXiv paper.
     Fetch {
@@ -91,7 +91,7 @@ enum Command {
     },
     /// Print the detected structure of a paper (for debugging).
     Inspect {
-        /// Local PDF, Word (.docx, .doc), Excel (.xlsx) or EPUB file, arXiv id or arXiv URL
+        /// Local PDF, Word (.docx, .doc), Excel (.xlsx), PowerPoint (.pptx) or EPUB file, arXiv id or arXiv URL
         input: String,
         /// Header rows of every table of a workbook (default: found from the cells); only for .xlsx
         #[arg(long, value_name = "N")]
@@ -294,7 +294,7 @@ impl From<PngCompressionArg> for PngCompression {
 /// texts.
 #[derive(clap::Args)]
 struct ConvertArgs {
-    /// Local PDF, Word (.docx, .doc), Excel (.xlsx), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
+    /// Local PDF, Word (.docx, .doc), Excel (.xlsx), PowerPoint (.pptx), EPUB (.epub) or HTML (.html) file, arXiv id (1706.03762) or arXiv URL, or the http(s) address of a web page or document (arXiv addresses give the PDF)
     input: String,
     /// Header rows of every table of a workbook, 0 for none (default: found from the cells); only for .xlsx, ignored for other inputs
     #[arg(long, value_name = "N")]

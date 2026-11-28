@@ -14,7 +14,7 @@
 
 - No new dependency in `Cargo.toml`.
 - `InputFormat::Pptx` (`name() == "pptx"`, `has_pages() == false`): `InputFormat` is `#[non_exhaustive]`, so this is `feat:`, not `feat!:`. No `FORMAT_VERSION` bump.
-- Thresholds and limits are fields of `PowerPointConfig` (documented, unit-suffixed), re-exported from `src/config.rs`. Starting values: `max_slides: 5_000`, `max_shapes_per_slide: 20_000`, `max_group_depth: 64`, `max_slide_side_pt: 14_400.0` (PowerPoint's own maximum, 200 inches).
+- Limits (most slides, shapes per slide, group depth, slide side) are documented constants of the module that applies them, as ARCHITECTURE.md says of constants that are not thresholds: `MAX_SLIDES = 5_000`, `MAX_SLIDE_SIDE_PT = 4_032.0` (56 inches, PowerPoint's maximum), and so on. A threshold of a rule, if one is needed, goes in a `PowerPointConfig` re-exported from `src/config.rs`.
 - Hidden slides are left out of every output. Placeholder prompt text never reaches any output.
 - Conventional Commits, English, imperative; each commit ends with the session's `Co-Authored-By`/`Claude-Session` lines.
 - Before each commit: `cargo fmt --check && cargo clippy --all-targets -- -D warnings` and `cargo test --release`. Snapshots of the papers, Word, Excel and EPUB must not change (`git diff --stat tests/data/snapshots` shows only `powerpoint-sample.txt`), unless a task says otherwise.

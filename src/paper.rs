@@ -31,6 +31,8 @@ pub enum InputFormat {
     Doc,
     /// An Excel workbook in Office Open XML (`.xlsx`).
     Xlsx,
+    /// A PowerPoint presentation in Office Open XML (`.pptx`).
+    Pptx,
     /// An EPUB book (`.epub`).
     Epub,
     /// A web page (`.html`, or an address of the Web).
@@ -38,7 +40,7 @@ pub enum InputFormat {
 }
 
 impl InputFormat {
-    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`, `epub`, `html`), also the name of the
+    /// The usual file extension (`pdf`, `docx`, `doc`, `xlsx`, `pptx`, `epub`, `html`), also the name of the
     /// format in the JSON output.
     pub fn name(self) -> &'static str {
         match self {
@@ -46,6 +48,7 @@ impl InputFormat {
             InputFormat::Docx => "docx",
             InputFormat::Doc => "doc",
             InputFormat::Xlsx => "xlsx",
+            InputFormat::Pptx => "pptx",
             InputFormat::Epub => "epub",
             InputFormat::Html => "html",
         }
@@ -74,6 +77,8 @@ enum Source {
     /// An EPUB book or a web page (the format), read into its structure
     /// when loaded.
     Book(Box<Document>, InputFormat),
+    /// A PowerPoint presentation, read into its structure when loaded.
+    Slides(Box<Document>),
 }
 
 /// A loaded PDF, Word document, Excel workbook, EPUB book or web page,
@@ -135,8 +140,14 @@ impl Paper {
             let doc = crate::epub::read(&data, None)?;
             return Ok(Self::loaded(Source::Book(Box::new(doc), InputFormat::Epub), sha256));
         }
-        // A workbook, a Word document and an EPUB book are ZIP packages:
-        // each looks for its own main part.
+        // A deck, a workbook, a Word document and an EPUB book are ZIP
+        // packages: each looks for its own main part. A deck is looked for
+        // before a Word document, whose test takes any package whose main
+        // part is there.
+        if crate::powerpoint::detect(&data) {
+            let doc = crate::powerpoint::read(&data, None)?;
+            return Ok(Self::loaded(Source::Slides(Box::new(doc)), sha256));
+        }
         if excel::detect(&data) {
             let (doc, paper) = excel::read_with_paper(&data, excel, None)?;
             return Ok(Self::loaded(Source::Sheet(Box::new(doc), paper, data, *excel), sha256));
@@ -241,6 +252,7 @@ impl Paper {
             Source::Word(_, format, _) => *format,
             Source::Sheet(..) => InputFormat::Xlsx,
             Source::Book(_, format) => *format,
+            Source::Slides(..) => InputFormat::Pptx,
         }
     }
 
@@ -248,14 +260,14 @@ impl Paper {
     fn pdf(&self) -> Option<&PdfFile> {
         match &self.file {
             Source::Pdf(pdf) => Some(pdf),
-            Source::Word(..) | Source::Sheet(..) | Source::Book(..) => None,
+            Source::Word(..) | Source::Sheet(..) | Source::Book(..) | Source::Slides(..) => None,
         }
     }
 
     /// The format a Word document is read with.
     fn word_format(&self) -> Option<WordFormat> {
         match &self.file {
-            Source::Pdf(_) | Source::Sheet(..) | Source::Book(..) => None,
+            Source::Pdf(_) | Source::Sheet(..) | Source::Book(..) | Source::Slides(..) => None,
             Source::Word(_, InputFormat::Doc, _) => Some(WordFormat::Doc),
             Source::Word(..) => Some(WordFormat::Docx),
         }
@@ -349,6 +361,7 @@ impl Paper {
                     crate::layout::workbook::print::to_pdf(&book, config, file)
                 }
             },
+            Source::Slides(..) => anyhow::bail!("a presentation cannot be written as a PDF yet"),
             Source::Book(..) => {
                 let docx = self.to_docx(&self.analyze(), &DocxOptions::default());
                 Paper::from_bytes(docx)?.to_pdf()
@@ -404,7 +417,7 @@ impl Paper {
     pub fn analyze_with(&self, opts: AnalyzeOptions) -> Analysis {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
-            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) => {
+            Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) | Source::Slides(doc) => {
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 // A file with no title of its own is called by its name.
