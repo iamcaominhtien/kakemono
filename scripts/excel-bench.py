@@ -85,68 +85,81 @@ def corpus(directory):
         print(json.dumps(row), flush=True)
 
 
+def made(path, write):
+    """`path`, written by `write(openpyxl, path)` unless it exists."""
+    if not os.path.exists(path):
+        import openpyxl
+        write(openpyxl, path)
+    return path
+
+
+def grid_cell(r, c, cols, text_every, long_text):
+    """The value of cell (r, c) of a synthetic grid."""
+    if long_text:
+        return ('word ' * (long_text // 5)) + str(r)
+    if text_every and c % text_every == 0:
+        return f'item {r} {c}'
+    return r * cols + c + 0.5
+
+
+def write_grid(openpyxl, path, rows, cols, text_every=0, long_text=0):
+    """A sheet of `rows` by `cols` under a header row: numbers, a text every
+    `text_every` columns, or texts of `long_text` characters."""
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet('Data')
+    ws.append([f'Col {c}' for c in range(cols)])
+    for r in range(rows):
+        ws.append([grid_cell(r, c, cols, text_every, long_text) for c in range(cols)])
+    wb.save(path)
+
+
+def write_many_sheets(openpyxl, path, sheets, rows, cols):
+    """`sheets` small sheets."""
+    wb = openpyxl.Workbook(write_only=True)
+    for s in range(sheets):
+        ws = wb.create_sheet(f'S{s}')
+        ws.append([f'h{c}' for c in range(cols)])
+        for r in range(rows):
+            ws.append([r + c for c in range(cols)])
+    wb.save(path)
+
+
+def write_merges(openpyxl, path, count):
+    """`count` merged blocks of 2 by 2 cells."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for i in range(count):
+        r = 1 + (i // 100) * 2
+        c = 1 + (i % 100) * 2
+        ws.cell(r, c, f'm{i}')
+        ws.merge_cells(start_row=r, start_column=c, end_row=r + 1, end_column=c + 1)
+    wb.save(path)
+
+
+def write_widest(openpyxl, path):
+    """5 rows as wide as a sheet goes (16,384 columns)."""
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet('Wide')
+    for r in range(5):
+        ws.append([r * 16384 + c for c in range(16384)])
+    wb.save(path)
+
+
 def synth(outdir):
-    import openpyxl
-    from openpyxl.utils import get_column_letter
     os.makedirs(outdir, exist_ok=True)
 
     def grid(name, rows, cols, text_every=0, long_text=0):
-        path = os.path.join(outdir, name)
-        if os.path.exists(path):
-            return path
-        wb = openpyxl.Workbook(write_only=True)
-        ws = wb.create_sheet('Data')
-        ws.append([f'Col {c}' for c in range(cols)])
-        for r in range(rows):
-            line = []
-            for c in range(cols):
-                if long_text:
-                    line.append(('word ' * (long_text // 5)) + str(r))
-                elif text_every and c % text_every == 0:
-                    line.append(f'item {r} {c}')
-                else:
-                    line.append(r * cols + c + 0.5)
-            ws.append(line)
-        wb.save(path)
-        return path
+        return made(os.path.join(outdir, name),
+                    lambda xl, path: write_grid(xl, path, rows, cols, text_every, long_text))
 
     def many_sheets(name, sheets, rows, cols):
-        path = os.path.join(outdir, name)
-        if os.path.exists(path):
-            return path
-        wb = openpyxl.Workbook(write_only=True)
-        for s in range(sheets):
-            ws = wb.create_sheet(f'S{s}')
-            ws.append([f'h{c}' for c in range(cols)])
-            for r in range(rows):
-                ws.append([r + c for c in range(cols)])
-        wb.save(path)
-        return path
+        return made(os.path.join(outdir, name), lambda xl, path: write_many_sheets(xl, path, sheets, rows, cols))
 
     def merges(name, count):
-        path = os.path.join(outdir, name)
-        if os.path.exists(path):
-            return path
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        for i in range(count):
-            r = 1 + (i // 100) * 2
-            c = 1 + (i % 100) * 2
-            ws.cell(r, c, f'm{i}')
-            ws.merge_cells(start_row=r, start_column=c, end_row=r + 1, end_column=c + 1)
-        wb.save(path)
-        return path
+        return made(os.path.join(outdir, name), lambda xl, path: write_merges(xl, path, count))
 
     def widest(name):
-        path = os.path.join(outdir, name)
-        if os.path.exists(path):
-            return path
-        wb = openpyxl.Workbook(write_only=True)
-        ws = wb.create_sheet('Wide')
-        for r in range(5):
-            ws.append([r * 16384 + c for c in range(16384)])
-        wb.save(path)
-        return path
+        return made(os.path.join(outdir, name), write_widest)
 
     cases = [
         ('grid-10k-x-10', lambda: grid('g1.xlsx', 10_000, 10, text_every=3)),
