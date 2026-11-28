@@ -45,3 +45,6 @@ benchmark-results/
 /bindings/**/node_modules
 /bindings/**/bin/
 /bindings/**/obj/
+
+# Maven
+/bindings/jvm/**/target/

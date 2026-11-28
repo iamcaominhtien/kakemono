@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The JVM binding of kakemono (Java 17+, Kotlin): the Java API, and its
+     LangChain4j parser. The JNI library is built by Cargo (native/); `mvn
+     verify` here needs it, named by -Dkakemono.library.path or on the
+     classpath (see Native.java). -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.github.iamcaominhtien</groupId>
+  <artifactId>kakemono-parent</artifactId>
+  <version>0.20.0</version>
+  <packaging>pom</packaging>
+  <name>kakemono (parent)</name>
+  <description>Convert PDF papers, Word documents, Excel workbooks, EPUB books and web pages to Markdown, HTML, Word, LaTeX, Typst, EPUB, editable JSON and chunks for RAG</description>
+  <url>https://github.com/iamcaominhtien/kakemono</url>
+
+  <licenses>
+    <license>
+      <name>MIT</name>
+      <url>https://opensource.org/licenses/MIT</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>iamcaominhtien</id>
+      <name>Cao Minh Tiến</name>
+      <url>https://github.com/iamcaominhtien</url>
+    </developer>
+  </developers>
+  <scm>
+    <url>https://github.com/iamcaominhtien/kakemono</url>
+    <connection>scm:git:https://github.com/iamcaominhtien/kakemono.git</connection>
+  </scm>
+
+  <modules>
+    <module>kakemono</module>
+    <module>kakemono-langchain4j</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <junit.version>5.13.4</junit.version>
+    <langchain4j.version>1.24.1</langchain4j.version>
+    <!-- The JNI library the tests load (a file); empty: from the classpath. -->
+    <kakemono.library.path>${project.basedir}/../../target/release/libkakemono_jni.so</kakemono.library.path>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.14.0</version>
+          <configuration>
+            <compilerArgs>
+              <arg>-Xlint:all</arg>
+              <arg>-Werror</arg>
+            </compilerArgs>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.3</version>
+          <configuration>
+            <systemPropertyVariables>
+              <kakemono.library.path>${kakemono.library.path}</kakemono.library.path>
+              <kakemono.test.data>${project.basedir}/../../../tests/data</kakemono.test.data>
+            </systemPropertyVariables>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.2</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>
