@@ -108,6 +108,7 @@ impl<'a> Body<'a> {
         let mut idx = 0;
         let mut in_abstract = false;
         while idx < blocks.len() {
+            crate::common::cancel::check();
             let block = blocks[idx];
             if let Some(end) = code_run(&blocks, idx) {
                 self.listing(&code::listing_lines(&blocks[idx..end]), block.anchor.as_deref());

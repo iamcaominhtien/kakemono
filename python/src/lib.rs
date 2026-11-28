@@ -12,7 +12,7 @@ use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
     MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
-use pyo3::exceptions::{PyUserWarning, PyValueError};
+use pyo3::exceptions::{PyException, PyTimeoutError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::path::Path;
@@ -79,6 +79,98 @@ fn check_scale(scale: f32) -> PyResult<()> {
     }
 }
 
+// Named in the `kakemono` package, which exports it: instances pickle.
+pyo3::create_exception!(
+    kakemono,
+    Cancelled,
+    PyException,
+    "Raised by a conversion stopped with the `cancel()` of its `CancelToken`."
+);
+
+/// A request to stop a conversion, shared by the thread that runs it and
+/// those that may stop it; with `timeout` (seconds), it also stops the work
+/// once that time has passed.
+#[pyclass(frozen, name = "CancelToken", module = "kakemono._kakemono")]
+struct PyCancelToken(kakemono::CancelToken);
+
+#[pymethods]
+impl PyCancelToken {
+    #[new]
+    #[pyo3(signature = (*, timeout=None))]
+    fn new(timeout: Option<f64>) -> PyResult<Self> {
+        Ok(Self(match duration(timeout)? {
+            Some(limit) => kakemono::CancelToken::with_timeout(limit),
+            None => kakemono::CancelToken::new(),
+        }))
+    }
+
+    /// Asks the work running with this token to stop: it raises `Cancelled`
+    /// at its next stopping point, normally within a page.
+    fn cancel(&self) {
+        self.0.cancel();
+    }
+
+    /// Whether the work must stop: cancelled, or past its time limit.
+    #[getter]
+    fn cancelled(&self) -> bool {
+        self.0.state().is_some()
+    }
+
+    /// Whether the work must stop because its time limit (or its
+    /// parent's) passed, and not because of a `cancel()`.
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.0.state() == Some(kakemono::Cancelled::TimedOut)
+    }
+
+    /// A token stopped by this one and by its own `cancel()` and `timeout`,
+    /// whose cancellation does not stop this one.
+    #[pyo3(signature = (*, timeout=None))]
+    fn child(&self, timeout: Option<f64>) -> PyResult<Self> {
+        Ok(Self(self.0.child(duration(timeout)?)))
+    }
+}
+
+/// A time limit in seconds as a duration.
+fn duration(seconds: Option<f64>) -> PyResult<Option<std::time::Duration>> {
+    seconds
+        .map(|seconds| {
+            std::time::Duration::try_from_secs_f64(seconds)
+                .ok()
+                .filter(|limit| !limit.is_zero())
+                .ok_or_else(|| value_error("timeout must be a positive number of seconds"))
+        })
+        .transpose()
+}
+
+/// The token a call runs with: `cancel` and `timeout` (seconds) together,
+/// or none when neither is given.
+fn stop_token(cancel: Option<&PyCancelToken>, timeout: Option<f64>) -> PyResult<Option<kakemono::CancelToken>> {
+    let limit = duration(timeout)?;
+    Ok(match (cancel, limit) {
+        (None, None) => None,
+        (None, Some(limit)) => Some(kakemono::CancelToken::with_timeout(limit)),
+        (Some(token), None) => Some(token.0.clone()),
+        (Some(token), Some(limit)) => Some(token.0.child(Some(limit))),
+    })
+}
+
+/// `work` run without the GIL, stopped by `token`: a cancelled one raises
+/// `Cancelled`, a timed out one `TimeoutError`.
+fn stoppable<R: Send>(
+    py: Python<'_>,
+    token: Option<kakemono::CancelToken>,
+    work: impl FnOnce() -> R + Send,
+) -> PyResult<R> {
+    py.detach(|| match token {
+        None => Ok(work()),
+        Some(token) => token.run(work).map_err(|stopped| match stopped {
+            kakemono::Cancelled::TimedOut => PyTimeoutError::new_err(stopped.to_string()),
+            _ => Cancelled::new_err(stopped.to_string()),
+        }),
+    })
+}
+
 /// Gives each warning to Python as a `UserWarning`.
 fn warn_all(py: Python<'_>, warnings: &[String]) -> PyResult<()> {
     let category = py.get_type::<PyUserWarning>();
@@ -127,7 +219,7 @@ impl Document {
     /// `UserWarning`s. `header_rows` gives the header rows of every table
     /// of a workbook, instead of finding them.
     #[new]
-    #[pyo3(signature = (data=None, *, path=None, url=None, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None, header_rows=None))]
+    #[pyo3(signature = (data=None, *, path=None, url=None, source=None, tables=true, jobs=0, png_compression="balanced", content=None, content_dir=None, header_rows=None, cancel=None, timeout=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -141,10 +233,12 @@ impl Document {
         content: Option<String>,
         content_dir: Option<String>,
         header_rows: Option<usize>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<Self> {
         let png = parse_png_compression(png_compression)?;
         let edited = content.is_some();
-        let (paper, analysis, warnings) = py.detach(move || {
+        let (paper, analysis, warnings) = stoppable(py, stop_token(cancel.as_deref(), timeout)?, move || {
             let excel = ExcelConfig {
                 header_rows,
                 ..Default::default()
@@ -175,7 +269,7 @@ impl Document {
                 (None, _) => Vec::new(),
             };
             Ok::<_, PyErr>((paper, analysis, warnings))
-        })?;
+        })??;
         warn_all(py, &warnings)?;
         Ok(Self {
             paper,
@@ -203,7 +297,8 @@ impl Document {
 
     /// The HTML of each of `modes`. A Word document has only the friendly
     /// mode, and the hard mode cannot show edited text.
-    #[pyo3(signature = (modes, *, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0))]
+    #[pyo3(signature = (modes, *, equations="mathml", page_image="svg", embed_fonts=true, scale=3.0, cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn convert(
         &self,
         py: Python<'_>,
@@ -212,6 +307,8 @@ impl Document {
         page_image: &str,
         embed_fonts: bool,
         scale: f32,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<Vec<String>> {
         let modes = modes
             .iter()
@@ -230,7 +327,7 @@ impl Document {
                 "a Word document or an EPUB book has no pages: hard, hard-95 and medium show the pages of a PDF; use 'friendly'",
             ));
         }
-        Ok(py.detach(|| {
+        stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             modes
                 .into_iter()
                 .map(|mode| {
@@ -246,22 +343,25 @@ impl Document {
                     self.paper.to_html(&self.analysis, &opts).html
                 })
                 .collect()
-        }))
+        })
     }
 
     /// The bytes of a Word document and, when `image_dir` is given, its
     /// pictures as files in that folder.
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir=None))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir=None, cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_docx<'py>(
         &self,
         py: Python<'py>,
         equations: &str,
         scale: f32,
         image_dir: Option<String>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<(Bound<'py, PyBytes>, PyFiles<'py>)> {
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
-        let (data, files) = py.detach(|| {
+        let (data, files) = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = DocxOptions {
                 scale,
                 jobs: self.jobs,
@@ -274,13 +374,14 @@ impl Document {
                 }
                 None => (self.paper.to_docx(&self.analysis, &opts), Vec::new()),
             }
-        });
+        })?;
         Ok((PyBytes::new(py, &data), py_files(py, files)))
     }
 
     /// Markdown and its picture files (none when `inline_images`: the
     /// pictures are then data URIs).
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), inline_images=false, mode="friendly"))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), inline_images=false, mode="friendly", cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_markdown<'py>(
         &self,
         py: Python<'py>,
@@ -289,6 +390,8 @@ impl Document {
         image_dir: String,
         inline_images: bool,
         mode: &str,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<(String, PyFiles<'py>)> {
         let mode = match parse_mode(mode)? {
             mode @ (Mode::Medium | Mode::Friendly) => mode,
@@ -300,7 +403,7 @@ impl Document {
         };
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
-        let out = py.detach(|| {
+        let out = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = MarkdownOptions {
                 inline_images,
                 asset_dir: image_dir,
@@ -310,13 +413,14 @@ impl Document {
                 mode,
             };
             self.paper.to_markdown(&self.analysis, &opts)
-        });
+        })?;
         Ok((out.markdown, py_files(py, out.files)))
     }
 
     /// The editable JSON and its picture files (none when `inline_images`:
     /// the pictures are then data URIs).
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), inline_images=false))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), inline_images=false, cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_json<'py>(
         &self,
         py: Python<'py>,
@@ -324,10 +428,12 @@ impl Document {
         scale: f32,
         image_dir: String,
         inline_images: bool,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<(String, PyFiles<'py>)> {
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
-        let out = py.detach(|| {
+        let out = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = JsonOptions {
                 inline_images,
                 asset_dir: image_dir,
@@ -336,22 +442,25 @@ impl Document {
                 equations,
             };
             self.paper.to_json(&self.analysis, &opts)
-        });
+        })?;
         Ok((out.json, py_files(py, out.files)))
     }
 
     /// The source of a LaTeX document and its picture files (in `image_dir`).
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string()))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_latex<'py>(
         &self,
         py: Python<'py>,
         equations: &str,
         scale: f32,
         image_dir: String,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<(String, PyFiles<'py>)> {
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
-        let out = py.detach(|| {
+        let out = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = LatexOptions {
                 asset_dir: image_dir,
                 scale,
@@ -359,13 +468,14 @@ impl Document {
                 equations,
             };
             self.paper.to_latex(&self.analysis, &opts)
-        });
+        })?;
         Ok((out.latex, py_files(py, out.files)))
     }
 
     /// The source of a Typst document and its picture files (in
     /// `image_dir`). `layout` is `"auto"`, `"article"` or `"book"`.
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), layout="auto"))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, image_dir="images".to_string(), layout="auto", cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_typst<'py>(
         &self,
         py: Python<'py>,
@@ -373,6 +483,8 @@ impl Document {
         scale: f32,
         image_dir: String,
         layout: &str,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<(String, PyFiles<'py>)> {
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
@@ -386,7 +498,7 @@ impl Document {
                 )));
             }
         };
-        let out = py.detach(|| {
+        let out = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = TypstOptions {
                 asset_dir: image_dir,
                 scale,
@@ -395,13 +507,14 @@ impl Document {
                 layout,
             };
             self.paper.to_typst(&self.analysis, &opts)
-        });
+        })?;
         Ok((out.typst, py_files(py, out.files)))
     }
 
     /// The bytes of an EPUB book. `modified` is its date
     /// (`CCYY-MM-DDThh:mm:ssZ`), fixed when `None`.
-    #[pyo3(signature = (*, equations="mathml", scale=3.0, max_math_width_em=20.0, cover=true, modified=None))]
+    #[pyo3(signature = (*, equations="mathml", scale=3.0, max_math_width_em=20.0, cover=true, modified=None, cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn to_epub<'py>(
         &self,
         py: Python<'py>,
@@ -410,10 +523,12 @@ impl Document {
         max_math_width_em: f32,
         cover: bool,
         modified: Option<String>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let equations = parse_equations(equations)?;
         check_scale(scale)?;
-        let data = py.detach(|| {
+        let data = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let opts = EpubOptions {
                 scale,
                 jobs: self.jobs,
@@ -423,36 +538,50 @@ impl Document {
                 modified,
             };
             self.paper.to_epub(&self.analysis, &opts)
-        });
+        })?;
         Ok(PyBytes::new(py, &data))
     }
 
     /// Chunks for retrieval as JSON Lines (one object per line). `tokenizer`
     /// is the path of a Hugging Face `tokenizer.json` or the name of an
     /// OpenAI tokenizer; without it, tokens are estimated.
-    #[pyo3(signature = (*, max_tokens=512, tokenizer=None))]
-    fn to_chunks(&self, py: Python<'_>, max_tokens: usize, tokenizer: Option<String>) -> PyResult<String> {
+    #[pyo3(signature = (*, max_tokens=512, tokenizer=None, cancel=None, timeout=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn to_chunks(
+        &self,
+        py: Python<'_>,
+        max_tokens: usize,
+        tokenizer: Option<String>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
+    ) -> PyResult<String> {
         let counter = match tokenizer {
             Some(spec) => TokenCounter::load(&spec).map_err(value_error)?,
             None => TokenCounter::estimate(),
         };
-        Ok(py.detach(|| {
+        stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             let chunks = self
                 .paper
                 .to_chunks(&self.analysis, &ChunkOptions { max_tokens, counter });
             kakemono::chunks_jsonl(&chunks)
-        }))
+        })
     }
 
     /// A Word document laid out in pages as Word lays it out, as the bytes
     /// of a PDF. With edited text, the edited document is laid out.
-    fn to_pdf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (*, cancel=None, timeout=None))]
+    fn to_pdf<'py>(
+        &self,
+        py: Python<'py>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         if self.paper.format().has_pages() {
             return Err(value_error(
                 "the input is already a PDF: only a Word document, a workbook or an EPUB book is laid out as a PDF",
             ));
         }
-        let data = py.detach(|| {
+        let data = stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
             if self.edited {
                 // The layout engine reads a Word file: the edited text and
                 // pictures go into a Word document first, as on the command
@@ -462,15 +591,23 @@ impl Document {
             } else {
                 self.paper.to_pdf()
             }
-        });
+        })?;
         Ok(PyBytes::new(py, &data.map_err(value_error)?))
     }
 
     /// The structure of the document (blocks in reading order) as JSON, the
     /// same document as `kakemono convert --json`.
-    fn analyze(&self, py: Python<'_>) -> PyResult<String> {
-        py.detach(|| serde_json::to_string(&self.analysis.doc))
-            .map_err(value_error)
+    #[pyo3(signature = (*, cancel=None, timeout=None))]
+    fn analyze(
+        &self,
+        py: Python<'_>,
+        cancel: Option<PyRef<'_, PyCancelToken>>,
+        timeout: Option<f64>,
+    ) -> PyResult<String> {
+        stoppable(py, stop_token(cancel.as_deref(), timeout)?, || {
+            serde_json::to_string(&self.analysis.doc)
+        })?
+        .map_err(value_error)
     }
 }
 
@@ -515,9 +652,16 @@ fn parse_arxiv_id(text: &str) -> Option<String> {
 
 /// Downloads the PDF of an arXiv paper, through the on-disk cache.
 #[pyfunction]
-fn fetch_arxiv<'py>(py: Python<'py>, id: &str) -> PyResult<Bound<'py, PyBytes>> {
+#[pyo3(signature = (id, *, cancel=None, timeout=None))]
+fn fetch_arxiv<'py>(
+    py: Python<'py>,
+    id: &str,
+    cancel: Option<PyRef<'_, PyCancelToken>>,
+    timeout: Option<f64>,
+) -> PyResult<Bound<'py, PyBytes>> {
     let id = arxiv::parse_id(id).ok_or_else(|| value_error(format!("'{id}' is not an arXiv id or URL")))?;
-    let data = py.detach(|| arxiv::fetch_pdf(&id)).map_err(value_error)?;
+    let data =
+        stoppable(py, stop_token(cancel.as_deref(), timeout)?, || arxiv::fetch_pdf(&id))?.map_err(value_error)?;
     Ok(PyBytes::new(py, &data))
 }
 
@@ -525,6 +669,8 @@ fn fetch_arxiv<'py>(py: Python<'py>, id: &str) -> PyResult<Bound<'py, PyBytes>> 
 #[pymodule]
 fn _kakemono(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Document>()?;
+    module.add_class::<PyCancelToken>()?;
+    module.add("Cancelled", module.py().get_type::<Cancelled>())?;
     module.add_function(wrap_pyfunction!(render_svg, module)?)?;
     module.add_function(wrap_pyfunction!(read_formula, module)?)?;
     module.add_function(wrap_pyfunction!(parse_arxiv_id, module)?)?;

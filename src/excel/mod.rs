@@ -291,6 +291,7 @@ fn read_sheets_with_styles<'w>(
         if !sheet.visible {
             continue;
         }
+        crate::common::cancel::check();
         let xml = if sheet.part.is_empty() {
             None
         } else {

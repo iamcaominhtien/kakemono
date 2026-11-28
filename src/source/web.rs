@@ -2,6 +2,7 @@
 //! EPUB book) at an `http(s)` address, and the pictures of a page, many at
 //! once.
 
+use crate::common::cancel::{self, CancelToken};
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::io::Read;
@@ -99,7 +100,7 @@ pub fn fetch(url: &str) -> Result<Fetched> {
 /// reason that may pass: no answer, a lost connection, a server error
 /// (5xx) or too many requests (429). A page that is missing (404) or
 /// refused (403) is not asked again.
-fn get_retrying(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) -> Result<Fetched> {
+fn get_retrying(agent: &ureq::Agent, url: &str, accept: &'static str, max_bytes: u64) -> Result<Fetched> {
     let mut wait = RETRY_WAIT;
     let mut attempt = 1;
     loop {
@@ -115,14 +116,27 @@ fn get_retrying(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) ->
         if !passing || attempt >= ATTEMPTS {
             return result;
         }
-        std::thread::sleep(wait);
+        cancel::sleep(wait);
         wait *= 2;
         attempt += 1;
     }
 }
 
-/// One request.
-fn get(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) -> Result<Fetched> {
+/// One request: on a thread of its own when the work can be cancelled
+/// ([`cancel::blocking`]), since waiting for an answer has no stopping point.
+fn get(agent: &ureq::Agent, url: &str, accept: &'static str, max_bytes: u64) -> Result<Fetched> {
+    let (agent, url) = (agent.clone(), url.to_string());
+    cancel::blocking(move |token| get_now(&agent, &url, accept, max_bytes, token.as_ref()))
+}
+
+/// [`get`], on this thread.
+fn get_now(
+    agent: &ureq::Agent,
+    url: &str,
+    accept: &str,
+    max_bytes: u64,
+    token: Option<&CancelToken>,
+) -> Result<Fetched> {
     let resp = agent
         .get(url)
         .set("Accept", accept)
@@ -130,11 +144,7 @@ fn get(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) -> Result<F
         .with_context(|| format!("downloading {url}"))?;
     let final_url = resp.get_url().to_string();
     let content_type = resp.header("Content-Type").map(str::to_string);
-    let mut data = Vec::new();
-    resp.into_reader()
-        .take(max_bytes + 1)
-        .read_to_end(&mut data)
-        .with_context(|| format!("reading {url}"))?;
+    let data = read_body(resp.into_reader(), max_bytes + 1, token).with_context(|| format!("reading {url}"))?;
     if data.len() as u64 > max_bytes {
         bail!("{url} is larger than {max_bytes} bytes");
     }
@@ -145,6 +155,32 @@ fn get(agent: &ureq::Agent, url: &str, accept: &str, max_bytes: u64) -> Result<F
     })
 }
 
+/// Bytes read from a download at a time, between two looks at its token.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// The bytes of `reader`, at most `max_bytes` of them, read in chunks of
+/// [`READ_CHUNK_BYTES`]; stops with an error once `token` stops, so that a
+/// download left by a cancelled conversion does not go on.
+///
+/// # Errors
+/// When reading fails, or `token` stops.
+pub(crate) fn read_body(reader: impl Read, max_bytes: u64, token: Option<&CancelToken>) -> std::io::Result<Vec<u8>> {
+    let mut reader = reader.take(max_bytes);
+    let mut data = Vec::new();
+    let mut chunk = vec![0; READ_CHUNK_BYTES];
+    loop {
+        if let Some(stopped) = token.and_then(CancelToken::state) {
+            return Err(std::io::Error::other(stopped));
+        }
+        match reader.read(&mut chunk) {
+            Ok(0) => return Ok(data),
+            Ok(read) => data.extend_from_slice(&chunk[..read]),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Fetches the pictures at `urls` (at most [`MAX_PICTURES`], several at a
 /// time): the bytes of each one fetched, by address. A picture that cannot
 /// be fetched is left out.
@@ -152,27 +188,82 @@ pub fn fetch_pictures(urls: &[String]) -> HashMap<String, Vec<u8>> {
     let agent = agent(PICTURE_TIMEOUT);
     let queue = Mutex::new(urls.iter().take(MAX_PICTURES));
     let found = Mutex::new(HashMap::new());
+    let token = cancel::current();
     std::thread::scope(|scope| {
         for _ in 0..PICTURE_WORKERS.min(urls.len()) {
             scope.spawn(|| {
                 // The lock is held only to take the next address.
                 let next = || queue.lock().ok().and_then(|mut queue| queue.next());
-                while let Some(url) = next() {
-                    if let Ok(fetched) = get_retrying(&agent, url, PICTURE_ACCEPT, MAX_PICTURE_BYTES)
-                        && let Ok(mut found) = found.lock()
-                    {
-                        found.insert(url.clone(), fetched.data);
+                let work = || {
+                    while let Some(url) = next() {
+                        if let Ok(fetched) = get_retrying(&agent, url, PICTURE_ACCEPT, MAX_PICTURE_BYTES)
+                            && let Ok(mut found) = found.lock()
+                        {
+                            found.insert(url.clone(), fetched.data);
+                        }
                     }
+                };
+                // A cancelled worker stops here: a scoped thread that
+                // unwinds would lose why, and the caller stops below.
+                match &token {
+                    Some(token) => drop(token.run(work)),
+                    None => work(),
                 }
             });
         }
     });
+    cancel::check();
     found.into_inner().unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Fetched, is_url};
+    use super::{Fetched, fetch, fetch_pictures, is_url, read_body};
+    use crate::common::cancel::{CancelToken, Cancelled};
+    use std::time::{Duration, Instant};
+
+    /// The address of a server that takes connections and never answers.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}/page", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn a_body_is_read_up_to_its_limit_or_its_token() {
+        let data = vec![7u8; 200_000];
+        assert_eq!(read_body(&data[..], 1_000_000, None).unwrap(), data);
+        assert_eq!(read_body(&data[..], 1000, None).unwrap().len(), 1000);
+        let token = CancelToken::new();
+        assert_eq!(read_body(&data[..], 1_000_000, Some(&token)).unwrap(), data);
+        token.cancel();
+        assert!(read_body(&data[..], 1_000_000, Some(&token)).is_err());
+    }
+
+    #[test]
+    fn a_download_that_waits_for_an_answer_stops_when_cancelled() {
+        // A proxy of the environment may answer in its place: the download
+        // then fails at once instead; either way it does not wait.
+        let url = silent_server();
+        let token = CancelToken::with_timeout(Duration::from_millis(300));
+        let start = Instant::now();
+        let outcome = token.run(|| fetch(&url).map(|_| ()));
+        assert!(matches!(outcome, Err(Cancelled::TimedOut) | Ok(Err(_))), "{outcome:?}");
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        let urls = vec![url.clone(), format!("{url}2")];
+        let token = CancelToken::with_timeout(Duration::from_millis(300));
+        let start = Instant::now();
+        let outcome = token.run(|| fetch_pictures(&urls).len());
+        assert!(matches!(outcome, Err(Cancelled::TimedOut) | Ok(0)), "{outcome:?}");
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        assert_eq!(CancelToken::new().run(|| fetch("not an address").is_err()), Ok(true));
+    }
 
     #[test]
     fn addresses_and_types() {

@@ -197,6 +197,7 @@ impl Page<'_> {
         }
         out.push_str("</nav></header><main>");
         for (index, DrawnSheet { name, grid, shapes, .. }) in sheets.iter().enumerate() {
+            crate::common::cancel::check();
             let _ = write!(
                 out,
                 "<section class=\"sheet\" id=\"sheet-{}\"><h2>{}</h2>",

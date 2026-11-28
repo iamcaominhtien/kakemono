@@ -365,6 +365,7 @@ impl Reader<'_> {
         blocks: &mut Vec<Block>,
     ) {
         for item in node.children().filter(Node::is_element) {
+            crate::common::cancel::check();
             if item.tag_name().namespace() != Some(WORD_NS) {
                 continue;
             }

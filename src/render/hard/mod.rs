@@ -61,6 +61,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 
 /// One page: its picture and the text layer over it.
 fn page_html(analysis: &Analysis, page_idx: usize, page: &PageInfo, images: &mut ImageStore<'_>) -> String {
+    crate::common::cancel::check();
     let doc = &analysis.doc;
     let (pw, ph) = (page.width, page.height);
     let mut layer = String::new();

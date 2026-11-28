@@ -396,6 +396,7 @@ pub fn build_math(doc: &mut Document, pages: &[PageData], fonts: &[FontInfo], cf
         let BlockKind::Equation { image: Some(image), .. } = &block.kind else {
             continue;
         };
+        crate::common::cancel::check();
         let page = &pages[block.page];
         if has_drawing(page, &image.rect, cfg) {
             continue;

@@ -900,6 +900,7 @@ impl Printer<'_, '_, '_> {
         scale: f32,
         repeat: bool,
     ) {
+        crate::common::cancel::check();
         let mut texts = Vec::new();
         let mut lines = Vec::new();
         self.page_right = columns.page_left + (columns.sheet_right - columns.sheet_left) * scale;

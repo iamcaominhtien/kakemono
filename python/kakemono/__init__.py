@@ -24,7 +24,8 @@ one document, open it once as a :class:`Document`:
 >>> doc.to_docx("out/paper.vi.docx"); doc.to_epub("out/paper.vi.epub")
 
 The work is done by the kakemono Rust library; the GIL is released while it
-runs, so conversions can run in parallel threads.
+runs, so conversions can run in parallel threads. :mod:`kakemono.aio` has the
+same functions to be awaited, run in worker threads, for asyncio programs.
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ from . import _kakemono
 
 __all__ = [
     "MODES",
+    "CancelToken",
+    "Cancelled",
     "Document",
     "Source",
     "analyze",
@@ -60,6 +63,13 @@ __all__ = [
 
 __version__: str = _kakemono.__version__
 
+# CancelToken: a request to stop a conversion, given as ``cancel=``; its
+# ``cancel()`` is called from another thread. ``CancelToken(timeout=s)`` also
+# stops the work after `s` seconds; ``token.child(timeout=s)`` is stopped by
+# `token` and by its own limit. Cancelled: raised by a conversion stopped
+# with ``cancel()``.
+from ._kakemono import CancelToken, Cancelled  # noqa: E402
+
 #: The four output modes, from the most faithful to the most readable.
 MODES = ("hard", "hard-95", "medium", "friendly")
 
@@ -78,7 +88,17 @@ Source = Union[bytes, bytearray, memoryview, PathArg]
 Content = Union[Dict[str, Any], PathArg]
 
 
-def _load(source: Source) -> tuple[Dict[str, Any], str | None]:
+def _token(cancel: Optional[CancelToken], timeout: Optional[float]) -> Optional[CancelToken]:
+    """The token of a call: `cancel`, with the time limit `timeout` (seconds)
+    from now."""
+    if timeout is None:
+        return cancel
+    if cancel is None:
+        return CancelToken(timeout=timeout)
+    return cancel.child(timeout=timeout)
+
+
+def _load(source: Source, cancel: Optional[CancelToken] = None) -> tuple[Dict[str, Any], str | None]:
     """Where `source` is read from (``data``, ``path`` or ``url``, the
     arguments of the native document), and the name recorded in the output."""
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -89,7 +109,7 @@ def _load(source: Source) -> tuple[Dict[str, Any], str | None]:
         return {"path": path}, os.path.basename(path)
     arxiv_id = _kakemono.parse_arxiv_id(path)
     if arxiv_id is not None:
-        return {"data": _kakemono.fetch_arxiv(arxiv_id)}, f"arXiv:{arxiv_id}"
+        return {"data": _kakemono.fetch_arxiv(arxiv_id, cancel=cancel)}, f"arXiv:{arxiv_id}"
     if re.match(r"(?i)https?://", path.strip()):
         return {"url": path.strip()}, path.strip()
     raise FileNotFoundError(f"{path!r} is neither a file, an arXiv id or URL, nor an http(s) address")
@@ -172,6 +192,12 @@ class Document:
       of the JSON file (the current folder for a dict or text).
     - ``header_rows``: the header rows of every table of an Excel workbook,
       given instead of found.
+    - ``cancel`` and ``timeout``: a :data:`CancelToken` whose ``cancel()``,
+      called from another thread, stops the reading (``Cancelled``), and a
+      time limit in seconds (``TimeoutError``). Every method takes them too,
+      for its own work; a module function's limit covers all of its work.
+      The work stops at its next stopping point, normally within a page,
+      and writes no file.
 
     Raises ``ValueError`` when the data is not a readable PDF, Word
     document, EPUB book or web page, a page cannot be fetched, an option is
@@ -190,8 +216,11 @@ class Document:
         png_compression: PngCompression = "balanced",
         content: Optional[Content] = None,
         header_rows: Optional[int] = None,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> None:
-        where, name = _load(source)
+        token = _token(cancel, timeout)
+        where, name = _load(source, token)
         text, folder = _content(content)
         self._doc = _kakemono.Document(
             **where,
@@ -202,6 +231,7 @@ class Document:
             content=text,
             content_dir=folder,
             header_rows=header_rows,
+            cancel=token,
         )
 
     @property
@@ -226,6 +256,8 @@ class Document:
         page_image: Literal["svg", "svg-only", "png"] = "svg",
         embed_fonts: bool = True,
         scale: float = 3.0,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, str]:
         """The HTML of each of `modes`, as a dict from mode name to a
         self-contained HTML document (images and fonts embedded).
@@ -240,7 +272,7 @@ class Document:
         """
         modes = list(modes)
         pages = self._doc.convert(
-            modes, equations=equations, page_image=page_image, embed_fonts=embed_fonts, scale=scale
+            modes, equations=equations, page_image=page_image, embed_fonts=embed_fonts, scale=scale, cancel=cancel, timeout=timeout
         )
         return dict(zip(modes, pages))
 
@@ -257,6 +289,8 @@ class Document:
         scale: float = 3.0,
         image_dir: Optional[str] = None,
         save_images: bool = False,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> bytes:
         """A Word document (``.docx``): its bytes.
 
@@ -271,7 +305,7 @@ class Document:
         if save_images and path is None:
             raise ValueError("save_images needs a path to write the pictures next to")
         folder = _image_dir(path, image_dir) if save_images and path is not None else None
-        docx, files = self._doc.to_docx(equations=equations, scale=scale, image_dir=folder)
+        docx, files = self._doc.to_docx(equations=equations, scale=scale, image_dir=folder, cancel=cancel, timeout=timeout)
         if path is not None:
             _write(path, docx, files)
         return docx
@@ -285,6 +319,8 @@ class Document:
         image_dir: Optional[str] = None,
         inline_images: bool = False,
         mode: Literal["friendly", "medium"] = "friendly",
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """Markdown: its text.
 
@@ -306,7 +342,7 @@ class Document:
         inline = inline_images or path is None
         folder = _image_dir(path, image_dir) if path is not None else "images"
         text, files = self._doc.to_markdown(
-            equations=equations, scale=scale, image_dir=folder, inline_images=inline, mode=mode
+            equations=equations, scale=scale, image_dir=folder, inline_images=inline, mode=mode, cancel=cancel, timeout=timeout
         )
         if path is not None:
             _write(path, text, files)
@@ -320,6 +356,8 @@ class Document:
         scale: float = 3.0,
         image_dir: Optional[str] = None,
         inline_images: bool = False,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """The editable JSON, as a dict.
 
@@ -346,7 +384,7 @@ class Document:
         """
         inline = inline_images or path is None
         folder = _image_dir(path, image_dir) if path is not None else "images"
-        text, files = self._doc.to_json(equations=equations, scale=scale, image_dir=folder, inline_images=inline)
+        text, files = self._doc.to_json(equations=equations, scale=scale, image_dir=folder, inline_images=inline, cancel=cancel, timeout=timeout)
         if path is not None:
             _write(path, text, files)
         return json.loads(text)
@@ -358,6 +396,8 @@ class Document:
         equations: Equations = "mathml",
         scale: float = 3.0,
         image_dir: Optional[str] = None,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """A LaTeX document (``.tex``): its source.
 
@@ -372,7 +412,7 @@ class Document:
         source is returned, and it refers to pictures in ``images/``.
         """
         folder = _image_dir(path, image_dir) if path is not None else "images"
-        text, files = self._doc.to_latex(equations=equations, scale=scale, image_dir=folder)
+        text, files = self._doc.to_latex(equations=equations, scale=scale, image_dir=folder, cancel=cancel, timeout=timeout)
         if path is not None:
             _write(path, text, files)
         return text
@@ -385,6 +425,8 @@ class Document:
         scale: float = 3.0,
         image_dir: Optional[str] = None,
         layout: str = "auto",
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> str:
         """A Typst document (``.typ``): its source.
 
@@ -401,7 +443,7 @@ class Document:
         source is returned, and it refers to pictures in ``images/``.
         """
         folder = _image_dir(path, image_dir) if path is not None else "images"
-        text, files = self._doc.to_typst(equations=equations, scale=scale, image_dir=folder, layout=layout)
+        text, files = self._doc.to_typst(equations=equations, scale=scale, image_dir=folder, layout=layout, cancel=cancel, timeout=timeout)
         if path is not None:
             _write(path, text, files)
         return text
@@ -415,6 +457,8 @@ class Document:
         max_math_width_em: float = 20.0,
         cover: bool = True,
         modified: Optional[str] = None,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> bytes:
         """An EPUB 3 book (``.epub``): its bytes.
 
@@ -434,7 +478,7 @@ class Document:
             scale=scale,
             max_math_width_em=max_math_width_em,
             cover=cover,
-            modified=_modified(modified),
+            modified=_modified(modified), cancel=cancel, timeout=timeout
         )
         if path is not None:
             _write(path, book)
@@ -446,6 +490,8 @@ class Document:
         *,
         max_tokens: int = 512,
         tokenizer: Optional[PathArg] = None,
+        cancel: Optional[CancelToken] = None,
+        timeout: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Chunks for retrieval (RAG), as dicts.
 
@@ -461,25 +507,27 @@ class Document:
         is given, the chunks are also written there as JSON Lines.
         """
         text = self._doc.to_chunks(
-            max_tokens=max_tokens, tokenizer=os.fspath(tokenizer) if tokenizer is not None else None
+            max_tokens=max_tokens, tokenizer=os.fspath(tokenizer) if tokenizer is not None else None, cancel=cancel, timeout=timeout
         )
         if path is not None:
             _write(path, text)
         return [json.loads(line) for line in text.split("\n") if line]
 
-    def to_pdf(self, path: Optional[PathArg] = None) -> bytes:
+    def to_pdf(
+        self, path: Optional[PathArg] = None, *, cancel: Optional[CancelToken] = None, timeout: Optional[float] = None
+    ) -> bytes:
         """A Word document laid out in pages as Word lays it out, as a PDF:
         its bytes. With ``content``, the edited document is laid out.
 
         When `path` is given, the PDF is also written there. Raises
         ``ValueError`` for a PDF, which already has its pages.
         """
-        pdf = self._doc.to_pdf()
+        pdf = self._doc.to_pdf(cancel=cancel, timeout=timeout)
         if path is not None:
             _write(path, pdf)
         return pdf
 
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, *, cancel: Optional[CancelToken] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
         """The structure of the document: its blocks in reading order, as a dict.
 
         This is the document that ``kakemono convert --json`` writes, with
@@ -488,7 +536,7 @@ class Document:
         ``paragraph``, ``equation``, ``figure``, ...), its ``page``, ``bbox``
         and ``spans`` of text.
         """
-        return json.loads(self._doc.analyze())
+        return json.loads(self._doc.analyze(cancel=cancel, timeout=timeout))
 
 
 def convert_all(
@@ -504,6 +552,8 @@ def convert_all(
     png_compression: PngCompression = "balanced",
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, str]:
     """Convert a PDF or Word document to HTML in several modes, analysing it only once.
 
@@ -516,8 +566,9 @@ def convert_all(
     wrong or `content` does not fit the PDF, and ``FileNotFoundError`` when
     `source` names nothing.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
-    return doc.convert_all(modes, equations=equations, page_image=page_image, embed_fonts=embed_fonts, scale=scale)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
+    return doc.convert_all(modes, equations=equations, page_image=page_image, embed_fonts=embed_fonts, scale=scale, cancel=token)
 
 
 def convert(source: Source, mode: Mode = "friendly", **options: Any) -> str:
@@ -542,6 +593,8 @@ def to_docx(
     save_images: bool = False,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> bytes:
     """Convert a PDF or Word document to a Word document (``.docx``) and return its bytes.
 
@@ -550,12 +603,13 @@ def to_docx(
     """
     if save_images and path is None:
         raise ValueError("save_images needs a path to write the pictures next to")
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
-    return doc.to_docx(path, equations=equations, scale=scale, image_dir=image_dir, save_images=save_images)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
+    return doc.to_docx(path, equations=equations, scale=scale, image_dir=image_dir, save_images=save_images, cancel=token)
 
 
 def to_markdown(
-    source: Source,
+    source: Source,  # NOSONAR python:S107: keyword options, as on the command line
     path: Optional[PathArg] = None,
     *,
     tables: bool = True,
@@ -568,15 +622,18 @@ def to_markdown(
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
     mode: Literal["friendly", "medium"] = "friendly",
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> str:
     """Convert a PDF or Word document to Markdown and return the text.
 
     See :meth:`Document.to_markdown`; ``tables``, ``jobs``,
     ``png_compression`` and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
     return doc.to_markdown(
-        path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images, mode=mode
+        path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images, mode=mode, cancel=token
     )
 
 
@@ -593,14 +650,17 @@ def to_json(
     inline_images: bool = False,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Convert a PDF or Word document to the editable JSON and return it as a dict.
 
     See :meth:`Document.to_json`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
-    return doc.to_json(path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
+    return doc.to_json(path, equations=equations, scale=scale, image_dir=image_dir, inline_images=inline_images, cancel=token)
 
 
 def to_latex(
@@ -615,14 +675,17 @@ def to_latex(
     image_dir: Optional[str] = None,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> str:
     """Convert a PDF or Word document to a LaTeX document (``.tex``) and return its source.
 
     See :meth:`Document.to_latex`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
-    return doc.to_latex(path, equations=equations, scale=scale, image_dir=image_dir)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
+    return doc.to_latex(path, equations=equations, scale=scale, image_dir=image_dir, cancel=token)
 
 
 def to_typst(
@@ -638,18 +701,21 @@ def to_typst(
     layout: str = "auto",
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> str:
     """Convert a PDF or Word document to a Typst document (``.typ``) and return its source.
 
     See :meth:`Document.to_typst`; ``tables``, ``jobs``, ``png_compression``
     and ``content`` are those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
-    return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
+    return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout, cancel=token)
 
 
 def to_epub(
-    source: Source,
+    source: Source,  # NOSONAR python:S107: keyword options, as on the command line
     path: Optional[PathArg] = None,
     *,
     tables: bool = True,
@@ -662,6 +728,8 @@ def to_epub(
     modified: Optional[str] = None,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> bytes:
     """Convert a PDF or Word document to an EPUB 3 book (``.epub``) and return its bytes.
 
@@ -669,9 +737,10 @@ def to_epub(
     and ``content`` are those of :class:`Document`.
     """
     modified = _modified(modified)
-    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, png_compression=png_compression, content=content, header_rows=header_rows, cancel=token)
     return doc.to_epub(
-        path, equations=equations, scale=scale, max_math_width_em=max_math_width_em, cover=cover, modified=modified
+        path, equations=equations, scale=scale, max_math_width_em=max_math_width_em, cover=cover, modified=modified, cancel=token
     )
 
 
@@ -685,14 +754,17 @@ def to_chunks(
     jobs: int = 0,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Cut a PDF or Word document into chunks for retrieval (RAG) and return them as dicts.
 
     See :meth:`Document.to_chunks`; ``tables``, ``jobs`` and ``content`` are
     those of :class:`Document`.
     """
-    doc = Document(source, tables=tables, jobs=jobs, content=content, header_rows=header_rows)
-    return doc.to_chunks(path, max_tokens=max_tokens, tokenizer=tokenizer)
+    token = _token(cancel, timeout)
+    doc = Document(source, tables=tables, jobs=jobs, content=content, header_rows=header_rows, cancel=token)
+    return doc.to_chunks(path, max_tokens=max_tokens, tokenizer=tokenizer, cancel=token)
 
 
 def to_pdf(
@@ -701,6 +773,8 @@ def to_pdf(
     *,
     content: Optional[Content] = None,
     header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> bytes:
     """Lay out a Word document (``.docx``, ``.doc``) in pages as Word does, as a PDF, and return its bytes.
 
@@ -709,17 +783,21 @@ def to_pdf(
     is laid out. An Excel workbook is printed as Excel prints it. Raises
     ``ValueError`` for a PDF.
     """
-    return Document(source, content=content, header_rows=header_rows).to_pdf(path)
+    token = _token(cancel, timeout)
+    return Document(source, content=content, header_rows=header_rows, cancel=token).to_pdf(path, cancel=token)
 
 
 def analyze(
-    source: Source, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None
+    source: Source, *, tables: bool = True, jobs: int = 0, header_rows: Optional[int] = None,
+    cancel: Optional[CancelToken] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """The structure of a PDF or Word document: its blocks in reading order, as a dict.
 
     See :meth:`Document.analyze`.
     """
-    return Document(source, tables=tables, jobs=jobs, header_rows=header_rows).analyze()
+    token = _token(cancel, timeout)
+    return Document(source, tables=tables, jobs=jobs, header_rows=header_rows, cancel=token).analyze(cancel=token)
 
 
 def render_svg(
@@ -774,6 +852,9 @@ def read_formula(image: Union[bytes, bytearray, memoryview, PathArg]) -> Optiona
     return _kakemono.read_formula(bytes(image))
 
 
-def fetch_arxiv(arxiv_id: str) -> bytes:
-    """Download the PDF of an arXiv paper (cached in ``~/.cache/kakemono``)."""
-    return _kakemono.fetch_arxiv(arxiv_id)
+def fetch_arxiv(arxiv_id: str, *, cancel: Optional[CancelToken] = None, timeout: Optional[float] = None) -> bytes:
+    """Download the PDF of an arXiv paper (cached in ``~/.cache/kakemono``).
+
+    ``cancel`` and ``timeout`` stop the download, as for :class:`Document`.
+    """
+    return _kakemono.fetch_arxiv(arxiv_id, cancel=cancel, timeout=timeout)

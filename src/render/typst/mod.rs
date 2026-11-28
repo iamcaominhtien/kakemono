@@ -329,6 +329,7 @@ impl Writer<'_, '_> {
         let blocks: Vec<&Block> = doc.blocks.iter().collect();
         let steps = steps(&blocks, doc.meta.arxiv_id.is_some());
         for (i, step) in steps.iter().enumerate() {
+            crate::common::cancel::check();
             let first = match step {
                 Step::Source => None,
                 Step::Code(run) | Step::Title(run) | Step::Authors(run) | Step::Contents(run) => Some(run[0]),
@@ -724,7 +725,9 @@ impl Writer<'_, '_> {
             args.push(format!("table.hline(y: {}, stroke: 0.5pt)", table.header_rows));
         }
         args.push(format!("table.hline(y: {n_rows})"));
+        let mut pace = crate::common::cancel::Pace::default();
         for (row_idx, row) in table.rows.iter().enumerate() {
+            pace.tick();
             for cell in row.iter().filter(|cell| cell.col < n_cols) {
                 let colspan = cell.colspan.clamp(1, n_cols - cell.col);
                 let rowspan = cell.rowspan.clamp(1, n_rows - row_idx);

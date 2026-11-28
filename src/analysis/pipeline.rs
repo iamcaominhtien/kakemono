@@ -14,7 +14,7 @@ use crate::analysis::lines::{join_math_letters, take_ruby};
 use crate::analysis::order::order_page;
 use crate::analysis::page::{DocStats, PageData, compute_stats};
 use crate::backend::{FontInfo, RawPage};
-use crate::common::parallel;
+use crate::common::{cancel, parallel};
 use crate::config::AnalyzeOptions;
 use crate::model::*;
 use std::collections::HashMap;
@@ -72,6 +72,7 @@ pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts
     if let Some(page) = pages.last_mut() {
         page.last = true;
     }
+    cancel::check();
     let stats = compute_stats(&pages, &layout.page);
     let mut furniture = remove_furniture(&mut pages, &layout.furniture);
     for (removed, page_ruby) in furniture.lines.iter_mut().zip(ruby) {
@@ -91,22 +92,31 @@ pub fn analyze(raw_pages: Vec<RawPage>, fonts: &[FontInfo], mut meta: Meta, opts
     // it had, and its glyphs in each math font).
     let mut math_glyphs = HashMap::new();
     for page in pages.iter_mut() {
+        cancel::check();
         layout_page(page, &stats, fonts, table_caption_above, &opts, &mut nodes);
         count_math_glyphs(&mut math_glyphs, &page.lines, fonts);
         page.drop_lines();
     }
 
     // --- document structure ---
+    // Each stage is a stopping point of a cancelled conversion.
+    cancel::check();
     classify_front_matter(&mut nodes, &pages, &stats, fonts, &layout.semantics);
+    cancel::check();
     classify_body(&mut nodes, &stats, fonts, &layout.semantics);
+    cancel::check();
     split_references(&mut nodes, &layout.semantics);
+    cancel::check();
     merge_paragraphs(&mut nodes, &stats, fonts, &layout.semantics);
+    cancel::check();
 
     let rotated = pages.iter().map(|page| rotated_runs(page, fonts)).collect();
     let (mut doc, loose) = build_document(nodes, &pages, &stats, fonts, meta, furniture.lines, opts);
     doc.math_font = main_math_font(&math_glyphs, fonts);
+    cancel::check();
     // Pictures of equations and figures that cut glyphs are made clean.
     crate::analysis::crops::fit_equation_crops(&mut doc, &loose);
+    cancel::check();
     // Displayed formulas get their structure, for MathML.
     crate::analysis::math::build_math(&mut doc, &pages, fonts, &layout.math);
     Analysis { doc, loose, rotated }

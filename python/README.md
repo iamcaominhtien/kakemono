@@ -135,4 +135,95 @@ read with confidence.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 
+Every conversion can be stopped: `cancel=` takes a `kakemono.CancelToken`, whose `cancel()`,
+called from another thread, makes it raise `kakemono.Cancelled`, and `timeout=` (seconds) raises
+`TimeoutError`. The work stops at its next stopping point, normally within a page, and writes no
+file:
+
+```python
+token = kakemono.CancelToken()
+threading.Timer(5, token.cancel).start()       # or from a "Stop" button
+md = kakemono.to_markdown("paper.pdf", cancel=token)
+md = kakemono.to_markdown("paper.pdf", timeout=30)
+```
+
+`kakemono.aio` has the same functions to be awaited in asyncio programs: each runs in a worker
+thread, so the event loop is not blocked while a document is fetched, read and written, and
+several run in parallel. `aio.Document.open` reads a document once. Cancelling a task (or
+`asyncio.wait_for`, `asyncio.timeout` from Python 3.11, `timeout=`) stops its conversion, and the
+cancellation is raised once it has stopped (at once for a conversion still waiting for a thread):
+
+```python
+import asyncio
+from kakemono import aio
+
+async def main(paths):
+    books = await asyncio.gather(*(aio.to_markdown(p) for p in paths))
+    async with asyncio.timeout(60):
+        doc = await aio.Document.open("paper.pdf")
+        await asyncio.gather(doc.to_docx("out/paper.docx"), doc.to_epub("out/paper.epub"))
+    # A document that is not trusted: in a process of its own, killed at once when cancelled
+    md = await aio.to_markdown("upload.docx", isolate=True, timeout=30)
+```
+
+With `isolate=True` a function runs in a Python process of its own, killed by a cancellation or
+its `timeout`: a hard limit, even for a document that would make the library hang or crash
+(`aio.ProcessError`). It costs the start of a process (about a tenth of a second) and the copy of
+the arguments and of the result; a killed conversion may leave a file it was writing half written.
+
+### Many documents at once
+
+`aio.convert_many` converts many documents, a number at a time, each into every format asked for
+(it is read and analysed once for all of them), and yields a result for each one as soon as it is
+done:
+
+```python
+results = aio.convert_many(
+    paths,                              # paths, arXiv ids, web addresses, bytes or (name, source)
+    "out",                              # out/<name>.docx, out/<name>.md, out/<name>_assets/, ...
+    ["docx", "epub", "md", "pdf"],      # also html, friendly, medium, hard, hard-95, tex, typ, json, jsonl
+    limit=50,                           # documents at once (default: one per core)
+    isolate=False,                      # True: each document in a process of its own
+    timeout=120,                        # seconds per document, from when it starts
+)
+async for result in results:
+    if result.ok:
+        print(result.source, result.outputs)          # {"docx": "out/x.docx", ...}
+    else:
+        print(result.source, result.error or result.errors)
+```
+
+A document that fails does not stop the others: `result.error` is what stopped it (it could not
+be read, `TimeoutError`, `kakemono.Cancelled`) and `result.errors` the formats it has not (a PDF
+has no `pdf` output; a Word document has no `medium`, `hard` or `hard-95` mode). `options` passes
+the options of each format, and those of `Document` under `"document"`:
+`options={"document": {"tables": False}, "md": {"mode": "medium"}}`. Cancelling the task that
+iterates (or a `cancel=` token) stops every document.
+
+`convert_many` sets up its threads itself: `limit` threads of its own, and each document gets the
+cores shared out among them (`jobs`, one thread each when `limit` is at least the number of cores).
+With `isolate=True`, `limit` Python processes run at once: mind the memory.
+
+### How many conversions run at once
+
+The other functions of `kakemono.aio` run in the event loop's default executor, which has at most
+`min(32, os.cpu_count() + 4)` threads: more conversions started at once wait for a thread. To run
+more at once, give the loop a larger executor, and give each conversion fewer threads of its own
+(`jobs`, by default one per core):
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+loop = asyncio.get_running_loop()
+loop.set_default_executor(ThreadPoolExecutor(max_workers=50))
+gate = asyncio.Semaphore(50)
+
+async def one(path):
+    async with gate:
+        return await aio.to_markdown(path, jobs=1, timeout=120)
+```
+
+Isolated conversions (`isolate=True`) do not use the executor: each starts its process at once
+and uses every core, so bound them with an `asyncio.Semaphore` like this one.
+
 MIT license.

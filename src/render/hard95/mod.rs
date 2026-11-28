@@ -556,6 +556,7 @@ pub(crate) fn render(analysis: &Analysis, images: &mut ImageStore<'_>) -> String
 /// One page: the picture of the page without the text that the text layer
 /// over it draws.
 fn page_html(analysis: &Analysis, page_idx: usize, page: &PageInfo, images: &mut ImageStore<'_>) -> String {
+    crate::common::cancel::check();
     let doc = &analysis.doc;
     let units = Units {
         page_width: page.width,
