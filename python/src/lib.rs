@@ -164,10 +164,30 @@ fn stoppable<R: Send>(
 ) -> PyResult<R> {
     py.detach(|| match token {
         None => Ok(work()),
-        Some(token) => token.run(work).map_err(|stopped| match stopped {
-            kakemono::Cancelled::TimedOut => PyTimeoutError::new_err(stopped.to_string()),
-            _ => Cancelled::new_err(stopped.to_string()),
-        }),
+        Some(token) => token.run(work).map_err(stopped_error),
+    })
+}
+
+/// The error of a conversion stopped so: `TimeoutError` or `Cancelled`.
+fn stopped_error(stopped: kakemono::Cancelled) -> PyErr {
+    match stopped {
+        kakemono::Cancelled::TimedOut => PyTimeoutError::new_err(stopped.to_string()),
+        _ => Cancelled::new_err(stopped.to_string()),
+    }
+}
+
+/// [`stoppable`] for work that can fail: an error of work whose token
+/// stopped (a download that fails on the cancellation before the token
+/// unwinds) is the token's.
+fn stoppable_try<T: Send>(
+    py: Python<'_>,
+    token: Option<kakemono::CancelToken>,
+    work: impl FnOnce() -> PyResult<T> + Send,
+) -> PyResult<T> {
+    let watched = token.clone();
+    stoppable(py, token, work)?.map_err(|err| match watched.as_ref().and_then(kakemono::CancelToken::state) {
+        Some(stopped) => stopped_error(stopped),
+        None => err,
     })
 }
 
@@ -238,7 +258,7 @@ impl Document {
     ) -> PyResult<Self> {
         let png = parse_png_compression(png_compression)?;
         let edited = content.is_some();
-        let (paper, analysis, warnings) = stoppable(py, stop_token(cancel.as_deref(), timeout)?, move || {
+        let (paper, analysis, warnings) = stoppable_try(py, stop_token(cancel.as_deref(), timeout)?, move || {
             let excel = ExcelConfig {
                 header_rows,
                 ..Default::default()
@@ -269,7 +289,7 @@ impl Document {
                 (None, _) => Vec::new(),
             };
             Ok::<_, PyErr>((paper, analysis, warnings))
-        })??;
+        })?;
         warn_all(py, &warnings)?;
         Ok(Self {
             paper,
@@ -660,8 +680,9 @@ fn fetch_arxiv<'py>(
     timeout: Option<f64>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let id = arxiv::parse_id(id).ok_or_else(|| value_error(format!("'{id}' is not an arXiv id or URL")))?;
-    let data =
-        stoppable(py, stop_token(cancel.as_deref(), timeout)?, || arxiv::fetch_pdf(&id))?.map_err(value_error)?;
+    let data = stoppable_try(py, stop_token(cancel.as_deref(), timeout)?, || {
+        arxiv::fetch_pdf(&id).map_err(value_error)
+    })?;
     Ok(PyBytes::new(py, &data))
 }
 
