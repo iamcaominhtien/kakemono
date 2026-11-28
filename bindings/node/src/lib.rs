@@ -58,6 +58,8 @@ pub struct Signal {
     listener: Option<sys::napi_ref>,
     /// Cancelled when the signal is aborted.
     token: CancelToken,
+    /// Woken when the signal is aborted: a call waiting for its turn.
+    aborted: Arc<tokio::sync::Notify>,
     /// The JavaScript thread of `env`: the only one the references may be
     /// used on.
     thread: std::thread::ThreadId,
@@ -97,17 +99,19 @@ impl FromNapiValue for Signal {
             signal: signal_ref,
             listener: None,
             token,
+            aborted: Arc::new(tokio::sync::Notify::new()),
             thread: std::thread::current().id(),
         };
         if aborted {
             this.token.cancel();
             return Ok(this);
         }
-        let stopper = this.token.clone();
+        let (stopper, waiting) = (this.token.clone(), Arc::clone(&this.aborted));
         // SAFETY: as above.
         let js_env = Env::from_raw(env);
         let listener = js_env.create_function_from_closure("abort", move |_| {
             stopper.cancel();
+            waiting.notify_waiters();
             Ok(())
         })?;
         add.apply(signal, FnArgs::from(("abort", listener)))?;
@@ -184,14 +188,26 @@ struct Stop {
     signal: Option<Signal>,
     /// The token of the call, or why the options are wrong.
     token: core::Result<Option<CancelToken>>,
+    /// When the time limit of the call passes.
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl Stop {
     /// From a call's options.
     fn new(signal: Option<Signal>, timeout: Option<f64>) -> Self {
-        let token = core::timeout_millis(timeout)
-            .map(|limit| core::stop_token(signal.as_ref().map(|signal| &signal.token), limit));
-        Self { signal, token }
+        let limit = core::timeout_millis(timeout);
+        let deadline = limit
+            .as_ref()
+            .ok()
+            .copied()
+            .flatten()
+            .and_then(|limit| tokio::time::Instant::now().checked_add(limit));
+        let token = limit.map(|limit| core::stop_token(signal.as_ref().map(|signal| &signal.token), limit));
+        Self {
+            signal,
+            token,
+            deadline,
+        }
     }
 }
 
@@ -218,9 +234,6 @@ fn rejection(env: &Env, err: core::Error, signal: Option<&Signal>) -> Error {
     build().unwrap_or_else(|_| js_error(err))
 }
 
-/// How often a call waiting for its turn looks at its token.
-const QUEUE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
-
 /// Runs `work` on tokio's blocking pool as the promise of a method, once
 /// its turn comes ([`conversions`]), with the token of `stop`; a call
 /// stopped while it waits for its turn leaves the queue at once.
@@ -229,12 +242,17 @@ where
     T: 'static + Send + napi::bindgen_prelude::ToNapiValue,
     F: 'static + Send + FnOnce(Option<&CancelToken>) -> core::Result<T>,
 {
-    let Stop { signal, token } = stop;
+    let Stop {
+        signal,
+        token,
+        deadline,
+    } = stop;
+    let aborted = signal.as_ref().map(|signal| Arc::clone(&signal.aborted));
     env.spawn_future_with_callback(
         async move {
             // The outcome is always handed to the callback, which removes
             // the signal's listener.
-            Ok(run(token, work).await)
+            Ok(run(token, aborted, deadline, work).await)
         },
         move |env, outcome: core::Result<T>| {
             let result = outcome.map_err(|err| rejection(env, err, signal.as_ref()));
@@ -244,8 +262,14 @@ where
     )
 }
 
-/// [`spawn`]'s work: its turn, then `work` on the blocking pool.
-async fn run<T, F>(token: core::Result<Option<CancelToken>>, work: F) -> core::Result<T>
+/// [`spawn`]'s work: its turn, then `work` on the blocking pool. While it
+/// waits for its turn, `aborted` (the signal's) or `deadline` ends the wait.
+async fn run<T, F>(
+    token: core::Result<Option<CancelToken>>,
+    aborted: Option<Arc<tokio::sync::Notify>>,
+    deadline: Option<tokio::time::Instant>,
+    work: F,
+) -> core::Result<T>
 where
     T: 'static + Send,
     F: 'static + Send + FnOnce(Option<&CancelToken>) -> core::Result<T>,
@@ -254,19 +278,37 @@ where
         core::Error::new(core::ErrorKind::Internal, format!("internal error in kakemono: {err}"))
     };
     let token = token?;
-    let mut acquire = std::pin::pin!(conversions().acquire());
-    // Its turn among the conversions (the semaphore is never closed).
-    let _turn = loop {
-        match &token {
-            None => break (&mut acquire).await.map_err(|err| internal(&err))?,
-            Some(token) => match tokio::time::timeout(QUEUE_POLL, &mut acquire).await {
-                Ok(turn) => break turn.map_err(|err| internal(&err))?,
-                Err(_) => {
-                    if let Some(stopped) = token.state() {
-                        return Err(stopped.into());
-                    }
+    // Woken by an abort from now on, so that one that comes after the check
+    // below is not missed.
+    let mut notified = aborted.as_ref().map(|aborted| Box::pin(aborted.notified()));
+    if let Some(notified) = notified.as_mut() {
+        notified.as_mut().enable();
+    }
+    if let Some(stopped) = token.as_ref().and_then(CancelToken::state) {
+        return Err(stopped.into());
+    }
+    let stop = async {
+        match (notified, deadline) {
+            (Some(notified), Some(deadline)) => {
+                tokio::select! {
+                    () = notified => {}
+                    () = tokio::time::sleep_until(deadline) => {}
                 }
-            },
+            }
+            (Some(notified), None) => notified.await,
+            (None, Some(deadline)) => tokio::time::sleep_until(deadline).await,
+            (None, None) => std::future::pending().await,
+        }
+    };
+    // Its turn among the conversions (the semaphore is never closed), or
+    // the end of the wait.
+    let _turn = tokio::select! {
+        turn = conversions().acquire() => turn.map_err(|err| internal(&err))?,
+        () = stop => {
+            // The signal cancels the token before it wakes this; the token's
+            // clock may lag tokio's by a little.
+            let stopped = token.as_ref().and_then(CancelToken::state).unwrap_or(core::Cancelled::TimedOut);
+            return Err(stopped.into());
         }
     };
     tokio::task::spawn_blocking(move || work(token.as_ref()))
