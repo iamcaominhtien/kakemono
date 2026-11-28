@@ -135,4 +135,21 @@ read with confidence.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 
+`kakemono.aio` has the same functions to be awaited in asyncio programs: each runs in a worker
+thread (`asyncio.to_thread`), so the event loop is not blocked while a document is fetched, read
+and written, and several run in parallel. `aio.Document.open` reads a document once:
+
+```python
+import asyncio
+from kakemono import aio
+
+async def main(paths):
+    books = await asyncio.gather(*(aio.to_markdown(p) for p in paths))
+    doc = await aio.Document.open("paper.pdf")
+    await asyncio.gather(doc.to_docx("out/paper.docx"), doc.to_epub("out/paper.epub"))
+```
+
+Cancelling a task stops the wait, not the conversion, which finishes in its thread. The number of
+conversions at once is that of the loop's default executor (`loop.set_default_executor`).
+
 MIT license.

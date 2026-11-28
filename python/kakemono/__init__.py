@@ -24,7 +24,8 @@ one document, open it once as a :class:`Document`:
 >>> doc.to_docx("out/paper.vi.docx"); doc.to_epub("out/paper.vi.epub")
 
 The work is done by the kakemono Rust library; the GIL is released while it
-runs, so conversions can run in parallel threads.
+runs, so conversions can run in parallel threads. :mod:`kakemono.aio` has the
+same functions to be awaited, run in worker threads, for asyncio programs.
 """
 
 from __future__ import annotations
