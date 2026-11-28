@@ -17,6 +17,11 @@ use std::collections::HashMap;
 /// Namespace of the Office 2010 drawing extensions (`a14:`), which hold a
 /// paragraph's formulas.
 const A14_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
+/// PowerPoint's size of text that names none, in points.
+const DEFAULT_SIZE_PT: f32 = 18.0;
+/// A percentage in DrawingML's units (thousandths of a percent): 100 000
+/// is 100 %.
+const PERCENT_UNITS: f32 = 100_000.0;
 /// The deepest level a paragraph can have (`lvl` 0 to 8).
 const LEVELS: usize = 9;
 
@@ -90,6 +95,58 @@ pub(crate) fn paragraphs(body: Node<'_, '_>, styles: &[Node<'_, '_>], context: &
         });
     }
     out
+}
+
+/// The size of the largest text of each paragraph with text of the text
+/// body `body`, in points, as PowerPoint shows it: each run's size (`a:rPr
+/// sz`), else its level's (`a:defRPr sz` through `styles`), else
+/// PowerPoint's default, scaled by the body's autofit (`a:normAutofit
+/// fontScale`).
+pub(crate) fn paragraph_sizes_pt(body: Node<'_, '_>, styles: &[Node<'_, '_>]) -> Vec<f32> {
+    let scale = child(body, DRAWING_NS, "bodyPr")
+        .and_then(|props| child(props, DRAWING_NS, "normAutofit"))
+        .and_then(|fit| fit.attribute("fontScale"))
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|scale| *scale > 0.0)
+        .map_or(1.0, |scale| (scale / PERCENT_UNITS).min(1.0));
+    let mut out = Vec::new();
+    for para in children(body, DRAWING_NS, "p") {
+        let mut largest: Option<f32> = None;
+        let props = child(para, DRAWING_NS, "pPr");
+        let level = props
+            .and_then(|props| props.attribute("lvl"))
+            .and_then(|lvl| lvl.parse::<u8>().ok())
+            .unwrap_or(0);
+        let chain = level_props(props, styles, level);
+        let level_size = chain
+            .iter()
+            .filter_map(|props| child(*props, DRAWING_NS, "defRPr"))
+            .find_map(|props| hundredths(props.attribute("sz")));
+        for run in children(para, DRAWING_NS, "r") {
+            let has_text = child(run, DRAWING_NS, "t")
+                .and_then(|node| node.text())
+                .is_some_and(|text| !text.trim().is_empty());
+            if !has_text {
+                continue;
+            }
+            let size = child(run, DRAWING_NS, "rPr")
+                .and_then(|props| hundredths(props.attribute("sz")))
+                .or(level_size)
+                .unwrap_or(DEFAULT_SIZE_PT)
+                * scale;
+            largest = Some(largest.map_or(size, |largest: f32| largest.max(size)));
+        }
+        out.extend(largest);
+    }
+    out
+}
+
+/// A size in hundredths of a point (`sz="2800"`), in points.
+fn hundredths(value: Option<&str>) -> Option<f32> {
+    value
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .map(|size| size / 100.0)
 }
 
 /// The plain text of `inlines`.

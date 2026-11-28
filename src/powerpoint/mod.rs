@@ -15,11 +15,15 @@
 //! - `text`: a text body → paragraphs and list items.
 //! - `build`: a slide's shapes → its title and content, in reading order.
 //! - `media`: pictures, charts and the text of SmartArt diagrams.
+//! - `order`: the reading order of a slide's shapes, from where they lie.
+//! - `rules`: titles found in text boxes, title slides, page furniture.
 
 mod build;
 mod inherit;
 mod media;
+mod order;
 mod package;
+mod rules;
 mod text;
 
 use crate::model::{Document, Span};
@@ -44,6 +48,61 @@ const NOTES_HEADING: &str = "Notes";
 /// PowerPoint's default font of the body text (the theme's minor font of
 /// the default theme before Office 2023).
 const DEFAULT_BODY_FONT: &str = "Calibri";
+
+/// The thresholds of the rules that read a deck as a document. Every
+/// field's name ends with its unit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PowerPointConfig {
+    /// A slide without a title placeholder takes as its title a text box
+    /// whose top edge lies within this share of the slide's height from
+    /// its top.
+    pub title_top_ratio: f32,
+    /// ... whose text is at least this large, in points.
+    pub title_min_size_pt: f32,
+    /// ... and this many times larger than any other text of the slide
+    /// (1.1: a 22 pt title over 20 pt text; decks often set their body in
+    /// 24 pt under a 28 pt title).
+    pub title_size_ratio: f32,
+    /// ... and which holds at most this many words, in one or two
+    /// paragraphs without bullets.
+    pub title_max_words: usize,
+    /// The first slide is a title slide, even when its layout does not say
+    /// so, when it has a title and, besides it, no list, table or chart and
+    /// at most this many words.
+    pub title_slide_max_words: usize,
+    /// A text box of at most this many words, near the top or bottom edge
+    /// of the slide, with the same text on many slides, is page furniture
+    /// (a banner, a copyright line): left out.
+    pub furniture_max_words: usize,
+    /// ... near the edge: within this share of the slide's height from its
+    /// top or bottom.
+    pub furniture_edge_ratio: f32,
+    /// ... on many slides: on at least this share of the visible slides.
+    pub furniture_slides_ratio: f32,
+    /// Two shapes overlapping by at most this much, in points, are still
+    /// read one after the other, as columns or rows, by their position.
+    pub reading_overlap_pt: f32,
+}
+
+impl Default for PowerPointConfig {
+    fn default() -> Self {
+        Self {
+            title_top_ratio: 0.25,
+            title_min_size_pt: 20.0,
+            title_size_ratio: 1.1,
+            title_max_words: 30,
+            title_slide_max_words: 60,
+            furniture_max_words: 12,
+            furniture_edge_ratio: 0.15,
+            furniture_slides_ratio: 0.5,
+            reading_overlap_pt: 2.0,
+        }
+    }
+}
+
+/// The fewest slides a text must be repeated on to be page furniture,
+/// whatever the share: a text on 1 of 2 slides is half of them.
+const FURNITURE_MIN_SLIDES: usize = 3;
 
 /// Whether `data` is a PowerPoint presentation: a ZIP package whose main
 /// part is a presentation.
@@ -82,15 +141,26 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
         body_font: DEFAULT_BODY_FONT.to_string(),
         ..Default::default()
     };
+    let config = PowerPointConfig::default();
+    let height_pt = presentation.size_pt.1;
+    let shown: Vec<&SlideRef> = presentation.visible().collect();
+    let mut slides = Vec::with_capacity(shown.len());
+    for slide in &shown {
+        slides.push(parts.slide(slide, defaults, &mut media, config.reading_overlap_pt)?);
+    }
+    // Titles first: a title repeated on every slide is no furniture.
+    for content in &mut slides {
+        rules::infer_title(content, height_pt, &config);
+    }
+    rules::remove_furniture(&mut slides, height_pt, &config);
     // With sections, each section's name heads its slides, one level up,
     // before the first of them that is shown; an unnamed section has none.
     let slide_level = if presentation.sections.is_empty() { 1 } else { 2 };
     let mut section = None;
-    for (index, slide) in presentation.visible().enumerate() {
-        let content = parts.slide(slide, defaults, &mut media)?;
+    for (index, (slide, content)) in shown.iter().zip(slides).enumerate() {
         let notes = parts.notes(slide);
-        if index == 0 && content.centred_title {
-            front_matter(content, &mut word.body);
+        if index == 0 && (content.title_slide || rules::looks_like_title_slide(&content, &config)) {
+            front_matter(content, &config, &mut word.body);
             push_notes(notes, slide_level, &mut word.body);
             continue;
         }
@@ -120,7 +190,8 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
             word.body.push(Item::Para(heading(title, slide_level)));
         }
         word.body.extend(content.subtitle.into_iter().map(Item::Para));
-        word.body.extend(content.body);
+        word.body
+            .extend(build::ordered_items(content.pieces, config.reading_overlap_pt));
         let notes_level = if repeats_section { slide_level } else { slide_level + 1 };
         push_notes(notes, notes_level, &mut word.body);
     }
@@ -129,8 +200,9 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
 }
 
 /// Adds the title slide `content` to `body`: its title as the document's
-/// title, its subtitle and its other text as the front matter.
-fn front_matter(content: SlideContent, body: &mut Vec<Item>) {
+/// title, its subtitle and its other text (authors, a date) as the front
+/// matter, in reading order; its pictures (logos) after them.
+fn front_matter(content: SlideContent, config: &PowerPointConfig, body: &mut Vec<Item>) {
     if let Some(title) = content.title {
         body.push(Item::Para(Para {
             style: "Title".to_string(),
@@ -138,13 +210,21 @@ fn front_matter(content: SlideContent, body: &mut Vec<Item>) {
             ..Default::default()
         }));
     }
-    for para in content.subtitle {
-        body.push(Item::Para(Para {
+    let as_subtitle = |para: Para| {
+        Item::Para(Para {
             style: "Subtitle".to_string(),
             ..para
-        }));
+        })
+    };
+    body.extend(content.subtitle.into_iter().map(as_subtitle));
+    let mut pictures = Vec::new();
+    for item in build::ordered_items(content.pieces, config.reading_overlap_pt) {
+        match item {
+            Item::Para(para) if !text::inlines_text(&para.inlines).trim().is_empty() => body.push(as_subtitle(para)),
+            other => pictures.push(other),
+        }
     }
-    body.extend(content.body);
+    body.extend(pictures);
 }
 
 /// Adds a slide's speaker notes `notes` to `body`, under a heading
@@ -207,7 +287,8 @@ impl<'z> Parts<'z> {
     }
 
     /// The content of the slide `slide`, whose text takes the default text
-    /// style `defaults` of the presentation.
+    /// style `defaults` of the presentation; its groups' shapes are read by
+    /// their position, shapes overlapping by `overlap_pt` told apart.
     ///
     /// # Errors
     /// When the slide's part is not well-formed XML.
@@ -216,6 +297,7 @@ impl<'z> Parts<'z> {
         slide: &SlideRef,
         defaults: Option<Node<'_, '_>>,
         media: &mut Media<'_>,
+        overlap_pt: f32,
     ) -> Result<SlideContent> {
         let Some(slide_xml) = self.text(&slide.part) else {
             return Ok(SlideContent::default());
@@ -247,9 +329,14 @@ impl<'z> Parts<'z> {
             number: slide.number,
             rels: &rels,
         };
-        Ok(shape_tree(&slide_doc).map_or_else(SlideContent::default, |tree| {
-            build::slide(tree, &inheritance, &context, media)
-        }))
+        let mut content = shape_tree(&slide_doc).map_or_else(SlideContent::default, |tree| {
+            build::slide(tree, &inheritance, &context, media, overlap_pt)
+        });
+        // A slide of the title slide layout is a title slide.
+        content.title_slide |= layout_doc
+            .as_ref()
+            .is_some_and(|doc| doc.root_element().attribute("type") == Some("title"));
+        Ok(content)
     }
 }
 

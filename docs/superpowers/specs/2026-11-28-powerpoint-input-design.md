@@ -164,9 +164,29 @@ display pages (`layout/display.rs`), as the workbook print does
     titles `heading 2`. A slide without a title (or with an empty one) is
     headed "Slide N" (`N` its number in the deck), so that every chunk has a
     section path;
-  - the rest in **reading order**: the order of the shape tree (which is the
-    order PowerPoint's reading-order pane and screen readers use), the title
-    first; a group's shapes in their own order; placeholders and shapes alike;
+  - the rest in **reading order**, the title first. *Changed after the
+    first review round (2026-11-28):* not the order of the shape tree, which
+    few decks set (shapes come in the order they were drawn or pasted), but
+    their position: the shapes are cut recursively into columns or rows by
+    the widest empty band between them (XY-cut), a group's shapes likewise
+    in the group's own space; shapes that overlap so that no band separates
+    them keep their tree order;
+  - a slide without a title placeholder takes its **title from a text
+    box** (`PowerPointConfig`): the first paragraph of a box near the top
+    clearly larger than the rest of the slide's text, else a short box near
+    the top whose text is clearly the largest, else the one short, large
+    text box of a slide that has no other (a section divider);
+  - the **first slide is the title slide** when its title is a `ctrTitle`,
+    its layout is a title slide's (`type="title"`), or it has a title and
+    otherwise no list, table or chart and little text; its other text is
+    front matter;
+  - short text boxes repeated with the same text near the top or bottom
+    edge of at least half of the slides (a classification banner, a
+    copyright line, a running title) are page furniture, left out, after
+    the titles are found;
+  - a picture's description that is only a file name or path (older
+    PowerPoints stored `C:\Users\...\MC900433934[1].PNG`) is no
+    description;
   - text: each paragraph with a bullet or a number → a list paragraph of its
     level (`lvl` 0–8 → `ListMark::level`, the number's text as marker); other
     paragraphs → `Normal`; a run's style as `Span` style bits; links kept;

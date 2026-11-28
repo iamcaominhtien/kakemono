@@ -1,5 +1,6 @@
-//! The presentation part of a deck (`ppt/presentation.xml`): the slides in
-//! order with the ones hidden, and the sections PowerPoint groups them in.
+//! The presentation part of a deck (`ppt/presentation.xml`): the size of
+//! its slides, the slides in order with the ones hidden, and the sections
+//! PowerPoint groups them in.
 
 use crate::word::docx::{parse, read_rels};
 use crate::word::xml::{REL_NS, attr, child, children};
@@ -21,6 +22,12 @@ const OFFICE_DOCUMENT_REL: &str = "officeDocument";
 const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
 /// The usual name of the presentation part.
 const PRESENTATION_NAME: &str = "presentation.xml";
+/// PowerPoint's default slide (4:3, 10 × 7.5 inches), in points, when a
+/// deck names none.
+const DEFAULT_SLIDE_PT: (f32, f32) = (720.0, 540.0);
+/// The largest side of a slide PowerPoint allows (56 inches), in points: a
+/// larger size in a file is clamped to it.
+const MAX_SLIDE_SIDE_PT: f32 = 4_032.0;
 /// The most slides read: a deck with more is read up to this many.
 const MAX_SLIDES: usize = 5_000;
 
@@ -29,6 +36,8 @@ const MAX_SLIDES: usize = 5_000;
 pub(crate) struct Presentation {
     /// The path of the presentation part in the package.
     pub(crate) part: String,
+    /// The size of a slide (width, height), in points.
+    pub(crate) size_pt: (f32, f32),
     /// The slides, in the order of the deck, hidden ones included.
     pub(crate) slides: Vec<SlideRef>,
     /// The sections, in order; empty when the deck has none.
@@ -76,6 +85,7 @@ impl Presentation {
         Ok(Self {
             slides: slide_list(root, &rels, zip),
             sections: sections(root),
+            size_pt: slide_size(root),
             part,
         })
     }
@@ -125,6 +135,21 @@ fn content_type(zip: &ZipArchive<'_>, part: &str) -> Option<String> {
         })
         .and_then(|node| node.attribute("ContentType"))
         .map(str::to_string)
+}
+
+/// The size of a slide (`p:sldSz`), in points, within PowerPoint's limits.
+fn slide_size(root: Node<'_, '_>) -> (f32, f32) {
+    let Some(size) = child(root, P_NS, "sldSz") else {
+        return DEFAULT_SLIDE_PT;
+    };
+    let side = |name: &str, default: f32| {
+        size.attribute(name)
+            .and_then(|value| value.parse::<f32>().ok())
+            .map(|emu| emu / EMU_PER_PT)
+            .filter(|pt| pt.is_finite() && *pt > 0.0)
+            .map_or(default, |pt| pt.min(MAX_SLIDE_SIDE_PT))
+    };
+    (side("cx", DEFAULT_SLIDE_PT.0), side("cy", DEFAULT_SLIDE_PT.1))
 }
 
 /// The slides of `p:sldIdLst`, in order, each with its part (through the
@@ -177,6 +202,22 @@ mod tests {
     fn root_of(xml: &str, test: impl FnOnce(Node<'_, '_>)) {
         let doc = parse(xml).unwrap();
         test(doc.root_element());
+    }
+
+    #[test]
+    fn slide_size_is_in_points_and_clamped() {
+        let ns = format!("xmlns:p=\"{P_NS}\"");
+        root_of(
+            &format!("<p:presentation {ns}><p:sldSz cx=\"12192000\" cy=\"6858000\"/></p:presentation>"),
+            |root| assert_eq!(slide_size(root), (960.0, 540.0)),
+        );
+        root_of(
+            &format!("<p:presentation {ns}><p:sldSz cx=\"999999999999\" cy=\"-5\"/></p:presentation>"),
+            |root| assert_eq!(slide_size(root), (MAX_SLIDE_SIDE_PT, DEFAULT_SLIDE_PT.1)),
+        );
+        root_of(&format!("<p:presentation {ns}/>"), |root| {
+            assert_eq!(slide_size(root), DEFAULT_SLIDE_PT);
+        });
     }
 
     #[test]

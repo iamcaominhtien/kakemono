@@ -97,7 +97,8 @@ Four layers, from cheap and certain to costly and subjective:
 - [ ] **Step 2: Implement.** Reuse `excel/drawing.rs` for geometry, fills, lines, pictures, `group_map`, `alternative`; if a piece needs `pub(crate)` or a move to a shared module, make that a separate refactoring commit first (`refactor(drawing): ...`) with unchanged Excel snapshots.
 - [ ] **Step 3:** outputs of the sample read and checked; snapshot updated.
 - [ ] **Step 4:** write `scripts/powerpoint-text-check.py` and run it on the corpus; fix what it finds.
-- [ ] **Step 5:** first review round (structure reviewer, Haiku sweep), findings checked and fixed.
+- [x] **Step 5:** first review round (structure reviewer, Haiku sweep), findings checked and fixed.
+  - Done 2026-11-28 with two Sonnet reviewers (16 decks) and a Haiku sweep (97 decks). Confirmed and fixed: titles in text boxes ("Slide N" in 59 of 113 decks, now 30, most of them picture-only slides), title slides without `ctrTitle`, repeated banners and footers in text boxes, the reading order of the shape tree (now by position, see the spec), file paths as descriptions. Checked and not a bug: a table's header "shifted" in gh-0008 (the file's own merges). Left as they are, shared with Word and Excel: an uncaptioned chart's "Chart N" written as the caption of both its figure and its data table; paragraphs of a table cell joined in one Markdown cell.
 - [ ] **Step 6: Commit** — `feat(powerpoint): tables, pictures, charts, SmartArt and formulas of slides`
 
 ### Task 5: Speaker notes

@@ -586,3 +586,137 @@ fn empty_notes_give_nothing() {
     // Only two slides of the sample have notes.
     assert_eq!(notes, 2);
 }
+
+/// A text box at (x, y), `width` × `height` points, of the paragraphs
+/// `paras`, each (text, size in points).
+fn text_box(x: f32, y: f32, width: f32, height: f32, paras: &[(&str, u32)]) -> String {
+    let emu = |pt: f32| (pt * 12_700.0) as i64;
+    let body: String = paras
+        .iter()
+        .map(|(text, size)| format!("<a:p><a:r><a:rPr sz=\"{}\"/><a:t>{text}</a:t></a:r></a:p>", size * 100))
+        .collect();
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"9\" name=\"TextBox\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr>\
+         <p:spPr><a:xfrm xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm></p:spPr>\
+         <p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:bodyPr/><a:lstStyle/>{body}</p:txBody></p:sp>",
+        emu(x),
+        emu(y),
+        emu(width),
+        emu(height)
+    )
+}
+
+/// The texts of the blocks of the deck of `slides`.
+fn texts_of(slides: &[&str]) -> Vec<String> {
+    Paper::from_bytes(deck(slides, &[]))
+        .unwrap()
+        .analyze()
+        .doc
+        .blocks
+        .iter()
+        .map(|block| block.text())
+        .collect()
+}
+
+#[test]
+fn title_in_a_text_box_is_the_slide_title() {
+    // A slide made of text boxes, its title drawn last; a first slide with
+    // a list, so that it is no title slide.
+    let first = text_box(40.0, 120.0, 600.0, 200.0, &[("Body text of the first slide", 18)]);
+    let second = [
+        text_box(40.0, 120.0, 600.0, 200.0, &[("The body of the slide", 18)]),
+        text_box(40.0, 30.0, 600.0, 50.0, &[("Results of the survey", 28)]),
+    ]
+    .concat();
+    let doc = Paper::from_bytes(deck(&[&first, &second], &[])).unwrap().analyze().doc;
+    assert!(
+        headings(&doc).contains(&(1, "Results of the survey".to_string())),
+        "{:?}",
+        headings(&doc)
+    );
+    assert!(!headings(&doc).iter().any(|(_, text)| text == "Slide 2"));
+}
+
+#[test]
+fn title_and_subtitle_in_one_box_give_the_title() {
+    let slide = [
+        text_box(
+            40.0,
+            20.0,
+            600.0,
+            80.0,
+            &[("Helium distribution", 32), ("821 samples with measurable helium", 24)],
+        ),
+        text_box(40.0, 150.0, 600.0, 200.0, &[("A chart would be here", 12)]),
+    ]
+    .concat();
+    let texts = texts_of(&[&text_box(0.0, 300.0, 10.0, 10.0, &[("x", 10)]), &slide]);
+    let at = texts
+        .iter()
+        .position(|text| text == "Helium distribution")
+        .expect("the title");
+    assert_eq!(texts[at + 1], "821 samples with measurable helium");
+}
+
+#[test]
+fn lone_text_box_is_a_section_title() {
+    let divider = text_box(100.0, 220.0, 500.0, 100.0, &[("Helium", 36)]);
+    let body = text_box(40.0, 120.0, 600.0, 200.0, &[("Some text of the next slide", 18)]);
+    let doc = Paper::from_bytes(deck(&[&body, &divider], &[])).unwrap().analyze().doc;
+    assert!(
+        headings(&doc).contains(&(1, "Helium".to_string())),
+        "{:?}",
+        headings(&doc)
+    );
+}
+
+#[test]
+fn first_slide_without_a_centred_title_is_a_title_slide() {
+    let title = "<p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr/><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/>\
+                 <p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Health inequalities in London</a:t></a:r></a:p></p:txBody></p:sp>";
+    let first = [
+        title,
+        &text_box(40.0, 200.0, 600.0, 40.0, &[("Summary pack, July 2024", 18)]),
+    ]
+    .concat();
+    let doc = Paper::from_bytes(deck(&[&first], &[])).unwrap().analyze().doc;
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:?}", doc.blocks[0]);
+    assert_eq!(doc.meta.title.as_deref(), Some("Health inequalities in London"));
+    assert!(headings(&doc).is_empty(), "{:?}", headings(&doc));
+}
+
+#[test]
+fn text_repeated_at_the_edge_of_slides_is_left_out() {
+    let slide = |text: &str| {
+        [
+            text_box(40.0, 30.0, 600.0, 50.0, &[(text, 28)]),
+            text_box(40.0, 120.0, 600.0, 200.0, &[("Body of the slide", 18)]),
+            text_box(300.0, 515.0, 120.0, 20.0, &[("UNCLASSIFIED", 10)]),
+        ]
+        .concat()
+    };
+    let (one, two, three) = (slide("One"), slide("Two"), slide("Three"));
+    let texts = texts_of(&[&one, &two, &three]);
+    assert!(!texts.iter().any(|text| text == "UNCLASSIFIED"), "{texts:?}");
+    assert_eq!(texts.iter().filter(|text| *text == "Body of the slide").count(), 3);
+}
+
+#[test]
+fn shapes_are_read_by_position() {
+    // Two columns, each a heading over its text; the headings come first
+    // in the shape tree.
+    let slide = [
+        text_box(40.0, 30.0, 600.0, 50.0, &[("Approach and purpose", 28)]),
+        text_box(40.0, 100.0, 300.0, 30.0, &[("Approach", 16)]),
+        text_box(380.0, 100.0, 300.0, 30.0, &[("Purpose", 16)]),
+        text_box(40.0, 140.0, 300.0, 300.0, &[("How the work was done", 14)]),
+        text_box(380.0, 140.0, 300.0, 300.0, &[("What the work is for", 14)]),
+    ]
+    .concat();
+    let texts = texts_of(&[&text_box(0.0, 300.0, 10.0, 10.0, &[("x", 10)]), &slide]);
+    let at = texts.iter().position(|text| text == "Approach and purpose").unwrap();
+    assert_eq!(
+        &texts[at + 1..at + 5],
+        ["Approach", "How the work was done", "Purpose", "What the work is for"]
+    );
+}

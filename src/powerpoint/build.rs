@@ -1,15 +1,17 @@
-//! A slide's shapes as the content of its section: its title, then its
-//! other shapes in the order of the shape tree (the order PowerPoint's
-//! reading order pane and screen readers follow), groups in their own
-//! order: text as paragraphs and list items, tables, pictures, charts,
-//! SmartArt as a list. Page furniture (date, footer, slide number) and
-//! empty placeholders give nothing: a placeholder's prompt text lives in
-//! the layout, which is never read for text.
+//! A slide's shapes as the content of its section: its title, and its
+//! other shapes as pieces, one per shape of the shape tree (a group is one
+//! piece, its shapes in their own order), each with where it lies on the
+//! slide, which `order` reads in order: text as paragraphs and list items,
+//! tables, pictures, charts, SmartArt as a list. Page furniture (date,
+//! footer, slide number) and empty placeholders give nothing: a
+//! placeholder's prompt text lives in the layout, which is never read for
+//! text.
 
 use super::inherit::{FURNITURE, Inheritance, placeholder};
 use super::media::{DIAGRAM_NS, Media};
+use super::order::{Frame, reading_order};
 use super::package::{EMU_PER_PT, P_NS};
-use super::text::{TextContext, inlines_text, paragraphs};
+use super::text::{TextContext, inlines_text, paragraph_sizes_pt, paragraphs};
 use crate::model::Span;
 use crate::word::docx::svg_blip;
 use crate::word::ir::{Cell, Inline, Item, ListMark, Para, Row, Table, VMerge};
@@ -21,6 +23,9 @@ use roxmltree::Node;
 const MAX_GROUP_DEPTH: usize = 64;
 /// Namespace of the Office 2017 decorative mark of a picture (`adec:`).
 const DECORATIVE_NS: &str = "http://schemas.microsoft.com/office/drawing/2017/decorative";
+/// The extensions of picture files, which a description that is a file
+/// name ends with.
+const PICTURE_EXTENSIONS: [&str; 10] = ["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "wmf", "emf", "svg"];
 /// The `uri` of the graphic data of a table.
 const TABLE_URI: &str = "http://schemas.openxmlformats.org/drawingml/2006/table";
 
@@ -29,35 +34,78 @@ const TABLE_URI: &str = "http://schemas.openxmlformats.org/drawingml/2006/table"
 pub(crate) struct SlideContent {
     /// The text of its title, when it has one with text.
     pub(crate) title: Option<Vec<Inline>>,
-    /// Its title is a centred title (`ctrTitle`): the slide is a title
-    /// slide.
-    pub(crate) centred_title: bool,
+    /// Its title is a centred title (`ctrTitle`), or its layout is a title
+    /// slide's: the slide is a title slide.
+    pub(crate) title_slide: bool,
     /// The paragraphs of its subtitle (`subTitle`).
     pub(crate) subtitle: Vec<Para>,
-    /// The rest, in reading order.
-    pub(crate) body: Vec<Item>,
+    /// The rest, one piece per shape, in the order of the shape tree.
+    pub(crate) pieces: Vec<Piece>,
 }
 
 impl SlideContent {
     /// It gives nothing.
     pub(crate) fn is_empty(&self) -> bool {
-        self.title.is_none() && self.subtitle.is_empty() && self.body.is_empty()
+        self.title.is_none() && self.subtitle.is_empty() && self.pieces.is_empty()
+    }
+}
+
+/// What a shape of a slide's shape tree gives.
+#[derive(Debug, Default)]
+pub(crate) struct Piece {
+    /// Its paragraphs, tables, pictures and charts.
+    pub(crate) items: Vec<Item>,
+    /// Where it lies on the slide, when its shape says.
+    pub(crate) frame: Option<Frame>,
+    /// For a text box (a shape with text, not a placeholder): what the
+    /// rules about titles and repeated text read of it.
+    pub(crate) text: Option<TextInfo>,
+}
+
+/// What the rules about titles and repeated text read of a text box.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TextInfo {
+    /// The size of its largest text, in points.
+    pub(crate) size_pt: f32,
+    /// The size of its first paragraph's largest text, in points, and its
+    /// number of words; `None` when the sizes are not known.
+    pub(crate) first: Option<(f32, usize)>,
+    /// The size of the largest text of its other paragraphs, in points (0
+    /// for none).
+    pub(crate) rest_size_pt: f32,
+    /// Its text, its words separated by single spaces.
+    pub(crate) plain: String,
+    /// Its number of paragraphs.
+    pub(crate) paragraphs: usize,
+    /// One of its paragraphs is an item of a list.
+    pub(crate) listed: bool,
+}
+
+impl TextInfo {
+    /// Its number of words.
+    pub(crate) fn words(&self) -> usize {
+        self.plain.split_whitespace().count()
     }
 }
 
 /// The content of the slide whose shape tree is `tree`; its pictures and
-/// charts are stored in `media`.
+/// charts are stored in `media`. The shapes of a group are read in their
+/// reading order (`order`), shapes overlapping by `overlap_pt` told apart.
 pub(crate) fn slide(
     tree: Node<'_, '_>,
     inheritance: &Inheritance<'_, '_>,
     context: &TextContext<'_>,
     media: &mut Media<'_>,
+    overlap_pt: f32,
 ) -> SlideContent {
     let mut reader = Reader {
         inheritance,
         context,
         media,
         content: SlideContent::default(),
+        items: Vec::new(),
+        text: None,
+        overlap_pt,
     };
     reader.shapes(tree, 0);
     reader.content
@@ -73,43 +121,117 @@ struct Reader<'s, 'a, 'i, 'm, 'z> {
     media: &'m mut Media<'z>,
     /// What it gave so far.
     content: SlideContent,
+    /// What the shape being read gave so far.
+    items: Vec<Item>,
+    /// What the rules read of the shape being read, when it is a text box.
+    text: Option<TextInfo>,
+    /// How much shapes may overlap and still be read by their position
+    /// (`PowerPointConfig::reading_overlap_pt`).
+    overlap_pt: f32,
 }
 
 impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
     /// Adds the content of the shapes of the shape tree or group `tree`.
     fn shapes(&mut self, tree: Node<'a, 'i>, depth: usize) {
+        let pieces = self.pieces(tree, depth);
+        self.content.pieces = pieces;
+    }
+
+    /// The pieces of the shapes of the shape tree or group `tree`, one per
+    /// shape that gives something, in tree order.
+    fn pieces(&mut self, tree: Node<'a, 'i>, depth: usize) -> Vec<Piece> {
+        let mut out = Vec::new();
         if depth > MAX_GROUP_DEPTH {
+            return out;
+        }
+        // The items of the shape that holds this group, set apart.
+        let outer = std::mem::take(&mut self.items);
+        for node in tree.children().filter(Node::is_element) {
+            self.text = None;
+            self.node(node, depth);
+            if !self.items.is_empty() {
+                out.push(Piece {
+                    items: std::mem::take(&mut self.items),
+                    frame: self.frame_of(node),
+                    // A group's shapes are placed in the group's own
+                    // space: only the slide's own text boxes are read for
+                    // titles and furniture.
+                    text: if depth == 0 { self.text.take() } else { None },
+                });
+            }
+        }
+        self.text = None;
+        self.items = outer;
+        out
+    }
+
+    /// Adds the content of the shape, group or alternative `node`.
+    fn node(&mut self, node: Node<'a, 'i>, depth: usize) {
+        if node.tag_name().namespace() == Some(MC_NS) && node.tag_name().name() == "AlternateContent" {
+            self.alternate(node, depth);
             return;
         }
-        for node in tree.children().filter(Node::is_element) {
-            if node.tag_name().namespace() == Some(MC_NS) && node.tag_name().name() == "AlternateContent" {
-                self.alternate(node, depth);
-                continue;
-            }
-            if node.tag_name().namespace() != Some(P_NS) || is_hidden(node) {
-                continue;
-            }
-            match node.tag_name().name() {
-                "sp" => self.shape(node),
-                "grpSp" => self.shapes(node, depth + 1),
-                "pic" => self.picture(node),
-                "graphicFrame" => self.frame(node),
-                _ => {}
-            }
+        if node.tag_name().namespace() != Some(P_NS) || is_hidden(node) {
+            return;
         }
+        match node.tag_name().name() {
+            "sp" => self.shape(node),
+            "grpSp" => {
+                // A group's shapes in their reading order, in the group's
+                // own space.
+                let pieces = self.pieces(node, depth + 1);
+                self.items.extend(ordered_items(pieces, self.overlap_pt));
+            }
+            "pic" => self.picture(node),
+            "graphicFrame" => self.frame(node),
+            _ => {}
+        }
+    }
+
+    /// Where the shape `node` lies on the slide: its own position and size
+    /// (`a:xfrm`, `p:xfrm`), else, for a placeholder, its layout's or
+    /// master's; for an alternative, that of the shape it holds.
+    fn frame_of(&self, node: Node<'a, 'i>) -> Option<Frame> {
+        if node.tag_name().name() == "AlternateContent" {
+            return node
+                .children()
+                .filter(Node::is_element)
+                .flat_map(|branch| branch.children().filter(Node::is_element))
+                .find_map(|inner| self.frame_of(inner));
+        }
+        let own = own_xfrm(node).and_then(frame_of_xfrm);
+        own.or_else(|| {
+            let ph = placeholder(node)?;
+            let layout = self.inheritance.layout_match(ph);
+            layout.and_then(own_xfrm).and_then(frame_of_xfrm).or_else(|| {
+                let master = layout.and_then(placeholder).map_or_else(
+                    || self.inheritance.master_match(ph),
+                    |own| self.inheritance.master_match(own),
+                );
+                master.and_then(own_xfrm).and_then(frame_of_xfrm)
+            })
+        })
     }
 
     /// Adds the content of an `mc:AlternateContent`: its first choice, or
     /// its fallback when the choice gives nothing.
     fn alternate(&mut self, node: Node<'a, 'i>, depth: usize) {
-        let before = self.content.body.len();
+        let before = self.items.len();
         if let Some(choice) = child(node, MC_NS, "Choice") {
-            self.shapes(choice, depth);
+            self.inner(choice, depth);
         }
-        if self.content.body.len() == before
+        if self.items.len() == before
             && let Some(fallback) = child(node, MC_NS, "Fallback")
         {
-            self.shapes(fallback, depth);
+            self.inner(fallback, depth);
+        }
+    }
+
+    /// Adds the content of the shapes inside a branch of an alternative,
+    /// as part of the piece being read.
+    fn inner(&mut self, branch: Node<'a, 'i>, depth: usize) {
+        for node in branch.children().filter(Node::is_element) {
+            self.node(node, depth);
         }
     }
 
@@ -123,7 +245,8 @@ impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
         if kind.is_some_and(|kind| FURNITURE.contains(&kind)) {
             return;
         }
-        let paras = paragraphs(body, &self.inheritance.list_styles(node), self.context);
+        let styles = self.inheritance.list_styles(node);
+        let paras = paragraphs(body, &styles, self.context);
         if paras.is_empty() {
             return;
         }
@@ -131,10 +254,35 @@ impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
         match kind {
             Some(kind @ ("title" | "ctrTitle")) if content.title.is_none() => {
                 content.title = Some(title_text(paras));
-                content.centred_title = kind == "ctrTitle";
+                content.title_slide |= kind == "ctrTitle";
             }
             Some("subTitle") => content.subtitle.extend(paras),
-            _ => content.body.extend(paras.into_iter().map(Item::Para)),
+            _ => {
+                if kind.is_none() {
+                    let sizes = paragraph_sizes_pt(body, &styles);
+                    // The sizes of the paragraphs with text, when they are
+                    // those read (a paragraph of a formula alone has none).
+                    let sizes = if sizes.len() == paras.len() { sizes } else { Vec::new() };
+                    self.text = Some(TextInfo {
+                        size_pt: sizes.iter().copied().fold(0.0, f32::max),
+                        first: sizes
+                            .first()
+                            .map(|size| (*size, inlines_text(&paras[0].inlines).split_whitespace().count())),
+                        rest_size_pt: sizes.iter().skip(1).copied().fold(0.0, f32::max),
+                        plain: paras
+                            .iter()
+                            .map(|para| inlines_text(&para.inlines))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        paragraphs: paras.len(),
+                        listed: paras.iter().any(|para| para.list.is_some()),
+                    });
+                }
+                self.items.extend(paras.into_iter().map(Item::Para));
+            }
         }
     }
 
@@ -159,6 +307,7 @@ impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
             extent(child(node, P_NS, "spPr").and_then(|props| child(props, DRAWING_NS, "xfrm")));
         let alt = props
             .and_then(|props| props.attribute("descr").or_else(|| props.attribute("title")))
+            .filter(|alt| !is_file_name(alt))
             .unwrap_or_default()
             .to_string();
         self.push_inline(Inline::Picture {
@@ -191,7 +340,7 @@ impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
             let nodes = attr(ids, REL_NS, "dm")
                 .map(|id| self.media.diagram(rels, id))
                 .unwrap_or_default();
-            self.content.body.extend(nodes.into_iter().map(|(level, text)| {
+            self.items.extend(nodes.into_iter().map(|(level, text)| {
                 Item::Para(Para {
                     style: "List Paragraph".to_string(),
                     list: Some(ListMark { level, marker: None }),
@@ -255,22 +404,63 @@ impl<'a, 'i> Reader<'_, 'a, 'i, '_, '_> {
             });
         }
         if !rows.is_empty() {
-            self.content.body.push(Item::Table(Table { rows }));
+            self.items.push(Item::Table(Table { rows }));
         }
     }
 
     /// Adds a paragraph holding only `inline` (a picture or a chart).
     fn push_inline(&mut self, inline: Inline) {
-        self.content.body.push(Item::Para(Para {
+        self.items.push(Item::Para(Para {
             inlines: vec![inline],
             ..Default::default()
         }));
     }
 }
 
+/// The content of `pieces` in reading order (`order`), shapes overlapping
+/// by `overlap_pt` told apart.
+pub(crate) fn ordered_items(pieces: Vec<Piece>, overlap_pt: f32) -> Vec<Item> {
+    let frames: Vec<_> = pieces.iter().map(|piece| piece.frame).collect();
+    let order = reading_order(&frames, overlap_pt);
+    let mut pieces: Vec<Option<Piece>> = pieces.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|index| pieces[index].take())
+        .flat_map(|piece| piece.items)
+        .collect()
+}
+
+/// The position and size of a shape (`a:xfrm` of its shape properties, or
+/// its own `p:xfrm` for a graphic frame).
+fn own_xfrm<'a, 'i>(node: Node<'a, 'i>) -> Option<Node<'a, 'i>> {
+    child(node, P_NS, "xfrm").or_else(|| {
+        node.children()
+            .find(|item| item.is_element() && matches!(item.tag_name().name(), "spPr" | "grpSpPr"))
+            .and_then(|props| child(props, DRAWING_NS, "xfrm"))
+    })
+}
+
+/// The frame an `a:xfrm` gives, in points; `None` when it says no size.
+fn frame_of_xfrm(xfrm: Node<'_, '_>) -> Option<Frame> {
+    let number = |node: Option<Node<'_, '_>>, name: &str| {
+        node.and_then(|node| node.attribute(name))
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .map(|emu| emu / EMU_PER_PT)
+    };
+    let off = child(xfrm, DRAWING_NS, "off");
+    let ext = child(xfrm, DRAWING_NS, "ext");
+    Some(Frame {
+        x: number(off, "x").unwrap_or(0.0),
+        y: number(off, "y").unwrap_or(0.0),
+        width: number(ext, "cx").filter(|width| *width >= 0.0)?,
+        height: number(ext, "cy").filter(|height| *height >= 0.0)?,
+    })
+}
+
 /// The text of a title's paragraphs, on one line: paragraphs and line
 /// breaks become spaces.
-fn title_text(paras: Vec<Para>) -> Vec<Inline> {
+pub(crate) fn title_text(paras: Vec<Para>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     for para in paras {
         if !out.is_empty() && !inlines_text(&out).ends_with(' ') {
@@ -323,7 +513,34 @@ fn is_decorative(props: Node<'_, '_>) -> bool {
     })
 }
 
+/// Whether a picture's description is only the name or path of the file
+/// it was inserted from (`C:\\Users\\...\\MC900433934[1].PNG`,
+/// `photo.jpg`), which older PowerPoints stored: no description for a
+/// reader.
+fn is_file_name(alt: &str) -> bool {
+    let alt = alt.trim();
+    let path = alt.contains('\\') && (alt.get(1..3) == Some(":\\") || alt.starts_with("\\\\"));
+    let extension = alt
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| PICTURE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+    path || (extension && !alt.contains(' '))
+}
+
 /// Whether the attribute `name` of `node` is true (`1` or `true`).
 fn flag(node: Node<'_, '_>, name: &str) -> bool {
     node.attribute(name).is_some_and(|value| matches!(value, "1" | "true"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_names_are_no_description() {
+        assert!(is_file_name(r"C:\Users\someone\AppData\Local\Temp\MC900433934[1].PNG"));
+        assert!(is_file_name("IMG_0042.jpg"));
+        assert!(is_file_name(r"\\server\share\logo"));
+        assert!(!is_file_name("A reef seen from above"));
+        assert!(!is_file_name("Chart of sales in 2024. Source: survey.png data"));
+    }
 }
