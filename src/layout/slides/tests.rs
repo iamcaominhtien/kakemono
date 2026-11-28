@@ -143,9 +143,15 @@ fn background_is_inherited_from_the_master() {
         })
     ));
     // A slide's own background wins.
-    let data = deck(bg, "", &[("", ""), ("", &format!("{own}"))]);
+    let data = deck(bg, "", &[("", ""), ("", own)]);
     let drawn = pages(&data);
-    assert!(matches!(drawn[1].items.first(), Some(Item::Rect { color: [0xED, 0x7D, 0x31], .. })));
+    assert!(matches!(
+        drawn[1].items.first(),
+        Some(Item::Rect {
+            color: [0xED, 0x7D, 0x31],
+            ..
+        })
+    ));
 }
 
 #[test]

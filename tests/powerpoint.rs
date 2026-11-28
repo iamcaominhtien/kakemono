@@ -735,7 +735,13 @@ fn pdf_has_one_page_per_visible_slide_of_the_slide_size() {
     assert_eq!(count, 10);
     let text: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
     let text = text.join("\n");
-    for expected in ["Coral Sea Survey 2026", "Results by site", "North reef", "Plan", "Dive manual, second edition"] {
+    for expected in [
+        "Coral Sea Survey 2026",
+        "Results by site",
+        "North reef",
+        "Plan",
+        "Dive manual, second edition",
+    ] {
         assert!(text.contains(expected), "{expected} is not in {text}");
     }
     // The hidden slide's text is not drawn.
