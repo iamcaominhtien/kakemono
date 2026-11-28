@@ -83,21 +83,10 @@ pub(super) fn draw(
     rect: [f32; 4],
 ) -> (Vec<Item>, f32) {
     let said = |name: &str| body.props.iter().find_map(|props| props.attribute(name));
-    // Vertical text is laid out across the frame turned, then turned; the
-    // text of a turned shape turns with it.
-    let vertical = match said("vert") {
-        Some("vert" | "eaVert" | "wordArtVert" | "mongolianVert") => 90.0,
-        Some("vert270") => 270.0,
-        _ => 0.0,
-    };
-    let own_turn = said("rot")
-        .and_then(|value| value.trim().parse::<f32>().ok())
-        .filter(|value| value.is_finite())
-        .map_or(0.0, |value| value / ANGLE_UNITS);
-    let turn = (body.turn_deg + vertical + own_turn).rem_euclid(360.0);
+    let (vertical, turn) = turns(&said, body);
     // A turned shape's frame is the frame before the turn; a vertical
     // text's is the frame shown.
-    let across = vertical != 0.0;
+    let across = vertical;
     let [x, y, width, height] = if across {
         let [x, y, width, height] = rect;
         [x + (width - height) / 2.0, y + (height - width) / 2.0, height, width]
@@ -123,18 +112,24 @@ pub(super) fn draw(
     let mut after = 0.0_f32;
     let paragraphs: Vec<Node<'_, '_>> = children(body.body, DRAWING_NS, "p").collect();
     for (index, node) in paragraphs.iter().enumerate() {
-        let read = paragraph(*node, body, context, &mut numbers, scale, reduction);
+        let mut read = paragraph(*node, body, context, &mut numbers, scale, reduction);
         // PowerPoint adds the space after a paragraph and before the next;
         // the first paragraph's space before is not at the top of the frame.
         if index > 0 {
             pen += after + read.before;
         }
         after = read.after;
+        // A text that is not wrapped is set on lines as long as they are,
+        // each placed in the frame as its alignment says.
+        let align = read.para.props.align;
+        if nowrap {
+            read.para.props.align = Align::Left;
+        }
         let laid = para::layout(ctx, &read.para, line_width);
         for mut line in laid.lines {
             let shift = if nowrap {
                 let end = line_end(&line.items);
-                match read.para.props.align {
+                match align {
                     Align::Center => (inner - end) / 2.0,
                     Align::Right => inner - end,
                     _ => 0.0,
@@ -165,6 +160,23 @@ pub(super) fn draw(
         items.push(Item::EndTurn);
     }
     (items, pen + top + bottom)
+}
+
+/// Whether a body's text is vertical, and the turn it is drawn at, in
+/// degrees clockwise: vertical text is laid out across the frame turned,
+/// then turned; the text of a turned shape turns with it. `said` gives
+/// its body properties.
+fn turns<'a>(said: &dyn Fn(&str) -> Option<&'a str>, body: &Body<'_, '_>) -> (bool, f32) {
+    let vertical = match said("vert") {
+        Some("vert" | "eaVert" | "wordArtVert" | "mongolianVert") => 90.0,
+        Some("vert270") => 270.0,
+        _ => 0.0,
+    };
+    let own_turn = said("rot")
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .map_or(0.0, |value| value / ANGLE_UNITS);
+    (vertical != 0.0, (body.turn_deg + vertical + own_turn).rem_euclid(360.0))
 }
 
 /// The share of their size an autofit body's fonts are drawn at, and the
@@ -606,17 +618,12 @@ fn run_fmt(
         .unwrap_or_else(|| crate::powerpoint::DEFAULT_BODY_FONT.to_string());
     let east_asia = face("ea", 1).unwrap_or_else(|| latin.clone());
     let complex = face("cs", 2).unwrap_or_else(|| latin.clone());
-    let click = props.and_then(|props| child(props, DRAWING_NS, "hlinkClick"));
-    // A link to a web address is one in the PDF; a link to another slide
-    // only looks like one.
-    let link = click
-        .and_then(|click| context.rels.get(attr(click, REL_NS, "id")?))
-        .filter(|rel| rel.external)
-        .map(|rel| rel.target.clone());
-    let linked = click
-        .and_then(|click| attr(click, REL_NS, "id"))
-        .is_some_and(|id| !id.is_empty());
-    let color = run_color(props, defaults, body, look, link.is_some());
+    let (link, linked, text_colored) = link_of(props, context);
+    let color = if linked && !text_colored {
+        Some(look.theme.hyperlink)
+    } else {
+        run_color(props, defaults, body, look)
+    };
     let baseline = said("baseline")
         .and_then(|value| value.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -652,19 +659,44 @@ fn run_fmt(
             .filter(|value| value.is_finite() && *value >= 0.0)
             .map(|value| value / 100.0),
         href: link,
+        highlight: chain
+            .iter()
+            .find_map(|node| child(*node, DRAWING_NS, "highlight"))
+            .and_then(|highlight| look.first_color(highlight)),
         ..RunFmt::default()
     }
 }
 
-/// The colour of a run with the properties `props`: its own; else a web
-/// link's (when `link`); else the shape's style's (or a table style's),
-/// which is stronger than its level's `defaults`; else the text colour.
+/// The link of a run with the properties `props`: its web address (a link
+/// to another slide only looks like one, it has none in the PDF), whether
+/// it has a link, and whether the link keeps the text's colour
+/// (`ahyp:hlinkClr val="tx"`, Office 2019; PowerPoint otherwise draws a
+/// link in the theme's link colour, over the run's own).
+fn link_of(props: Option<Node<'_, '_>>, context: &Context<'_, '_, '_>) -> (Option<String>, bool, bool) {
+    let click = props.and_then(|props| child(props, DRAWING_NS, "hlinkClick"));
+    let link = click
+        .and_then(|click| context.rels.get(attr(click, REL_NS, "id")?))
+        .filter(|rel| rel.external)
+        .map(|rel| rel.target.clone());
+    let linked = click
+        .and_then(|click| attr(click, REL_NS, "id"))
+        .is_some_and(|id| !id.is_empty());
+    let text_colored = click.is_some_and(|click| {
+        click
+            .descendants()
+            .any(|node| node.tag_name().name() == "hlinkClr" && node.attribute("val") == Some("tx"))
+    });
+    (link, linked, text_colored)
+}
+
+/// The colour of a run with the properties `props`: its own; else the
+/// shape's style's (or a table style's), which is stronger than its
+/// level's `defaults`; else the text colour.
 fn run_color(
     props: Option<Node<'_, '_>>,
     defaults: &[Node<'_, '_>],
     body: &Body<'_, '_>,
     look: &Look<'_, '_>,
-    link: bool,
 ) -> Option<Rgb> {
     let color_of = |node: &Node<'_, '_>| {
         look.fill(*node, [0; 3])
@@ -672,7 +704,6 @@ fn run_color(
     };
     match props.as_ref().and_then(color_of) {
         Some(color) => color,
-        None if link => Some(look.theme.hyperlink),
         None => body
             .font_color
             .or_else(|| defaults.iter().find_map(color_of).flatten())

@@ -280,3 +280,35 @@ fn a_fill_that_is_not_seen_draws_nothing() {
     let drawn = pages(&deck("", "", &[("", &body)]));
     assert_eq!(pictures(&drawn[0]), 1);
 }
+
+#[test]
+fn text_that_is_not_wrapped_is_aligned_in_its_frame() {
+    let para = "<a:pPr algn=\"ctr\"/><a:r><a:t>Mid</a:t></a:r>";
+    let body = shape([100.0, 100.0, 200.0, 40.0], "", &text("wrap=\"none\"", &[para]));
+    let drawn = pages(&deck("", "", &[("", &body)]));
+    let run = runs(&drawn[0])[0];
+    let end = run.x + run.glyphs.last().map_or(0.0, |glyph| glyph.x + glyph.advance);
+    // Centred: as far from the frame's left as its end from its right.
+    assert!(((run.x - 100.0) - (300.0 - end)).abs() < 1.0, "{} {end}", run.x);
+}
+
+#[test]
+fn links_take_the_theme_link_colour_and_highlights_show() {
+    let linked = "<a:r><a:rPr><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill><a:hlinkClick r:id=\"rId9\"/></a:rPr><a:t>Link</a:t></a:r>";
+    let kept = "<a:r><a:rPr><a:solidFill><a:srgbClr val=\"112233\"/></a:solidFill><a:hlinkClick r:id=\"rId9\"><a:extLst><a:ext uri=\"x\"><ahyp:hlinkClr xmlns:ahyp=\"http://schemas.microsoft.com/office/drawing/2018/hyperlinkcolor\" val=\"tx\"/></a:ext></a:extLst></a:hlinkClick></a:rPr><a:t>Kept</a:t></a:r>";
+    let marked = "<a:r><a:rPr><a:highlight><a:srgbClr val=\"FFFF00\"/></a:highlight></a:rPr><a:t>Marked</a:t></a:r>";
+    let body = shape([100.0, 100.0, 400.0, 100.0], "", &text("", &[linked, kept, marked]));
+    let drawn = pages(&deck("", "", &[("", &body)]));
+    let found = runs(&drawn[0]);
+    let color = |word: &str| found.iter().find(|run| run.text.starts_with(word)).map(|run| run.color);
+    // The default theme's link colour, over the run's own black.
+    assert_eq!(color("Link"), Some([0x05, 0x63, 0xC1]));
+    assert_eq!(color("Kept"), Some([0x11, 0x22, 0x33]));
+    assert!(drawn[0].items.iter().any(|item| matches!(
+        item,
+        Item::Rect {
+            color: [0xFF, 0xFF, 0x00],
+            ..
+        }
+    )));
+}

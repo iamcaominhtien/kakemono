@@ -50,6 +50,10 @@ const TABLE_URI: &str = "http://schemas.openxmlformats.org/drawingml/2006/table"
 const DIAGRAM_DRAWING_NS: &str = "http://schemas.microsoft.com/office/drawing/2008/diagram";
 /// Namespace of the SmartArt data model.
 const DIAGRAM_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
+/// What a DrawingML angle is written in: 60 000 is a degree.
+const ANGLE_UNITS: f32 = 60_000.0;
+/// The least turn drawn, in degrees.
+const TURN_TOLERANCE_DEG: f32 = 0.01;
 /// A share in DrawingML's units (thousandths of a percent): 100 000 is all.
 const SHARE_UNITS: f32 = 100_000.0;
 
@@ -627,7 +631,9 @@ impl Painter<'_> {
             let crop = props
                 .and_then(|props| child(props, DRAWING_NS, "blipFill"))
                 .map_or([0.0; 4], crop_of);
+            let start = items.len();
             self.push_picture(tree.rels, id, rect, crop, items);
+            turn_items(items, start, turn_of(node), rect);
         }
         let has_geometry = |props: &Node<'_, '_>| {
             child(*props, DRAWING_NS, "prstGeom").is_some() || child(*props, DRAWING_NS, "custGeom").is_some()
@@ -642,7 +648,14 @@ impl Painter<'_> {
                     .find(has_geometry)
             })
             .or(props);
-        let outline = look.outline(props, geometry, style, fill.as_ref().and_then(Paint::rgb));
+        let inherited_props: Vec<Node<'_, '_>> = inherited.iter().filter_map(|shape| properties(*shape)).collect();
+        let outline = look.outline(
+            props,
+            geometry,
+            &inherited_props,
+            style,
+            fill.as_ref().and_then(Paint::rgb),
+        );
         if (outline.fill.is_some() || outline.line.is_some())
             && let Some((svg, [dx, dy, svg_width, svg_height])) = shape_svg(&outline, width, height)
         {
@@ -706,7 +719,9 @@ impl Painter<'_> {
         };
         let id = svg_blip(blip).or_else(|| attr(blip, REL_NS, "embed"));
         if let Some(id) = id {
+            let start = items.len();
             self.push_picture(tree.rels, id, [x, y, width, height], crop_of(fill), items);
+            turn_items(items, start, turn_of(node), [x, y, width, height]);
         }
     }
 
@@ -902,6 +917,33 @@ fn with_gradient(svg: &str, gradient: &look::Gradient) -> String {
         out.insert_str(open + 1, &format!("<defs>{}</defs>", gradient.svg("g")));
     }
     out
+}
+
+/// The turn of the shape `node` (its `a:xfrm rot`), in degrees clockwise.
+fn turn_of(node: Node<'_, '_>) -> f32 {
+    own_xfrm(node)
+        .and_then(|xfrm| xfrm.attribute("rot"))
+        .and_then(|rot| rot.trim().parse::<f32>().ok())
+        .filter(|rot| rot.is_finite())
+        .map_or(0.0, |rot| (rot / ANGLE_UNITS).rem_euclid(360.0))
+}
+
+/// Turns the items of `items` from `start` by `angle_deg` about the centre
+/// of `rect`.
+fn turn_items(items: &mut Vec<Item>, start: usize, angle_deg: f32, rect: [f32; 4]) {
+    if items.len() == start || angle_deg.abs() < TURN_TOLERANCE_DEG {
+        return;
+    }
+    let [x, y, width, height] = rect;
+    items.insert(
+        start,
+        Item::Turn {
+            angle_deg,
+            x: x + width / 2.0,
+            y: y + height / 2.0,
+        },
+    );
+    items.push(Item::EndTurn);
 }
 
 /// The shape properties of a shape (`p:spPr`, `dsp:spPr`).

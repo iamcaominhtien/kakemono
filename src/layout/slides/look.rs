@@ -290,12 +290,15 @@ impl Look<'_, '_> {
     /// The outline of a shape (`p:sp`, `p:cxnSp`) for drawing with
     /// `excel::view::shape_svg`: its geometry from the properties
     /// `geometry` (its own, or its placeholder's), its turn, flips and line
-    /// from its own properties `own`, else from `geometry`, else its style's
-    /// line, and its fill `fill` (a colour; a picture fill is drawn apart).
+    /// from its own properties `own`, else from `geometry`, else from the
+    /// properties of the placeholders it inherits from `inherited`, else its
+    /// style's line, and its fill `fill` (a colour; a picture fill is drawn
+    /// apart).
     pub(super) fn outline(
         &self,
         own: Option<Node<'_, '_>>,
         geometry: Option<Node<'_, '_>>,
+        inherited: &[Node<'_, '_>],
         style: Option<Node<'_, '_>>,
         fill: Option<Rgb>,
     ) -> TextShape {
@@ -317,6 +320,7 @@ impl Look<'_, '_> {
         let said = [own, geometry]
             .into_iter()
             .flatten()
+            .chain(inherited.iter().copied())
             .filter_map(|props| child(props, DRAWING_NS, "ln"))
             .find_map(|line| self.fill(line, [0; 3]));
         let from_style = style
