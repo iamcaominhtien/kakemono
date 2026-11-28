@@ -307,6 +307,8 @@ SLIDE_STEPS = slide(
             para(run("No bullet on this closing line"), ppr_extra="<a:buNone/>"),
         ),
     )
+    # A footer known only by its index: its type is its layout's.
+    + placeholder(4, "Footer Placeholder 3", 'idx="11"', None, body(para(run("Dive manual, second edition"))))
 )
 
 SLIDE_HIDDEN = slide(title_shape("Draft ideas, hidden") + text_box(3, "TextBox 2", (1, 2, 8, 1), para(run("This slide is hidden and left out."))), show=False)

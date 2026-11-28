@@ -1,6 +1,5 @@
-//! The presentation part of a deck (`ppt/presentation.xml`): the size of
-//! its slides, the slides in order with the ones hidden, and the sections
-//! PowerPoint groups them in.
+//! The presentation part of a deck (`ppt/presentation.xml`): the slides in
+//! order with the ones hidden, and the sections PowerPoint groups them in.
 
 use crate::word::docx::{parse, read_rels};
 use crate::word::xml::{REL_NS, attr, child, children};
@@ -26,6 +25,8 @@ const MAX_SLIDES: usize = 5_000;
 /// What the presentation part says about the deck.
 #[derive(Debug, Default)]
 pub(crate) struct Presentation {
+    /// The path of the presentation part in the package.
+    pub(crate) part: String,
     /// The slides, in the order of the deck, hidden ones included.
     pub(crate) slides: Vec<SlideRef>,
     /// The sections, in order; empty when the deck has none.
@@ -73,6 +74,7 @@ impl Presentation {
         Ok(Self {
             slides: slide_list(root, &rels, zip),
             sections: sections(root),
+            part,
         })
     }
 

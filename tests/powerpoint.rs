@@ -3,7 +3,11 @@
 //! decks written here for what the sample does not hold.
 
 use kakemono::model::{BlockKind, Document};
-use kakemono::{InputFormat, Paper};
+use kakemono::{
+    ChunkOptions, DocxOptions, EpubOptions, HtmlOptions, InputFormat, JsonOptions, LatexOptions, MarkdownOptions,
+    Paper, TypstOptions,
+};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -161,27 +165,147 @@ fn docx_and_xlsx_are_not_taken_for_a_deck() {
 #[test]
 fn hidden_slides_are_left_out() {
     let doc = sample();
-    // The sample's 4th slide is hidden: slide 5 follows slide 3.
-    let numbers: Vec<String> = headings(&doc)
-        .into_iter()
-        .filter(|(_, text)| text.starts_with("Slide "))
-        .map(|(_, text)| text)
-        .collect();
-    assert!(!numbers.contains(&"Slide 4".to_string()), "{numbers:?}");
-    assert!(numbers.contains(&"Slide 5".to_string()), "{numbers:?}");
     assert!(!doc.blocks.iter().any(|block| block.text().contains("hidden")));
+    assert!(!headings(&doc).iter().any(|(_, text)| text == "Slide 4"));
 }
 
 #[test]
-fn sections_head_their_slides() {
+fn title_slide_gives_the_document_title() {
     let doc = sample();
-    let headings = headings(&doc);
-    assert_eq!(headings.first(), Some(&(1, "Introduction".to_string())), "{headings:?}");
-    assert!(headings.contains(&(1, "Results".to_string())), "{headings:?}");
-    assert!(
-        headings.iter().filter(|(level, _)| *level == 2).count() >= 9,
-        "{headings:?}"
-    );
+    assert_eq!(doc.meta.title.as_deref(), Some("Coral Sea Survey 2026"));
+    assert!(matches!(doc.blocks[0].kind, BlockKind::Title), "{:?}", doc.blocks[0]);
+    assert_eq!(doc.blocks[1].text(), "Marine Science Team");
+    assert_eq!(doc.blocks[2].text(), "Quarterly review");
+    // The title slide is not a section.
+    assert!(!headings(&doc).iter().any(|(_, text)| text.contains("Coral Sea Survey")));
+}
+
+#[test]
+fn sections_are_headings_above_slide_titles() {
+    let found = headings(&sample());
+    let expected: Vec<(u8, String)> = [
+        (1, "Introduction"),
+        (2, "Goals of the survey"),
+        (2, "Steps of a dive"),
+        (2, "Slide 5"),
+        // The section's header slide repeats its name: one heading.
+        (1, "Results"),
+        (2, "Results by site"),
+        (2, "Coral cover by year"),
+        (2, "How cover is computed"),
+        (2, "How a survey runs"),
+        (2, "Before and after"),
+    ]
+    .into_iter()
+    .map(|(level, text)| (level, text.to_string()))
+    .collect();
+    assert_eq!(found, expected);
+}
+
+#[test]
+fn slides_without_title_are_numbered() {
+    let doc = sample();
+    let at = doc.blocks.iter().position(|block| block.text() == "Slide 5").unwrap();
+    assert!(doc.blocks[at + 1].text().starts_with("A slide without a title"));
+}
+
+/// The list items of `doc` between the headings `from` and the next, as
+/// (level, marker, text).
+fn items_under(doc: &Document, from: &str) -> Vec<(u8, Option<String>, String)> {
+    let start = doc.blocks.iter().position(|block| block.text() == from).unwrap() + 1;
+    doc.blocks[start..]
+        .iter()
+        .take_while(|block| !matches!(block.kind, BlockKind::Heading { .. }))
+        .filter_map(|block| match &block.kind {
+            BlockKind::ListItem { marker, level } => Some((*level, marker.clone(), block.text())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn bullet_levels_become_list_levels() {
+    let items = items_under(&sample(), "Goals of the survey");
+    let levels: Vec<u8> = items.iter().map(|(level, _, _)| *level).collect();
+    assert_eq!(levels, [0, 1, 2, 0, 0], "{items:?}");
+    assert!(items.iter().all(|(_, marker, _)| marker.is_none()));
+}
+
+#[test]
+fn auto_numbers_keep_their_marker() {
+    let doc = sample();
+    let items = items_under(&doc, "Steps of a dive");
+    let markers: Vec<(u8, String)> = items
+        .iter()
+        .map(|(level, marker, _)| (*level, marker.clone().unwrap_or_default()))
+        .collect();
+    let expected: Vec<(u8, String)> = [(0, "3."), (1, "a)"), (1, "b)"), (0, "4."), (0, "5.")]
+        .into_iter()
+        .map(|(level, marker)| (level, marker.to_string()))
+        .collect();
+    assert_eq!(markers, expected);
+    // A paragraph with `buNone` is not an item.
+    let closing = doc
+        .blocks
+        .iter()
+        .find(|block| block.text() == "No bullet on this closing line")
+        .unwrap();
+    assert!(matches!(closing.kind, BlockKind::Paragraph { .. }));
+}
+
+#[test]
+fn runs_keep_their_style_and_links() {
+    let doc = sample();
+    let link = doc
+        .blocks
+        .iter()
+        .flat_map(|block| &block.spans)
+        .find(|span| span.text.contains("open data portal"))
+        .unwrap();
+    assert_eq!(link.href.as_deref(), Some("https://example.org/coral-data"));
+    let bold = doc
+        .blocks
+        .iter()
+        .flat_map(|block| &block.spans)
+        .find(|span| span.text == "twelve")
+        .unwrap();
+    assert_ne!(bold.style & kakemono::model::style::BOLD, 0);
+}
+
+#[test]
+fn placeholder_prompts_are_not_text() {
+    let doc = sample();
+    assert!(!doc.blocks.iter().any(|block| block.text().contains("Click to")));
+}
+
+#[test]
+fn footer_date_and_number_are_left_out() {
+    let doc = sample();
+    let text: String = doc.blocks.iter().map(|block| block.text() + "\n").collect();
+    assert!(!text.contains("Confidential"), "{text}");
+    assert!(!text.contains("Dive manual"), "{text}");
+    assert!(!text.contains("11/28/2026"), "{text}");
+    assert!(!text.lines().any(|line| line.trim() == "2"), "{text}");
+}
+
+#[test]
+fn reading_order_is_the_shape_tree_with_the_title_first() {
+    let shape = |id: u32, ph: &str, text: &str| {
+        format!(
+            "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"s{id}\"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr/>\
+             <p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:bodyPr/><a:lstStyle/>\
+             <a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"
+        )
+    };
+    let tree = [
+        shape(2, "", "First box"),
+        shape(3, "<p:ph type=\"title\"/>", "The title"),
+        shape(4, "", "Second box"),
+    ]
+    .concat();
+    let doc = Paper::from_bytes(deck(&[&tree], &[])).unwrap().analyze().doc;
+    let texts: Vec<String> = doc.blocks.iter().map(|block| block.text()).collect();
+    assert_eq!(texts, ["The title", "First box", "Second box"]);
 }
 
 #[test]
@@ -196,6 +320,64 @@ fn missing_and_external_parts_are_skipped() {
     );
     let paper = Paper::from_bytes(bytes).unwrap();
     assert_eq!(paper.format(), InputFormat::Pptx);
-    let doc = paper.analyze().doc;
-    assert_eq!(headings(&doc), vec![(1, "Slide 1".to_string())]);
+    // The one slide has no text: the deck gives nothing.
+    assert!(paper.analyze().doc.blocks.is_empty());
+}
+
+#[test]
+fn powerpoint_outputs_match_their_snapshot() {
+    let paper = Paper::from_bytes(std::fs::read(data(SAMPLE)).unwrap()).unwrap();
+    let analysis = paper.analyze();
+    let html_opts = HtmlOptions {
+        embed_fonts: false,
+        ..Default::default()
+    };
+    let chunks = paper.to_chunks(&analysis, &ChunkOptions::default());
+    let outputs: Vec<(&str, Vec<u8>)> = vec![
+        ("friendly", paper.to_html(&analysis, &html_opts).html.into_bytes()),
+        ("docx", paper.to_docx(&analysis, &DocxOptions::default())),
+        (
+            "markdown",
+            paper
+                .to_markdown(&analysis, &MarkdownOptions::default())
+                .markdown
+                .into_bytes(),
+        ),
+        (
+            "latex",
+            paper.to_latex(&analysis, &LatexOptions::default()).latex.into_bytes(),
+        ),
+        (
+            "typst",
+            paper.to_typst(&analysis, &TypstOptions::default()).typst.into_bytes(),
+        ),
+        ("epub", paper.to_epub(&analysis, &EpubOptions::default())),
+        (
+            "content",
+            paper.to_json(&analysis, &JsonOptions::default()).json.into_bytes(),
+        ),
+        ("chunks", kakemono::chunks_jsonl(&chunks).into_bytes()),
+    ];
+    let mut text = String::new();
+    for (output, bytes) in outputs {
+        let bytes = String::from_utf8_lossy(&bytes)
+            .replace(env!("CARGO_PKG_VERSION"), "VERSION")
+            .into_bytes();
+        let hash: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        text.push_str(&format!("{SAMPLE} {output} {hash}\n"));
+    }
+    let file = data("snapshots/powerpoint-sample.txt");
+    if std::env::var("KAKEMONO_UPDATE_SNAPSHOTS").is_ok_and(|value| value == "1") {
+        std::fs::write(&file, &text).unwrap();
+        return;
+    }
+    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    assert_eq!(
+        old, text,
+        "the output of the PowerPoint sample changed; if this is intended, run \
+         KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test powerpoint"
+    );
 }
