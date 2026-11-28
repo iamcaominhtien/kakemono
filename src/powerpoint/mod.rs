@@ -39,6 +39,8 @@ use text::TextContext;
 /// The size of PowerPoint's default body text, in points
 /// (`p:defaultTextStyle`, level 1).
 const DEFAULT_BODY_SIZE_PT: f32 = 18.0;
+/// The heading of a slide's speaker notes.
+const NOTES_HEADING: &str = "Notes";
 /// PowerPoint's default font of the body text (the theme's minor font of
 /// the default theme before Office 2023).
 const DEFAULT_BODY_FONT: &str = "Calibri";
@@ -86,11 +88,13 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     let mut section = None;
     for (index, slide) in presentation.visible().enumerate() {
         let content = parts.slide(slide, defaults, &mut media)?;
+        let notes = parts.notes(slide);
         if index == 0 && content.centred_title {
             front_matter(content, &mut word.body);
+            push_notes(notes, slide_level, &mut word.body);
             continue;
         }
-        if content.is_empty() {
+        if content.is_empty() && notes.is_empty() {
             continue;
         }
         let current = presentation.section_of(&slide.id);
@@ -117,6 +121,8 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
         }
         word.body.extend(content.subtitle.into_iter().map(Item::Para));
         word.body.extend(content.body);
+        let notes_level = if repeats_section { slide_level } else { slide_level + 1 };
+        push_notes(notes, notes_level, &mut word.body);
     }
     word.pictures = media.pictures;
     Ok(crate::word::build_document(word, source))
@@ -139,6 +145,20 @@ fn front_matter(content: SlideContent, body: &mut Vec<Item>) {
         }));
     }
     body.extend(content.body);
+}
+
+/// Adds a slide's speaker notes `notes` to `body`, under a heading
+/// "Notes" of `level` (one below the slide's own), so that their place in
+/// the document, and the section path of their chunks, is their slide's.
+fn push_notes(notes: Vec<Para>, level: u8, body: &mut Vec<Item>) {
+    if notes.is_empty() {
+        return;
+    }
+    body.push(Item::Para(heading(
+        vec![Inline::Text(Span::plain(NOTES_HEADING))],
+        level,
+    )));
+    body.extend(notes.into_iter().map(Item::Para));
 }
 
 /// A heading of `level` (1 for the outermost) with the text `inlines`.
@@ -230,6 +250,57 @@ impl<'z> Parts<'z> {
         Ok(shape_tree(&slide_doc).map_or_else(SlideContent::default, |tree| {
             build::slide(tree, &inheritance, &context, media)
         }))
+    }
+}
+
+impl Parts<'_> {
+    /// The text of the speaker notes of `slide` (the body placeholder of
+    /// its notes page), which takes its list styles from the notes master
+    /// (`p:notesStyle`); empty when it has none.
+    fn notes(&mut self, slide: &SlideRef) -> Vec<Para> {
+        let Some(part) = self.related(&slide.part, "notesSlide") else {
+            return Vec::new();
+        };
+        let Some(xml) = self.text(&part) else {
+            return Vec::new();
+        };
+        let master_xml = self.related(&part, "notesMaster").and_then(|master| self.text(&master));
+        let (Ok(doc), master_doc) = (parse(&xml), master_xml.as_deref().map(parse)) else {
+            return Vec::new();
+        };
+        let master_doc = master_doc.and_then(Result::ok);
+        let inheritance = Inheritance {
+            master: master_doc.as_ref().and_then(shape_tree),
+            defaults: master_doc
+                .as_ref()
+                .and_then(|doc| child(doc.root_element(), P_NS, "notesStyle")),
+            ..Default::default()
+        };
+        let rels: HashMap<String, Rel> = read_rels(self.zip, &part)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _, rel)| (id, rel))
+            .collect();
+        let context = TextContext {
+            number: slide.number,
+            rels: &rels,
+        };
+        let Some(tree) = shape_tree(&doc) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for shape in tree.descendants().filter(|node| node.tag_name().name() == "sp") {
+            let Some(ph) = inherit::placeholder(shape) else {
+                continue;
+            };
+            if ph.kind != "body" {
+                continue;
+            }
+            if let Some(body) = child(shape, P_NS, "txBody") {
+                out.extend(text::paragraphs(body, &inheritance.list_styles(shape), &context));
+            }
+        }
+        out
     }
 }
 

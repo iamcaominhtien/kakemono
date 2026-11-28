@@ -186,12 +186,14 @@ fn sections_are_headings_above_slide_titles() {
     let expected: Vec<(u8, String)> = [
         (1, "Introduction"),
         (2, "Goals of the survey"),
+        (3, "Notes"),
         (2, "Steps of a dive"),
         (2, "Slide 5"),
         // The section's header slide repeats its name: one heading.
         (1, "Results"),
         (2, "Results by site"),
         (2, "Coral cover by year"),
+        (3, "Notes"),
         (2, "How cover is computed"),
         (2, "How a survey runs"),
         (2, "Before and after"),
@@ -523,4 +525,64 @@ fn group_nesting_past_the_limit_stops() {
         .doc;
     let text: String = doc.blocks.iter().map(|block| block.text()).collect();
     assert!(text.contains("Shallow") && !text.contains("Deep"), "{text}");
+}
+
+#[test]
+fn notes_follow_their_slide() {
+    let doc = sample();
+    let at = doc
+        .blocks
+        .iter()
+        .position(|block| block.text() == "Goals of the survey")
+        .unwrap();
+    let notes = doc.blocks[at..]
+        .iter()
+        .position(|block| block.text() == "Notes")
+        .map(|offset| at + offset)
+        .unwrap();
+    assert!(matches!(doc.blocks[notes].kind, BlockKind::Heading { level: 3 }));
+    assert_eq!(doc.blocks[notes + 1].text(), "Mention the baseline of 2024 first.");
+    assert_eq!(doc.blocks[notes + 2].text(), "Then the twelve reefs.");
+    assert!(matches!(doc.blocks[notes + 3].kind, BlockKind::Heading { level: 2 }));
+}
+
+#[test]
+fn chunks_of_notes_have_the_slide_in_their_path() {
+    let paper = Paper::from_bytes(std::fs::read(data(SAMPLE)).unwrap()).unwrap();
+    let chunks = paper.to_chunks(&paper.analyze(), &ChunkOptions::default());
+    let chunk = chunks
+        .iter()
+        .find(|chunk| chunk.text.contains("heat wave"))
+        .expect("a chunk of the chart slide's notes");
+    assert!(
+        chunk.text.starts_with("Results > Coral cover by year > Notes"),
+        "{}",
+        chunk.text
+    );
+}
+
+#[test]
+fn slide_number_placeholder_of_the_notes_page_is_left_out() {
+    let doc = sample();
+    let at = doc
+        .blocks
+        .iter()
+        .position(|block| block.text() == "Coral cover by year")
+        .unwrap();
+    let after: Vec<String> = doc.blocks[at..]
+        .iter()
+        .skip_while(|block| block.text() != "Notes")
+        .skip(1)
+        .take_while(|block| !matches!(block.kind, BlockKind::Heading { .. }))
+        .map(|block| block.text())
+        .collect();
+    assert_eq!(after, ["The south reef lost cover after the 2025 heat wave."]);
+}
+
+#[test]
+fn empty_notes_give_nothing() {
+    let doc = sample();
+    let notes = headings(&doc).into_iter().filter(|(_, text)| text == "Notes").count();
+    // Only two slides of the sample have notes.
+    assert_eq!(notes, 2);
 }
