@@ -444,12 +444,13 @@ impl Document {
         }))
     }
 
-    /// A Word document laid out in pages as Word lays it out, as the bytes
-    /// of a PDF. With edited text, the edited document is laid out.
+    /// A Word document, an EPUB book or a web page laid out in pages as Word
+    /// lays it out, or a workbook printed as Excel prints it, as the bytes of
+    /// a PDF. With edited text, the edited document is laid out.
     fn to_pdf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         if self.paper.format().has_pages() {
             return Err(value_error(
-                "the input is already a PDF: only a Word document, a workbook or an EPUB book is laid out as a PDF",
+                "the input is already a PDF: only a Word document, a workbook, an EPUB book or a web page is laid out as a PDF",
             ));
         }
         let data = py.detach(|| {

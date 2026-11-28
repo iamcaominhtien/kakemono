@@ -15,7 +15,7 @@
 
 </div>
 
-kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files, Excel workbooks, EPUB books and web pages, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, Typst (an article or a printed book), EPUB, editable JSON and JSONL chunks for retrieval. Word and EPUB input can also be laid out as PDF, and a workbook printed as Excel prints it. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
+kakemono is a Rust document converter and library. It extracts reading order and structure from PDFs, Word files, Excel workbooks, EPUB books and web pages, including headings, tables, equations and figures. It can produce HTML, DOCX, Markdown, LaTeX, Typst (an article or a printed book), EPUB, editable JSON and JSONL chunks for retrieval. Word, EPUB and web page input can also be laid out as PDF, and a workbook printed as Excel prints it. PDF processing uses [hayro](https://github.com/LaurenzV/hayro); no Python, Poppler or MuPDF is needed for the CLI.
 
 ## Install
 
