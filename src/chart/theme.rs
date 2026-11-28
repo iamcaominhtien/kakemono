@@ -242,10 +242,12 @@ fn transformed(base: Rgb, element: Node<'_, '_>) -> Rgb {
             match transform.tag_name().name() {
                 "lumMod" => with_luminance(rgb, |lum| lum * ratio),
                 "lumOff" => with_luminance(rgb, |lum| lum + ratio),
-                "shade" => rgb.map(|channel| channel_of(f32::from(channel) * ratio.clamp(0.0, 1.0))),
+                // Office darkens and lightens in linear light: a 20 % tint
+                // of accent 1 is PowerPoint's pale table band (E9EBF5).
+                "shade" => rgb.map(|channel| linear_to_srgb(srgb_to_linear(channel) * ratio.clamp(0.0, 1.0))),
                 "tint" => rgb.map(|channel| {
-                    let channel = f32::from(channel);
-                    channel_of(channel + (255.0 - channel) * (1.0 - ratio.clamp(0.0, 1.0)))
+                    let ratio = ratio.clamp(0.0, 1.0);
+                    linear_to_srgb(srgb_to_linear(channel) * ratio + (1.0 - ratio))
                 }),
                 _ => rgb,
             }
@@ -291,6 +293,16 @@ pub(crate) fn with_luminance(rgb: Rgb, change: impl Fn(f32) -> f32) -> Rgb {
 /// A channel value rounded into 0..=255.
 fn channel_of(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
+}
+
+/// An sRGB channel as linear light (0..1).
+fn srgb_to_linear(channel: u8) -> f32 {
+    let value = f32::from(channel) / 255.0;
+    if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// A linear-light channel (0..1) of `a:scrgbClr` as an sRGB channel.
@@ -398,14 +410,15 @@ mod tests {
                 &solid(r#"<a:srgbClr val="FF0000"><a:shade val="50000"/></a:srgbClr>"#),
                 &theme
             ),
-            Some([128, 0, 0])
+            // Half the light, not half the value.
+            Some([188, 0, 0])
         );
         assert_eq!(
             fill(
                 &solid(r#"<a:srgbClr val="000000"><a:tint val="50000"/></a:srgbClr>"#),
                 &theme
             ),
-            Some([128, 128, 128])
+            Some([188, 188, 188])
         );
         // A damaged value is no colour; absurd transforms stay in range.
         assert_eq!(fill(&solid(r#"<a:srgbClr val="xyz"/>"#), &theme), None);

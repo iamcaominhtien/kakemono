@@ -1395,7 +1395,8 @@ mod tests {
             panic!("a shape")
         };
         assert_eq!(shape.fill, Some([0x44, 0x72, 0xC4]));
-        assert_eq!(shape.line, Some([0x22, 0x39, 0x62]));
+        // Office's default outline, accent 1 shaded in linear light.
+        assert_eq!(shape.line, Some([0x2F, 0x52, 0x8F]));
         assert_eq!(shape.color, Some([255, 255, 255]));
         assert_eq!((shape.size_pt, shape.bold), (Some(14.0), true));
         assert_eq!(
