@@ -23,13 +23,36 @@ fn js_error(err: core::Error) -> Error {
     Error::new(status, err.message().to_string())
 }
 
-/// Runs `work` on tokio's blocking pool as the promise of a method.
+/// The conversions that run at once: `KAKEMONO_MAX_CONCURRENCY`, or one per
+/// core. The others wait for their turn, so that a burst of calls (a server's
+/// requests) holds that many documents in memory, not all of them; the work
+/// is bound by the processor, so running more at once is not faster.
+fn conversions() -> &'static tokio::sync::Semaphore {
+    static CONVERSIONS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    CONVERSIONS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let max = std::env::var("KAKEMONO_MAX_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|&max| max > 0)
+            .unwrap_or(cores);
+        tokio::sync::Semaphore::new(max)
+    })
+}
+
+/// Runs `work` on tokio's blocking pool as the promise of a method, once
+/// its turn comes ([`conversions`]).
 fn spawn<'env, T, F>(env: &'env Env, work: F) -> Result<PromiseRaw<'env, T>>
 where
     T: 'static + Send + napi::bindgen_prelude::ToNapiValue,
     F: 'static + Send + FnOnce() -> core::Result<T>,
 {
     env.spawn_future(async move {
+        // Its turn among the conversions (the semaphore is never closed).
+        let _turn = conversions()
+            .acquire()
+            .await
+            .map_err(|err| Error::new(Status::GenericFailure, format!("internal error in kakemono: {err}")))?;
         tokio::task::spawn_blocking(work)
             .await
             .map_err(|err| Error::new(Status::GenericFailure, format!("internal error in kakemono: {err}")))?

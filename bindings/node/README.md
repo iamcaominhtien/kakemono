@@ -24,8 +24,12 @@ several can be written at once. To translate a document, edit the text of `toJso
 document again with `{ content }`: every output then shows the edited text.
 
 Options are typed (see `index.d.ts`); a wrong one rejects with an error whose `code` is
-`InvalidArg`. `jobs` (default: one thread per core) is per document: on a server converting
-several documents at once, set it to 1 or 2.
+`InvalidArg` (`GenericFailure`: a document that cannot be read or written; `Unknown`: a bug).
+
+At most one conversion per core runs at once (`KAKEMONO_MAX_CONCURRENCY` to change it); the others
+wait for their turn, so a burst of requests holds only that many documents in memory. `jobs`
+(default: one thread per core) is per document: on a server converting several documents at
+once, set it to 1.
 
 Prebuilt for Linux (x64, arm64; glibc and musl), macOS (x64, arm64) and Windows (x64, arm64).
 For browsers, see `@kakemono/wasm`.

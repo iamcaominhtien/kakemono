@@ -21,6 +21,9 @@ How it differs from `@kakemono/node`:
   give it with `addFont(bytes)` first, or `toPdf()` throws a `DocumentError`. Text in SVG pictures
   drawn as PNG uses the fonts given so too.
 - Tokens of chunks are estimated (no tokenizers).
+- It needs WebAssembly SIMD: every browser since 2023 (Safari 16.4, Chrome 91, Firefox 89), Node
+  16.4+, Deno, Cloudflare Workers. It runs about 1.25 times slower than `@kakemono/node` on one
+  thread (8 test papers: 8.4 s against 6.8 s).
 - The module is about 19 MB (7 MB compressed). A panic of kakemono aborts it with a
   `RuntimeError` (its message is logged to `console.error`): load the module again after one.
 

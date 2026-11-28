@@ -15,7 +15,7 @@ kakemono-bindings = { workspace = true }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "serde-json"] }
 serde_json = { workspace = true }
 napi-derive = "3"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [build-dependencies]
 napi-build = "2"

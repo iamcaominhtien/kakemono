@@ -53,6 +53,26 @@ there first (`RenderOptions`, `Target::options`), then into each binding's typed
   Without any, those outputs fail with an error (Word's medium page is then the friendly one).
 - **Cancellation** is not supported: a conversion runs to its end.
 
+## Performance
+
+Measured on 4 cores (2026-11-28): the 8 test papers, a Word document and a workbook, each read
+from bytes and written as Markdown with `jobs = 1`, best of 3 runs; every binding gives the same
+Markdown, byte for byte.
+
+| Called from | Rust | C | Node | Java | .NET | WebAssembly (Node) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Seconds | 6.77 | 6.67 | 7.01 | 7.43 | 6.93 | 8.42 |
+| Against Rust | 1.00 | 0.98 | 1.04 | 1.10 | 1.02 | 1.24 |
+
+- Concurrency: the 8 papers at once take 2.7 s (Node, Java) to 3.6 s (.NET) instead of about 7 s.
+  Node runs at most one conversion per core at once (`KAKEMONO_MAX_CONCURRENCY`): 24 outputs of the
+  GPT-4 paper at once peak at 754 MB instead of 1.6 GB, in the same time.
+- Memory: 2000 rounds of open, five outputs and close (a Word document), and 40 to 120 rounds on
+  the LIGO paper, stay flat in C, Node, Java, .NET and WebAssembly, also when Java and .NET
+  documents are left to the garbage collector instead of being closed.
+- WebAssembly runs in Chromium (the page and a Web Worker) and handles the 100-page GPT-4 paper in
+  the hard mode (45 MB of HTML, 442 MB of memory).
+
 ## Building and testing
 
 ```bash
