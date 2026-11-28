@@ -12,6 +12,35 @@ Ngày: 2026-11-28 · Phạm vi: Kotlin, Java, JavaScript, TypeScript, C++, C#, S
   kiểu dữ liệu lồng phức tạp. Đây là hình dạng lý tưởng cho FFI: mọi ngôn ngữ nên dùng lại đúng
   hình dạng này.
 
+## 1b. Khảo sát nhu cầu (số liệu lấy ngày 2026-11-28)
+
+Lượt tải lấy trực tiếp từ registry: npm (`api.npmjs.org`, 7 ngày), PyPI (`pypistats.org`, 7 ngày),
+NuGet (tổng từ trước đến nay), pub.dev (30 ngày), sao GitHub. Số tải bị thổi phồng bởi CI, nên chỉ
+dùng để so sánh độ lớn giữa các hệ sinh thái.
+
+| Hệ sinh thái | Tín hiệu | Nhận xét |
+| --- | --- | --- |
+| Python (đã có) | pypdf 54,8 tr/tuần, pymupdf 42,3 tr, markitdown 6,6 tr, mammoth 4,7 tr, docling 0,91 tr, unstructured 0,57 tr | Thị trường RAG lớn nhất. |
+| JS / TS | pdfjs-dist 59,8 tr/tuần, turndown 17,3 tr, mammoth 16,1 tr, pdf-parse 13,0 tr, unpdf 12,6 tr, officeparser 1,8 tr | Lớn ngang Python, nhưng các thư viện chủ yếu cho ra **văn bản thô**: thiếu một công cụ PDF/Word → Markdown/HTML có cấu trúc. Có thêm lợi thế chạy được trong trình duyệt và trên edge (wasm). |
+| Java / Kotlin (JVM) | Tika, PDFBox đã có module riêng trong LangChain4j, và Tika có reader riêng trong Spring AI | Thị trường doanh nghiệp. Đã có sẵn chỗ để cắm vào: một `DocumentParser` của LangChain4j. Một JAR phục vụ cả Java và Kotlin phía server. |
+| C# / .NET | DocumentFormat.OpenXml 501 tr (tổng), PDFsharp 87,5 tr, itext7 57,8 tr; mảng AI: ManagedCode.MarkItDown 63 nghìn, Kreuzberg 80 nghìn | Thị trường tài liệu lớn, mảng PDF→Markdown cho AI còn nhỏ nhưng đang tăng. |
+| Go | pdfcpu 8,9k sao (chỉnh sửa PDF, không trích xuất), docconv 1,8k (văn bản thô), tabula 31 | Người dùng Go thích thư viện thuần Go; cgo là rào cản. Dịch vụ Go thường gọi CLI hoặc HTTP. |
+| Flutter / Dart | read_pdf_text 6,3 nghìn/30 ngày, docx_to_text 6,5 nghìn | Rất nhỏ (gói `pdf` 2,3 tr là gói *tạo* PDF). |
+| Swift / Kotlin Android | Ứng dụng dùng PDFKit, PdfRenderer để hiển thị; ít khi chuyển đổi ngay trên máy | Ngách: ứng dụng đọc sách, dịch offline. Binary lớn là điểm trừ. |
+| C++ | Đã có MuPDF, Poppler, PDFium | Ngách. |
+
+Đối thủ đáng chú ý: **Kreuzberg** (lõi Rust, binding cho khoảng 16 ngôn ngữ) chỉ đạt khoảng 69 nghìn/tuần
+trên npm, 50 nghìn/tuần trên PyPI, 80 nghìn tổng trên NuGet. Phủ nhiều ngôn ngữ tự nó không tạo
+ra người dùng. Thứ tạo ra người dùng là chất lượng và chỗ cắm vào các framework (LangChain,
+LlamaIndex, LangChain4j, Semantic Kernel).
+
+**Kết luận ưu tiên:**
+1. **JS/TS** (napi-rs, sau đó wasm): nhu cầu lớn nhất còn trống.
+2. **JVM** (một JAR cho Java + Kotlin server) kèm module LangChain4j.
+3. **C#**: khi có người dùng hỏi.
+4. **Go, Swift, Android, Flutter, C++**: hoãn. Thay vào đó phát hành CLI dựng sẵn và một bản HTTP/Docker
+   (hoặc server MCP cho agent AI), dùng được từ mọi ngôn ngữ mà không phải duy trì binding.
+
 ## 2. Đề xuất kiến trúc
 
 ```
@@ -92,6 +121,10 @@ dụng tự tải (đã có `Paper::from_page_at(data, url)`) và tắt feature 
 
 ## 5. Lộ trình đề xuất
 
+Bảng dưới đây là lộ trình **đầy đủ** nếu làm mọi ngôn ngữ. Theo khảo sát ở mục 1b, nên làm
+theo thứ tự: bước 0, bước 2 (JS/TS), bước 6 (wasm), rồi JVM ở bước 3 (chỉ Kotlin/Java). Các bước
+còn lại để sau.
+
 | Bước | Việc | Mở khoá | Ước lượng |
 | --- | --- | --- | --- |
 | 0 | Feature `net`, `mimalloc` chỉ cho binary, font Android + API truyền font | wasm, mobile | 1–2 ngày |
@@ -111,3 +144,7 @@ Phần tốn công nhất không phải viết binding mà là **CI dựng và p
 - UniFFI và danh sách binding bên thứ ba: https://github.com/mozilla/uniffi-rs
 - napi-rs v3 (WebAssembly): https://napi.rs/blog/announce-v3, https://napi.rs/docs/concepts/webassembly
 - flutter_rust_bridge: https://docs.rs/crate/flutter_rust_bridge/latest
+- Số tải: https://api.npmjs.org/downloads/point/last-week/<gói>, https://pypistats.org/api/packages/<gói>/recent,
+  https://azuresearch-usnc.nuget.org/query, https://pub.dev/api/packages/<gói>/score
+- Kreuzberg: https://docs.rs/crate/kreuzberg/latest
+- LangChain4j parser modules: https://central.sonatype.com/artifact/dev.langchain4j/langchain4j-document-parser-apache-tika
