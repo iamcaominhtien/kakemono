@@ -130,6 +130,8 @@ jobs:
       - name: C smoke test
         working-directory: bindings/c
         run: |
+          # cargo test builds the library for the tests, not its cdylib.
+          cargo build --release --locked -p kakemono-c
           cc -Wall -Wextra -Werror -I include tests/smoke.c -L ../target/release -lkakemono_ffi -o smoke
           LD_LIBRARY_PATH=../target/release ./smoke ../../tests/data/word/sample.docx
 
