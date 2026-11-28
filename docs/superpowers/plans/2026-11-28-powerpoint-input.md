@@ -29,7 +29,24 @@
 4. A `.docx` and an `.xlsx` are still read as Word and Excel; a zip that is none of them is still the same error. Test in Task 1 (`docx_and_xlsx_are_not_taken_for_a_deck`).
 5. Autofit: a body with `a:normAutofit fontScale="62500" lnSpcReduction="20000"` is drawn at 62.5 % of its size, its line spacing 20 points of percent less, and its text stays inside its frame. Test in Task 7 (`autofit_text_stays_in_its_frame`).
 
+## How the output is checked
+
+Four layers, from cheap and certain to costly and subjective:
+
+1. Unit tests, behaviour tests (`tests/powerpoint.rs`) and the snapshot of the sample, in CI.
+2. **Text against an independent reader** (`scripts/powerpoint-text-check.py`, run with python-pptx in `/root/.venvs/kakemono-py`, not in CI): for each deck of the corpus, python-pptx's text of each visible slide is compared with our Markdown of that slide: share of its words found (recall), slide titles that are headings, prompt text leaked ("Click to add"), footer or slide-number text repeated, notes found under their slide. Totals per deck and overall, written as TSV so that two runs can be diffed before and after a change.
+3. **Pages against PowerPoint's PDFs** (Task 9): lines broken at the same words, page counts, with minimums in CI.
+4. **Review rounds by subagents** (after Task 4 and after Task 7; not in CI): 15–20 decks of the corpus per round.
+   - A Sonnet reviewer of the *structure*: each slide's picture (PowerPoint's PDF page, else LibreOffice's, drawn with `pdftoppm` at 1×) next to our Markdown and friendly HTML of it: reading order, headings, list levels, tables, charts' data, notes.
+   - A Sonnet reviewer of the *pages* (after Task 7): our PDF page next to PowerPoint's: text out of its frame, wrong fonts or sizes, backgrounds, missing pictures, shapes.
+   - Haiku only to sweep many decks quickly and pick those worth a closer look.
+   - Each reviewer is given the files, not our conclusions, and reports in a fixed form: deck, slide number, what is wrong, evidence (the output's text, or the area of the page), severity. Every finding is checked by hand before it is fixed; each real one is fixed with a test, so that it does not come back.
+
 ---
+
+### Task 0 (from the start, alongside Tasks 1–5): The corpus
+
+- [ ] Collect public decks (gov.uk, data.gov.au, open.canada.ca, data.gov.uk, GitHub repositories of talks; English, Japanese, Vietnamese), preferring those published with the PDF PowerPoint made of them (the PDF's `Producer` or `Creator` names Microsoft PowerPoint). Record them in `tests/data/powerpoint-corpus.tsv` (Task 6 adds the fetch script and the crash test). Started early so that the number of decks with a PowerPoint PDF, which Task 9 depends on, is known early.
 
 ### Task 1: Detection, the package, and wiring into `Paper`
 
@@ -78,7 +95,9 @@
 - [ ] **Step 1: Failing tests:** `table_merges_become_spans`, `first_row_is_a_header_when_the_table_says_so`, `svg_blip_is_kept_over_its_png`, `decorative_pictures_are_left_out`, `chart_gives_a_figure_and_its_data`, `smartart_text_becomes_a_list`, `formula_is_math_not_a_picture`, `group_with_empty_child_extent_is_not_scaled`, `group_nesting_past_the_limit_stops`.
 - [ ] **Step 2: Implement.** Reuse `excel/drawing.rs` for geometry, fills, lines, pictures, `group_map`, `alternative`; if a piece needs `pub(crate)` or a move to a shared module, make that a separate refactoring commit first (`refactor(drawing): ...`) with unchanged Excel snapshots.
 - [ ] **Step 3:** outputs of the sample read and checked; snapshot updated.
-- [ ] **Step 4: Commit** — `feat(powerpoint): tables, pictures, charts, SmartArt and formulas of slides`
+- [ ] **Step 4:** write `scripts/powerpoint-text-check.py` and run it on the corpus; fix what it finds.
+- [ ] **Step 5:** first review round (structure reviewer, Haiku sweep), findings checked and fixed.
+- [ ] **Step 6: Commit** — `feat(powerpoint): tables, pictures, charts, SmartArt and formulas of slides`
 
 ### Task 5: Speaker notes
 
@@ -110,7 +129,8 @@
 - [ ] **Step 1: Failing tests:** `pdf_has_one_page_per_visible_slide_of_the_slide_size` (`tests/cli.rs`), `autofit_text_stays_in_its_frame`, `bullets_hang_at_their_indent`, `master_shapes_hidden_when_show_master_shapes_is_off`, `slide_number_field_shows_the_number`, `background_is_inherited_from_the_master`.
 - [ ] **Step 2: Implement** in the order of the spec's "What a deck becomes (the pages)": background, master and layout shapes, slide shapes (geometry through `excel::view::shape_svg`, pictures cropped, charts as SVG), text frames (insets, anchor, wrap, autofit, line spacing, space before and after, bullets, columns, vertical text), tables with `tableStyles.xml`. Fonts through `layout/fonts` as for Word; a theme font with no open match uses `metrics.txt` (Aptos is there) or the family's fallback.
 - [ ] **Step 3:** draw the sample and five corpus decks; look at the pages next to LibreOffice's or PowerPoint's PDFs (render both to PNG at 1×; `pdftoppm` is installed); fix what differs most.
-- [ ] **Step 4: Commit** — `feat(powerpoint): draw slides as PDF pages as PowerPoint does`
+- [ ] **Step 4:** second review round (pages reviewer, structure reviewer again), findings checked and fixed.
+- [ ] **Step 5: Commit** — `feat(powerpoint): draw slides as PDF pages as PowerPoint does`
 
 ### Task 8: `hard`, `hard-95`, `medium` through the slides' PDF
 
