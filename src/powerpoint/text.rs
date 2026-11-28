@@ -1,17 +1,22 @@
 //! The text of a shape (`p:txBody`) as paragraphs of `word::ir`: each
 //! paragraph with a bullet or a number becomes an item of a list at its
 //! level, the others plain paragraphs; runs keep their style and links;
-//! fields show their text (a slide number field, the slide's number).
+//! fields show their text (a slide number field, the slide's number);
+//! formulas (`a14:m`) keep their structure.
 
 use super::inherit::level_props;
 use crate::model::Span;
 use crate::model::style::{BOLD, ITALIC, SUB, SUP};
 use crate::word::docx::Rel;
 use crate::word::ir::{Inline, ListMark, Para};
-use crate::word::xml::{DRAWING_NS, REL_NS, attr, child, children};
+use crate::word::omml;
+use crate::word::xml::{DRAWING_NS, MATH_NS, REL_NS, attr, child, children};
 use roxmltree::Node;
 use std::collections::HashMap;
 
+/// Namespace of the Office 2010 drawing extensions (`a14:`), which hold a
+/// paragraph's formulas.
+const A14_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
 /// The deepest level a paragraph can have (`lvl` 0 to 8).
 const LEVELS: usize = 9;
 
@@ -51,7 +56,9 @@ pub(crate) fn paragraphs(body: Node<'_, '_>, styles: &[Node<'_, '_>], context: &
             .min(LEVELS - 1);
         let chain = level_props(props, styles, level as u8);
         let inlines = runs(para, &chain, context);
-        if inlines_text(&inlines).trim().is_empty() {
+        if inlines_text(&inlines).trim().is_empty()
+            && !inlines.iter().any(|inline| matches!(inline, Inline::Math { .. }))
+        {
             continue;
         }
         let list = match bullet(&chain) {
@@ -197,6 +204,18 @@ fn runs(para: Node<'_, '_>, chain: &[Node<'_, '_>], context: &TextContext<'_>) -
         .collect::<Vec<_>>();
     let mut out: Vec<Inline> = Vec::new();
     for item in para.children().filter(Node::is_element) {
+        // A formula (`a14:m`, read in the choice of an `mc:AlternateContent`).
+        if item.tag_name().namespace() == Some(A14_NS) && item.tag_name().name() == "m" {
+            out.extend(
+                item.children()
+                    .filter(|node| node.tag_name().namespace() == Some(MATH_NS))
+                    .map(|node| Inline::Math {
+                        node: omml::formula(node),
+                        display: node.tag_name().name() == "oMathPara",
+                    }),
+            );
+            continue;
+        }
         let text = match item.tag_name().name() {
             // A tab separates words, as in a Word document.
             "r" => child(item, DRAWING_NS, "t")

@@ -14,9 +14,11 @@
 //!   the list styles a shape's text takes its properties from.
 //! - `text`: a text body → paragraphs and list items.
 //! - `build`: a slide's shapes → its title and content, in reading order.
+//! - `media`: pictures, charts and the text of SmartArt diagrams.
 
 mod build;
 mod inherit;
+mod media;
 mod package;
 mod text;
 
@@ -28,6 +30,7 @@ use crate::word::zip::ZipArchive;
 use anyhow::{Context, Result};
 use build::SlideContent;
 use inherit::Inheritance;
+use media::Media;
 use package::{P_NS, Presentation, SlideRef};
 use roxmltree::{Document as Xml, Node};
 use std::collections::HashMap;
@@ -66,6 +69,11 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     let presentation_xml = parts.text(&presentation.part).unwrap_or_default();
     let presentation_doc = parse(&presentation_xml).with_context(|| format!("reading {}", presentation.part))?;
     let defaults = child(presentation_doc.root_element(), P_NS, "defaultTextStyle");
+    // Charts take their colours from the deck's theme.
+    let theme = parts
+        .related(&presentation.part, "theme")
+        .and_then(|part| zip.read(&part).ok().flatten());
+    let mut media = Media::new(&zip, theme.as_deref());
     let mut word = WordDoc {
         title: crate::word::docx::document_title(&zip)?,
         body_size_pt: DEFAULT_BODY_SIZE_PT,
@@ -77,7 +85,7 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
     let slide_level = if presentation.sections.is_empty() { 1 } else { 2 };
     let mut section = None;
     for (index, slide) in presentation.visible().enumerate() {
-        let content = parts.slide(slide, defaults)?;
+        let content = parts.slide(slide, defaults, &mut media)?;
         if index == 0 && content.centred_title {
             front_matter(content, &mut word.body);
             continue;
@@ -110,6 +118,7 @@ pub fn read(data: &[u8], source: Option<String>) -> Result<Document> {
         word.body.extend(content.subtitle.into_iter().map(Item::Para));
         word.body.extend(content.body);
     }
+    word.pictures = media.pictures;
     Ok(crate::word::build_document(word, source))
 }
 
@@ -182,7 +191,12 @@ impl<'z> Parts<'z> {
     ///
     /// # Errors
     /// When the slide's part is not well-formed XML.
-    fn slide(&mut self, slide: &SlideRef, defaults: Option<Node<'_, '_>>) -> Result<SlideContent> {
+    fn slide(
+        &mut self,
+        slide: &SlideRef,
+        defaults: Option<Node<'_, '_>>,
+        media: &mut Media<'_>,
+    ) -> Result<SlideContent> {
         let Some(slide_xml) = self.text(&slide.part) else {
             return Ok(SlideContent::default());
         };
@@ -213,10 +227,9 @@ impl<'z> Parts<'z> {
             number: slide.number,
             rels: &rels,
         };
-        Ok(
-            shape_tree(&slide_doc)
-                .map_or_else(SlideContent::default, |tree| build::slide(tree, &inheritance, &context)),
-        )
+        Ok(shape_tree(&slide_doc).map_or_else(SlideContent::default, |tree| {
+            build::slide(tree, &inheritance, &context, media)
+        }))
     }
 }
 

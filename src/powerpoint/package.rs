@@ -13,6 +13,8 @@ pub(crate) const P_NS: &str = "http://schemas.openxmlformats.org/presentationml/
 /// Namespace of the PowerPoint 2010 extensions (`p14:`), which hold the
 /// sections.
 const P14_NS: &str = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+/// EMUs (English Metric Units) in a point: 12 700.
+pub(crate) const EMU_PER_PT: f32 = 12_700.0;
 /// The type of the package relationship to the main part.
 const OFFICE_DOCUMENT_REL: &str = "officeDocument";
 /// The part of the content types of a package.

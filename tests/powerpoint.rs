@@ -381,3 +381,146 @@ fn powerpoint_outputs_match_their_snapshot() {
          KAKEMONO_UPDATE_SNAPSHOTS=1 cargo test --release --test powerpoint"
     );
 }
+
+/// The tables of `doc`.
+fn tables(doc: &Document) -> Vec<&kakemono::model::Table> {
+    doc.blocks.iter().filter_map(|block| block.table.as_ref()).collect()
+}
+
+#[test]
+fn table_merges_become_spans() {
+    let doc = sample();
+    let table = tables(&doc)
+        .into_iter()
+        .find(|table| table.rows[0][0].spans.iter().any(|span| span.text == "Site"))
+        .expect("the sample's table");
+    assert_eq!(table.n_cols, 3);
+    let cell = |row: usize, text: &str| {
+        table.rows[row]
+            .iter()
+            .find(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect::<String>() == text)
+            .unwrap_or_else(|| panic!("no cell {text:?} in row {row}"))
+    };
+    assert_eq!(cell(0, "Coral cover").colspan, 2);
+    assert_eq!(cell(2, "North reef").rowspan, 2);
+    // The rows are whole: every row covers the three columns.
+    assert_eq!(table.rows.len(), 5);
+}
+
+#[test]
+fn first_row_is_a_header_when_the_table_says_so() {
+    let doc = sample();
+    let table = tables(&doc)
+        .into_iter()
+        .find(|table| table.rows[0][0].spans.iter().any(|span| span.text == "Site"))
+        .unwrap();
+    assert_eq!(table.header_rows, 1);
+}
+
+#[test]
+fn svg_blip_is_kept_over_its_png() {
+    let doc = sample();
+    let formats: Vec<kakemono::model::PictureFormat> = doc.pictures.iter().map(|picture| picture.format).collect();
+    assert!(formats.contains(&kakemono::model::PictureFormat::Svg), "{formats:?}");
+    // The reef (PNG), the logo (its SVG, not its PNG), the chart (SVG): the
+    // decorative picture is left out and the logo's PNG is never read.
+    assert_eq!(doc.pictures.len(), 3, "{formats:?}");
+}
+
+#[test]
+fn decorative_pictures_are_left_out() {
+    let doc = sample();
+    let alts: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.kind, BlockKind::Figure { .. }))
+        // A picture's description is kept as its block's one row.
+        .map(|block| {
+            block
+                .rows
+                .iter()
+                .flatten()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    assert!(alts.iter().any(|alt| alt.contains("reef")), "{alts:?}");
+    assert_eq!(
+        doc.blocks
+            .iter()
+            .filter(|block| matches!(
+                block.kind,
+                BlockKind::Figure {
+                    kind: kakemono::model::FloatKind::Figure | kakemono::model::FloatKind::Graphic,
+                    ..
+                }
+            ))
+            .count(),
+        3,
+        "two pictures and a chart"
+    );
+}
+
+#[test]
+fn chart_gives_a_figure_and_its_data() {
+    let doc = sample();
+    let data = tables(&doc)
+        .into_iter()
+        .find(|table| {
+            table
+                .rows
+                .iter()
+                .flatten()
+                .any(|cell| cell.spans.iter().any(|span| span.text == "North reef"))
+                && table.rows.len() == 4
+        })
+        .expect("the chart's data table");
+    let row: Vec<String> = data.rows[3]
+        .iter()
+        .map(|cell| cell.spans.iter().map(|span| span.text.as_str()).collect())
+        .collect();
+    assert_eq!(row, ["2026", "34", "19"]);
+}
+
+#[test]
+fn smartart_text_becomes_a_list() {
+    let items = items_under(&sample(), "How a survey runs");
+    let texts: Vec<&str> = items.iter().map(|(_, _, text)| text.as_str()).collect();
+    assert_eq!(texts, ["Plan", "Dive", "Report"]);
+}
+
+#[test]
+fn formula_is_math_not_a_picture() {
+    let doc = sample();
+    let at = doc
+        .blocks
+        .iter()
+        .position(|block| block.text() == "How cover is computed")
+        .unwrap();
+    let formula = &doc.blocks[at + 1];
+    assert!(
+        matches!(formula.kind, BlockKind::Equation { .. }) && formula.math.is_some(),
+        "{formula:?}"
+    );
+}
+
+#[test]
+fn group_nesting_past_the_limit_stops() {
+    let mut tree = String::new();
+    for _ in 0..200 {
+        tree.push_str("<p:grpSp>");
+    }
+    tree.push_str(
+        "<p:sp><p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:p><a:r><a:t>Deep</a:t></a:r></a:p></p:txBody></p:sp>",
+    );
+    for _ in 0..200 {
+        tree.push_str("</p:grpSp>");
+    }
+    let shallow = "<p:sp><p:txBody xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:p><a:r><a:t>Shallow</a:t></a:r></a:p></p:txBody></p:sp>";
+    let doc = Paper::from_bytes(deck(&[&format!("{shallow}{tree}")], &[]))
+        .unwrap()
+        .analyze()
+        .doc;
+    let text: String = doc.blocks.iter().map(|block| block.text()).collect();
+    assert!(text.contains("Shallow") && !text.contains("Deep"), "{text}");
+}

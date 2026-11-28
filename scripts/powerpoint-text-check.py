@@ -40,9 +40,9 @@ args = parser.parse_args()
 # Placeholders whose text is page furniture, left out of the document.
 FURNITURE = {PP_PLACEHOLDER.DATE, PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.HEADER}
 TITLES = {PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE, PP_PLACEHOLDER.VERTICAL_TITLE}
-# A word: a run of letters or digits, or one CJK character (they are not
-# separated by spaces).
-WORD = re.compile(r'[⺀-鿿豈-﫿ｦ-ﾟ]|[^\W_]+', re.UNICODE)
+# A word: a run of letters or digits, or one CJK character (kana, kanji:
+# they are not separated by spaces); CJK spaces and punctuation are none.
+WORD = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]|[^\W_]+', re.UNICODE)
 PROMPT = re.compile(r'\bClick to (add|edit)\b', re.IGNORECASE)
 
 
