@@ -25,7 +25,14 @@ A `Document` is read and analysed once; it can be written from several threads a
 `Dispose()` frees it once the calls running on it return. Errors are `KakemonoException`s with a
 `Kind` (`InvalidArgument`, `Document`, `Internal`). `Jobs` (default: one thread per core) is per
 document: a server converting several documents at once should set `new OpenOptions { Jobs = 1 }`.
-A conversion cannot be cancelled once started.
+Every call, sync or `Async`, takes a `CancellationToken`: once it is cancelled, the call stops soon
+after (normally within a page) with an `OperationCanceledException`, and the document stays
+usable. For a time limit, use `CancelAfter`:
+
+```csharp
+using var source = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+var md = await doc.ToMarkdownAsync(null, source.Token);
+```
 
 Native libraries are included for Linux (x64, arm64; glibc and musl), macOS (x64, arm64) and
 Windows (x64, arm64). In a container without fonts, give one with `Document.AddFont(bytes)` before

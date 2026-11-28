@@ -4,9 +4,13 @@
 //! kakemono's own (through tokio's blocking pool, so it never fills libuv's
 //! pool, which `fs` and `zlib` share), with a large stack.
 
+use core::CancelToken;
 use kakemono_bindings as core;
-use napi::bindgen_prelude::{Buffer, PromiseRaw};
-use napi::{Env, Error, Result, Status};
+use napi::bindgen_prelude::{
+    Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, JsValue, Object, PromiseRaw, TypeName, Unknown,
+    ValidateNapiValue,
+};
+use napi::{Env, Error, Result, Status, ValueType, sys};
 use napi_derive::napi;
 use std::sync::Arc;
 
@@ -19,6 +23,7 @@ fn js_error(err: core::Error) -> Error {
         core::ErrorKind::InvalidArgument => Status::InvalidArg,
         core::ErrorKind::Document => Status::GenericFailure,
         core::ErrorKind::Internal => Status::Unknown,
+        core::ErrorKind::Cancelled | core::ErrorKind::TimedOut => Status::Cancelled,
     };
     Error::new(status, err.message().to_string())
 }
@@ -40,28 +45,226 @@ fn conversions() -> &'static tokio::sync::Semaphore {
     })
 }
 
+/// An `AbortSignal` given with a call: a listener of its `abort` event
+/// cancels the call's token, and is removed once the call ends (when this
+/// is dropped, on the JavaScript thread).
+pub struct Signal {
+    /// The environment the signal lives in.
+    env: sys::napi_env,
+    /// The signal.
+    signal: sys::napi_ref,
+    /// The listener added to it (`None` when the signal was already aborted).
+    listener: Option<sys::napi_ref>,
+    /// Cancelled when the signal is aborted.
+    token: CancelToken,
+}
+
+/// `addEventListener` or `removeEventListener` of an event target, called
+/// with an event name and a listener of type `L`.
+type Listen<'env, L> = Function<'env, FnArgs<(&'env str, L)>, ()>;
+
+impl TypeName for Signal {
+    fn type_name() -> &'static str {
+        "AbortSignal"
+    }
+
+    fn value_type() -> ValueType {
+        ValueType::Object
+    }
+}
+
+impl ValidateNapiValue for Signal {}
+
+impl FromNapiValue for Signal {
+    unsafe fn from_napi_value(env: sys::napi_env, value: sys::napi_value) -> Result<Self> {
+        // SAFETY: napi gives a value of `env`, on its thread.
+        let signal = unsafe { Object::from_napi_value(env, value) }?;
+        let token = CancelToken::new();
+        let aborted: Option<bool> = signal.get_named_property("aborted")?;
+        let add: Option<Listen<'_, Function<'_, (), ()>>> = signal.get_named_property("addEventListener")?;
+        let (Some(aborted), Some(add)) = (aborted, add) else {
+            return Err(Error::new(Status::InvalidArg, "signal must be an AbortSignal"));
+        };
+        let mut signal_ref = std::ptr::null_mut();
+        // SAFETY: `value` is a live object of `env`.
+        check(unsafe { sys::napi_create_reference(env, value, 1, &mut signal_ref) })?;
+        let mut this = Self {
+            env,
+            signal: signal_ref,
+            listener: None,
+            token,
+        };
+        if aborted {
+            this.token.cancel();
+            return Ok(this);
+        }
+        let stopper = this.token.clone();
+        // SAFETY: as above.
+        let js_env = Env::from_raw(env);
+        let listener = js_env.create_function_from_closure("abort", move |_| {
+            stopper.cancel();
+            Ok(())
+        })?;
+        add.apply(signal, FnArgs::from(("abort", listener)))?;
+        let mut listener_ref = std::ptr::null_mut();
+        // SAFETY: `listener` is a live function of `env`.
+        check(unsafe { sys::napi_create_reference(env, listener.raw(), 1, &mut listener_ref) })?;
+        this.listener = Some(listener_ref);
+        Ok(this)
+    }
+}
+
+impl Signal {
+    /// The signal's `reason`, for the `cause` of the error of an aborted call.
+    fn reason(&self) -> Option<Unknown<'_>> {
+        let signal = self.object()?;
+        signal.get_named_property::<Unknown<'_>>("reason").ok()
+    }
+
+    /// The signal, while it lives.
+    fn object(&self) -> Option<Object<'_>> {
+        let mut value = std::ptr::null_mut();
+        // SAFETY: `signal` is a reference of `env`, used on its thread.
+        check(unsafe { sys::napi_get_reference_value(self.env, self.signal, &mut value) }).ok()?;
+        // SAFETY: as above.
+        unsafe { Object::from_napi_value(self.env, value) }.ok()
+    }
+}
+
+impl Drop for Signal {
+    fn drop(&mut self) {
+        // Errors are left: the signal may already be collected.
+        if let Some(listener) = self.listener.take() {
+            let mut function = std::ptr::null_mut();
+            // SAFETY: the references are of `env`, used on its thread (a
+            // `Signal` never leaves it: it is not `Send`).
+            unsafe {
+                if check(sys::napi_get_reference_value(self.env, listener, &mut function)).is_ok()
+                    && let Some(signal) = self.object()
+                    && let Ok(Some(remove)) =
+                        signal.get_named_property::<Option<Listen<'_, Unknown<'_>>>>("removeEventListener")
+                    && let Ok(function) = Unknown::from_napi_value(self.env, function)
+                {
+                    let _ = remove.apply(signal, FnArgs::from(("abort", function)));
+                }
+                sys::napi_delete_reference(self.env, listener);
+            }
+        }
+        // SAFETY: as above.
+        unsafe { sys::napi_delete_reference(self.env, self.signal) };
+    }
+}
+
+/// A napi status as a result.
+fn check(status: sys::napi_status) -> Result<()> {
+    if status == sys::Status::napi_ok {
+        Ok(())
+    } else {
+        Err(Error::new(
+            Status::GenericFailure,
+            format!("napi call failed ({status})"),
+        ))
+    }
+}
+
+/// How a call may be stopped: its `signal` and `timeout` options.
+struct Stop {
+    /// The signal, kept until the call ends.
+    signal: Option<Signal>,
+    /// The token of the call, or why the options are wrong.
+    token: core::Result<Option<CancelToken>>,
+}
+
+impl Stop {
+    /// From a call's options.
+    fn new(signal: Option<Signal>, timeout: Option<f64>) -> Self {
+        let token = core::timeout_millis(timeout)
+            .map(|limit| core::stop_token(signal.as_ref().map(|signal| &signal.token), limit));
+        Self { signal, token }
+    }
+}
+
+/// The error a call is rejected with: [`js_error`], or, for a call that
+/// was stopped, an `AbortError` (`code` `'ABORT_ERR'`, its `cause` the
+/// signal's reason) or a `TimeoutError` (`code` `'ETIMEDOUT'`).
+fn rejection(env: &Env, err: core::Error, signal: Option<&Signal>) -> Error {
+    let (name, code) = match err.kind() {
+        core::ErrorKind::Cancelled => ("AbortError", "ABORT_ERR"),
+        core::ErrorKind::TimedOut => ("TimeoutError", "ETIMEDOUT"),
+        _ => return js_error(err),
+    };
+    let build = || -> Result<Error> {
+        let mut error = env.create_error(Error::new(Status::Cancelled, err.message().to_string()))?;
+        error.set_named_property("name", name)?;
+        error.set_named_property("code", code)?;
+        if name == "AbortError"
+            && let Some(reason) = signal.and_then(Signal::reason)
+        {
+            error.set_named_property("cause", reason)?;
+        }
+        Ok(Error::from(error.to_unknown()))
+    };
+    build().unwrap_or_else(|_| js_error(err))
+}
+
+/// How often a call waiting for its turn looks at its token.
+const QUEUE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Runs `work` on tokio's blocking pool as the promise of a method, once
-/// its turn comes ([`conversions`]).
-fn spawn<'env, T, F>(env: &'env Env, work: F) -> Result<PromiseRaw<'env, T>>
+/// its turn comes ([`conversions`]), with the token of `stop`; a call
+/// stopped while it waits for its turn leaves the queue at once.
+fn spawn<'env, T, F>(env: &'env Env, stop: Stop, work: F) -> Result<PromiseRaw<'env, T>>
 where
     T: 'static + Send + napi::bindgen_prelude::ToNapiValue,
-    F: 'static + Send + FnOnce() -> core::Result<T>,
+    F: 'static + Send + FnOnce(Option<&CancelToken>) -> core::Result<T>,
 {
-    env.spawn_future(async move {
-        // Its turn among the conversions (the semaphore is never closed).
-        let _turn = conversions()
-            .acquire()
-            .await
-            .map_err(|err| Error::new(Status::GenericFailure, format!("internal error in kakemono: {err}")))?;
-        tokio::task::spawn_blocking(work)
-            .await
-            .map_err(|err| Error::new(Status::GenericFailure, format!("internal error in kakemono: {err}")))?
-            .map_err(js_error)
-    })
+    let Stop { signal, token } = stop;
+    env.spawn_future_with_callback(
+        async move {
+            // The outcome is always handed to the callback, which removes
+            // the signal's listener.
+            Ok(run(token, work).await)
+        },
+        move |env, outcome: core::Result<T>| {
+            let result = outcome.map_err(|err| rejection(env, err, signal.as_ref()));
+            drop(signal);
+            result
+        },
+    )
+}
+
+/// [`spawn`]'s work: its turn, then `work` on the blocking pool.
+async fn run<T, F>(token: core::Result<Option<CancelToken>>, work: F) -> core::Result<T>
+where
+    T: 'static + Send,
+    F: 'static + Send + FnOnce(Option<&CancelToken>) -> core::Result<T>,
+{
+    let internal = |err: &dyn std::fmt::Display| {
+        core::Error::new(core::ErrorKind::Internal, format!("internal error in kakemono: {err}"))
+    };
+    let token = token?;
+    let mut acquire = std::pin::pin!(conversions().acquire());
+    // Its turn among the conversions (the semaphore is never closed).
+    let _turn = loop {
+        match &token {
+            None => break (&mut acquire).await.map_err(|err| internal(&err))?,
+            Some(token) => match tokio::time::timeout(QUEUE_POLL, &mut acquire).await {
+                Ok(turn) => break turn.map_err(|err| internal(&err))?,
+                Err(_) => {
+                    if let Some(stopped) = token.state() {
+                        return Err(stopped.into());
+                    }
+                }
+            },
+        }
+    };
+    tokio::task::spawn_blocking(move || work(token.as_ref()))
+        .await
+        .map_err(|err| internal(&err))?
 }
 
 /// The options of reading and analysing a document, kept for every output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct OpenOptions {
     /// The name recorded as the document's source. By default: the file
@@ -85,6 +288,13 @@ pub struct OpenOptions {
     /// The header rows of every table of an Excel workbook, given instead
     /// of found.
     pub header_rows: Option<f64>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// A count option: a whole number, 0 or more (JavaScript numbers are
@@ -120,7 +330,7 @@ impl OpenOptions {
 }
 
 /// Options of the HTML output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct HtmlOptions {
     /// The mode, from the most faithful to the most readable (default
@@ -143,10 +353,17 @@ pub struct HtmlOptions {
     pub inline_images: Option<bool>,
     /// The folder of the picture files, relative (default `'images'`).
     pub image_dir: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the Markdown output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct MarkdownOptions {
     /// `'friendly'` (default), or `'medium'` to keep tables as HTML.
@@ -161,10 +378,17 @@ pub struct MarkdownOptions {
     pub image_dir: Option<String>,
     /// Pictures as data URIs instead of files (default false).
     pub inline_images: Option<bool>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the editable JSON output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct JsonOptions {
     /// How displayed formulas are written (default `'mathml'`).
@@ -176,10 +400,17 @@ pub struct JsonOptions {
     pub image_dir: Option<String>,
     /// Pictures as data URIs instead of files (default false).
     pub inline_images: Option<bool>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the Word output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct DocxOptions {
     /// How displayed formulas are written (default `'mathml'`).
@@ -190,10 +421,17 @@ pub struct DocxOptions {
     /// When given, the pictures are files in this relative folder too
     /// (they are always inside the document).
     pub image_dir: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the LaTeX output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct LatexOptions {
     /// How displayed formulas are written (default `'mathml'`).
@@ -203,10 +441,17 @@ pub struct LatexOptions {
     pub scale: Option<f64>,
     /// The folder of the picture files, relative (default `'images'`).
     pub image_dir: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the Typst output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct TypstOptions {
     /// How displayed formulas are written (default `'mathml'`).
@@ -220,10 +465,17 @@ pub struct TypstOptions {
     /// document (default `'auto'`).
     #[napi(ts_type = "'auto' | 'article' | 'book'")]
     pub layout: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the EPUB output.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct EpubOptions {
     /// How displayed formulas are written (default `'mathml'`).
@@ -237,10 +489,17 @@ pub struct EpubOptions {
     pub cover: Option<bool>,
     /// The book's date, `CCYY-MM-DDThh:mm:ssZ` (default: a fixed date).
     pub modified: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
 }
 
 /// Options of the chunks for retrieval.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 #[derive(Default)]
 pub struct ChunkOptions {
     /// Largest chunk, in tokens (default 512).
@@ -248,6 +507,34 @@ pub struct ChunkOptions {
     /// The path of a Hugging Face `tokenizer.json`, or `'cl100k_base'` /
     /// `'o200k_base'`; tokens are estimated without it.
     pub tokenizer: Option<String>,
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
+}
+
+/// The options of a call that has no others: how to stop it.
+#[napi(object, object_to_js = false)]
+#[derive(Default)]
+pub struct StopOptions {
+    /// Stops the call when it is aborted: the promise is then rejected
+    /// with an `AbortError` (its `cause` is the signal's reason).
+    #[napi(ts_type = "AbortSignal")]
+    pub signal: Option<Signal>,
+    /// A time limit for the call, in milliseconds: past it, the promise is
+    /// rejected with a `TimeoutError`.
+    pub timeout: Option<f64>,
+}
+
+impl StopOptions {
+    /// The [`Stop`] of `options`.
+    fn stop(options: Option<Self>) -> Stop {
+        let options = options.unwrap_or_default();
+        Stop::new(options.signal, options.timeout)
+    }
 }
 
 /// A picture file of an output.
@@ -348,10 +635,12 @@ impl Document {
         source: core::Source,
         options: Option<OpenOptions>,
     ) -> Result<PromiseRaw<'env, Document>> {
-        let opts = options.unwrap_or_default().into_core();
-        spawn(env, move || {
+        let mut options = options.unwrap_or_default();
+        let stop = Stop::new(options.signal.take(), options.timeout);
+        let opts = options.into_core();
+        spawn(env, stop, move |token| {
             let opts = opts?;
-            core::Document::open(source, &opts).map(|doc| Document { doc: Arc::new(doc) })
+            core::Document::open_with(source, &opts, token).map(|doc| Document { doc: Arc::new(doc) })
         })
     }
 
@@ -427,6 +716,7 @@ impl Document {
     fn render<'env, T, O>(
         &self,
         env: &'env Env,
+        stop: Stop,
         target: core::Target,
         opts: core::RenderOptions,
         output: O,
@@ -436,14 +726,17 @@ impl Document {
         O: 'static + Send + FnOnce(core::Output) -> T,
     {
         let doc = Arc::clone(&self.doc);
-        spawn(env, move || doc.render(target, &opts).map(output))
+        spawn(env, stop, move |token| {
+            doc.render_with(target, &opts, token).map(output)
+        })
     }
 
     /// An HTML page; its pictures are inline unless `inlineImages` is
     /// false.
     #[napi(ts_return_type = "Promise<TextOutput>")]
     pub fn to_html<'env>(&self, env: &'env Env, options: Option<HtmlOptions>) -> Result<PromiseRaw<'env, TextOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             mode: o.mode,
             equations: o.equations,
@@ -454,7 +747,7 @@ impl Document {
             image_dir: o.image_dir,
             ..Default::default()
         };
-        self.render(env, core::Target::Html, opts, text_output)
+        self.render(env, stop, core::Target::Html, opts, text_output)
     }
 
     /// Markdown and its picture files.
@@ -464,7 +757,8 @@ impl Document {
         env: &'env Env,
         options: Option<MarkdownOptions>,
     ) -> Result<PromiseRaw<'env, TextOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             mode: o.mode,
             equations: o.equations,
@@ -473,14 +767,15 @@ impl Document {
             inline_images: o.inline_images,
             ..Default::default()
         };
-        self.render(env, core::Target::Markdown, opts, text_output)
+        self.render(env, stop, core::Target::Markdown, opts, text_output)
     }
 
     /// The editable JSON and its picture files: edit its text, then open
     /// the document again with it as `content`.
     #[napi(ts_return_type = "Promise<TextOutput>")]
     pub fn to_json<'env>(&self, env: &'env Env, options: Option<JsonOptions>) -> Result<PromiseRaw<'env, TextOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             equations: o.equations,
             scale: o.scale.map(|scale| scale as f32),
@@ -488,7 +783,7 @@ impl Document {
             inline_images: o.inline_images,
             ..Default::default()
         };
-        self.render(env, core::Target::Json, opts, text_output)
+        self.render(env, stop, core::Target::Json, opts, text_output)
     }
 
     /// LaTeX source and its picture files.
@@ -498,14 +793,15 @@ impl Document {
         env: &'env Env,
         options: Option<LatexOptions>,
     ) -> Result<PromiseRaw<'env, TextOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             equations: o.equations,
             scale: o.scale.map(|scale| scale as f32),
             image_dir: o.image_dir,
             ..Default::default()
         };
-        self.render(env, core::Target::Latex, opts, text_output)
+        self.render(env, stop, core::Target::Latex, opts, text_output)
     }
 
     /// Typst source and its picture files.
@@ -515,7 +811,8 @@ impl Document {
         env: &'env Env,
         options: Option<TypstOptions>,
     ) -> Result<PromiseRaw<'env, TextOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             equations: o.equations,
             scale: o.scale.map(|scale| scale as f32),
@@ -523,7 +820,7 @@ impl Document {
             layout: o.layout,
             ..Default::default()
         };
-        self.render(env, core::Target::Typst, opts, text_output)
+        self.render(env, stop, core::Target::Typst, opts, text_output)
     }
 
     /// A Word document (`.docx`); its pictures are files too when
@@ -534,14 +831,15 @@ impl Document {
         env: &'env Env,
         options: Option<DocxOptions>,
     ) -> Result<PromiseRaw<'env, BinaryOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             equations: o.equations,
             scale: o.scale.map(|scale| scale as f32),
             image_dir: o.image_dir,
             ..Default::default()
         };
-        self.render(env, core::Target::Docx, opts, binary_output)
+        self.render(env, stop, core::Target::Docx, opts, binary_output)
     }
 
     /// An EPUB 3 book.
@@ -551,7 +849,8 @@ impl Document {
         env: &'env Env,
         options: Option<EpubOptions>,
     ) -> Result<PromiseRaw<'env, BinaryOutput>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             equations: o.equations,
             scale: o.scale.map(|scale| scale as f32),
@@ -560,14 +859,21 @@ impl Document {
             modified: o.modified,
             ..Default::default()
         };
-        self.render(env, core::Target::Epub, opts, binary_output)
+        self.render(env, stop, core::Target::Epub, opts, binary_output)
     }
 
     /// A Word document, workbook or EPUB book laid out in pages, as a PDF
     /// (an error for a PDF).
     #[napi(ts_return_type = "Promise<BinaryOutput>")]
-    pub fn to_pdf<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, BinaryOutput>> {
-        self.render(env, core::Target::Pdf, core::RenderOptions::default(), binary_output)
+    pub fn to_pdf<'env>(&self, env: &'env Env, options: Option<StopOptions>) -> Result<PromiseRaw<'env, BinaryOutput>> {
+        let stop = StopOptions::stop(options);
+        self.render(
+            env,
+            stop,
+            core::Target::Pdf,
+            core::RenderOptions::default(),
+            binary_output,
+        )
     }
 
     /// Chunks for retrieval (RAG), cut at sentence ends and headed by their
@@ -578,20 +884,21 @@ impl Document {
         env: &'env Env,
         options: Option<ChunkOptions>,
     ) -> Result<PromiseRaw<'env, Vec<Chunk>>> {
-        let o = options.unwrap_or_default();
+        let mut o = options.unwrap_or_default();
+        let stop = Stop::new(o.signal.take(), o.timeout);
         let opts = core::RenderOptions {
             tokenizer: o.tokenizer,
             ..Default::default()
         };
         let max_tokens = count("maxTokens", o.max_tokens);
         let doc = Arc::clone(&self.doc);
-        spawn(env, move || {
+        spawn(env, stop, move |token| {
             let opts = core::RenderOptions {
                 max_tokens: max_tokens?,
                 ..opts
             };
             Ok(doc
-                .chunks(&opts)?
+                .chunks_with(&opts, token)?
                 .into_iter()
                 .map(|chunk| Chunk {
                     id: small(chunk.id),
@@ -609,11 +916,15 @@ impl Document {
     /// The structure of the document (its blocks in reading order), as the
     /// command line's `--json` writes it.
     #[napi(ts_return_type = "Promise<any>")]
-    pub fn analyze<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, serde_json::Value>> {
+    pub fn analyze<'env>(
+        &self,
+        env: &'env Env,
+        options: Option<StopOptions>,
+    ) -> Result<PromiseRaw<'env, serde_json::Value>> {
         let doc = Arc::clone(&self.doc);
-        spawn(env, move || {
+        spawn(env, StopOptions::stop(options), move |token| {
             let text = doc
-                .render(core::Target::Structure, &core::RenderOptions::default())?
+                .render_with(core::Target::Structure, &core::RenderOptions::default(), token)?
                 .text
                 .unwrap_or_default();
             serde_json::from_str(&text).map_err(|err| core::Error::new(core::ErrorKind::Internal, err.to_string()))

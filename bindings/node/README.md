@@ -26,6 +26,15 @@ document again with `{ content }`: every output then shows the edited text.
 Options are typed (see `index.d.ts`); a wrong one rejects with an error whose `code` is
 `InvalidArg` (`GenericFailure`: a document that cannot be read or written; `Unknown`: a bug).
 
+Every call can be stopped: give it `{ signal }` (an `AbortSignal`) or `{ timeout }` (milliseconds),
+in its options (`toPdf({ signal })` and `analyze({ signal })` too). It then rejects soon after,
+normally within a page, with an `AbortError` (`code` `'ABORT_ERR'`, `cause` the signal's reason) or a
+`TimeoutError` (`code` `'ETIMEDOUT'`), also while it waits for its turn; the document stays usable:
+
+```js
+const md = await doc.toMarkdown({ signal: AbortSignal.timeout(30_000) })   // or request.signal
+```
+
 At most one conversion per core runs at once (`KAKEMONO_MAX_CONCURRENCY` to change it); the others
 wait for their turn, so a burst of requests holds only that many documents in memory. `jobs`
 (default: one thread per core) is per document: on a server converting several documents at

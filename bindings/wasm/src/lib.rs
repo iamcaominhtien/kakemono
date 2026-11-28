@@ -104,6 +104,9 @@ fn js_error(err: &core::Error) -> JsValue {
         core::ErrorKind::InvalidArgument => "InvalidArgument",
         core::ErrorKind::Document => "DocumentError",
         core::ErrorKind::Internal => "InternalError",
+        // No call is given a token here (stopping would abort the module).
+        core::ErrorKind::Cancelled => "AbortError",
+        core::ErrorKind::TimedOut => "TimeoutError",
     });
     error.into()
 }

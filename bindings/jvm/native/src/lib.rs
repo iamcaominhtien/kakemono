@@ -10,8 +10,8 @@
 
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue};
-use jni::sys::{jint, jlong, jobject, jobjectArray, jstring};
-use kakemono_bindings::{Document, Error, ErrorKind, OpenOptions, RenderOptions, Source};
+use jni::sys::{jdouble, jint, jlong, jobject, jobjectArray, jstring};
+use kakemono_bindings::{CancelToken, Cancelled, Document, Error, ErrorKind, OpenOptions, RenderOptions, Source};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// The exception the Java side throws.
@@ -23,6 +23,8 @@ fn kind_code(kind: ErrorKind) -> jint {
         ErrorKind::InvalidArgument => 1,
         ErrorKind::Document => 2,
         ErrorKind::Internal => 3,
+        ErrorKind::Cancelled => 4,
+        ErrorKind::TimedOut => 5,
     }
 }
 
@@ -92,10 +94,39 @@ fn document<'a>(handle: jlong) -> Result<&'a Document, Error> {
     Ok(unsafe { &*(handle as *const Document) })
 }
 
+/// The token a call runs with: that of the handle `cancel` (0 for none),
+/// with the time limit `timeout_ms` (0 for none).
+fn stop(cancel: jlong, timeout_ms: jdouble) -> Result<Option<CancelToken>, Error> {
+    // SAFETY: the Java side gives a handle of `cancelNew` not yet freed, and
+    // keeps its `CancelToken` reachable while this call runs.
+    let parent = (cancel != 0).then(|| unsafe { &*(cancel as *const CancelToken) });
+    let limit = if timeout_ms == 0.0 {
+        None
+    } else {
+        kakemono_bindings::timeout_millis(Some(timeout_ms))?
+    };
+    Ok(kakemono_bindings::stop_token(parent, limit))
+}
+
+/// A time limit in milliseconds for a new token: 0 for none.
+fn limit(timeout_ms: jdouble) -> Result<Option<std::time::Duration>, Error> {
+    if timeout_ms == 0.0 {
+        Ok(None)
+    } else {
+        kakemono_bindings::timeout_millis(Some(timeout_ms))
+    }
+}
+
 /// Opens `source` with the JSON options `options`, as a handle.
-fn open(env: &mut JNIEnv<'_>, source: Source, options: &JString<'_>) -> Result<jlong, Error> {
+fn open(
+    env: &mut JNIEnv<'_>,
+    source: Source,
+    options: &JString<'_>,
+    cancel: jlong,
+    timeout_ms: jdouble,
+) -> Result<jlong, Error> {
     let opts = OpenOptions::from_json(read_string(env, options)?.as_deref())?;
-    let doc = Document::open(source, &opts)?;
+    let doc = Document::open_with(source, &opts, stop(cancel, timeout_ms)?.as_ref())?;
     Ok(Box::into_raw(Box::new(doc)) as jlong)
 }
 
@@ -151,7 +182,7 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_abiVersion(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jint {
-    1
+    2
 }
 
 /// `String version()`.
@@ -181,35 +212,40 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_addFont<'lo
     })
 }
 
-/// `long openData(byte[] data, String options)`.
+/// `long openData(byte[] data, String options, long cancel, double timeoutMs)`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_openData<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     data: JByteArray<'local>,
     options: JString<'local>,
+    cancel: jlong,
+    timeout_ms: jdouble,
 ) -> jlong {
     run(&mut env, 0, |env| {
         let data = env.convert_byte_array(&data).map_err(jni_error)?;
-        open(env, Source::Data(data), &options)
+        open(env, Source::Data(data), &options, cancel, timeout_ms)
     })
 }
 
-/// Defines `long <name>(String text, String options)`, opening the source
+/// Defines `long <name>(String text, String options, long cancel, double
+/// timeoutMs)`, opening the source
 /// `variant` of the text.
 macro_rules! open_from_text {
     ($name:ident, $variant:ident, $what:literal) => {
-        #[doc = concat!("`long ", $what, "(String, String options)`.")]
+        #[doc = concat!("`long ", $what, "(String, String options, long cancel, double timeoutMs)`.")]
         #[unsafe(no_mangle)]
         pub extern "system" fn $name<'local>(
             mut env: JNIEnv<'local>,
             _class: JClass<'local>,
             text: JString<'local>,
             options: JString<'local>,
+            cancel: jlong,
+            timeout_ms: jdouble,
         ) -> jlong {
             run(&mut env, 0, |env| {
                 let text = read_string(env, &text)?.ok_or_else(|| Error::invalid(concat!($what, ": null")))?;
-                open(env, Source::$variant(text), &options)
+                open(env, Source::$variant(text), &options, cancel, timeout_ms)
             })
         }
     };
@@ -296,12 +332,18 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_render<'loc
     handle: jlong,
     target: JString<'local>,
     options: JString<'local>,
+    cancel: jlong,
+    timeout_ms: jdouble,
 ) -> jobjectArray {
     run(&mut env, std::ptr::null_mut(), |env| {
         let doc = document(handle)?;
         let target = read_string(env, &target)?.ok_or_else(|| Error::invalid("target: null"))?;
         let opts = read_string(env, &options)?;
-        let out = doc.render(target.parse()?, &RenderOptions::from_json(opts.as_deref())?)?;
+        let out = doc.render_with(
+            target.parse()?,
+            &RenderOptions::from_json(opts.as_deref())?,
+            stop(cancel, timeout_ms)?.as_ref(),
+        )?;
         let result = env
             .new_object_array(4, "java/lang/Object", JObject::null())
             .map_err(jni_error)?;
@@ -339,11 +381,16 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_chunks<'loc
     _class: JClass<'local>,
     handle: jlong,
     options: JString<'local>,
+    cancel: jlong,
+    timeout_ms: jdouble,
 ) -> jobjectArray {
     run(&mut env, std::ptr::null_mut(), |env| {
         let doc = document(handle)?;
         let opts = read_string(env, &options)?;
-        let chunks = doc.chunks(&RenderOptions::from_json(opts.as_deref())?)?;
+        let chunks = doc.chunks_with(
+            &RenderOptions::from_json(opts.as_deref())?,
+            stop(cancel, timeout_ms)?.as_ref(),
+        )?;
         let result = env
             .new_object_array(len(chunks.len())?, "java/lang/Object", JObject::null())
             .map_err(jni_error)?;
@@ -376,4 +423,72 @@ pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_chunks<'loc
         }
         Ok(result.into_raw())
     })
+}
+
+/// `long cancelNew(long parent, double timeoutMs)`: a new token (a child of
+/// the token `parent` when it is not 0), with the time limit `timeoutMs`
+/// (0 for none).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_cancelNew<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    parent: jlong,
+    timeout_ms: jdouble,
+) -> jlong {
+    run(&mut env, 0, |_| {
+        let limit = limit(timeout_ms)?;
+        let token = if parent == 0 {
+            limit.map_or_else(CancelToken::new, CancelToken::with_timeout)
+        } else {
+            // SAFETY: the Java side gives a live token handle.
+            unsafe { &*(parent as *const CancelToken) }.child(limit)
+        };
+        Ok(Box::into_raw(Box::new(token)) as jlong)
+    })
+}
+
+/// `void cancelCancel(long token)`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_cancelCancel(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    token: jlong,
+) {
+    if token != 0 {
+        // SAFETY: the Java side gives a live token handle.
+        let _ = catch_unwind(|| unsafe { &*(token as *const CancelToken) }.cancel());
+    }
+}
+
+/// `int cancelState(long token)`: 0 while the work may go on, 4 once it is
+/// cancelled, 5 once it is past its time limit (the kinds of
+/// `KakemonoException`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_cancelState(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    token: jlong,
+) -> jint {
+    if token == 0 {
+        return 0;
+    }
+    // SAFETY: the Java side gives a live token handle.
+    match catch_unwind(|| unsafe { &*(token as *const CancelToken) }.state()) {
+        Ok(Some(Cancelled::TimedOut)) => 5,
+        Ok(Some(_)) => 4,
+        _ => 0,
+    }
+}
+
+/// `void cancelFree(long token)`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_iamcaominhtien_kakemono_Native_cancelFree(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    token: jlong,
+) {
+    if token != 0 {
+        // SAFETY: the Java side frees a token handle once, when no call holds it.
+        let _ = catch_unwind(|| drop(unsafe { Box::from_raw(token as *mut CancelToken) }));
+    }
 }

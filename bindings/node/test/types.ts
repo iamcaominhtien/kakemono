@@ -10,7 +10,10 @@ async function main(): Promise<void> {
   const html = await doc.toHtml({ mode: 'hard-95', pageImage: 'svg-only' })
   const chunks: Chunk[] = await doc.toChunks({ maxTokens: 256, tokenizer: 'cl100k_base' })
   const pages: number[] = chunks[0].pages
-  const pdf: Buffer = (await doc.toPdf()).data
+  const pdf: Buffer = (await doc.toPdf({ signal: AbortSignal.timeout(1000) })).data
+  await doc.toJson({ timeout: 5000, signal: new AbortController().signal })
+  // @ts-expect-error: a signal is an AbortSignal
+  await doc.analyze({ signal: true })
   const format: 'pdf' | 'docx' | 'doc' | 'xlsx' | 'epub' | 'html' = doc.format
   const title: string | null = doc.title
   // @ts-expect-error: not a mode

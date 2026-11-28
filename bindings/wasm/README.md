@@ -15,7 +15,8 @@ const chunks = doc.toChunks({ maxTokens: 512 })
 
 How it differs from `@kakemono/node`:
 
-- Synchronous and single-threaded: run it in a Web Worker to keep a page responsive.
+- Synchronous and single-threaded: run it in a Web Worker to keep a page responsive. A call cannot
+  be stopped once started (no `signal` or `timeout`): to stop one, terminate its Worker.
 - Documents come from bytes only: no files, no network (fetch them yourself).
 - No installed fonts. Laying out a Word document or a workbook as a PDF (`toPdf()`) needs one:
   give it with `addFont(bytes)` first, or `toPdf()` throws a `DocumentError`. Text in SVG pictures

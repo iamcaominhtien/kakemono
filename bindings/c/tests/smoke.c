@@ -11,13 +11,13 @@ int main(int argc, char **argv) {
         return 2;
     }
     KkError *err = NULL;
-    KkDocument *doc = kk_open_path(argv[1], "{\"jobs\":1}", &err);
+    KkDocument *doc = kk_open_path(argv[1], "{\"jobs\":1}", NULL, &err);
     if (!doc) {
         fprintf(stderr, "error %u: %s\n", kk_error_kind(err), kk_error_message(err, NULL));
         kk_error_free(err);
         return 1;
     }
-    KkOutput *out = kk_render(doc, "markdown", "{\"inlineImages\":true}", &err);
+    KkOutput *out = kk_render(doc, "markdown", "{\"inlineImages\":true}", NULL, &err);
     if (!out) {
         fprintf(stderr, "error %u: %s\n", kk_error_kind(err), kk_error_message(err, NULL));
         kk_error_free(err);

@@ -23,9 +23,16 @@
 //!   not be freed while a render runs.
 //! - No panic crosses the ABI: one becomes an error of kind
 //!   [`KK_ERROR_INTERNAL`].
+//! - The functions that convert (`kk_open_*`, `kk_render`) take a
+//!   `const KkCancel *cancel` (`NULL` for none): `kk_cancel_cancel`, from any
+//!   thread, or the token's time limit stops the call soon after (normally
+//!   within a page), with an error of kind [`KK_ERROR_CANCELLED`] or
+//!   [`KK_ERROR_TIMED_OUT`]; the document stays usable.
 #![allow(unsafe_code)]
 
-use kakemono_bindings::{Document, Error, ErrorKind, OpenOptions, Output, RenderOptions, Source};
+use kakemono_bindings::{
+    CancelToken, Cancelled, Document, Error, ErrorKind, OpenOptions, Output, RenderOptions, Source,
+};
 use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
@@ -41,6 +48,10 @@ pub const KK_ERROR_INVALID_ARGUMENT: u32 = 1;
 pub const KK_ERROR_DOCUMENT: u32 = 2;
 /// Error kind: a bug of kakemono.
 pub const KK_ERROR_INTERNAL: u32 = 3;
+/// Error kind: the call was stopped by `kk_cancel_cancel`.
+pub const KK_ERROR_CANCELLED: u32 = 4;
+/// Error kind: the call was stopped by the time limit of its `KkCancel`.
+pub const KK_ERROR_TIMED_OUT: u32 = 5;
 
 /// Text given back: its UTF-8 bytes, then a NUL.
 struct Text(Vec<u8>);
@@ -90,6 +101,28 @@ pub struct KkError {
     message: Text,
 }
 
+/// A request to stop conversions, shared by the calls given it and the
+/// threads that may stop them.
+pub struct KkCancel {
+    /// The token.
+    token: CancelToken,
+}
+
+/// The token of `cancel`, which is `NULL` or a live `KkCancel`.
+fn token<'a>(cancel: *const KkCancel) -> Option<&'a CancelToken> {
+    // SAFETY: `cancel` is NULL or a live `KkCancel` (the contract).
+    unsafe { cancel.as_ref() }.map(|cancel| &cancel.token)
+}
+
+/// A time limit in milliseconds: 0 for none.
+fn limit(timeout_ms: f64) -> Result<Option<std::time::Duration>, Error> {
+    if timeout_ms == 0.0 {
+        Ok(None)
+    } else {
+        kakemono_bindings::timeout_millis(Some(timeout_ms))
+    }
+}
+
 /// A document read and analysed once.
 pub struct KkDocument {
     /// The document.
@@ -132,6 +165,8 @@ fn kind_code(kind: ErrorKind) -> u32 {
         ErrorKind::InvalidArgument => KK_ERROR_INVALID_ARGUMENT,
         ErrorKind::Document => KK_ERROR_DOCUMENT,
         ErrorKind::Internal => KK_ERROR_INTERNAL,
+        ErrorKind::Cancelled => KK_ERROR_CANCELLED,
+        ErrorKind::TimedOut => KK_ERROR_TIMED_OUT,
     }
 }
 
@@ -204,9 +239,9 @@ fn read_opt_str<'a>(text: *const c_char, what: &str) -> Result<Option<&'a str>, 
 }
 
 /// Opens a document from `source` with the JSON options `options`.
-fn open(source: Source, options: *const c_char) -> Result<KkDocument, Error> {
+fn open(source: Source, options: *const c_char, cancel: *const KkCancel) -> Result<KkDocument, Error> {
     let opts = OpenOptions::from_json(read_opt_str(options, "options")?)?;
-    let doc = Document::open(source, &opts)?;
+    let doc = Document::open_with(source, &opts, token(cancel))?;
     Ok(KkDocument {
         format: Text::new(doc.format()),
         title: doc.title().map(Text::new),
@@ -262,13 +297,14 @@ pub unsafe extern "C" fn kk_add_font(data: *const u8, len: usize, err: *mut *mut
 ///
 /// # Safety
 /// `data` points to `len` readable bytes (or `len` is 0); `options` is
-/// `NULL` or a NUL-terminated string; `err` is `NULL` or points to a
-/// `KkError *`.
+/// `NULL` or a NUL-terminated string; `cancel` is `NULL` or a live
+/// `KkCancel`; `err` is `NULL` or points to a `KkError *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kk_open_data(
     data: *const u8,
     len: usize,
     options: *const c_char,
+    cancel: *const KkCancel,
     err: *mut *mut KkError,
 ) -> *mut KkDocument {
     fallible(err, || {
@@ -280,7 +316,7 @@ pub unsafe extern "C" fn kk_open_data(
             // SAFETY: `data` points to `len` readable bytes (the contract).
             unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
         };
-        open(Source::Data(bytes), options)
+        open(Source::Data(bytes), options, cancel)
     })
 }
 
@@ -289,14 +325,18 @@ pub unsafe extern "C" fn kk_open_data(
 ///
 /// # Safety
 /// `path` and `options` are NUL-terminated strings (`options` may be
-/// `NULL`); `err` is `NULL` or points to a `KkError *`.
+/// `NULL`); `cancel` is `NULL` or a live `KkCancel`; `err` is `NULL` or
+/// points to a `KkError *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kk_open_path(
     path: *const c_char,
     options: *const c_char,
+    cancel: *const KkCancel,
     err: *mut *mut KkError,
 ) -> *mut KkDocument {
-    fallible(err, || open(Source::Path(read_str(path, "path")?.to_string()), options))
+    fallible(err, || {
+        open(Source::Path(read_str(path, "path")?.to_string()), options, cancel)
+    })
 }
 
 /// Fetches, reads and analyses the document at the `http(s)` address `url`
@@ -308,9 +348,12 @@ pub unsafe extern "C" fn kk_open_path(
 pub unsafe extern "C" fn kk_open_url(
     url: *const c_char,
     options: *const c_char,
+    cancel: *const KkCancel,
     err: *mut *mut KkError,
 ) -> *mut KkDocument {
-    fallible(err, || open(Source::Url(read_str(url, "url")?.to_string()), options))
+    fallible(err, || {
+        open(Source::Url(read_str(url, "url")?.to_string()), options, cancel)
+    })
 }
 
 /// Fetches (through the on-disk cache), reads and analyses the PDF of the
@@ -322,9 +365,12 @@ pub unsafe extern "C" fn kk_open_url(
 pub unsafe extern "C" fn kk_open_arxiv(
     id: *const c_char,
     options: *const c_char,
+    cancel: *const KkCancel,
     err: *mut *mut KkError,
 ) -> *mut KkDocument {
-    fallible(err, || open(Source::Arxiv(read_str(id, "id")?.to_string()), options))
+    fallible(err, || {
+        open(Source::Arxiv(read_str(id, "id")?.to_string()), options, cancel)
+    })
 }
 
 /// The input format of `doc`: `pdf`, `docx`, `doc`, `xlsx`, `epub` or
@@ -394,13 +440,14 @@ pub unsafe extern "C" fn kk_document_warning(doc: *const KkDocument, index: usiz
 ///
 /// # Safety
 /// `doc` is a live document; `target` and `options` are NUL-terminated
-/// strings (`options` may be `NULL`); `err` is `NULL` or points to a
-/// `KkError *`.
+/// strings (`options` may be `NULL`); `cancel` is `NULL` or a live
+/// `KkCancel`; `err` is `NULL` or points to a `KkError *`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kk_render(
     doc: *const KkDocument,
     target: *const c_char,
     options: *const c_char,
+    cancel: *const KkCancel,
     err: *mut *mut KkError,
 ) -> *mut KkOutput {
     fallible(err, || {
@@ -408,7 +455,7 @@ pub unsafe extern "C" fn kk_render(
         let doc = unsafe { doc.as_ref() }.ok_or_else(|| Error::invalid("doc is NULL"))?;
         let target = read_str(target, "target")?.parse()?;
         let opts = RenderOptions::from_json(read_opt_str(options, "options")?)?;
-        Ok(KkOutput::from(doc.doc.render(target, &opts)?))
+        Ok(KkOutput::from(doc.doc.render_with(target, &opts, token(cancel))?))
     })
 }
 
@@ -497,6 +544,85 @@ pub unsafe extern "C" fn kk_error_message(err: *const KkError, len: *mut usize) 
     match unsafe { err.as_ref() } {
         Some(err) => err.message.give(len),
         None => ptr::null(),
+    }
+}
+
+/// A new request to stop conversions, with a time limit of `timeout_ms`
+/// milliseconds from now (0 for none); `NULL` on error (a negative or
+/// infinite limit). Free it with `kk_cancel_free`.
+///
+/// # Safety
+/// `err` is `NULL` or points to a `KkError *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_cancel_new(timeout_ms: f64, err: *mut *mut KkError) -> *mut KkCancel {
+    fallible(err, || {
+        let token = match limit(timeout_ms)? {
+            Some(limit) => CancelToken::with_timeout(limit),
+            None => CancelToken::new(),
+        };
+        Ok(KkCancel { token })
+    })
+}
+
+/// A request stopped by `parent` (by its cancellation or its time limit)
+/// and by its own, with a time limit of `timeout_ms` milliseconds from now
+/// (0 for none): cancelling it does not stop `parent`. `NULL` on error.
+///
+/// # Safety
+/// `parent` is a live `KkCancel`; `err` is `NULL` or points to a
+/// `KkError *`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_cancel_child(
+    parent: *const KkCancel,
+    timeout_ms: f64,
+    err: *mut *mut KkError,
+) -> *mut KkCancel {
+    fallible(err, || {
+        let parent = token(parent).ok_or_else(|| Error::invalid("parent is NULL"))?;
+        Ok(KkCancel {
+            token: parent.child(limit(timeout_ms)?),
+        })
+    })
+}
+
+/// Asks the calls given `cancel` (and its children) to stop; from any
+/// thread, any number of times. `NULL` does nothing.
+///
+/// # Safety
+/// `cancel` is `NULL` or a live `KkCancel`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_cancel_cancel(cancel: *const KkCancel) {
+    if let Some(token) = token(cancel) {
+        infallible((), || token.cancel());
+    }
+}
+
+/// Whether the calls given `cancel` must stop: 0 while they may go on,
+/// [`KK_ERROR_CANCELLED`] or [`KK_ERROR_TIMED_OUT`] once they must (0 for
+/// `NULL`).
+///
+/// # Safety
+/// `cancel` is `NULL` or a live `KkCancel`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_cancel_state(cancel: *const KkCancel) -> u32 {
+    infallible(0, || match token(cancel).and_then(CancelToken::state) {
+        None => 0,
+        Some(Cancelled::TimedOut) => KK_ERROR_TIMED_OUT,
+        Some(_) => KK_ERROR_CANCELLED,
+    })
+}
+
+/// Frees a request to stop (`NULL` does nothing). No call given it may be
+/// running.
+///
+/// # Safety
+/// `cancel` is `NULL` or a `KkCancel` of `kk_cancel_new` or
+/// `kk_cancel_child`, not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kk_cancel_free(cancel: *mut KkCancel) {
+    if !cancel.is_null() {
+        // SAFETY: `cancel` came from `Box::into_raw` and is freed once (the contract).
+        infallible((), || drop(unsafe { Box::from_raw(cancel) }));
     }
 }
 

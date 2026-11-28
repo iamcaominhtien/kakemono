@@ -30,9 +30,13 @@ import java.util.function.LongFunction;
  * platform threads (a bounded pool) when there are many at once. Close it to free its memory at
  * once (a document left open is freed once it is unreachable). Methods throw {@link
  * KakemonoException} on error, and {@link IllegalStateException} once the document is closed.
+ *
+ * <p>Every call that reads or writes a document can be stopped from another thread, or after a
+ * time limit: see {@link Options#cancel} and {@link Options#timeout}.
  */
 public final class Document implements AutoCloseable {
-    private static final Cleaner CLEANER = Cleaner.create();
+    /** Frees documents and tokens once they are unreachable. */
+    static final Cleaner CLEANER = Cleaner.create();
 
     /**
      * The native handle and its lock: what the cleaner frees. It holds no reference to the
@@ -107,9 +111,25 @@ public final class Document implements AutoCloseable {
         return open(data, null);
     }
 
+    /** Runs an open {@code call} with the token and time limit of {@code options}. */
+    private static Document opened(OpenOptions options, Opener call) {
+        String json = json(options);
+        try {
+            return new Document(call.open(json, Options.cancelHandle(options), Options.timeoutMillis(options)));
+        } finally {
+            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+        }
+    }
+
+    /** A native open call. */
+    @FunctionalInterface
+    private interface Opener {
+        long open(String json, long cancel, double timeoutMs);
+    }
+
     /** Reads and analyses the bytes of a document with {@code options}. */
     public static Document open(byte[] data, OpenOptions options) {
-        return new Document(Native.openData(data, json(options)));
+        return opened(options, (json, cancel, timeout) -> Native.openData(data, json, cancel, timeout));
     }
 
     /** Reads and analyses the file at {@code path} (a web page with its pictures next to it). */
@@ -119,12 +139,13 @@ public final class Document implements AutoCloseable {
 
     /** Reads and analyses the file at {@code path} with {@code options}. */
     public static Document open(Path path, OpenOptions options) {
-        return new Document(Native.openPath(path.toString(), json(options)));
+        String file = path.toString();
+        return opened(options, (json, cancel, timeout) -> Native.openPath(file, json, cancel, timeout));
     }
 
     /** Fetches, reads and analyses the document at the {@code http(s)} address {@code url}. */
     public static Document openUrl(String url, OpenOptions options) {
-        return new Document(Native.openUrl(url, json(options)));
+        return opened(options, (json, cancel, timeout) -> Native.openUrl(url, json, cancel, timeout));
     }
 
     /**
@@ -132,7 +153,7 @@ public final class Document implements AutoCloseable {
      * such as {@code 1706.03762}, or an arXiv URL.
      */
     public static Document openArxiv(String id, OpenOptions options) {
-        return new Document(Native.openArxiv(id, json(options)));
+        return opened(options, (json, cancel, timeout) -> Native.openArxiv(id, json, cancel, timeout));
     }
 
     /** The input format: {@code pdf}, {@code docx}, {@code doc}, {@code xlsx}, {@code epub} or {@code html}. */
@@ -163,7 +184,13 @@ public final class Document implements AutoCloseable {
     /** Renders the document as {@code target}: {@code { text, data, paths, files }}. */
     private Object[] render(String target, Options<?> options) {
         String json = json(options);
-        return call(handle -> Native.render(handle, target, json));
+        long cancel = Options.cancelHandle(options);
+        double timeout = Options.timeoutMillis(options);
+        try {
+            return call(handle -> Native.render(handle, target, json, cancel, timeout));
+        } finally {
+            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+        }
     }
 
     /** The picture files of a rendered output. */
@@ -261,7 +288,12 @@ public final class Document implements AutoCloseable {
 
     /** A Word document, workbook or EPUB book laid out in pages, as a PDF (an error for a PDF). */
     public BinaryOutput toPdf() {
-        return binary("pdf", null);
+        return toPdf(null);
+    }
+
+    /** {@link #toPdf()}, stopped by the token or the time limit of {@code options}. */
+    public BinaryOutput toPdf(StopOptions options) {
+        return binary("pdf", options);
     }
 
     /** Chunks for retrieval (RAG) of at most 512 tokens. */
@@ -272,7 +304,14 @@ public final class Document implements AutoCloseable {
     /** Chunks for retrieval (RAG), cut at sentence ends and headed by their section. */
     public List<Chunk> toChunks(ChunkOptions options) {
         String json = json(options);
-        Object[] items = call(handle -> Native.chunks(handle, json));
+        long cancel = Options.cancelHandle(options);
+        double timeout = Options.timeoutMillis(options);
+        Object[] items;
+        try {
+            items = call(handle -> Native.chunks(handle, json, cancel, timeout));
+        } finally {
+            Reference.reachabilityFence(options == null ? null : options.cancelToken());
+        }
         List<Chunk> chunks = new ArrayList<>(items.length);
         for (Object item : items) {
             Object[] fields = (Object[]) item;
@@ -295,7 +334,12 @@ public final class Document implements AutoCloseable {
 
     /** The structure of the document (its blocks in reading order) as JSON text. */
     public String analyze() {
-        return utf8((byte[]) render("structure", null)[0]);
+        return analyze(null);
+    }
+
+    /** {@link #analyze()}, stopped by the token or the time limit of {@code options}. */
+    public String analyze(StopOptions options) {
+        return utf8((byte[]) render("structure", options)[0]);
     }
 
     /** Frees the document's memory. Waits for the calls running on it; closing twice does nothing. */

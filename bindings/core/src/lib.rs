@@ -13,19 +13,26 @@
 //! that no binding unwinds into its host; on WebAssembly, which has neither
 //! threads nor unwinding, the work runs on the caller's stack and a panic
 //! aborts the module.
+//!
+//! Every conversion can be stopped from another thread, or after a time
+//! limit, by a [`CancelToken`] (the `_with` methods): it then ends with an
+//! error of kind [`ErrorKind::Cancelled`] or [`ErrorKind::TimedOut`], soon
+//! after the request (normally within a page), and the [`Document`] stays
+//! usable. Not on WebAssembly, where stopping would abort the module.
 
-pub use kakemono::Chunk;
 use kakemono::config::ExcelConfig;
 use kakemono::{
     AnalyzeOptions, ChunkOptions, DocxOptions, EpubOptions, Equations, HtmlOptions, JsonOptions, LatexOptions,
     MarkdownOptions, Mode, PageImage, Paper, PngCompression, TokenCounter, TypstLayout, TypstOptions,
 };
+pub use kakemono::{CancelToken, Cancelled, Chunk};
 use serde::Deserialize;
 use std::fmt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 /// Smallest accepted `scale` (pixels per PDF point), exclusive: smaller
 /// pictures are unreadable. The command line has the same limits.
@@ -51,6 +58,10 @@ pub enum ErrorKind {
     Document = 2,
     /// A bug of kakemono (a panic), or a thread that could not start.
     Internal = 3,
+    /// The conversion was stopped by [`CancelToken::cancel`].
+    Cancelled = 4,
+    /// The conversion was stopped by the time limit of its [`CancelToken`].
+    TimedOut = 5,
 }
 
 /// What went wrong: its kind, and a message for people with its causes.
@@ -101,6 +112,16 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+impl From<Cancelled> for Error {
+    fn from(stopped: Cancelled) -> Self {
+        let kind = match stopped {
+            Cancelled::TimedOut => ErrorKind::TimedOut,
+            _ => ErrorKind::Cancelled,
+        };
+        Self::new(kind, stopped.to_string())
+    }
+}
+
 /// A result of this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -146,6 +167,48 @@ pub fn guarded<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
 #[cfg(target_arch = "wasm32")]
 pub fn guarded<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
     work()
+}
+
+/// [`guarded`], stopped by `stop` when it is given: a conversion stopped
+/// so returns an error of kind [`ErrorKind::Cancelled`] or
+/// [`ErrorKind::TimedOut`].
+///
+/// # Errors
+/// As [`guarded`], and when `stop` stops the work before its end (or is
+/// already stopped).
+pub fn guarded_with<T: Send>(stop: Option<&CancelToken>, work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    guarded(|| match stop {
+        Some(token) => token.run(work)?,
+        None => work(),
+    })
+}
+
+/// The token a call runs with, from a binding's two ways of stopping it:
+/// `cancel`, a token of the caller's, and `timeout`, a time limit of this
+/// call (a child of `cancel` when both are given, so that cancelling it
+/// still stops the call). `None` when neither is given.
+pub fn stop_token(cancel: Option<&CancelToken>, timeout: Option<Duration>) -> Option<CancelToken> {
+    match (cancel, timeout) {
+        (Some(token), Some(limit)) => Some(token.child(Some(limit))),
+        (Some(token), None) => Some(token.clone()),
+        (None, Some(limit)) => Some(CancelToken::with_timeout(limit)),
+        (None, None) => None,
+    }
+}
+
+/// A time limit given in milliseconds by a binding: `None` for none.
+///
+/// # Errors
+/// When `millis` is not a positive, finite number.
+pub fn timeout_millis(millis: Option<f64>) -> Result<Option<Duration>> {
+    millis
+        .map(|ms| {
+            Duration::try_from_secs_f64(ms / 1000.0)
+                .ok()
+                .filter(|limit| !limit.is_zero())
+                .ok_or_else(|| Error::invalid("timeout must be a positive number of milliseconds"))
+        })
+        .transpose()
 }
 
 /// The version of the kakemono library.
@@ -624,7 +687,15 @@ impl Document {
     /// When the document cannot be read, fetched or analysed, an option is
     /// wrong, or the content does not fit the document.
     pub fn open(source: Source, opts: &OpenOptions) -> Result<Self> {
-        guarded(|| Self::open_unguarded(source, opts))
+        Self::open_with(source, opts, None)
+    }
+
+    /// [`Document::open`], stopped by `stop` (see the crate's comment).
+    ///
+    /// # Errors
+    /// As [`Document::open`], and when `stop` stops it.
+    pub fn open_with(source: Source, opts: &OpenOptions, stop: Option<&CancelToken>) -> Result<Self> {
+        guarded_with(stop, || Self::open_unguarded(source, opts))
     }
 
     /// [`Document::open`], without catching panics.
@@ -715,7 +786,15 @@ impl Document {
     /// document cannot be written so (the hard mode of a Word document, a
     /// PDF of a PDF, an unknown tokenizer).
     pub fn render(&self, target: Target, opts: &RenderOptions) -> Result<Output> {
-        guarded(|| self.render_unguarded(target, opts))
+        self.render_with(target, opts, None)
+    }
+
+    /// [`Document::render`], stopped by `stop` (see the crate's comment).
+    ///
+    /// # Errors
+    /// As [`Document::render`], and when `stop` stops it.
+    pub fn render_with(&self, target: Target, opts: &RenderOptions, stop: Option<&CancelToken>) -> Result<Output> {
+        guarded_with(stop, || self.render_unguarded(target, opts))
     }
 
     /// [`Document::render`] with the options as JSON text.
@@ -723,7 +802,15 @@ impl Document {
     /// # Errors
     /// As [`Document::render`], and when the target or the JSON is invalid.
     pub fn render_json(&self, target: &str, opts: Option<&str>) -> Result<Output> {
-        self.render(target.parse()?, &RenderOptions::from_json(opts)?)
+        self.render_json_with(target, opts, None)
+    }
+
+    /// [`Document::render_json`], stopped by `stop`.
+    ///
+    /// # Errors
+    /// As [`Document::render_json`], and when `stop` stops it.
+    pub fn render_json_with(&self, target: &str, opts: Option<&str>, stop: Option<&CancelToken>) -> Result<Output> {
+        self.render_with(target.parse()?, &RenderOptions::from_json(opts)?, stop)
     }
 
     /// [`Document::render`], without catching panics.
@@ -881,7 +968,15 @@ impl Document {
     /// When another option is given, `maxTokens` is 0 or the tokenizer
     /// cannot be loaded.
     pub fn chunks(&self, opts: &RenderOptions) -> Result<Vec<Chunk>> {
-        guarded(|| {
+        self.chunks_with(opts, None)
+    }
+
+    /// [`Document::chunks`], stopped by `stop`.
+    ///
+    /// # Errors
+    /// As [`Document::chunks`], and when `stop` stops it.
+    pub fn chunks_with(&self, opts: &RenderOptions, stop: Option<&CancelToken>) -> Result<Vec<Chunk>> {
+        guarded_with(stop, || {
             let allowed = Target::Chunks.options();
             if let Some(name) = opts.given().into_iter().find(|name| !allowed.contains(name)) {
                 return Err(Error::invalid(format!("{name} does not apply to chunks")));

@@ -19,7 +19,10 @@ namespace Kakemono
     /// <remarks>
     /// A document can be written from several threads at once. The work runs on a thread of
     /// kakemono's own with a large stack, so any thread may call it; the <c>Async</c> methods run
-    /// it on a thread of their own (it cannot be cancelled once started). Dispose it to free its memory
+    /// it on a thread of their own. Every call takes a <see cref="CancellationToken"/>: once it is
+    /// cancelled, the call stops soon after (normally within a page) with an
+    /// <see cref="OperationCanceledException"/>, and the document stays usable (for a time limit,
+    /// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>). Dispose it to free its memory
     /// at once: calls running then finish first. Methods throw <see cref="KakemonoException"/> on
     /// error, and <see cref="ObjectDisposedException"/> once the document is disposed.
     /// </remarks>
@@ -60,44 +63,86 @@ namespace Kakemono
         /// <summary>Checks the native library once, before the first call.</summary>
         private static void EnsureLoaded() => _ = Loaded.Value;
 
+        /// <summary>
+        /// Runs <paramref name="call"/> with a native request to stop that
+        /// <paramref name="cancellationToken"/> cancels (none when it cannot be cancelled); a call
+        /// stopped so throws an <see cref="OperationCanceledException"/>.
+        /// </summary>
+        private static T Stoppable<T>(CancellationToken cancellationToken, Func<IntPtr, T> call)
+        {
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return call(IntPtr.Zero);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            using CancelHandle cancel = Native.kk_cancel_new(0, out IntPtr err);
+            Native.Check(err);
+            IntPtr native = cancel.DangerousGetHandle();
+            try
+            {
+                // Disposed before the handle (it waits for a callback running), so the callback
+                // never sees it freed.
+                using (cancellationToken.Register(() => Native.kk_cancel_cancel(native)))
+                {
+                    return call(native);
+                }
+            }
+            catch (KakemonoException error) when (error.Kind == KakemonoErrorKind.Cancelled)
+            {
+                throw new OperationCanceledException(error.Message, error, cancellationToken);
+            }
+        }
+
         /// <summary>Reads and analyses the bytes of a document.</summary>
-        public static Document Open(byte[] data, OpenOptions? options = null)
+        public static Document Open(byte[] data, OpenOptions? options = null, CancellationToken cancellationToken = default)
         {
             EnsureLoaded();
-            DocumentHandle doc = Native.kk_open_data(data, (UIntPtr)data.Length, Options.ToJson(options), out IntPtr err);
-            return new Document(doc, err);
+            return Stoppable(cancellationToken, cancel =>
+            {
+                DocumentHandle doc = Native.kk_open_data(data, (UIntPtr)data.Length, Options.ToJson(options), cancel, out IntPtr err);
+                return new Document(doc, err);
+            });
         }
 
         /// <summary>Reads and analyses the file at <paramref name="path"/> (a web page with its pictures next to it).</summary>
-        public static Document Open(string path, OpenOptions? options = null)
+        public static Document Open(string path, OpenOptions? options = null, CancellationToken cancellationToken = default)
         {
             EnsureLoaded();
-            DocumentHandle doc = Native.kk_open_path(Native.Utf8(path), Options.ToJson(options), out IntPtr err);
-            return new Document(doc, err);
+            return Stoppable(cancellationToken, cancel =>
+            {
+                DocumentHandle doc = Native.kk_open_path(Native.Utf8(path), Options.ToJson(options), cancel, out IntPtr err);
+                return new Document(doc, err);
+            });
         }
 
         /// <summary>Fetches, reads and analyses the document at the <c>http(s)</c> address <paramref name="url"/>.</summary>
-        public static Document OpenUrl(string url, OpenOptions? options = null)
+        public static Document OpenUrl(string url, OpenOptions? options = null, CancellationToken cancellationToken = default)
         {
             EnsureLoaded();
-            DocumentHandle doc = Native.kk_open_url(Native.Utf8(url), Options.ToJson(options), out IntPtr err);
-            return new Document(doc, err);
+            return Stoppable(cancellationToken, cancel =>
+            {
+                DocumentHandle doc = Native.kk_open_url(Native.Utf8(url), Options.ToJson(options), cancel, out IntPtr err);
+                return new Document(doc, err);
+            });
         }
 
         /// <summary>
         /// Fetches (through the on-disk cache), reads and analyses the PDF of an arXiv paper: an id
         /// such as <c>1706.03762</c>, or an arXiv URL.
         /// </summary>
-        public static Document OpenArxiv(string id, OpenOptions? options = null)
+        public static Document OpenArxiv(string id, OpenOptions? options = null, CancellationToken cancellationToken = default)
         {
             EnsureLoaded();
-            DocumentHandle doc = Native.kk_open_arxiv(Native.Utf8(id), Options.ToJson(options), out IntPtr err);
-            return new Document(doc, err);
+            return Stoppable(cancellationToken, cancel =>
+            {
+                DocumentHandle doc = Native.kk_open_arxiv(Native.Utf8(id), Options.ToJson(options), cancel, out IntPtr err);
+                return new Document(doc, err);
+            });
         }
 
         /// <summary>Reads and analyses the file at <paramref name="path"/> on the thread pool.</summary>
         public static Task<Document> OpenAsync(string path, OpenOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => Open(path, options), cancellationToken);
+            Run(() => Open(path, options, cancellationToken), cancellationToken);
 
         /// <summary>The input format: <c>pdf</c>, <c>docx</c>, <c>doc</c>, <c>xlsx</c>, <c>epub</c> or <c>html</c>.</summary>
         public string Format { get; }
@@ -135,12 +180,16 @@ namespace Kakemono
         }
 
         /// <summary>Renders the document as <paramref name="target"/> and reads the output.</summary>
-        private T Render<T>(string target, Options? options, Func<IntPtr, IReadOnlyList<OutputFile>, T> read)
+        private T Render<T>(string target, Options? options, CancellationToken cancellationToken, Func<IntPtr, IReadOnlyList<OutputFile>, T> read)
         {
             // P/Invoke holds a reference to the SafeHandle during the call: disposing the
             // document meanwhile frees it once the call returns.
-            IntPtr output = Native.kk_render(Live(), Native.Utf8(target), Options.ToJson(options), out IntPtr err);
-            Native.Check(err);
+            IntPtr output = Stoppable(cancellationToken, cancel =>
+            {
+                IntPtr rendered = Native.kk_render(Live(), Native.Utf8(target), Options.ToJson(options), cancel, out IntPtr err);
+                Native.Check(err);
+                return rendered;
+            });
             try
             {
                 ulong count = Native.kk_output_file_count(output).ToUInt64();
@@ -160,43 +209,50 @@ namespace Kakemono
         }
 
         /// <summary>A text output.</summary>
-        private TextOutput Text(string target, Options? options) =>
-            Render(target, options, (output, files) =>
+        private TextOutput Text(string target, Options? options, CancellationToken cancellationToken) =>
+            Render(target, options, cancellationToken, (output, files) =>
                 new TextOutput(Native.Text(Native.kk_output_text(output, out UIntPtr len), len) ?? "", files));
 
         /// <summary>A binary output.</summary>
-        private BinaryOutput Binary(string target, Options? options) =>
-            Render(target, options, (output, files) =>
+        private BinaryOutput Binary(string target, Options? options, CancellationToken cancellationToken) =>
+            Render(target, options, cancellationToken, (output, files) =>
                 new BinaryOutput(Native.Bytes(Native.kk_output_data(output, out UIntPtr len), len), files));
 
         /// <summary>An HTML page (friendly mode, pictures inline by default).</summary>
-        public TextOutput ToHtml(HtmlOptions? options = null) => Text("html", options);
+        public TextOutput ToHtml(HtmlOptions? options = null, CancellationToken cancellationToken = default) =>
+            Text("html", options, cancellationToken);
 
         /// <summary>Markdown and its picture files (in <c>images/</c> by default).</summary>
-        public TextOutput ToMarkdown(MarkdownOptions? options = null) => Text("markdown", options);
+        public TextOutput ToMarkdown(MarkdownOptions? options = null, CancellationToken cancellationToken = default) =>
+            Text("markdown", options, cancellationToken);
 
         /// <summary>The editable JSON and its picture files: edit its text, then open the document again with it as content.</summary>
-        public TextOutput ToJson(JsonOptions? options = null) => Text("json", options);
+        public TextOutput ToJson(JsonOptions? options = null, CancellationToken cancellationToken = default) =>
+            Text("json", options, cancellationToken);
 
         /// <summary>LaTeX source and its picture files.</summary>
-        public TextOutput ToLatex(LatexOptions? options = null) => Text("latex", options);
+        public TextOutput ToLatex(LatexOptions? options = null, CancellationToken cancellationToken = default) =>
+            Text("latex", options, cancellationToken);
 
         /// <summary>Typst source and its picture files.</summary>
-        public TextOutput ToTypst(TypstOptions? options = null) => Text("typst", options);
+        public TextOutput ToTypst(TypstOptions? options = null, CancellationToken cancellationToken = default) =>
+            Text("typst", options, cancellationToken);
 
         /// <summary>A Word document; its pictures are files too when ImageDir is given.</summary>
-        public BinaryOutput ToDocx(DocxOptions? options = null) => Binary("docx", options);
+        public BinaryOutput ToDocx(DocxOptions? options = null, CancellationToken cancellationToken = default) =>
+            Binary("docx", options, cancellationToken);
 
         /// <summary>An EPUB 3 book.</summary>
-        public BinaryOutput ToEpub(EpubOptions? options = null) => Binary("epub", options);
+        public BinaryOutput ToEpub(EpubOptions? options = null, CancellationToken cancellationToken = default) =>
+            Binary("epub", options, cancellationToken);
 
         /// <summary>A Word document, workbook or EPUB book laid out in pages, as a PDF (an error for a PDF).</summary>
-        public BinaryOutput ToPdf() => Binary("pdf", null);
+        public BinaryOutput ToPdf(CancellationToken cancellationToken = default) => Binary("pdf", null, cancellationToken);
 
         /// <summary>Chunks for retrieval (RAG), cut at sentence ends and headed by their section.</summary>
-        public IReadOnlyList<Chunk> ToChunks(ChunkOptions? options = null)
+        public IReadOnlyList<Chunk> ToChunks(ChunkOptions? options = null, CancellationToken cancellationToken = default)
         {
-            string lines = Text("chunks", options).Text;
+            string lines = Text("chunks", options, cancellationToken).Text;
             var chunks = new List<Chunk>();
             foreach (string line in lines.Split('\n'))
             {
@@ -209,51 +265,51 @@ namespace Kakemono
         }
 
         /// <summary>The structure of the document (its blocks in reading order) as JSON text.</summary>
-        public string Analyze() => Text("structure", null).Text;
+        public string Analyze(CancellationToken cancellationToken = default) => Text("structure", null, cancellationToken).Text;
 
         /// <summary>
         /// Runs <paramref name="work"/> on a thread of its own (a conversion takes seconds: it
-        /// would hold a thread of the pool). <paramref name="cancellationToken"/> only cancels it
-        /// before it starts: a conversion cannot be stopped.
+        /// would hold a thread of the pool); <paramref name="work"/> is given
+        /// <paramref name="cancellationToken"/> too, so that it stops once started.
         /// </summary>
         private static Task<T> Run<T>(Func<T> work, CancellationToken cancellationToken) =>
             Task.Factory.StartNew(work, cancellationToken, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
         /// <summary><see cref="ToHtml"/> on a thread of its own.</summary>
         public Task<TextOutput> ToHtmlAsync(HtmlOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToHtml(options), cancellationToken);
+            Run(() => ToHtml(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToMarkdown"/> on a thread of its own.</summary>
         public Task<TextOutput> ToMarkdownAsync(MarkdownOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToMarkdown(options), cancellationToken);
+            Run(() => ToMarkdown(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToJson"/> on a thread of its own.</summary>
         public Task<TextOutput> ToJsonAsync(JsonOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToJson(options), cancellationToken);
+            Run(() => ToJson(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToLatex"/> on a thread of its own.</summary>
         public Task<TextOutput> ToLatexAsync(LatexOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToLatex(options), cancellationToken);
+            Run(() => ToLatex(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToTypst"/> on a thread of its own.</summary>
         public Task<TextOutput> ToTypstAsync(TypstOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToTypst(options), cancellationToken);
+            Run(() => ToTypst(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToDocx"/> on a thread of its own.</summary>
         public Task<BinaryOutput> ToDocxAsync(DocxOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToDocx(options), cancellationToken);
+            Run(() => ToDocx(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToEpub"/> on a thread of its own.</summary>
         public Task<BinaryOutput> ToEpubAsync(EpubOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToEpub(options), cancellationToken);
+            Run(() => ToEpub(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToChunks"/> on a thread of its own.</summary>
         public Task<IReadOnlyList<Chunk>> ToChunksAsync(ChunkOptions? options = null, CancellationToken cancellationToken = default) =>
-            Run(() => ToChunks(options), cancellationToken);
+            Run(() => ToChunks(options, cancellationToken), cancellationToken);
 
         /// <summary><see cref="ToPdf"/> on a thread of its own.</summary>
         public Task<BinaryOutput> ToPdfAsync(CancellationToken cancellationToken = default) =>
-            Run(ToPdf, cancellationToken);
+            Run(() => ToPdf(cancellationToken), cancellationToken);
 
         /// <summary>Frees the document's memory, once the calls running on it have returned.</summary>
         public void Dispose() => handle.Dispose();

@@ -42,8 +42,19 @@ A `Document` is read and analysed once; it can be written from several threads a
 `close()` waits for the calls running on it. A conversion blocks its thread (a native call: a
 virtual thread stays pinned to its carrier), so run many at once on a bounded pool of platform
 threads. Errors are `KakemonoException`s with a `kind()`
-(`INVALID_ARGUMENT`, `DOCUMENT`, `INTERNAL`). `jobs` (default: one thread per core) is per
+(`INVALID_ARGUMENT`, `DOCUMENT`, `INTERNAL`, `CANCELLED`, `TIMED_OUT`). `jobs` (default: one thread per core) is per
 document: a server converting several documents at once should set `new OpenOptions().jobs(1)`.
+
+Every call can be stopped from another thread, or after a time limit: give its options a
+`CancelToken` (`.cancel(token)`) or a `.timeout(Duration)` (`toPdf` and `analyze` take
+`StopOptions`). Once `token.cancel()` is called or the time is up, the call throws soon after
+(normally within a page) a `KakemonoException` of kind `CANCELLED` or `TIMED_OUT`; the document
+stays usable.
+
+```java
+CancelToken token = new CancelToken();          // token.cancel() from any thread
+doc.toMarkdown(new MarkdownOptions().cancel(token).timeout(Duration.ofSeconds(30)));
+```
 
 ## LangChain4j
 

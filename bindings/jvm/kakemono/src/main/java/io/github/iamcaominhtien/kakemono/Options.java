@@ -1,5 +1,6 @@
 package io.github.iamcaominhtien.kakemono;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -11,8 +12,54 @@ import java.util.Map;
  */
 public abstract class Options<S extends Options<S>> {
     private final Map<String, Object> values = new LinkedHashMap<>();
+    private CancelToken cancel;
+    private double timeoutMillis;
 
     Options() {}
+
+    /**
+     * Stops the call when {@code token} is cancelled (or times out): it then throws a {@link
+     * KakemonoException} of kind {@link KakemonoException.Kind#CANCELLED} (or {@link
+     * KakemonoException.Kind#TIMED_OUT}). Null for none.
+     */
+    public final S cancel(CancelToken token) {
+        this.cancel = token;
+        return self();
+    }
+
+    /**
+     * A time limit for the call: past it, the call throws a {@link KakemonoException} of kind
+     * {@link KakemonoException.Kind#TIMED_OUT}. Null for none.
+     *
+     * @throws KakemonoException when {@code limit} is zero or negative
+     */
+    public final S timeout(Duration limit) {
+        this.timeoutMillis = limit == null ? 0 : millis(limit);
+        return self();
+    }
+
+    /** {@code limit} in milliseconds, which must be positive. */
+    static double millis(Duration limit) {
+        if (limit.isNegative() || limit.isZero()) {
+            throw new KakemonoException("timeout must be positive", KakemonoException.Kind.INVALID_ARGUMENT);
+        }
+        return limit.getSeconds() * 1000.0 + limit.getNano() / 1e6;
+    }
+
+    /** The token of the call, or null. */
+    final CancelToken cancelToken() {
+        return cancel;
+    }
+
+    /** The native token of the call, or 0. */
+    static long cancelHandle(Options<?> options) {
+        return options == null || options.cancel == null ? 0 : options.cancel.handle();
+    }
+
+    /** The time limit of the call in milliseconds, or 0. */
+    static double timeoutMillis(Options<?> options) {
+        return options == null ? 0 : options.timeoutMillis;
+    }
 
     /** Sets option {@code name} to {@code value} (a String, Number or Boolean). */
     final S set(String name, Object value) {

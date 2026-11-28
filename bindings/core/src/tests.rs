@@ -1,7 +1,7 @@
 //! Tests of the façade on the committed samples: the LIGO paper (PDF) and
 //! the Word, Excel and web-page samples.
 
-use super::{Document, OpenOptions, RenderOptions, Source, Target};
+use super::{CancelToken, Document, ErrorKind, OpenOptions, RenderOptions, Source, Target, stop_token, timeout_millis};
 
 /// A file of the repository's test data.
 fn data(path: &str) -> Vec<u8> {
@@ -198,4 +198,65 @@ fn a_panic_on_the_worker_thread_is_an_internal_error() {
 fn a_font_that_is_not_one_is_refused() {
     let err = super::add_font(b"not a font".to_vec()).unwrap_err();
     assert_eq!(err.kind(), super::ErrorKind::InvalidArgument);
+}
+
+#[test]
+fn a_cancelled_conversion_stops_and_the_document_stays_usable() {
+    let doc = ligo();
+    let token = CancelToken::new();
+    let stopper = token.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        stopper.cancel();
+    });
+    let started = std::time::Instant::now();
+    let opts = RenderOptions {
+        mode: Some("hard".into()),
+        ..Default::default()
+    };
+    // Each round of the hard mode takes far longer than the cancellation.
+    let err = loop {
+        match doc.render_with(Target::Html, &opts, Some(&token)) {
+            Ok(_) => assert!(started.elapsed().as_secs() < 60, "never cancelled"),
+            Err(err) => break err,
+        }
+    };
+    canceller.join().unwrap();
+    assert_eq!(err.kind(), ErrorKind::Cancelled, "{err}");
+    // A token already cancelled stops the next call before it starts.
+    let err = doc
+        .render_with(Target::Markdown, &RenderOptions::default(), Some(&token))
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Cancelled);
+    // The document is still whole.
+    let md = doc.render(Target::Markdown, &RenderOptions::default()).unwrap();
+    assert!(md.text.unwrap().contains("gravitational"));
+}
+
+#[test]
+fn a_time_limit_stops_opening_and_rendering() {
+    let token = stop_token(None, timeout_millis(Some(1.0)).unwrap()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let err = Document::open_with(
+        Source::Data(data("1602.03837v1.pdf")),
+        &OpenOptions::default(),
+        Some(&token),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TimedOut, "{err}");
+    let doc = ligo();
+    let err = doc.chunks_with(&RenderOptions::default(), Some(&token)).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TimedOut);
+    // A child of a cancelled token stops; cancelling a child does not stop its parent.
+    let parent = CancelToken::new();
+    let child = stop_token(Some(&parent), Some(std::time::Duration::from_secs(60))).unwrap();
+    child.cancel();
+    assert!(parent.state().is_none());
+    assert!(doc.chunks_with(&RenderOptions::default(), Some(&parent)).is_ok());
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            timeout_millis(Some(bad)).unwrap_err().kind(),
+            ErrorKind::InvalidArgument
+        );
+    }
 }

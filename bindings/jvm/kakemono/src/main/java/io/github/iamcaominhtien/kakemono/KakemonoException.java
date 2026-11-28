@@ -1,6 +1,9 @@
 package io.github.iamcaominhtien.kakemono;
 
-/** An error of kakemono: a wrong option, a document it cannot read or write, or a bug. */
+/**
+ * An error of kakemono: a wrong option, a document it cannot read or write, a bug, or a call
+ * stopped by its {@link CancelToken} or its time limit.
+ */
 public class KakemonoException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
@@ -11,7 +14,11 @@ public class KakemonoException extends RuntimeException {
         /** The document cannot be read, fetched or written so. */
         DOCUMENT,
         /** A bug of kakemono. */
-        INTERNAL
+        INTERNAL,
+        /** The call was stopped by {@link CancelToken#cancel()}. */
+        CANCELLED,
+        /** The call was stopped by its time limit (or its token's). */
+        TIMED_OUT
     }
 
     private final Kind kind;
@@ -22,9 +29,9 @@ public class KakemonoException extends RuntimeException {
         this.kind = kind;
     }
 
-    /** Called by the JNI library: {@code code} is 1, 2 or 3, as {@link Kind} orders them. */
+    /** Called by the JNI library: {@code code} is 1 to 5, as {@link Kind} orders them. */
     KakemonoException(String message, int code) {
-        this(message, code == 1 ? Kind.INVALID_ARGUMENT : code == 2 ? Kind.DOCUMENT : Kind.INTERNAL);
+        this(message, code >= 1 && code <= 5 ? Kind.values()[code - 1] : Kind.INTERNAL);
     }
 
     /** The kind of error. */

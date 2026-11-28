@@ -11,6 +11,9 @@ namespace Kakemono
         /// <summary>The version of the C ABI this binding calls.</summary>
         internal const uint AbiVersion = 1;
 
+        /// <summary>Error kind of a call stopped by its <c>KkCancel</c>.</summary>
+        internal const uint ErrorCancelled = 4;
+
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern uint kk_abi_version();
 
@@ -21,16 +24,16 @@ namespace Kakemono
         internal static extern UIntPtr kk_add_font(byte[] data, UIntPtr len, out IntPtr err);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern DocumentHandle kk_open_data(byte[] data, UIntPtr len, byte[]? options, out IntPtr err);
+        internal static extern DocumentHandle kk_open_data(byte[] data, UIntPtr len, byte[]? options, IntPtr cancel, out IntPtr err);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern DocumentHandle kk_open_path(byte[] path, byte[]? options, out IntPtr err);
+        internal static extern DocumentHandle kk_open_path(byte[] path, byte[]? options, IntPtr cancel, out IntPtr err);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern DocumentHandle kk_open_url(byte[] url, byte[]? options, out IntPtr err);
+        internal static extern DocumentHandle kk_open_url(byte[] url, byte[]? options, IntPtr cancel, out IntPtr err);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern DocumentHandle kk_open_arxiv(byte[] id, byte[]? options, out IntPtr err);
+        internal static extern DocumentHandle kk_open_arxiv(byte[] id, byte[]? options, IntPtr cancel, out IntPtr err);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr kk_document_format(DocumentHandle doc, out UIntPtr len);
@@ -48,7 +51,16 @@ namespace Kakemono
         internal static extern IntPtr kk_document_warning(DocumentHandle doc, UIntPtr index, out UIntPtr len);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern IntPtr kk_render(DocumentHandle doc, byte[] target, byte[]? options, out IntPtr err);
+        internal static extern IntPtr kk_render(DocumentHandle doc, byte[] target, byte[]? options, IntPtr cancel, out IntPtr err);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern CancelHandle kk_cancel_new(double timeoutMs, out IntPtr err);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void kk_cancel_cancel(IntPtr cancel);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void kk_cancel_free(IntPtr cancel);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr kk_output_text(IntPtr output, out UIntPtr len);
@@ -118,6 +130,8 @@ namespace Kakemono
                 {
                     1 => KakemonoErrorKind.InvalidArgument,
                     2 => KakemonoErrorKind.Document,
+                    4 => KakemonoErrorKind.Cancelled,
+                    5 => KakemonoErrorKind.TimedOut,
                     _ => KakemonoErrorKind.Internal,
                 };
                 throw new KakemonoException(Text(text, len) ?? "unknown error", kind);
@@ -126,6 +140,23 @@ namespace Kakemono
             {
                 kk_error_free(err);
             }
+        }
+    }
+
+    /// <summary>A request to stop calls of the C ABI (a <c>KkCancel</c>).</summary>
+    internal sealed class CancelHandle : SafeHandle
+    {
+        public CancelHandle()
+            : base(IntPtr.Zero, ownsHandle: true)
+        {
+        }
+
+        public override bool IsInvalid => handle == IntPtr.Zero;
+
+        protected override bool ReleaseHandle()
+        {
+            Native.kk_cancel_free(handle);
+            return true;
         }
     }
 

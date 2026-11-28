@@ -51,7 +51,13 @@ there first (`RenderOptions`, `Target::options`), then into each binding's typed
   document) needs a font: those installed, those embedded in the document, the folders of
   `KAKEMONO_FONT_DIRS`, or one given with `addFont` / `add_font` (WebAssembly has no other).
   Without any, those outputs fail with an error (Word's medium page is then the friendly one).
-- **Cancellation** is not supported: a conversion runs to its end.
+- **Stopping a call.** Every call can be stopped from another thread, or after a time limit
+  (kakemono's `CancelToken`): Node takes `signal` (an `AbortSignal`) and `timeout` in the options of
+  each call, the JVM a `CancelToken` and a `timeout`, .NET a `CancellationToken`, C a `KkCancel`. The
+  call stops soon after (normally within a page; a download within its next chunk) with an error
+  of its own kind (`AbortError`/`TimeoutError`, `CANCELLED`/`TIMED_OUT`,
+  `OperationCanceledException`, `KK_ERROR_CANCELLED`/`KK_ERROR_TIMED_OUT`), and the document stays
+  usable. Not in WebAssembly: its work is synchronous, and stopping would abort the module.
 
 ## Performance
 

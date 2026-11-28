@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -153,5 +154,59 @@ class DocumentTest {
     /** The first {@code count} bytes of {@code data}. */
     private static byte[] head(byte[] data, int count) {
         return java.util.Arrays.copyOf(data, count);
+    }
+
+    @Test
+    void aCancelledCallStopsAndTheDocumentStaysUsable() throws Exception {
+        try (Document doc = Document.open(LIGO, new OpenOptions().jobs(1))) {
+            CancelToken token = new CancelToken();
+            Thread stopper = new Thread(() -> {
+                try {
+                    Thread.sleep(30);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                token.cancel();
+            });
+            long started = System.nanoTime();
+            stopper.start();
+            KakemonoException error = assertThrows(KakemonoException.class, () -> {
+                while (true) {
+                    doc.toHtml(new HtmlOptions().mode(Mode.HARD).cancel(token));
+                }
+            });
+            stopper.join();
+            assertEquals(KakemonoException.Kind.CANCELLED, error.kind(), error.getMessage());
+            assertTrue(System.nanoTime() - started < 30_000_000_000L);
+            assertTrue(token.isCancelled());
+            assertFalse(token.isTimedOut());
+            assertEquals(KakemonoException.Kind.CANCELLED,
+                    assertThrows(KakemonoException.class, () -> doc.toPdf(new StopOptions().cancel(token))).kind());
+            assertTrue(doc.toMarkdown().text().contains("Gravitational"));
+        }
+    }
+
+    @Test
+    void aTimeLimitStopsACall() throws Exception {
+        KakemonoException error = assertThrows(KakemonoException.class,
+                () -> Document.open(LIGO, new OpenOptions().jobs(1).timeout(Duration.ofMillis(1))));
+        assertEquals(KakemonoException.Kind.TIMED_OUT, error.kind(), error.getMessage());
+        CancelToken expired = CancelToken.withTimeout(Duration.ofMillis(1));
+        Thread.sleep(5);
+        assertTrue(expired.isTimedOut());
+        try (Document doc = Document.open(DOCX)) {
+            assertEquals(KakemonoException.Kind.TIMED_OUT, assertThrows(KakemonoException.class,
+                    () -> doc.toChunks(new ChunkOptions().cancel(expired))).kind());
+            // A child stops with its parent; cancelling a child leaves the parent.
+            CancelToken parent = new CancelToken();
+            CancelToken child = parent.child(Duration.ofMinutes(1));
+            child.cancel();
+            assertFalse(parent.isCancelled());
+            assertTrue(doc.analyze(new StopOptions().cancel(parent).timeout(Duration.ofMinutes(1))).startsWith("{"));
+            parent.cancel();
+            assertTrue(parent.child(null).isCancelled());
+            assertEquals(KakemonoException.Kind.INVALID_ARGUMENT, assertThrows(KakemonoException.class,
+                    () -> new JsonOptions().timeout(Duration.ZERO)).kind());
+        }
     }
 }

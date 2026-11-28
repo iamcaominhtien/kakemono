@@ -13,6 +13,15 @@ namespace Kakemono
 
         /// <summary>A bug of kakemono.</summary>
         Internal = 3,
+
+        /// <summary>
+        /// The call was stopped (a <see cref="System.Threading.CancellationToken"/> cancels it
+        /// with an <see cref="OperationCanceledException"/> instead).
+        /// </summary>
+        Cancelled = 4,
+
+        /// <summary>The call was stopped by a time limit.</summary>
+        TimedOut = 5,
     }
 
     /// <summary>An error of kakemono.</summary>

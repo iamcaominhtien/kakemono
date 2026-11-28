@@ -31,7 +31,7 @@ import java.util.Locale;
  */
 final class Native {
     /** The version of the native methods this class declares. */
-    private static final int ABI_VERSION = 1;
+    private static final int ABI_VERSION = 2;
 
     static {
         load();
@@ -215,13 +215,16 @@ final class Native {
 
     static native int addFont(byte[] data);
 
-    static native long openData(byte[] data, String options);
+    // The calls that convert take the native token {@code cancel} (0 for none) and a time limit
+    // {@code timeoutMs} (0 for none).
 
-    static native long openPath(String path, String options);
+    static native long openData(byte[] data, String options, long cancel, double timeoutMs);
 
-    static native long openUrl(String url, String options);
+    static native long openPath(String path, String options, long cancel, double timeoutMs);
 
-    static native long openArxiv(String id, String options);
+    static native long openUrl(String url, String options, long cancel, double timeoutMs);
+
+    static native long openArxiv(String id, String options, long cancel, double timeoutMs);
 
     static native void free(long handle);
 
@@ -234,9 +237,19 @@ final class Native {
     static native String[] warnings(long handle);
 
     /** {@code { byte[] text (UTF-8) or null, byte[] data or null, String[] paths, byte[][] files }}. */
-    static native Object[] render(long handle, String target, String options);
+    static native Object[] render(long handle, String target, String options, long cancel, double timeoutMs);
 
     /** For each chunk: {@code { Integer id, byte[] text, Integer tokens, byte[] title or null,
      * String[] section, int[] blocks, int[] pages }}. */
-    static native Object[] chunks(long handle, String options);
+    static native Object[] chunks(long handle, String options, long cancel, double timeoutMs);
+
+    /** A new native token: a child of {@code parent} unless it is 0, timing out after {@code timeoutMs} unless it is 0. */
+    static native long cancelNew(long parent, double timeoutMs);
+
+    static native void cancelCancel(long token);
+
+    /** 0, 4 (cancelled) or 5 (timed out). */
+    static native int cancelState(long token);
+
+    static native void cancelFree(long token);
 }

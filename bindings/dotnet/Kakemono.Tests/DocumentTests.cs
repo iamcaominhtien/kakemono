@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -126,6 +127,41 @@ namespace Kakemono.Tests
                 // It had not started yet.
             }
             Assert.Equal(4, done);
+        }
+
+        [Fact]
+        public async Task ACancelledCallStopsAndTheDocumentStaysUsable()
+        {
+            using var doc = Document.Open(Ligo, new OpenOptions { Jobs = 1 });
+            using var source = new CancellationTokenSource();
+            var started = DateTime.UtcNow;
+            source.CancelAfter(TimeSpan.FromMilliseconds(30));
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                while (true)
+                {
+                    await doc.ToHtmlAsync(new HtmlOptions { Mode = Mode.Hard }, source.Token);
+                }
+            });
+            Assert.Equal(source.Token, error.CancellationToken);
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(30));
+            // A token already cancelled stops a call before it starts, sync or not.
+            Assert.Throws<OperationCanceledException>(() => doc.ToPdf(source.Token));
+            Assert.Throws<OperationCanceledException>(() => Document.Open(Docx, null, source.Token));
+            Assert.Contains("Gravitational", doc.ToMarkdown(null, new CancellationTokenSource().Token).Text);
+        }
+
+        [Fact]
+        public void OpeningIsStoppedByItsToken()
+        {
+            using var source = new CancellationTokenSource(TimeSpan.FromMilliseconds(5));
+            Assert.ThrowsAny<OperationCanceledException>(() =>
+            {
+                for (int round = 0; round < 1000; round++)
+                {
+                    using var doc = Document.Open(Ligo, new OpenOptions { Jobs = 1 }, source.Token);
+                }
+            });
         }
     }
 }

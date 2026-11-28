@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { getEventListeners } from 'node:events'
 
 const { Document, addFont, version } = createRequire(import.meta.url)('../index.js')
 const data = (path) => new URL(`../../../tests/data/${path}`, import.meta.url).pathname
@@ -91,4 +92,51 @@ test('several outputs run at once without blocking the event loop', async () => 
 test('the version is the library’s; a font that is not one is refused', () => {
   assert.match(version(), /^\d+\.\d+\.\d+/)
   assert.throws(() => addFont(Buffer.from('nothing')), { code: 'InvalidArg' })
+})
+
+test('an AbortSignal stops a call, and the document stays usable', async () => {
+  const doc = await Document.fromFile(data('1602.03837v1.pdf'), { jobs: 1 })
+  const controller = new AbortController()
+  const started = Date.now()
+  const pending = doc.toHtml({ mode: 'hard', signal: controller.signal })
+  setTimeout(() => controller.abort(new Error('closed')), 20)
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.name, 'AbortError')
+    assert.equal(err.code, 'ABORT_ERR')
+    assert.equal(err.cause.message, 'closed')
+    return true
+  })
+  assert.ok(Date.now() - started < 2000, 'stopped soon')
+  // A signal already aborted rejects at once; its listener is gone after each call.
+  await assert.rejects(doc.toMarkdown({ signal: controller.signal }), { name: 'AbortError' })
+  await assert.rejects(doc.toPdf({ signal: AbortSignal.abort() }), { name: 'AbortError' })
+  const md = await doc.toMarkdown({ signal: new AbortController().signal })
+  assert.match(md.text, /Gravitational/)
+})
+
+test('a time limit stops a call with a TimeoutError', async () => {
+  await assert.rejects(
+    Document.fromFile(data('1602.03837v1.pdf'), { jobs: 1, timeout: 1 }),
+    (err) => err.name === 'TimeoutError' && err.code === 'ETIMEDOUT',
+  )
+  const doc = await Document.fromFile(data('word/sample.docx'))
+  await assert.rejects(doc.analyze({ timeout: 0 }), { code: 'InvalidArg' })
+  assert.throws(() => doc.toChunks({ signal: {} }), /AbortSignal/)
+  // AbortSignal.timeout gives an AbortError whose cause is a TimeoutError.
+  await assert.rejects(
+    (await Document.fromFile(data('1602.03837v1.pdf'), { jobs: 1 })).toHtml({ mode: 'hard', signal: AbortSignal.timeout(10) }),
+    (err) => err.name === 'AbortError' && err.cause.name === 'TimeoutError',
+  )
+})
+
+test('many calls with one long-lived signal leave no listeners behind', async () => {
+  const doc = await Document.fromFile(data('word/sample.docx'))
+  const controller = new AbortController()
+  const warnings = []
+  process.on('warning', (warning) => warnings.push(warning))
+  await Promise.all(Array.from({ length: 50 }, () => doc.toJson({ signal: controller.signal })))
+  for (let i = 0; i < 50; i++) await doc.toMarkdown({ signal: controller.signal })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(warnings.filter((w) => /listener/i.test(w.message)), [])
+  assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
 })

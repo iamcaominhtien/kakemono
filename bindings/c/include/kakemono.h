@@ -20,6 +20,16 @@
 // Error kind: a bug of kakemono.
 #define KK_ERROR_INTERNAL 3
 
+// Error kind: the call was stopped by `kk_cancel_cancel`.
+#define KK_ERROR_CANCELLED 4
+
+// Error kind: the call was stopped by the time limit of its `KkCancel`.
+#define KK_ERROR_TIMED_OUT 5
+
+// A request to stop conversions, shared by the calls given it and the
+// threads that may stop them.
+typedef struct KkCancel KkCancel;
+
 // A document read and analysed once.
 typedef struct KkDocument KkDocument;
 
@@ -56,11 +66,12 @@ size_t kk_add_font(const uint8_t *data, size_t len, struct KkError **err);
 //
 // # Safety
 // `data` points to `len` readable bytes (or `len` is 0); `options` is
-// `NULL` or a NUL-terminated string; `err` is `NULL` or points to a
-// `KkError *`.
+// `NULL` or a NUL-terminated string; `cancel` is `NULL` or a live
+// `KkCancel`; `err` is `NULL` or points to a `KkError *`.
 struct KkDocument *kk_open_data(const uint8_t *data,
                                 size_t len,
                                 const char *options,
+                                const struct KkCancel *cancel,
                                 struct KkError **err);
 
 // Reads and analyses the file at `path` (a web page with its pictures next
@@ -68,22 +79,32 @@ struct KkDocument *kk_open_data(const uint8_t *data,
 //
 // # Safety
 // `path` and `options` are NUL-terminated strings (`options` may be
-// `NULL`); `err` is `NULL` or points to a `KkError *`.
-struct KkDocument *kk_open_path(const char *path, const char *options, struct KkError **err);
+// `NULL`); `cancel` is `NULL` or a live `KkCancel`; `err` is `NULL` or
+// points to a `KkError *`.
+struct KkDocument *kk_open_path(const char *path,
+                                const char *options,
+                                const struct KkCancel *cancel,
+                                struct KkError **err);
 
 // Fetches, reads and analyses the document at the `http(s)` address `url`
 // (a web page with its pictures).
 //
 // # Safety
 // As [`kk_open_path`].
-struct KkDocument *kk_open_url(const char *url, const char *options, struct KkError **err);
+struct KkDocument *kk_open_url(const char *url,
+                               const char *options,
+                               const struct KkCancel *cancel,
+                               struct KkError **err);
 
 // Fetches (through the on-disk cache), reads and analyses the PDF of the
 // arXiv paper `id` (an id such as `1706.03762`, or an arXiv URL).
 //
 // # Safety
 // As [`kk_open_path`].
-struct KkDocument *kk_open_arxiv(const char *id, const char *options, struct KkError **err);
+struct KkDocument *kk_open_arxiv(const char *id,
+                                 const char *options,
+                                 const struct KkCancel *cancel,
+                                 struct KkError **err);
 
 // The input format of `doc`: `pdf`, `docx`, `doc`, `xlsx`, `epub` or
 // `html`.
@@ -123,11 +144,12 @@ const char *kk_document_warning(const struct KkDocument *doc, size_t index, size
 //
 // # Safety
 // `doc` is a live document; `target` and `options` are NUL-terminated
-// strings (`options` may be `NULL`); `err` is `NULL` or points to a
-// `KkError *`.
+// strings (`options` may be `NULL`); `cancel` is `NULL` or a live
+// `KkCancel`; `err` is `NULL` or points to a `KkError *`.
 struct KkOutput *kk_render(const struct KkDocument *doc,
                            const char *target,
                            const char *options,
+                           const struct KkCancel *cancel,
                            struct KkError **err);
 
 // The text of a text output, or `NULL` for a binary one.
@@ -174,6 +196,48 @@ uint32_t kk_error_kind(const struct KkError *err);
 // `err` is `NULL` or a live error; `len` is `NULL` or points to a
 // `size_t`.
 const char *kk_error_message(const struct KkError *err, size_t *len);
+
+// A new request to stop conversions, with a time limit of `timeout_ms`
+// milliseconds from now (0 for none); `NULL` on error (a negative or
+// infinite limit). Free it with `kk_cancel_free`.
+//
+// # Safety
+// `err` is `NULL` or points to a `KkError *`.
+struct KkCancel *kk_cancel_new(double timeout_ms, struct KkError **err);
+
+// A request stopped by `parent` (by its cancellation or its time limit)
+// and by its own, with a time limit of `timeout_ms` milliseconds from now
+// (0 for none): cancelling it does not stop `parent`. `NULL` on error.
+//
+// # Safety
+// `parent` is a live `KkCancel`; `err` is `NULL` or points to a
+// `KkError *`.
+struct KkCancel *kk_cancel_child(const struct KkCancel *parent,
+                                 double timeout_ms,
+                                 struct KkError **err);
+
+// Asks the calls given `cancel` (and its children) to stop; from any
+// thread, any number of times. `NULL` does nothing.
+//
+// # Safety
+// `cancel` is `NULL` or a live `KkCancel`.
+void kk_cancel_cancel(const struct KkCancel *cancel);
+
+// Whether the calls given `cancel` must stop: 0 while they may go on,
+// [`KK_ERROR_CANCELLED`] or [`KK_ERROR_TIMED_OUT`] once they must (0 for
+// `NULL`).
+//
+// # Safety
+// `cancel` is `NULL` or a live `KkCancel`.
+uint32_t kk_cancel_state(const struct KkCancel *cancel);
+
+// Frees a request to stop (`NULL` does nothing). No call given it may be
+// running.
+//
+// # Safety
+// `cancel` is `NULL` or a `KkCancel` of `kk_cancel_new` or
+// `kk_cancel_child`, not yet freed.
+void kk_cancel_free(struct KkCancel *cancel);
 
 // Frees a document (`NULL` does nothing). No render of it may be running.
 //

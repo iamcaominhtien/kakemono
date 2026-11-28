@@ -71,7 +71,7 @@ export declare class Document {
    * A Word document, workbook or EPUB book laid out in pages, as a PDF
    * (an error for a PDF).
    */
-  toPdf(): Promise<BinaryOutput>
+  toPdf(options?: StopOptions | undefined | null): Promise<BinaryOutput>
   /**
    * Chunks for retrieval (RAG), cut at sentence ends and headed by their
    * section.
@@ -81,7 +81,7 @@ export declare class Document {
    * The structure of the document (its blocks in reading order), as the
    * command line's `--json` writes it.
    */
-  analyze(): Promise<any>
+  analyze(options?: StopOptions | undefined | null): Promise<any>
 }
 
 /**
@@ -129,6 +129,16 @@ export interface ChunkOptions {
    * `'o200k_base'`; tokens are estimated without it.
    */
   tokenizer?: string
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the Word output. */
@@ -142,6 +152,16 @@ export interface DocxOptions {
    * (they are always inside the document).
    */
   imageDir?: string
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the EPUB output. */
@@ -156,6 +176,16 @@ export interface EpubOptions {
   cover?: boolean
   /** The book's date, `CCYY-MM-DDThh:mm:ssZ` (default: a fixed date). */
   modified?: string
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the HTML output. */
@@ -183,6 +213,16 @@ export interface HtmlOptions {
   inlineImages?: boolean
   /** The folder of the picture files, relative (default `'images'`). */
   imageDir?: string
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the editable JSON output. */
@@ -195,6 +235,16 @@ export interface JsonOptions {
   imageDir?: string
   /** Pictures as data URIs instead of files (default false). */
   inlineImages?: boolean
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the LaTeX output. */
@@ -205,6 +255,16 @@ export interface LatexOptions {
   scale?: number
   /** The folder of the picture files, relative (default `'images'`). */
   imageDir?: string
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** Options of the Markdown output. */
@@ -219,6 +279,16 @@ export interface MarkdownOptions {
   imageDir?: string
   /** Pictures as data URIs instead of files (default false). */
   inlineImages?: boolean
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** The options of reading and analysing a document, kept for every output. */
@@ -250,6 +320,16 @@ export interface OpenOptions {
    * of found.
    */
   headerRows?: number
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** A picture file of an output. */
@@ -258,6 +338,20 @@ export interface OutputFile {
   path: string
   /** Its bytes. */
   data: Buffer
+}
+
+/** The options of a call that has no others: how to stop it. */
+export interface StopOptions {
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** A text output and its picture files. */
@@ -284,6 +378,16 @@ export interface TypstOptions {
    * document (default `'auto'`).
    */
   layout?: 'auto' | 'article' | 'book'
+  /**
+   * Stops the call when it is aborted: the promise is then rejected
+   * with an `AbortError` (its `cause` is the signal's reason).
+   */
+  signal?: AbortSignal
+  /**
+   * A time limit for the call, in milliseconds: past it, the promise is
+   * rejected with a `TimeoutError`.
+   */
+  timeout?: number
 }
 
 /** The version of kakemono. */
