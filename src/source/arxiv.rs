@@ -4,7 +4,6 @@
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 use std::ffi::OsString;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -116,12 +115,15 @@ fn download(id: &str) -> Result<Vec<u8>> {
         .timeout(DOWNLOAD_TIMEOUT)
         .user_agent(concat!("kakemono/", env!("CARGO_PKG_VERSION")))
         .build();
-    let resp = agent.get(&url).call().with_context(|| format!("downloading {url}"))?;
-    let mut data = Vec::new();
-    resp.into_reader()
-        .take(MAX_PDF_BYTES)
-        .read_to_end(&mut data)
-        .with_context(|| format!("reading {url}"))?;
+    // Waiting for arXiv has no stopping point: on a thread of its own when
+    // the work can be cancelled.
+    let data = crate::common::cancel::blocking(move |token| {
+        let resp = agent.get(&url).call().with_context(|| format!("downloading {url}"))?;
+        crate::source::web::read_body(resp.into_reader(), MAX_PDF_BYTES, token.as_ref())
+            .with_context(|| format!("reading {url}"))
+            .map(|data| (url, data))
+    });
+    let (url, data) = data?;
     if !data.starts_with(PDF_MAGIC) {
         return Err(anyhow!(
             "{url} did not return a PDF (arXiv may not have a PDF for this id)"

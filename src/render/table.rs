@@ -47,7 +47,9 @@ pub(crate) fn table_walk(table: &Table, mut emit: impl FnMut(usize, usize, Optio
     let n_rows = table.rows.len();
     // Positions covered by a row-spanning cell from an earlier row.
     let mut covered = vec![vec![false; table.n_cols]; n_rows];
+    let mut pace = crate::common::cancel::Pace::default();
     for (row_idx, row) in table.rows.iter().enumerate() {
+        pace.tick();
         let mut col = 0;
         for cell in row {
             while col < cell.col.min(table.n_cols) {
@@ -93,7 +95,9 @@ pub(crate) fn table_html_numeric(table: &Table, math: bool) -> String {
 fn numeric_columns(table: &Table) -> Vec<bool> {
     let mut numeric = vec![true; table.n_cols];
     let mut seen = vec![false; table.n_cols];
+    let mut pace = crate::common::cancel::Pace::default();
     for row in table.rows.iter().skip(table.header_rows) {
+        pace.tick();
         for cell in row.iter().filter(|cell| cell.colspan == 1 && cell.col < table.n_cols) {
             let text = plain(&cell.spans);
             if text.is_empty() {

@@ -14,7 +14,9 @@
 //! The entry points are [`Paper`] (load, analyse and render step by step,
 //! e.g. to produce several modes from one analysis) and [`convert`] (all in
 //! one call with default options). Analysis thresholds live in
-//! [`LayoutConfig`], reachable through [`AnalyzeOptions`].
+//! [`LayoutConfig`], reachable through [`AnalyzeOptions`]. Any of these can
+//! be stopped from another thread or after a time limit with a
+//! [`CancelToken`].
 #![warn(
     missing_docs,
     clippy::missing_docs_in_private_items,
@@ -58,6 +60,7 @@ pub mod word;
 
 pub use analysis::pipeline::Analysis;
 pub use backend::{PageRenderer, PngCompression};
+pub use common::cancel::{CancelToken, Cancelled};
 pub use config::{AnalyzeOptions, LayoutConfig};
 pub use paper::{InputFormat, Paper, convert};
 pub use render::{

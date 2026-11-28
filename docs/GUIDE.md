@@ -595,6 +595,25 @@ estimate.
 document structure that `--json` writes. The API reference is on [docs.rs](https://docs.rs/kakemono);
 how the pipeline works is described in [ARCHITECTURE.md](../ARCHITECTURE.md).
 
+Any of these calls can be stopped from another thread, or after a time limit, with a
+`CancelToken`: run the work with `token.run(...)`, which returns `Err(Cancelled::Requested)` soon
+after `token.cancel()` (normally within a page; the pages and the pictures are drawn on worker
+threads, which stop too), or `Err(Cancelled::TimedOut)` with `CancelToken::with_timeout`. The
+`Paper` stays usable afterwards, and a token never cancelled changes nothing in the output.
+
+```rust
+use kakemono::{CancelToken, Cancelled, Paper};
+use std::time::Duration;
+
+let token = CancelToken::with_timeout(Duration::from_secs(30));
+let stop = token.clone(); // stop.cancel() from another thread
+match token.run(|| Paper::from_path("paper.pdf").map(|paper| paper.analyze())) {
+    Ok(read) => { let analysis = read?; /* ... */ }
+    Err(Cancelled::TimedOut) => eprintln!("too long"),
+    Err(Cancelled::Requested) => eprintln!("stopped"),
+}
+```
+
 ### Python
 
 ```bash

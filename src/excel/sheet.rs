@@ -292,7 +292,9 @@ fn read_part(xml: &str, ctx: &SheetContext<'_>) -> Result<Grid> {
     if root.empty {
         stack.clear();
     }
+    let mut pace = crate::common::cancel::Pace::default();
     while let Some(event) = reader.next_event()? {
+        pace.tick();
         match event {
             Event::Start(tag) => {
                 let parent = stack.last().copied().unwrap_or(Place::Other);

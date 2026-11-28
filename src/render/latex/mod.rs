@@ -499,6 +499,7 @@ impl Writer<'_, '_> {
     fn write(&mut self, doc: &Document) {
         let blocks: Vec<&Block> = doc.blocks.iter().collect();
         for step in steps(&blocks, doc.meta.arxiv_id.is_some()) {
+            crate::common::cancel::check();
             match step {
                 Step::Source => self.arxiv_link(doc),
                 Step::Code(run) => {
@@ -1072,7 +1073,9 @@ impl Writer<'_, '_> {
         // specification, at its first column.
         let mut covered: Vec<Vec<Option<(usize, String)>>> = vec![vec![None; n_cols]; n_rows];
         let mut lines = Vec::new();
+        let mut pace = crate::common::cancel::Pace::default();
         for (row_idx, row) in table.rows.iter().enumerate() {
+            pace.tick();
             let last_row = if split_header && row_idx < table.header_rows {
                 table.header_rows.min(n_rows)
             } else {
@@ -1383,7 +1386,9 @@ impl TextWidths {
             breaks: vec![false; n_cols],
             spans: Vec::new(),
         };
+        let mut pace = crate::common::cancel::Pace::default();
         for (row, cells) in table.rows.iter().enumerate() {
+            pace.tick();
             for cell in cells.iter().filter(|cell| cell.colspan > 1 && cell.col < n_cols) {
                 let text: String = cell.spans.iter().map(|span| span.text.as_str()).collect();
                 let bold = row < table.header_rows || cell.spans.iter().any(|span| span.style & BOLD != 0);

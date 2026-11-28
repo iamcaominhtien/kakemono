@@ -135,9 +135,23 @@ read with confidence.
 
 The GIL is released during a conversion, so several PDFs can be converted in parallel threads.
 
+Every conversion can be stopped: `cancel=` takes a `kakemono.CancelToken`, whose `cancel()`,
+called from another thread, makes it raise `kakemono.Cancelled`, and `timeout=` (seconds) raises
+`TimeoutError`. The work stops at its next stopping point, normally within a page, and writes no
+file:
+
+```python
+token = kakemono.CancelToken()
+threading.Timer(5, token.cancel).start()       # or from a "Stop" button
+md = kakemono.to_markdown("paper.pdf", cancel=token)
+md = kakemono.to_markdown("paper.pdf", timeout=30)
+```
+
 `kakemono.aio` has the same functions to be awaited in asyncio programs: each runs in a worker
-thread (`asyncio.to_thread`), so the event loop is not blocked while a document is fetched, read
-and written, and several run in parallel. `aio.Document.open` reads a document once:
+thread, so the event loop is not blocked while a document is fetched, read and written, and
+several run in parallel. `aio.Document.open` reads a document once. Cancelling a task (or
+`asyncio.timeout`, `asyncio.wait_for`, `timeout=`) stops its conversion, and the cancellation is
+raised once it has stopped:
 
 ```python
 import asyncio
@@ -145,11 +159,18 @@ from kakemono import aio
 
 async def main(paths):
     books = await asyncio.gather(*(aio.to_markdown(p) for p in paths))
-    doc = await aio.Document.open("paper.pdf")
-    await asyncio.gather(doc.to_docx("out/paper.docx"), doc.to_epub("out/paper.epub"))
+    async with asyncio.timeout(60):
+        doc = await aio.Document.open("paper.pdf")
+        await asyncio.gather(doc.to_docx("out/paper.docx"), doc.to_epub("out/paper.epub"))
+    # A document that is not trusted: in a process of its own, killed at once when cancelled
+    md = await aio.to_markdown("upload.docx", isolate=True, timeout=30)
 ```
 
-Cancelling a task stops the wait, not the conversion, which finishes in its thread. The number of
-conversions at once is that of the loop's default executor (`loop.set_default_executor`).
+With `isolate=True` a function runs in a Python process of its own, killed by a cancellation or
+its `timeout`: a hard limit, even for a document that would make the library hang or crash
+(`aio.ProcessError`). It costs the start of a process (about a tenth of a second) and the copy of
+the arguments and of the result; a killed conversion may leave a file it was writing half written.
+The number of conversions at once is that of the loop's default executor
+(`loop.set_default_executor`).
 
 MIT license.

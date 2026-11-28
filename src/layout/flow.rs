@@ -644,6 +644,7 @@ impl Flow<'_> {
         // new column: its later paragraphs stay with it.
         let mut chain_moved = false;
         for block in blocks.iter().enumerate() {
+            crate::common::cancel::check();
             let (at, block) = block;
             match block {
                 Block::Para(para) => {

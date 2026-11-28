@@ -336,6 +336,7 @@ impl ImageStore<'_> {
         out: &mut dyn Write,
         file: &mut dyn FnMut(String, Vec<u8>) -> io::Result<()>,
     ) -> io::Result<()> {
+        crate::common::cancel::check();
         let mut writer = SourceWriter {
             store: &self,
             out,

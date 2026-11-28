@@ -322,6 +322,7 @@ fn blocks_out(
     let mut headings: Vec<(u8, usize)> = Vec::new();
     let mut out = Vec::with_capacity(doc.blocks.len());
     for block in &doc.blocks {
+        crate::common::cancel::check();
         let mut json = block_out(block, opts, images);
         // The text inside a figure's picture, rotated text included (which
         // the analysis keeps by page).

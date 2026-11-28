@@ -110,7 +110,9 @@ pub(crate) fn table_xml(table: &Table, fit: Fit, cell_runs: &mut dyn FnMut(&[Spa
 fn grid(table: &Table) -> Vec<Vec<Slot<'_>>> {
     let n_rows = table.rows.len();
     let mut slots = vec![vec![Slot::Empty; table.n_cols]; n_rows];
+    let mut pace = crate::common::cancel::Pace::default();
     for (row_idx, row) in table.rows.iter().enumerate() {
+        pace.tick();
         for cell in row.iter().filter(|cell| cell.col < table.n_cols) {
             slots[row_idx][cell.col] = Slot::Start(cell);
             for covered in slots

@@ -59,6 +59,7 @@ pub(crate) fn sheet_blocks(name: &str, grid: &Grid, shapes: &[Shape], config: &E
         })
         .collect();
     for region in regions::split(grid, config) {
+        crate::common::cancel::check();
         let cells = RegionCells::new(grid, &merges, &region);
         if cells.cells.is_empty() {
             continue;
@@ -422,10 +423,12 @@ fn table(cells: &RegionCells<'_>, parts: &Parts, config: &ExcelConfig) -> Table 
         (kept.partition_point(|&index| index <= last) - kept.partition_point(|&index| index < first)).max(1)
     };
     let mut numeric = vec![(0usize, 0usize); n_cols];
+    let mut pace = crate::common::cancel::Pace::default();
     let built: Vec<Vec<TableCell>> = rows
         .iter()
         .enumerate()
         .map(|(index, &row)| {
+            pace.tick();
             cells
                 .row(row)
                 .map(|(col, cell)| {
@@ -513,7 +516,9 @@ impl<'g> RegionCells<'g> {
         // The next visible column after `col`.
         let next_col = |col: u32| (col + 1..=region.right).find(|&col| visible_col(col));
         let mut cells: BTreeMap<(u32, u32), Cell<'g>> = BTreeMap::new();
+        let mut pace = crate::common::cancel::Pace::default();
         for row in (region.top..=region.bottom).filter(|row| !grid.hidden_rows.contains(row)) {
+            pace.tick();
             // The cell whose text is centred across the cells after it.
             let mut centred: Option<(u32, u32)> = None;
             for (&(_, col), cell) in grid.cells.range((row, region.left)..=(row, region.right)) {

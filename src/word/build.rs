@@ -200,6 +200,7 @@ impl Builder<'_> {
     /// Adds the blocks of the paragraphs and tables `items`.
     fn items(&mut self, items: &[Item]) {
         for (idx, item) in items.iter().enumerate() {
+            crate::common::cancel::check();
             match item {
                 Item::Para(para) => {
                     let next_is_float = items[idx + 1..]

@@ -333,6 +333,7 @@ impl Paper {
     /// # Errors
     /// As [`Paper::to_pdf`].
     pub fn to_pdf_with(&self, config: &WorkbookPdfConfig) -> Result<Vec<u8>> {
+        crate::common::cancel::check();
         match &self.file {
             Source::Pdf(_) => anyhow::bail!("the input is already a PDF"),
             Source::Sheet(doc, paper, data, excel_config) => match config.style {
@@ -405,6 +406,7 @@ impl Paper {
         let pdf = match &self.file {
             Source::Pdf(pdf) => pdf,
             Source::Word(doc, _, _) | Source::Sheet(doc, ..) | Source::Book(doc, _) => {
+                crate::common::cancel::check();
                 let mut doc = doc.as_ref().clone();
                 doc.meta.source = self.source.clone();
                 // A file with no title of its own is called by its name.
@@ -505,6 +507,7 @@ impl Paper {
     /// bytes of the file. `analysis` must come from this paper, since the
     /// pictures are drawn from its PDF.
     pub fn to_docx(&self, analysis: &Analysis, opts: &DocxOptions) -> Vec<u8> {
+        crate::common::cancel::check();
         render_docx(analysis, self.pdf(), opts)
     }
 
@@ -513,12 +516,14 @@ impl Paper {
     /// `image_dir` (a relative path, such as `images`): the pictures stay
     /// embedded in the document too.
     pub fn to_docx_with_images(&self, analysis: &Analysis, opts: &DocxOptions, image_dir: &str) -> DocxOutput {
+        crate::common::cancel::check();
         render_docx_with_images(analysis, self.pdf(), opts, image_dir)
     }
 
     /// Writes an analysis as Markdown. `analysis` must come from this paper,
     /// since the pictures are drawn from its PDF.
     pub fn to_markdown(&self, analysis: &Analysis, opts: &MarkdownOptions) -> MarkdownOutput {
+        crate::common::cancel::check();
         render_markdown(analysis, self.pdf(), opts)
     }
 
@@ -526,6 +531,7 @@ impl Paper {
     /// files. `analysis` must come from this paper, since the pictures are
     /// drawn from its PDF.
     pub fn to_latex(&self, analysis: &Analysis, opts: &LatexOptions) -> LatexOutput {
+        crate::common::cancel::check();
         render_latex(analysis, self.pdf(), opts)
     }
 
@@ -533,6 +539,7 @@ impl Paper {
     /// files, in the layout of an article or of a printed book. `analysis`
     /// must come from this paper, since the pictures are drawn from its PDF.
     pub fn to_typst(&self, analysis: &Analysis, opts: &TypstOptions) -> TypstOutput {
+        crate::common::cancel::check();
         render_typst(analysis, self.pdf(), opts)
     }
 
@@ -540,6 +547,7 @@ impl Paper {
     /// the file. `analysis` must come from this paper, since the pictures
     /// are drawn from its PDF.
     pub fn to_epub(&self, analysis: &Analysis, opts: &EpubOptions) -> Vec<u8> {
+        crate::common::cancel::check();
         render_epub(analysis, self.pdf(), opts)
     }
 
@@ -548,6 +556,7 @@ impl Paper {
     /// with [`Paper::apply_content`]. `analysis` must come from this paper,
     /// since the pictures are drawn from its PDF.
     pub fn to_json(&self, analysis: &Analysis, opts: &JsonOptions) -> JsonOutput {
+        crate::common::cancel::check();
         render_json(analysis, self.pdf(), opts, &self.source_info())
     }
 
@@ -556,6 +565,7 @@ impl Paper {
     /// each headed by its section path, with the blocks and pages it comes
     /// from. Write them as JSON Lines with [`chunks_jsonl`](crate::chunks_jsonl).
     pub fn to_chunks(&self, analysis: &Analysis, opts: &ChunkOptions) -> Vec<Chunk> {
+        crate::common::cancel::check();
         render_chunks(&analysis.doc, opts)
     }
 
