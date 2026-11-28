@@ -4,7 +4,7 @@
 //! (`usWinAscent`, `usWinDescent` and the external leading) and the line
 //! spacing rule.
 
-use super::display::{Glyph, Item, TextRun};
+use super::display::{Glyph, Item, TextRun, offset};
 use super::fonts::{FaceId, FontBook};
 use super::metrics::MetricFace;
 use super::shape::{Shaped, Shaper};
@@ -13,6 +13,7 @@ use crate::word::fmt::model::{
     ParaProps, Rgb, RunFmt, Shape, TabKind, TabStop, Underline, VertAlign,
 };
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Superscripts and subscripts are set at this share of the font size.
 const SCRIPT_SIZE_RATIO: f32 = 2.0 / 3.0;
@@ -55,11 +56,22 @@ const JUSTIFY_OVERHANG_RATIO: f32 = 0.45;
 const FIT_TOLERANCE_PT: f32 = 0.01;
 
 /// How a piece of text is set: face, faked bold and italic, size, small
-/// capitals, and the address of the metrics of a missing font.
-type PieceKey = (FaceId, bool, bool, f32, bool, Option<usize>);
+/// capitals, and the metrics of a missing font.
+type PieceKey = (FaceId, bool, bool, f32, bool, Option<Metric>);
 
 /// The face choice for a character: [`PieceKey`] without small capitals.
-type FaceChoice = (FaceId, bool, bool, f32, Option<usize>);
+type FaceChoice = (FaceId, bool, bool, f32, Option<Metric>);
+
+/// Built-in metrics of a font, told apart by their address (there is one
+/// of each in the table).
+#[derive(Debug, Clone, Copy)]
+struct Metric(&'static super::metrics::MetricFace);
+
+impl PartialEq for Metric {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
 
 /// Font slot of a run for East Asian characters (`w:eastAsia`).
 const SLOT_EAST_ASIA: usize = 0;
@@ -109,15 +121,6 @@ fn font_slot(ch: char, fmt: &RunFmt) -> usize {
 const MIN_STAND_IN_SCALE: f32 = 0.75;
 /// See [`MIN_STAND_IN_SCALE`].
 const MAX_STAND_IN_SCALE: f32 = 1.25;
-
-/// The metric face whose address is `address`, looked up again from the
-/// run's fonts (the address only tells pieces apart).
-fn metric_by_address(address: usize, fmt: &RunFmt) -> Option<&'static super::metrics::MetricFace> {
-    [&fmt.font, &fmt.font_hansi, &fmt.font_east_asia, &fmt.font_cs]
-        .into_iter()
-        .filter_map(|family| super::metrics::lookup(family, fmt.bold, fmt.italic))
-        .find(|metric| *metric as *const _ as usize == address)
-}
 
 /// What a paragraph's layout needs to know about its surroundings.
 pub struct Ctx<'a> {
@@ -221,7 +224,9 @@ struct Piece {
     fake_bold: bool,
     fake_italic: bool,
     scale: f32,
-    fmt: RunFmt,
+    /// The format of its run, shared by the pieces of the run (a long
+    /// paragraph holds a piece for each word while it is laid out).
+    fmt: Rc<RunFmt>,
     glyphs: Vec<Glyph>,
     text: String,
     width: f32,
@@ -320,13 +325,7 @@ impl Ctx<'_> {
         let metric = slot.metric.filter(|metric| {
             metric.vertical_only() || slot.missing && (ch.is_whitespace() || metric.advance(ch).is_some())
         });
-        (
-            face,
-            fake_bold,
-            fake_italic,
-            slot.size,
-            metric.map(|metric| metric as *const _ as usize),
-        )
+        (face, fake_bold, fake_italic, slot.size, metric.map(Metric))
     }
 
     /// What does not depend on the character in the font slot `slot` of
@@ -340,14 +339,14 @@ impl Ctx<'_> {
             SLOT_ASCII => (&fmt.font, fmt.size),
             _ => (&fmt.font_hansi, fmt.size),
         };
-        let (face, fake_bold, fake_italic) = self.book.face(family, fmt.bold, fmt.italic);
+        let style = self.book.style(family, fmt.bold, fmt.italic);
         SlotFace {
-            face,
-            fake_bold,
-            fake_italic,
+            face: style.face,
+            fake_bold: style.fake_bold,
+            fake_italic: style.fake_italic,
             size,
-            missing: !self.book.has_family(family),
-            metric: super::metrics::lookup(family, fmt.bold, fmt.italic),
+            missing: style.missing,
+            metric: style.metric,
         }
     }
 
@@ -363,6 +362,11 @@ impl Ctx<'_> {
 
     /// Text in format `fmt` as pieces (split where the face changes).
     fn pieces(&mut self, text: &str, fmt: &RunFmt) -> Vec<Piece> {
+        self.shared_pieces(text, &Rc::new(fmt.clone()))
+    }
+
+    /// [`Ctx::pieces`] with a format the pieces share.
+    fn shared_pieces(&mut self, text: &str, fmt: &Rc<RunFmt>) -> Vec<Piece> {
         let text = transform_case(text, fmt);
         let mut pieces = Vec::new();
         let mut start = 0;
@@ -395,9 +399,9 @@ impl Ctx<'_> {
     }
 
     /// One piece: text in one face.
-    fn piece(&mut self, text: &str, fmt: &RunFmt, key: PieceKey) -> Piece {
+    fn piece(&mut self, text: &str, fmt: &Rc<RunFmt>, key: PieceKey) -> Piece {
         let (face, fake_bold, fake_italic, base_size, small, metric) = key;
-        let metric = metric.and_then(|address| metric_by_address(address, fmt));
+        let metric = metric.map(|metric| metric.0);
         let (shown, mut size) = if small {
             (text.to_uppercase(), base_size * SMALL_CAPS_RATIO)
         } else {
@@ -437,7 +441,7 @@ impl Ctx<'_> {
             fake_bold,
             fake_italic,
             scale: draw_scale,
-            fmt: fmt.clone(),
+            fmt: Rc::clone(fmt),
             glyphs,
             text: shown,
             width: x,
@@ -459,7 +463,7 @@ impl Ctx<'_> {
     pub(crate) fn line_metrics(&mut self, fmt: &RunFmt) -> (f32, f32, f32) {
         let ch = 'x';
         let (face, _, _, size, metric) = self.face_for(ch, fmt);
-        if let Some(metric) = metric.and_then(|address| metric_by_address(address, fmt)) {
+        if let Some(Metric(metric)) = metric {
             return (metric.ascent * size, metric.descent * size, metric.leading * size);
         }
         let metrics = self.book.get(face).metrics;
@@ -713,7 +717,8 @@ fn cut_piece(piece: Piece, keep: usize) -> (Option<Piece>, Option<Piece>) {
     if keep >= piece.glyphs.len() || !in_order {
         return (Some(piece), None);
     }
-    let split_byte = piece.glyphs[keep].text.0;
+    let split = piece.glyphs[keep].text.0;
+    let split_byte = split as usize;
     let mut first = piece.clone();
     first.glyphs.truncate(keep);
     first.text = piece.text[..split_byte].to_string();
@@ -724,7 +729,7 @@ fn cut_piece(piece: Piece, keep: usize) -> (Option<Piece>, Option<Piece>) {
         .iter()
         .map(|glyph| Glyph {
             x: glyph.x - offset,
-            text: (glyph.text.0 - split_byte, glyph.text.1 - split_byte),
+            text: (glyph.text.0 - split, glyph.text.1 - split),
             ..*glyph
         })
         .collect();
@@ -907,7 +912,10 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
     if stretch.is_empty() {
         return;
     }
-    let runs = std::mem::take(stretch);
+    let runs: Vec<(String, Rc<RunFmt>)> = std::mem::take(stretch)
+        .into_iter()
+        .map(|(text, fmt)| (text, Rc::new(fmt)))
+        .collect();
     let mut text = String::new();
     let mut bounds = Vec::new();
     for (piece, _) in &runs {
@@ -915,35 +923,64 @@ fn flush_stretch(ctx: &mut Ctx<'_>, stretch: &mut Vec<(String, RunFmt)>, atoms: 
         text.push_str(piece);
     }
     bounds.push(text.len());
+    // The first run that ends after the start of the word: the words go
+    // forward, and each only looks at the runs it overlaps (a paragraph
+    // of 100,000 links).
+    let mut first_run = 0;
     for (start, body_end, end) in words(&text) {
-        let mut pieces = Vec::new();
-        let mut body = 0.0;
-        let mut trailing = 0.0;
-        for (at, (_, fmt)) in runs.iter().enumerate() {
-            let (run_start, run_end) = (bounds[at], bounds[at + 1]);
-            for (part_start, part_end, is_body) in [(start, body_end, true), (body_end, end, false)] {
-                let from = part_start.max(run_start);
-                let to = part_end.min(run_end);
-                if from >= to {
-                    continue;
+        while first_run < runs.len() && bounds[first_run + 1] <= start {
+            first_run += 1;
+        }
+        let word = Stretch {
+            text: &text,
+            runs: &runs[first_run..],
+            bounds: &bounds[first_run..],
+        };
+        atoms.push(word_atom(ctx, &word, (start, body_end, end)));
+    }
+}
+
+/// The text of a stretch of runs, from a run on: the runs, and where each
+/// starts in the text (and the last ends).
+struct Stretch<'s> {
+    text: &'s str,
+    runs: &'s [(String, Rc<RunFmt>)],
+    bounds: &'s [usize],
+}
+
+/// The word of `stretch` from `start` to `end` (its body ending at
+/// `body_end`): its pieces in the formats of the runs it overlaps, the
+/// first of which is the first of `stretch`.
+fn word_atom(ctx: &mut Ctx<'_>, stretch: &Stretch<'_>, (start, body_end, end): (usize, usize, usize)) -> Atom {
+    let mut pieces = Vec::new();
+    let mut body = 0.0;
+    let mut trailing = 0.0;
+    for (at, (_, fmt)) in stretch.runs.iter().enumerate() {
+        let (run_start, run_end) = (stretch.bounds[at], stretch.bounds[at + 1]);
+        if run_start >= end {
+            break;
+        }
+        for (part_start, part_end, is_body) in [(start, body_end, true), (body_end, end, false)] {
+            let from = part_start.max(run_start);
+            let to = part_end.min(run_end);
+            if from >= to {
+                continue;
+            }
+            let part = stretch.text[from..to].replace('\u{00AD}', "");
+            if part.is_empty() {
+                continue;
+            }
+            for piece in ctx.shared_pieces(&part, fmt) {
+                if is_body {
+                    body += piece.width;
+                } else {
+                    trailing += piece.width;
                 }
-                let part = &text[from..to];
-                let part = part.replace('\u{00AD}', "");
-                if part.is_empty() {
-                    continue;
-                }
-                for piece in ctx.pieces(&part, fmt) {
-                    if is_body {
-                        body += piece.width;
-                    } else {
-                        trailing += piece.width;
-                    }
-                    pieces.push(piece);
-                }
+                pieces.push(piece);
             }
         }
-        atoms.push(Atom::Word { pieces, body, trailing });
     }
+    Atom::Word { pieces, body, trailing }
 }
 
 /// The left and right edges of a line of a paragraph with `props` in a
@@ -1176,7 +1213,7 @@ fn place_glyphs(
             advance,
             dx: glyph.dx * size * scale,
             dy: glyph.dy * size,
-            text: (start, end),
+            text: (offset(start), offset(end)),
         });
         x += advance;
     }
@@ -1197,10 +1234,13 @@ struct Builder {
 /// Share of the width of its spaces a justified line may lose to fit a
 /// word (`KAKEMONO_JUSTIFY_SHRINK` overrides it, for tuning).
 fn justify_shrink() -> f32 {
-    std::env::var("KAKEMONO_JUSTIFY_SHRINK")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(JUSTIFY_SHRINK_RATIO)
+    static SHRINK: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHRINK.get_or_init(|| {
+        std::env::var("KAKEMONO_JUSTIFY_SHRINK")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(JUSTIFY_SHRINK_RATIO)
+    })
 }
 
 impl Builder {
@@ -1628,7 +1668,7 @@ fn decimal_offset(segment: &[&Placed]) -> Option<f32> {
 /// The text a glyph of `piece` stands for (empty when its range is not in
 /// the piece's text).
 fn glyph_text<'a>(piece: &'a Piece, glyph: &Glyph) -> &'a str {
-    piece.text.get(glyph.text.0..glyph.text.1).unwrap_or("")
+    piece.text.get(glyph.range()).unwrap_or("")
 }
 
 /// Moves an item placed on baseline 0 to `baseline`.
@@ -1812,7 +1852,7 @@ fn emit_leader(ctx: &mut Ctx<'_>, leader: char, fmt: &RunFmt, from: f32, to: f32
         for glyph in &piece.glyphs {
             glyphs.push(Glyph {
                 x: x - start + glyph.x,
-                text: (text.len(), text.len() + leader.len_utf8()),
+                text: (offset(text.len()), offset(text.len() + leader.len_utf8())),
                 ..*glyph
             });
         }

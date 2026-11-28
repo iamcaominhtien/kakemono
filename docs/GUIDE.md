@@ -669,6 +669,24 @@ page layout: 0.01–0.4 s per document, 15–23× faster than LibreOffice's Word
 cores. By size, every format, threads and memory:
 [docs/WORD-INPUT.md](WORD-INPUT.md#speed-and-resources).
 
+**Web pages** (`scripts/web-bench/perf.py`, same machine): the 330 pages of the web benchmark
+convert to Markdown in 10 ms each (median), 310 ms for the slowest, with 55 MB at most; one
+process per core converts about 200 pages a second on 4 cores. Pages written to push the limits:
+
+| Page | Size | Markdown | PDF |
+| --- | ---: | ---: | ---: |
+| 130,000 paragraphs | 48 MB | 1.9 s, 458 MB | 25 s, 2.6 GB |
+| One line of 4 million words | 20 MB | 0.7 s, 177 MB | 13 s, 3.6 GB |
+| 200,000 boxes of clutter | 12 MB | 0.7 s, 392 MB | 0.6 s, 392 MB |
+| 100,000 links in one paragraph | 3.3 MB | 0.6 s, 160 MB | 1.8 s, 400 MB |
+| 20,000 headings in a row | 1.5 MB | 0.2 s, 64 MB | 3.6 s, 156 MB |
+| 100,000 lines of code | 1.1 MB | 0.1 s, 107 MB | 1.5 s, 390 MB |
+
+Time grows in proportion to the page (`tests/scaling.rs` checks it), except for elements nested
+tens of thousands deep, which html5ever builds in a time that grows with the square of the depth.
+A laid-out page holds its text until the PDF is written: the 13,000 pages of the 48 MB page take
+about 200 MB of memory per 1,000 pages.
+
 All the numbers, and leads for making it faster, are in
 [docs/IMPROVEMENTS.md](IMPROVEMENTS.md#10-benchmark-november-2026-and-leads-for-speed-and-memory).
 

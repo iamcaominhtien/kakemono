@@ -158,7 +158,7 @@ pub(crate) fn to_pdf(book: &SheetBook, config: &WorkbookPdfConfig, file: Option<
         });
     }
     drop(ctx);
-    pdf::write(&pages, &[], &fonts, &images, book.title.as_deref())
+    pdf::write(pages, &[], &fonts, &images, book.title.as_deref())
 }
 
 /// What one sheet is printed with.
@@ -2085,10 +2085,13 @@ fn keep_shown_text(run: &mut crate::layout::display::TextRun) {
     run.glyphs.shrink_to_fit();
     let start = run.glyphs.iter().map(|glyph| glyph.text.0).min().unwrap_or(0);
     let end = run.glyphs.iter().map(|glyph| glyph.text.1).max().unwrap_or(0);
-    if start == 0 && end == run.text.len() {
+    let (Ok(from), Ok(to)) = (usize::try_from(start), usize::try_from(end)) else {
+        return;
+    };
+    if from == 0 && to == run.text.len() {
         return;
     }
-    let Some(shown) = run.text.get(start..end) else {
+    let Some(shown) = run.text.get(from..to) else {
         return;
     };
     run.text = shown.to_string();

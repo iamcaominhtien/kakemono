@@ -42,9 +42,6 @@ const CELL_SEPARATOR: &str = " | ";
 /// A table's caption and last header row, repeated on each piece when the
 /// whole head is too long, are each cut to this share (1 / n) of a chunk.
 const HEAD_PART_SHARE: usize = 4;
-/// The first length (bytes) of the prefix of a long text that `cut` counts
-/// to find how far its head may go, doubled until it no longer fits.
-const FIRST_PROBE_BYTES: usize = 1024;
 
 /// Everything that controls how a document is cut into chunks.
 #[derive(Debug, Clone)]
@@ -398,15 +395,12 @@ fn split_long(text: &str, budget: usize, counter: &TokenCounter) -> Vec<String> 
             pieces.push(std::mem::take(&mut current));
         }
         let mut rest = sentence;
-        loop {
+        while over_budget(rest, budget, counter).is_some() {
             let (head, tail) = cut(rest, budget, counter);
-            if tail.is_empty() {
-                current = head.to_string();
-                break;
-            }
             pieces.push(head.to_string());
             rest = tail;
         }
+        current = rest.to_string();
     }
     if !current.is_empty() {
         pieces.push(current);
@@ -450,41 +444,51 @@ fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-/// Cuts `text` into its longest head of at most `budget` tokens and the
-/// rest: between words, or between characters when the first word alone is
-/// too long. The head is never empty; the rest is empty when `text` fits
-/// whole.
-fn cut<'t>(text: &'t str, budget: usize, counter: &TokenCounter) -> (&'t str, &'t str) {
-    // The head ends before `bound`, the first prefix found, doubling from
-    // `FIRST_PROBE_BYTES`, that no longer fits: a long text is then not
-    // counted whole for each head cut from it (quadratic, minutes for the
-    // cells of a large workbook).
-    let mut bound = FIRST_PROBE_BYTES;
+/// Bytes of text first looked at for each token of a budget, by
+/// [`over_budget`]: the window doubles until it holds more tokens.
+const CUT_WINDOW_BYTES_PER_TOKEN: usize = 8;
+
+/// The length of a head of `text` that holds more than `budget` tokens,
+/// if the text does: heads twice as long each time are counted, so that
+/// a long text is not counted whole for each piece cut from it. The count
+/// grows with the head, so the text holds more than `budget` tokens when
+/// a head does.
+fn over_budget(text: &str, budget: usize, counter: &TokenCounter) -> Option<usize> {
+    let mut window = text.len().min(budget.saturating_mul(CUT_WINDOW_BYTES_PER_TOKEN).max(1));
     loop {
-        if bound >= text.len() {
-            if counter.count(text) <= budget {
-                return (text, "");
-            }
-            bound = text.len();
-            break;
+        while !text.is_char_boundary(window) {
+            window += 1;
         }
-        while !text.is_char_boundary(bound) {
-            bound -= 1;
+        if counter.count(&text[..window]) > budget {
+            return Some(window);
         }
-        if counter.count(&text[..bound]) > budget {
-            break;
+        if window == text.len() {
+            return None;
         }
-        bound *= 2;
+        window = text.len().min(window.saturating_mul(2));
     }
-    let window = &text[..bound];
+}
+
+/// Cuts `text` (more than `budget` tokens) into its longest head of at most
+/// `budget` tokens and the rest: between words, or between characters when
+/// the first word alone is too long. The head is never empty.
+fn cut<'t>(text: &'t str, budget: usize, counter: &TokenCounter) -> (&'t str, &'t str) {
+    // The head is in the first bytes that hold more than `budget` tokens:
+    // the ends are looked for there only, not in the whole text at each
+    // cut (a block of 100,000 lines of code).
+    let window = over_budget(text, budget, counter).unwrap_or(text.len());
+    let head = &text[..window];
     // Ends of the candidate heads: after each word, else after each char.
-    let mut ends: Vec<usize> = window
+    let mut ends: Vec<usize> = head
         .char_indices()
         .filter(|&(i, ch)| ch.is_whitespace() && i > 0 && !text[..i].ends_with(char::is_whitespace))
         .map(|(i, _)| i)
         .collect();
     if ends.first().is_none_or(|&end| counter.count(&text[..end]) > budget) {
-        ends = window.char_indices().skip(1).map(|(i, _)| i).collect();
+        // The end of the window too: the end of the first char when the
+        // window holds only it.
+        let window_end = (head.len() < text.len()).then_some(head.len());
+        ends = head.char_indices().skip(1).map(|(i, _)| i).chain(window_end).collect();
     }
     // The count grows with the head: find the last end that fits.
     let fits = ends.partition_point(|&end| counter.count(&text[..end]) <= budget);
@@ -522,6 +526,50 @@ mod tests {
             math_font: String::new(),
             blocks,
             pictures: Vec::new(),
+        }
+    }
+
+    /// `cut` as it was before it looked in a window only: every end of the
+    /// text is a candidate.
+    fn cut_whole<'t>(text: &'t str, budget: usize, counter: &TokenCounter) -> (&'t str, &'t str) {
+        let mut ends: Vec<usize> = text
+            .char_indices()
+            .filter(|&(i, ch)| ch.is_whitespace() && i > 0 && !text[..i].ends_with(char::is_whitespace))
+            .map(|(i, _)| i)
+            .collect();
+        if ends.first().is_none_or(|&end| counter.count(&text[..end]) > budget) {
+            ends = text.char_indices().skip(1).map(|(i, _)| i).collect();
+        }
+        let fits = ends.partition_point(|&end| counter.count(&text[..end]) <= budget);
+        let end = if fits == 0 {
+            ends.first().copied().unwrap_or(text.len())
+        } else {
+            ends[fits - 1]
+        };
+        (text[..end].trim_end(), text[end..].trim_start())
+    }
+
+    /// A long text is cut where it was when all of it was looked at for
+    /// each piece, and `over_budget` tells the texts with too many tokens.
+    #[test]
+    fn long_texts_are_cut_as_when_looked_at_whole() {
+        let counter = TokenCounter::default();
+        let words: String = (0..3_000).map(|i| format!("word{} ", i % 37)).collect();
+        let long_word = "x".repeat(5_000);
+        let cjk = "漢字かな交じり文".repeat(400);
+        for text in [words.as_str(), long_word.as_str(), cjk.as_str(), "a b", "é"] {
+            for budget in [1, 2, 7, 50, 300, 100_000] {
+                assert_eq!(
+                    cut(text, budget, &counter),
+                    cut_whole(text, budget, &counter),
+                    "{budget}"
+                );
+                assert_eq!(
+                    over_budget(text, budget, &counter).is_some(),
+                    counter.count(text) > budget,
+                    "{budget}"
+                );
+            }
         }
     }
 

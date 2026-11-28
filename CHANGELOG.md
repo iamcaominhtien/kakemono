@@ -6,45 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-## [0.20.0](https://github.com/iamcaominhtien/kakemono/compare/v0.19.0...v0.20.0) - 2026-11-27
+## [0.19.1](https://github.com/iamcaominhtien/kakemono/compare/v0.19.0...v0.19.1) - 2026-11-27
 
-### Added
+### Performance
 
-- *(excel)* Show and print workbooks as Excel does, with charts and vector pictures
+- Convert long documents and unusual web pages in linear time, with less memory
 
-Excel input fidelity, tuned file by file on the public corpus of `tests/data/excel-corpus.tsv` (91 workbooks: Japanese forms and statistics, project templates, financial reports, world statistics), and the charts and vector pictures shared with Word input.
+Long documents and unusual web pages now convert in time in proportion to their size, and a document laid out as a PDF holds about 40% less memory. Every output stays the same.
 
-##### Sheet view (`-m medium`, `src/excel/view.rs`)
-- Each visible sheet as Excel shows it: column widths and row heights as the screen it was saved on drew them (MS P Gothic, Yu Gothic, Calibri...), merged cells, fonts, fills, borders, alignment (centred across the selection, distributed, stacked and turned text), overflowing text.
-- Number formats with their fill (`*x`, accounting) and colours (`[Red]`), conditional formats and data bars, the built-in styles of Excel Tables.
-- Drawn objects: preset shapes, callouts, connectors with arrow heads, groups (turned and mirrored), text boxes, pictures (TIFF too), embedded objects by their preview (also those written before Excel 2010), form controls as the VML drawing shows them, charts.
+#### PDF of a long document
 
-##### Workbook PDF
-- Printed as Excel prints it by default (`src/layout/workbook/print.rs`): print areas, page setup, scale and fit to page, manual breaks, repeated title rows and columns, headers and footers, black-and-white sheets, row and column headings, columns as wide as the printer draws them, rows fitted to their text.
-- `--pdf-style document` lays the workbook out as a document (tables fitted to the page, landscape pages, column groups), without TeX.
+The pages of a document are held until the PDF is written. They now take less room:
 
-##### Charts and vector pictures (`src/chart/`, shared with Word)
-- Charts read from DrawingML and extended chart parts, drawn as SVG (bars, lines, areas, pies, doughnuts, radar, scatter...), with their data as a table; Excel's automatic scale (room past the data).
-- **Breaking:** SVG and metafile pictures stay vector in every output (`feat!`). The SVG of a document has its text drawn as paths where it is written as an SVG (as on main); kakemono's own charts keep their text.
+- The runs of a line in one face are joined as they are placed on the page: one run per line instead of one per word. The PDF writer already drew them as one.
+- A glyph takes 28 bytes instead of 40, the spare room of each page's vectors is freed once the page is drawn, and the writer drops each page once drawn.
+- The pieces of a run share its format instead of holding a copy each.
+- Each font family's face and built-in metrics are resolved once, not for each run.
 
-##### Other outputs, after a review of every output of the corpus
-- Chunks keep a table's long head instead of dropping it; empty columns left out.
-- docx: tables sized by their text, wide ones on landscape pages in smaller text.
-- LaTeX: CJK fonts and symbols, long tables broken across pages, wide workbook tables as long tables.
-- Markdown: a form's wide merged fields written once.
-- A long label that runs into the next cell of its row stays in its table.
-- Untitled files are named by their file name; charts whose references are all `#REF!` give no fake data table.
+| Web page to PDF | Before | After |
+| --- | --- | --- |
+| 130,000 paragraphs (48 MB, 13,000 pages) | 40 s, 4.6 GB | 25 s, 2.6 GB |
+| One line of 4 million words (20 MB) | 18 s, 7.3 GB | 13 s, 3.6 GB |
+| 4 MB of paragraphs (1,084 pages) | 2.8 s, 412 MB | 2.1 s, 248 MB |
+| The 483 documents of the Word corpus | 106 s | 101 s |
 
-##### Speed, from a stress test (long cells, large grids)
-- The page layout found the end of each glyph's cluster by scanning every cluster: quadratic, minutes for a cell of 32,000 characters. Now a binary search (231 s to 2.2 s for the Excel-style PDF of 250 such cells); Word documents with long paragraphs gain too.
-- A table row that runs over pages is split copying each item once (31 s to 18 s for the document-style PDF of the same workbook).
-- The chunks of a long sentence no longer count the tokens of its whole rest for each piece (7.6 s to 1.3 s for 500 such cells).
-- The output is the same, byte for byte, on the 91 workbooks and 523 Word documents.
+#### Pages whose time grew with the square of their size
 
-##### Merge of main
-- Main's EPUB and web page inputs, Typst output and notes meet the Excel input: a workbook is `source_format` `"xlsx"`, `Paper::from_path_with` reads one with its `ExcelConfig`, the Python `Document` takes `header_rows`.
+Each of these was found with pages written to repeat one thing 20,000 times:
 
-What is left is listed in `TODO.md` ("Excel input").
+| Page | Where | Before | After |
+| --- | --- | --- | --- |
+| 20,000 list items with a link | `html/clean.rs`, counts | 52 s | 0.2 s |
+| 20,000 spans of class `menu` in a paragraph | `html/clean.rs`, clutter | 28 s | 0.1 s |
+| 20,000 number paragraphs in one box | `html/clean.rs`, counts | 7 s | 0.1 s |
+| 20,000 double line breaks | `html/clean.rs` | 1.8 s | 0.1 s |
+| 100,000 lines of code | `word/build.rs`, lines | 28 s | 0.1 s |
+| 20,000 notes cited from one mark, or headings with the same words | `word/build.rs`, anchors | 16–20 s | 0.2–0.3 s |
+| 100,000 lines of code, as chunks | `render/chunks` | 9 s | 0.2 s |
+| 20,000 headings in a row, as a PDF | `layout/flow.rs`, kept with next | over 300 s | 3.6 s |
+| 100,000 links in a paragraph, as a PDF | `layout/para.rs`, words and runs | 124 s | 1.8 s |
+
+The fixes:
+
+- A parent holds more text than a child: the check stops at the first other text, instead of comparing their whole texts for each child. The counts go out at once.
+- Each parent's line breaks are walked once.
+- Anchors of the same base are numbered on from the last one given.
+- A span is split into lines without copying its text for each line.
+- The chunker counts heads of a long text that double in length, not the whole text for each piece it cuts.
+- A chain of paragraphs kept with the next is measured until it is taller than a page.
+- Each word looks only at the runs it overlaps.
+
+Elements nested tens of thousands deep are still slow (11 s for 50,000): almost all of it is html5ever building the tree.
+
+#### Tools
+
+- `scripts/web-bench/perf.py` measures speed and memory:
+  - `sweep`: every benchmark page, one at a time;
+  - `parallel N`: all of them, N at a time;
+  - `formats`: every output of the largest pages;
+  - `stress [--pdf]`: pages written to push the limits.
+- `docs/GUIDE.md` has the numbers for web pages.
 
 ## [0.19.0](https://github.com/iamcaominhtien/kakemono/compare/v0.18.0...v0.19.0) - 2026-11-27
 

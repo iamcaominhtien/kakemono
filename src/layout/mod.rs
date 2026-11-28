@@ -38,5 +38,5 @@ pub fn to_pdf(doc: &FDoc) -> Result<Vec<u8>> {
 /// When the PDF cannot be written.
 fn to_pdf_with(doc: &FDoc, book: &mut fonts::FontBook) -> Result<Vec<u8>> {
     let laid = flow::layout(doc, book);
-    pdf::write(&laid.pages, &laid.destinations, book, &doc.images, doc.title.as_deref())
+    pdf::write(laid.pages, &laid.destinations, book, &doc.images, doc.title.as_deref())
 }
