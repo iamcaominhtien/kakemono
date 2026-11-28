@@ -121,8 +121,9 @@ def test_errors_are_raised_where_awaited():
     async def main():
         await aio.to_markdown(b"not a document")
 
+    converting = main()
     with pytest.raises(ValueError):
-        asyncio.run(main())
+        asyncio.run(converting)
     opening = aio.Document.open("no/such/file.pdf")
     with pytest.raises(FileNotFoundError):
         asyncio.run(opening)
@@ -266,10 +267,12 @@ def test_an_isolated_conversion_gives_the_same_result(tmp_path):
 
 
 def test_an_isolated_conversion_raises_its_errors():
+    broken = aio.to_markdown(b"not a document", isolate=True)
     with pytest.raises(ValueError):
-        asyncio.run(aio.to_markdown(b"not a document", isolate=True))
+        asyncio.run(broken)
+    missing = aio.to_markdown("no/such/file.pdf", isolate=True)
     with pytest.raises(FileNotFoundError):
-        asyncio.run(aio.to_markdown("no/such/file.pdf", isolate=True))
+        asyncio.run(missing)
 
 
 def test_an_isolated_conversion_is_killed_when_cancelled_or_late():
@@ -401,8 +404,9 @@ def test_an_isolated_conversion_takes_a_memoryview():
 
 
 def test_an_isolated_conversion_times_out_with_its_token_as_in_a_thread():
+    late = aio.convert_all(LIGO, isolate=True, cancel=kakemono.CancelToken(timeout=0.3))
     with pytest.raises(TimeoutError):
-        asyncio.run(aio.convert_all(LIGO, isolate=True, cancel=kakemono.CancelToken(timeout=0.3)))
+        asyncio.run(late)
 
 
 def test_cancelled_is_a_kakemono_exception_that_pickles():

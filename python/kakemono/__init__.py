@@ -608,8 +608,8 @@ def to_docx(
     return doc.to_docx(path, equations=equations, scale=scale, image_dir=image_dir, save_images=save_images, cancel=token)
 
 
-def to_markdown(  # NOSONAR python:S107: keyword options, as on the command line
-    source: Source,
+def to_markdown(
+    source: Source,  # NOSONAR python:S107: keyword options, as on the command line
     path: Optional[PathArg] = None,
     *,
     tables: bool = True,
@@ -714,8 +714,8 @@ def to_typst(
     return doc.to_typst(path, equations=equations, scale=scale, image_dir=image_dir, layout=layout, cancel=token)
 
 
-def to_epub(  # NOSONAR python:S107: keyword options, as on the command line
-    source: Source,
+def to_epub(
+    source: Source,  # NOSONAR python:S107: keyword options, as on the command line
     path: Optional[PathArg] = None,
     *,
     tables: bool = True,
