@@ -6,7 +6,8 @@ packages of a release are built with the same version:
 
 It sets:
 - `bindings/Cargo.toml` (`[workspace.package] version`) and `bindings/wasm/Cargo.toml`;
-- `bindings/node/package.json` and `bindings/wasm/package.json`;
+- `bindings/node/package.json` and `bindings/wasm/package.json`, and the version napi's loader
+  `bindings/node/index.js` checks its platform packages against;
 - the Maven POMs of `bindings/jvm/` (the project's and its parent's version);
 - `bindings/dotnet/Kakemono/Kakemono.csproj` (`<Version>`).
 """
@@ -49,7 +50,15 @@ def set_versions(root: pathlib.Path, version: str) -> list[pathlib.Path]:
     wasm = root / "wasm" / "Cargo.toml"
     replace_once(wasm, r'(\[package\]\n(?:.*\n)*?version = )"[^"]*"', rf'\g<1>"{version}"')
     changed.append(wasm)
-    for package in (root / "node" / "package.json", root / "wasm" / "package.json"):
+    node = root / "node" / "package.json"
+    old = json.loads(node.read_text(encoding="utf-8"))["version"]
+    loader = root / "node" / "index.js"
+    if loader.exists():
+        text = loader.read_text(encoding="utf-8")
+        new = text.replace(f"'{old}'", f"'{version}'").replace(f"expected {old} but", f"expected {version} but")
+        loader.write_text(new, encoding="utf-8")
+        changed.append(loader)
+    for package in (node, root / "wasm" / "package.json"):
         set_json(package, version)
         changed.append(package)
     for pom in sorted((root / "jvm").glob("**/pom.xml")):

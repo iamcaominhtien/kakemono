@@ -42,6 +42,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.13.4</junit.version>
     <langchain4j.version>1.24.1</langchain4j.version>
+    <!-- Maven Central: false uploads and validates the release, to be published by hand on
+         central.sonatype.com (the first releases); true publishes it at once. -->
+    <central.autoPublish>false</central.autoPublish>
     <!-- The JNI library the tests load (a file); empty: from the classpath. -->
     <kakemono.library.path>${project.basedir}/../../target/release/libkakemono_jni.so</kakemono.library.path>
   </properties>
@@ -118,8 +121,8 @@
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
-              <autoPublish>true</autoPublish>
-              <waitUntil>published</waitUntil>
+              <autoPublish>${central.autoPublish}</autoPublish>
+              <waitUntil>validated</waitUntil>
             </configuration>
           </plugin>
         </plugins>

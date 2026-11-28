@@ -81,4 +81,7 @@ repository variable `BINDINGS_PUBLISH` is `true`, with these secrets:
 | Maven Central | `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` (a Central Portal token), `MAVEN_GPG_PRIVATE_KEY`, `MAVEN_GPG_PASSPHRASE` | the namespace `io.github.iamcaominhtien`, verified on central.sonatype.com; a GPG key published on a key server |
 | NuGet | `NUGET_API_KEY` | the package id `Kakemono` on nuget.org |
 
-A version already published is skipped, so the workflow can be run again by hand.
+A version already published is skipped, so the workflow can be run again by hand. On Maven
+Central the upload is validated, then waits to be published by hand on central.sonatype.com,
+unless the repository variable `BINDINGS_MAVEN_AUTO_PUBLISH` is `true`. Run the first release with
+`BINDINGS_PUBLISH` unset: the packages are then only built, as artifacts of the workflow run.
